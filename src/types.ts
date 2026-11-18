@@ -170,5 +170,16 @@ export class CmsError extends Error {
             : 422
   ) {
     super(message);
+    this.name = "CmsError";
   }
+  /** Marks CmsErrors so `isCmsError` works across bundle copies of this class. */
+  readonly isCmsError = true;
+}
+
+/**
+ * True for any CmsError, even one from another copy of this package (bundlers
+ * can duplicate the class, which breaks `instanceof`). Use this, not instanceof.
+ */
+export function isCmsError(e: unknown): e is CmsError {
+  return !!e && typeof e === "object" && (e as { isCmsError?: unknown }).isCmsError === true;
 }

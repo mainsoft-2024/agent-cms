@@ -29,7 +29,7 @@ import { z } from "zod";
 import type { Cms } from "./cms";
 import { keyFromHeader } from "./keys";
 import { handleMcp } from "./mcp";
-import { CmsError, DOC_STATUSES, KEY_SCOPES, type Actor } from "./types";
+import { CmsError, isCmsError, DOC_STATUSES, KEY_SCOPES, type Actor } from "./types";
 
 export interface CmsHandlerOptions {
   cms: Cms;
@@ -63,7 +63,7 @@ export function json(data: unknown, status = 200): Response {
 }
 
 export function errorResponse(err: unknown): Response {
-  if (err instanceof CmsError) return json({ error: err.code, message: err.message }, err.status);
+  if (isCmsError(err)) return json({ error: err.code, message: err.message }, err.status);
   if (err instanceof z.ZodError) return json({ error: "invalid", message: err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") }, 422);
   console.error("[agent-cms] request failed:", err);
   return json({ error: "internal", message: "처리 중 오류" }, 500);

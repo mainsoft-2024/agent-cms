@@ -16,9 +16,9 @@
 
 import { tool, zodSchema, type Tool } from "ai";
 import type { Cms } from "./cms";
-import { createCmsClient, CmsRemoteError, type CmsClientOptions } from "./client";
+import { createCmsClient, isCmsRemoteError, type CmsClientOptions } from "./client";
 import { CMS_TOOLS, toolsFor, type CmsToolDef } from "./tools";
-import { CmsError, type Actor } from "./types";
+import { CmsError, isCmsError, type Actor } from "./types";
 
 export interface CmsToolsOptions {
   /** Only these tools (by name). Default: every tool the actor may use. */
@@ -37,7 +37,7 @@ function wrap(def: CmsToolDef, run: (args: Record<string, unknown>) => Promise<u
       try {
         return await run(args);
       } catch (err) {
-        if (err instanceof CmsError || err instanceof CmsRemoteError) return { error: err.code, message: err.message };
+        if (isCmsError(err) || isCmsRemoteError(err)) return { error: err.code, message: err.message };
         throw err;
       }
     },

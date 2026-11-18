@@ -21,7 +21,7 @@ export { lookupForAgent } from "./agent";
 export type { AgentLink, AgentLookup, AgentSection } from "./agent";
 export { CMS_TOOLS, CMS_TOOL_NAMES, toolsFor } from "./tools";
 export type { CmsToolDef } from "./tools";
-export { createCmsClient, CmsRemoteError } from "./client";
+export { createCmsClient, CmsRemoteError, isCmsRemoteError } from "./client";
 export type { CmsClient, CmsClientOptions } from "./client";
 export { docFromMarkdown, parseFrontmatter } from "./frontmatter";
 export * from "./types";

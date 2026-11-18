@@ -20,7 +20,14 @@ export class CmsRemoteError extends Error {
     public code: string
   ) {
     super(message);
+    this.name = "CmsRemoteError";
   }
+  readonly isCmsRemoteError = true;
+}
+
+/** Like `isCmsError`: survives duplicated copies of this class in a bundle. */
+export function isCmsRemoteError(e: unknown): e is CmsRemoteError {
+  return !!e && typeof e === "object" && (e as { isCmsRemoteError?: unknown }).isCmsRemoteError === true;
 }
 
 export interface RemoteTool {

@@ -11,7 +11,7 @@
 import { z } from "zod";
 import type { Cms } from "./cms";
 import { toolsFor, CMS_TOOL_NAMES } from "./tools";
-import { CmsError, type Actor } from "./types";
+import { CmsError, isCmsError, type Actor } from "./types";
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 const SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -85,8 +85,8 @@ async function dispatch(cms: Cms, actor: Actor, msg: RpcRequest): Promise<Record
         const result = await tool.run(cms, actor, parsed.data as Record<string, unknown>);
         return reply({ content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: Array.isArray(result) ? { items: result } : result ?? {} });
       } catch (err) {
-        const text = err instanceof CmsError ? `${err.code}: ${err.message}` : "internal error";
-        if (!(err instanceof CmsError)) console.error("[agent-cms] mcp tool failed:", err);
+        const text = isCmsError(err) ? `${err.code}: ${err.message}` : "internal error";
+        if (!(isCmsError(err))) console.error("[agent-cms] mcp tool failed:", err);
         return reply({ isError: true, content: [{ type: "text", text }] });
       }
     }

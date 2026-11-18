@@ -176,3 +176,12 @@ test("cli: put creates, then updates with the current version; errors exit 1", a
   assert.equal(await runCli(["get", "guide", "nope", "--env", "/tmp/a.env"], io), 1);
   assert.equal(await runCli(["list", "guide"], { ...io, env: {} }), 1, "no url/key → exit 1");
 });
+
+test("errors are recognised across copies of the class (bundlers duplicate it)", async () => {
+  const { isCmsError } = await import("./types");
+  const { isCmsRemoteError } = await import("./client");
+  const foreign = Object.assign(new Error("x"), { isCmsError: true, code: "not_found" });
+  assert.equal(isCmsError(foreign), true);
+  assert.equal(isCmsError(new Error("x")), false);
+  assert.equal(isCmsRemoteError(Object.assign(new Error("x"), { isCmsRemoteError: true })), true);
+});

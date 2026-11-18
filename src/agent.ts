@@ -7,7 +7,7 @@
 
 import type { Cms } from "./cms";
 import { appLinkKeys, APP_LINK_RE, splitSections } from "./markdown";
-import { CmsError, type Actor } from "./types";
+import { CmsError, isCmsError, type Actor } from "./types";
 
 export interface AgentSection {
   slug: string;
@@ -55,7 +55,7 @@ export async function lookupForAgent(
     else {
       for (const col of collections) {
         const doc = await cms.get(actor, col, o.slug).catch((e: unknown) => {
-          if (e instanceof CmsError && e.code === "not_found") return null;
+          if (isCmsError(e) && e.code === "not_found") return null;
           throw e;
         });
         if (!doc) continue;

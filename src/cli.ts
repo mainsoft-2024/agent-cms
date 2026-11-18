@@ -20,7 +20,7 @@
 
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { createCmsClient, CmsRemoteError } from "./client";
+import { createCmsClient, CmsRemoteError, isCmsRemoteError } from "./client";
 import { docFromMarkdown } from "./frontmatter";
 
 export interface CliIo {
@@ -122,7 +122,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         const current = await api
           .call<{ version: number }>("get_document", { collection, slug: doc.slug, draft: true })
           .catch((e: unknown) => {
-            if (e instanceof CmsRemoteError && e.code === "not_found") return null;
+            if (isCmsRemoteError(e) && e.code === "not_found") return null;
             throw e;
           });
         const result = current
@@ -142,7 +142,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         return 1;
     }
   } catch (e) {
-    err(`[agent-cms] ${e instanceof CmsRemoteError ? `${e.code}: ` : ""}${e instanceof Error ? e.message : String(e)}`);
+    err(`[agent-cms] ${isCmsRemoteError(e) ? `${e.code}: ` : ""}${e instanceof Error ? e.message : String(e)}`);
     return 1;
   }
 }
