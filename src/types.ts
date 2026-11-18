@@ -3,11 +3,15 @@
  * MCP, AI SDK tools) edit together. Lives inside the app: no separate server.
  *
  * EXTRACTION RULE: nothing under `src/` may import from a host app (`@/`) or
- * any app module. It is written to be lifted into `@mainsoft-2024/agent-cms`
- * unchanged (`src/parts.test.ts` enforces it).
+ * any app module (`src/parts.test.ts` enforces it).
+ *
+ * Browser-safe: no Node APIs here (the admin UI imports these types).
  */
 
 import type { ZodTypeAny } from "zod";
+
+export { CmsError, ERROR_CODES, ERROR_KINDS, formatMessage, isCmsError } from "./errors";
+export type { CmsErrorCode, CmsErrorKind, CmsErrorOptions, Diagnostic, ErrorParams, Messages, MessageTemplate } from "./errors";
 
 /**
  * draft     — the latest version is not public (an older one may be).
@@ -20,12 +24,20 @@ export type DocStatus = (typeof DOC_STATUSES)[number];
 export const KEY_SCOPES = ["read", "write", "publish", "admin"] as const;
 export type KeyScope = (typeof KEY_SCOPES)[number];
 
-/** Who is acting. Either an app session (user) or an API key. */
-export type Actor =
+/** How a request came in. Used for usage counts (`cms_hits.source`) and the audit log. */
+export const VIAS = ["rest", "mcp", "ai", "cli", "app"] as const;
+export type Via = (typeof VIAS)[number];
+
+/** Who is acting. Either an app session (user), an API key, the app itself or nobody. */
+export type Actor = (
   | { kind: "anonymous" }
   | { kind: "user"; id: string; label: string; email?: string | null; isAdmin: boolean }
   | { kind: "key"; id: string; label: string; scopes: KeyScope[]; collections: string[] | null }
-  | { kind: "system"; label: string };
+  | { kind: "system"; label: string }
+) & {
+  /** Set by the transports (REST, MCP, AI tools); app code may leave it out. */
+  via?: Via;
+};
 
 /** The editable content of a document; one version = one snapshot of this. */
 export interface DocContent {
@@ -38,6 +50,15 @@ export interface DocContent {
   fields: Record<string, unknown>;
 }
 
+/** Unsaved editor state kept by `cms.autosave()`. Never a version. */
+export interface AutosaveState {
+  content: DocContent;
+  at: string;
+  by: string | null;
+  /** The version the editor started from (the base of a 3-way merge). */
+  baseVersion: number;
+}
+
 export interface CmsDoc extends DocContent {
   id: string;
   collection: string;
@@ -48,12 +69,32 @@ export interface CmsDoc extends DocContent {
   publishedVersion: number | null;
   /** The public snapshot (null when never published). */
   published: DocContent | null;
+  /** First publish time; kept across unpublish and republish. */
   publishedAt: string | null;
+  /** Last time it went public again after being hidden or unpublished. */
+  republishedAt: string | null;
   createdAt: string;
   updatedAt: string;
   /** Label of whoever wrote the latest version. */
   updatedBy: string | null;
   updatedByKind: "user" | "key" | "system" | null;
+  /** Unsaved editor content (only for editors; never on a public read). */
+  autosave: AutosaveState | null;
+}
+
+/** What `commit()` records about a version: changed fields and body hunks. */
+export interface VersionChange {
+  fields: string[];
+  /** Body hunks (added and removed lines) against the previous version. */
+  hunks: { id: string; removed: string[]; added: string[]; before?: string | null }[];
+}
+
+/** A reviewed agent change (`cms.reviewChanges`). */
+export interface ReviewMark {
+  hunk: string;
+  by: string;
+  at: string;
+  action: "accepted" | "reverted";
 }
 
 export interface CmsVersion {
@@ -67,20 +108,12 @@ export interface CmsVersion {
   note: string | null;
   published: boolean;
   createdAt: string;
+  changed: VersionChange | null;
+  reviewed: ReviewMark[];
 }
 
-export interface CmsGap {
-  id: string;
-  collection: string;
-  kind: "no_result" | "reported";
-  query: string;
-  note: string | null;
-  documentSlug: string | null;
-  count: number;
-  state: "open" | "done" | "ignored";
-  firstSeenAt: string;
-  lastSeenAt: string;
-}
+/** A version without its snapshot (version lists). */
+export type VersionSummary = Omit<CmsVersion, "snapshot"> & { title: string };
 
 export interface CmsKey {
   id: string;
@@ -90,7 +123,53 @@ export interface CmsKey {
   collections: string[] | null;
   lastUsedAt: string | null;
   revokedAt: string | null;
+  /** null = never expires. */
+  expiresAt: string | null;
   createdAt: string;
+}
+
+export const AUDIT_ACTIONS = [
+  "key.create",
+  "key.revoke",
+  "doc.publish",
+  "doc.unpublish",
+  "doc.archive",
+  "doc.unarchive",
+  "doc.delete",
+  "doc.restore",
+  "preview.create",
+  "access.denied",
+  "auth.failed",
+] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+export interface AuditEntry {
+  id: string;
+  at: string;
+  actorKind: Actor["kind"];
+  actorId: string | null;
+  actorLabel: string;
+  action: AuditAction;
+  collection: string | null;
+  slug: string | null;
+  version: number | null;
+  outcome: "ok" | "denied" | "failed";
+  via: Via | null;
+  detail: Record<string, unknown>;
+}
+
+/** Passed to `createCms({ onSearchMiss })` when a search the caller flagged found nothing. */
+export interface SearchMissEvent {
+  query: string;
+  /** `normalizeQuery(query)`: particles dropped, words sorted — group by this. */
+  normalized: string;
+  collections: string[];
+  /** Anyone, anonymous included. Whether to keep it is the app's call. */
+  actor: Actor;
+  source: Via;
+  at: string;
+  /** Best results that scored below the threshold (max 3). */
+  nearest: { collection: string; slug: string; anchor: string | null; score: number; coverage: number }[];
 }
 
 export interface AccessArgs {
@@ -99,13 +178,25 @@ export interface AccessArgs {
   doc?: CmsDoc | null;
 }
 
-export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny | undefined> {
-  slug: string;
+/** How the admin form shows one field (`admin.fields` in the collection). */
+export interface FieldAdmin {
+  label?: string;
+  help?: string;
+  widget?: "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json";
+}
+
+export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny | undefined, S extends string = string> {
+  slug: S;
   label: string;
   /**
+   * Required. "public": anyone may read published documents unless
+   * `access.read` says otherwise. "internal": `access.read` is required (the
+   * CMS refuses to start without it), so nothing is public by accident.
+   */
+  visibility: "public" | "internal";
+  /**
    * Writes only through the host app (the `system` actor). Users and API keys
-   * can read it over REST and MCP but never create, edit, publish or delete,
-   * so app-side rules around a save (tombstones, sync markers) always run.
+   * can read it over REST and MCP but never create, edit, publish or delete.
    */
   managed?: boolean;
   /** Allowed category values (null = free text / none). */
@@ -129,20 +220,22 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
   search?: {
     /** Index published docs of this collection. Default true. */
     enabled?: boolean;
-    /** Record searches that found nothing as gaps. */
-    gapLogging?: boolean;
   };
   /** `[[link:key|label]]` keys: return the URL, or null when the key is unknown. */
   links?: { resolve: (key: string) => string | null };
-  /** Public URL of a document (for agent results and link chips). */
+  /** Public URL of a document (agent results, the editor's public link, preview links). */
   url?: (doc: { slug: string }) => string;
   access?: {
-    /** Read published documents. Default: everyone. */
+    /** Read published documents. Default for "public": everyone. Required for "internal". */
     read?: (a: AccessArgs) => boolean;
-    /** Read drafts, versions, gaps; create and edit. */
+    /** Read drafts and versions; create and edit. */
     write?: (a: AccessArgs) => boolean;
-    /** Publish, archive, restore-and-publish. */
+    /** Publish, archive, restore-and-publish, delete. */
     publish?: (a: AccessArgs) => boolean;
+  };
+  admin?: {
+    /** Per field path (`tags`, `seo.title`): label, help text, widget. */
+    fields?: Record<string, FieldAdmin>;
   };
   hooks?: {
     /**
@@ -153,37 +246,47 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
   };
 }
 
-export class CmsError extends Error {
-  constructor(
-    public code:
-      | "not_found"
-      | "forbidden"
-      | "unauthorized"
-      | "invalid"
-      | "conflict"
-      | "unknown_collection",
-    message: string,
-    public status: number = code === "not_found" || code === "unknown_collection"
-      ? 404
-      : code === "forbidden"
-        ? 403
-        : code === "unauthorized"
-          ? 401
-          : code === "conflict"
-            ? 409
-            : 422
-  ) {
-    super(message);
-    this.name = "CmsError";
-  }
-  /** Marks CmsErrors so `isCmsError` works across bundle copies of this class. */
-  readonly isCmsError = true;
+/** What the admin list shows for a document. */
+export interface DocState {
+  state: "draft" | "published" | "archived";
+  /** Published, and the working copy has changes the public does not see yet. */
+  modifiedSincePublish: boolean;
 }
 
 /**
- * True for any CmsError, even one from another copy of this package (bundlers
- * can duplicate the class, which breaks `instanceof`). Use this, not instanceof.
+ * Display state. The stored status is "draft" when a published document has
+ * a newer working copy; the admin shows that as "published, modified".
  */
-export function isCmsError(e: unknown): e is CmsError {
-  return !!e && typeof e === "object" && (e as { isCmsError?: unknown }).isCmsError === true;
+export function docState(doc: Pick<CmsDoc, "status" | "version" | "publishedVersion">): DocState {
+  if (doc.status === "archived") return { state: "archived", modifiedSincePublish: false };
+  if (doc.publishedVersion === null) return { state: "draft", modifiedSincePublish: false };
+  return { state: "published", modifiedSincePublish: doc.version !== doc.publishedVersion };
+}
+
+/** List item without the body (`fields: "summary"` lists). */
+export interface DocSummary {
+  id: string;
+  collection: string;
+  slug: string;
+  title: string;
+  summary: string;
+  category: string | null;
+  status: DocStatus;
+  state: DocState["state"];
+  modifiedSincePublish: boolean;
+  version: number;
+  publishedVersion: number | null;
+  publishedAt: string | null;
+  updatedAt: string;
+  updatedBy: string | null;
+  updatedByKind: CmsDoc["updatedByKind"];
+  hits7d?: number;
+}
+
+export interface DocCounts {
+  all: number;
+  draft: number;
+  published: number;
+  modified: number;
+  archived: number;
 }

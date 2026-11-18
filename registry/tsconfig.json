@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"],
+    "baseUrl": "..",
+    "paths": {
+      "@/components/ui/*": ["examples/next/components/ui/*"],
+      "@/lib/utils": ["examples/next/lib/utils"],
+      "@mainsoft-2024/agent-cms/*": ["src/*"]
+    }
+  },
+  "include": ["cms/**/*", "__tests__/**/*", "../examples/next/components/ui/**/*", "../examples/next/lib/utils.ts"]
+}

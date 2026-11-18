@@ -14,15 +14,16 @@ function setup() {
   const guide = defineCollection({
     slug: "guide",
     label: "가이드",
+    visibility: "public",
     categories: ["연동", "만들기"],
     forbiddenChars: ["·"],
-    search: { gapLogging: true },
-    links: { resolve: (k) => (k === "settings.integrations" ? "/settings/integrations" : null) },
+        links: { resolve: (k) => (k === "settings.integrations" ? "/settings/integrations" : null) },
     url: (d) => `/guide/${d.slug}`,
   });
   const updates = defineCollection({
     slug: "updates",
     label: "공지사항",
+    visibility: "public",
     versions: { drafts: false },
     fields: z.object({ pinned: z.boolean().default(false) }),
   });
@@ -39,8 +40,8 @@ const slack = {
   body: "## 연결하기\n\n1. [[link:settings.integrations|연동 서비스]]를 열어요.\n2. **연결**을 눌러요.\n\n## 연결 끊기\n\n관리에서 연결 해제를 눌러요.",
 };
 
-async function reject(p: Promise<unknown>, code: CmsError["code"]) {
-  await assert.rejects(p, (e: unknown) => e instanceof CmsError && e.code === code);
+async function reject(p: Promise<unknown>, code: CmsError["code"] | CmsError["kind"]) {
+  await assert.rejects(p, (e: unknown) => e instanceof CmsError && (e.code === code || e.kind === code));
 }
 
 test("draft is invisible to the public until published", async () => {
@@ -91,7 +92,7 @@ test("restore makes a new version from an old one", async () => {
   assert.equal(r.title, "Slack 연결하기");
   const vs = await cms.versions(admin, "guide", "slack-connect");
   assert.deepEqual(vs.map((v) => v.version), [3, 2, 1]);
-  assert.equal(vs[0].note, "v1로 되돌림");
+  assert.equal(vs[0].note, "restored v1");
 });
 
 test("validation: slug, category, forbidden chars, unknown screen link", async () => {
@@ -126,28 +127,14 @@ test("revoked keys stop working; secrets are never stored", async () => {
   await reject(cms.createKey(user, { name: "x", scopes: ["read"] }), "forbidden");
 });
 
-test("search finds Korean questions by alias and stem; empty results log a gap", async () => {
+test("search finds Korean questions by alias and stem", async () => {
   const { cms } = setup();
   await cms.create(admin, "guide", slack, { publish: true });
   const r = await cms.search(anon, ["guide"], "슬랙 어떻게 연결해?");
   assert.equal(r.empty, false);
   assert.equal(r.hits[0].unit.slug, "slack-connect");
   assert.equal(r.hits[0].unit.heading, "연결하기");
-  // Anonymous misses are never written (a public search box cannot fill the table).
-  assert.equal((await cms.search(anon, ["guide"], "환불 받는 법", { logGap: true })).empty, true);
-  await new Promise((res) => setImmediate(res));
-  assert.equal((await cms.gaps(admin, "guide")).length, 0);
-  await reject(cms.reportGap(anon, "guide", { question: "x" }), "unauthorized");
-
-  const agent: Actor = { kind: "system", label: "agent" };
-  await cms.search(agent, ["guide"], "환불 받는 법", { logGap: true });
-  await new Promise((res) => setImmediate(res));
-  const gaps = await cms.gaps(admin, "guide");
-  assert.equal(gaps.length, 1);
-  assert.equal(gaps[0].kind, "no_result");
-  await cms.search(agent, ["guide"], "환불 받는 법은?", { logGap: true });
-  await new Promise((res) => setImmediate(res));
-  assert.equal((await cms.gaps(admin, "guide"))[0].count, 2);
+  assert.equal((await cms.search(anon, ["guide"], "환불 받는 법")).empty, true);
 });
 
 test("a key cannot mint a key wider than itself", async () => {
@@ -178,7 +165,7 @@ test("search index follows publish and archive", async () => {
 
 test("old versions are pruned but the published one is kept", async () => {
   const repo = new MemoryRepo();
-  const cms = createCms({ repo, collections: [defineCollection({ slug: "g", label: "g", versions: { max: 2 } })] });
+  const cms = createCms({ repo, collections: [defineCollection({ slug: "g", label: "g", visibility: "public", versions: { max: 2 } })] });
   await cms.create(admin, "g", { slug: "a", title: "v1" }, { publish: true });
   for (let i = 2; i <= 5; i++) await cms.update(admin, "g", "a", { title: `v${i}` });
   const vs = await cms.versions(admin, "g", "a");
@@ -210,7 +197,7 @@ test("unpublish takes a doc off the public site and keeps its first publish time
 });
 
 test("managed collection: only the host app (system) writes; keys and users read", async () => {
-  const notes = defineCollection({ slug: "notes", label: "Notes", managed: true, versions: { drafts: false } });
+  const notes = defineCollection({ slug: "notes", label: "Notes", visibility: "public", managed: true, versions: { drafts: false } });
   const cms = createCms({ repo: new MemoryRepo(), collections: [notes] });
   const sys: Actor = { kind: "system", label: "app" };
   const key: Actor = { kind: "key", id: "k", label: "k", scopes: ["admin"], collections: null };

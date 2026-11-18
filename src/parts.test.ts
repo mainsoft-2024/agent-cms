@@ -17,9 +17,11 @@ const DIR = join(process.cwd(), "src");
 const admin: Actor = { kind: "user", id: "u1", label: "관리자", isAdmin: true };
 
 test("standalone: no file imports the host app", () => {
-  for (const f of readdirSync(DIR).filter((f) => f.endsWith(".ts"))) {
-    const src = readFileSync(join(DIR, f), "utf8");
-    const bad = [...src.matchAll(/from\s+["'](@\/[^"']+|\.\.\/[^"']+)["']/g)].map((m) => m[1]);
+  const files = [...readdirSync(DIR).filter((f) => f.endsWith(".ts")), ...readdirSync(join(DIR, "messages")).map((f) => `messages/${f}`)];
+  for (const f of files) {
+    // Template strings (files `agent-cms init` writes into the app) may import the app.
+    const src = readFileSync(join(DIR, f), "utf8").replace(/`(?:\\[\s\S]|[^\\`])*`/g, "``");
+    const bad = [...src.matchAll(/from\s+["'](@\/[^"']+|\.\.\/[^"']+)["']/g)].map((m) => m[1]).filter((m) => !(f.startsWith("messages/") && m === "../errors"));
     assert.deepEqual(bad, [], `${f} imports ${bad.join(", ")}`);
   }
 });
@@ -56,6 +58,7 @@ async function seeded() {
       defineCollection({
         slug: "guide",
         label: "가이드",
+        visibility: "public",
         links: { resolve: (k) => (k === "settings.integrations" ? "/settings/integrations" : null) },
         url: (d) => `/guide/${d.slug}`,
       }),
@@ -118,6 +121,8 @@ test("http: REST read, key auth, MCP tools", async () => {
 
   const note = await h(new Request("http://x/api/cms/mcp", { method: "POST", headers: auth, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) }));
   assert.equal(note.status, 202);
+  const anonMcp = await h(new Request("http://x/api/cms/mcp", { method: "POST", body: "{}" }));
+  assert.equal(anonMcp.status, 401);
 });
 
 function inProcessFetch(cms: Awaited<ReturnType<typeof seeded>>) {
@@ -138,7 +143,8 @@ test("ai: local tools follow the actor's permissions and return errors as result
   const ok = (await exec(editor.cms_update_document)({ collection: "guide", slug: "slack", doc: { summary: "새 요약" }, expectedVersion: doc.version }, {})) as { version: number };
   assert.equal(ok.version, doc.version + 1);
   const stale = (await exec(editor.cms_update_document)({ collection: "guide", slug: "slack", doc: { summary: "또" }, expectedVersion: doc.version }, {})) as { error: string };
-  assert.equal(stale.error, "conflict");
+  assert.equal(stale.error, "conflict_version");
+  assert.equal((stale as unknown as { kind: string }).kind, "conflict");
 });
 
 test("ai: remote tools call the app over MCP with a key", async () => {
@@ -194,17 +200,4 @@ test("frontmatter: # and commas inside quotes are kept", () => {
   const d = docFromMarkdown('---\ntitle: "Fix #123"  # comment\ntags: ["a, b", c]\n---\n본문');
   assert.equal(d.title, "Fix #123");
   assert.deepEqual(d.fields, { tags: ["a, b", "c"] });
-});
-
-test("gaps: a writer of one collection cannot change another collection's gap", async () => {
-  const cms = createCms({
-    repo: new MemoryRepo(),
-    collections: [defineCollection({ slug: "a", label: "a", search: { gapLogging: true } }), defineCollection({ slug: "b", label: "b", search: { gapLogging: true } })],
-  });
-  await cms.reportGap(admin, "b", { question: "없는 질문" });
-  const [gap] = await cms.gaps(admin, "b");
-  const { secret } = await cms.createKey(admin, { name: "a-only", scopes: ["write"], collections: ["a"] });
-  const key = (await cms.authenticateKey(secret))!;
-  await assert.rejects(cms.setGapState(key, "a", gap.id, "done"));
-  assert.equal((await cms.gaps(admin, "b"))[0].state, "open");
 });
