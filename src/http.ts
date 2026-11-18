@@ -9,20 +9,18 @@
  * (`resolveUser`), else anonymous (published reads only).
  *
  *   GET    /collections/:c                      list (?drafts=1&status=&category=)
- *   POST   /collections/:c                      create {doc, publish?, pr?, note?}
+ *   POST   /collections/:c                      create {doc, publish?, note?}
  *   GET    /collections/:c/:slug                read (?draft=1 for the working copy)
- *   PATCH  /collections/:c/:slug                update {doc, expectedVersion?, publish?, pr?, note?}
+ *   PATCH  /collections/:c/:slug                update {doc, expectedVersion?, publish?, note?}
  *   DELETE /collections/:c/:slug
  *   POST   /collections/:c/:slug/publish        {version?}
- *   POST   /collections/:c/:slug/archive | unarchive | unpublish | reviewed
+ *   POST   /collections/:c/:slug/archive | unarchive | unpublish
  *   GET    /collections/:c/:slug/versions[/:n]
  *   POST   /collections/:c/:slug/versions/:n/restore {publish?}
  *   GET    /collections/:c/_gaps                (?state=open)
  *   POST   /collections/:c/_gaps                {question, note?, slug?}
  *   PATCH  /collections/:c/_gaps/:id            {state}
  *   GET    /search?q=&collections=a,b
- *   POST   /coverage                            {files, pr?}
- *   POST   /deploy-sync                         {prs, files, sha?}
  *   GET    /keys | POST /keys {name, scopes, collections?} | DELETE /keys/:id
  *   POST   /mcp                                 MCP (JSON-RPC over streamable HTTP, stateless)
  */
@@ -49,7 +47,6 @@ const DocInput = z
     body: z.string().optional(),
     category: z.string().nullable().optional(),
     keywords: z.array(z.string()).optional(),
-    covers: z.array(z.string()).optional(),
     fields: z.record(z.unknown()).optional(),
   })
   .strict();
@@ -58,7 +55,6 @@ const WriteBody = z.object({
   doc: DocInput,
   expectedVersion: z.number().int().positive().optional(),
   publish: z.boolean().optional(),
-  pr: z.number().int().positive().nullable().optional(),
   note: z.string().max(300).nullable().optional(),
 });
 
@@ -159,15 +155,6 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         });
       }
 
-      if (seg[0] === "coverage" && m === "POST") {
-        const b = await body(req, z.object({ files: z.array(z.string()).max(5000), pr: z.number().int().positive().nullable().optional() }));
-        return json({ docs: await cms.coverage(actor, b.files, b.pr ?? null) });
-      }
-      if (seg[0] === "deploy-sync" && m === "POST") {
-        const b = await body(req, z.object({ prs: z.array(z.number().int().positive()).max(200), files: z.array(z.string()).max(5000), sha: z.string().max(80).nullable().optional() }));
-        return json(await cms.deploySync(actor, b));
-      }
-
       if (seg[0] === "keys") {
         if (seg.length === 1 && m === "GET") return json({ keys: await cms.listKeys(actor) });
         if (seg.length === 1 && m === "POST") {
@@ -206,7 +193,6 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             const docs = await cms.list(actor, col, {
               drafts: q.get("drafts") === "1",
               status: (DOC_STATUSES as readonly string[]).includes(status ?? "") ? (status as (typeof DOC_STATUSES)[number]) : undefined,
-              needsReview: q.get("needsReview") === "1" ? true : undefined,
               category: q.get("category") ?? undefined,
             });
             let counts: Map<string, number> | null = null;
@@ -239,7 +225,6 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           if (seg[3] === "archive") return json({ doc: await cms.archive(actor, col, slug) });
           if (seg[3] === "unarchive") return json({ doc: await cms.unarchive(actor, col, slug) });
           if (seg[3] === "unpublish") return json({ doc: await cms.unpublish(actor, col, slug) });
-          if (seg[3] === "reviewed") return json({ doc: await cms.markReviewed(actor, col, slug) });
         }
         if (slug && seg[3] === "versions") {
           if (seg.length === 4 && m === "GET") return json({ versions: await cms.versions(actor, col, slug) });

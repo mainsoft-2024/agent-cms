@@ -3,9 +3,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { lookupForAgent } from "./agent";
-import { prNumbersFromLog, runCli } from "./cli";
+import { runCli } from "./cli";
+import { cmsTools, remoteCmsTools } from "./ai";
+import { docFromMarkdown } from "./frontmatter";
 import { createCms, defineCollection } from "./cms";
-import { matchesAny } from "./glob";
 import { createCmsHandler } from "./http";
 import { keyFromHeader } from "./keys";
 import { anchorOf, extractToc, parseInline, parseMarkdown, plainText, splitSections } from "./markdown";
@@ -41,15 +42,6 @@ test("markdown: links, callouts, lists and unsafe hrefs", () => {
   assert.equal(plainText("**굵게** [[link:a|화면]] `코드`"), "굵게 화면 코드");
 });
 
-test("glob: folders, ** and braces", () => {
-  assert.ok(matchesAny("src/features/settings/ui/a.tsx", ["src/features/settings"]));
-  assert.ok(matchesAny("src/a/b/c.ts", ["src/**/*.ts"]));
-  assert.ok(matchesAny("src/x.ts", ["src/**/*.ts"]));
-  assert.ok(matchesAny("src/lib/mcp/catalog.ts", ["src/lib/{mcp,slack}/**"]));
-  assert.ok(!matchesAny("src/lib/mem/x.ts", ["src/lib/{mcp,slack}/**"]));
-  assert.ok(!matchesAny("src/features/settingsX/a.ts", ["src/features/settings"]));
-});
-
 test("keys: header formats", () => {
   const k = "sgk_" + "a".repeat(40);
   assert.equal(keyFromHeader(`Bearer ${k}`), k);
@@ -64,7 +56,6 @@ async function seeded() {
       defineCollection({
         slug: "guide",
         label: "가이드",
-        coverage: true,
         links: { resolve: (k) => (k === "settings.integrations" ? "/settings/integrations" : null) },
         url: (d) => `/guide/${d.slug}`,
       }),
@@ -77,7 +68,6 @@ async function seeded() {
       slug: "slack",
       title: "Slack 연결하기",
       keywords: ["슬랙"],
-      covers: ["src/slack/**"],
       body: "## 연결하기\n\n[[link:settings.integrations|연동 서비스]]에서 **연결**을 눌러요.",
     },
     { publish: true }
@@ -119,36 +109,70 @@ test("http: REST read, key auth, MCP tools", async () => {
     new Request("http://x/api/cms/mcp", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "update_document", arguments: { collection: "guide", slug: "slack", doc: { summary: "요약" }, pr: 9 } } }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "update_document", arguments: { collection: "guide", slug: "slack", doc: { summary: "요약" } } } }),
     })
   );
   const res = (await call.json()) as { result: { isError?: boolean; structuredContent: { status: string } } };
   assert.equal(res.result.isError, undefined);
-  assert.equal(res.result.structuredContent.status, "pending");
+  assert.equal(res.result.structuredContent.status, "draft", "a write key saves a draft; publishing needs publish scope");
 
   const note = await h(new Request("http://x/api/cms/mcp", { method: "POST", headers: auth, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) }));
   assert.equal(note.status, 202);
 });
 
-test("cli: PR numbers from merge and squash subjects", () => {
-  assert.deepEqual(prNumbersFromLog("feat: x (#12)\nMerge pull request #34 from a/b\nchore: y"), [12, 34]);
+function inProcessFetch(cms: Awaited<ReturnType<typeof seeded>>) {
+  const h = createCmsHandler({ cms, resolveUser: async () => null });
+  return ((input: RequestInfo | URL, init?: RequestInit) => h(new Request(String(input), init))) as typeof fetch;
+}
+
+type Exec = (args: unknown, o: unknown) => Promise<unknown>;
+const exec = (t: unknown) => (t as { execute: Exec }).execute;
+
+test("ai: local tools follow the actor's permissions and return errors as results", async () => {
+  const cms = await seeded();
+  const reader = cmsTools(cms, { kind: "anonymous" });
+  assert.ok("get_document" in reader && "search_documents" in reader);
+  assert.ok(!("update_document" in reader), "readers get read tools only");
+  const editor = cmsTools(cms, { kind: "system", label: "agent" }, { prefix: "cms_" });
+  const doc = (await exec(editor.cms_get_document)({ collection: "guide", slug: "slack", draft: true }, {})) as { version: number };
+  const ok = (await exec(editor.cms_update_document)({ collection: "guide", slug: "slack", doc: { summary: "새 요약" }, expectedVersion: doc.version }, {})) as { version: number };
+  assert.equal(ok.version, doc.version + 1);
+  const stale = (await exec(editor.cms_update_document)({ collection: "guide", slug: "slack", doc: { summary: "또" }, expectedVersion: doc.version }, {})) as { error: string };
+  assert.equal(stale.error, "conflict");
 });
 
-test("cli: check-coverage fails without update, passes with skip token", async () => {
+test("ai: remote tools call the app over MCP with a key", async () => {
   const cms = await seeded();
-  const { secret } = await cms.createKey(admin, { name: "ci", scopes: ["read"] });
-  const h = createCmsHandler({ cms, resolveUser: async () => null });
-  const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => h(new Request(String(input), init))) as typeof fetch;
+  const { secret } = await cms.createKey(admin, { name: "agent", scopes: ["read", "write", "publish"] });
+  const tools = remoteCmsTools({ url: "http://x/api/cms", key: secret, fetch: inProcessFetch(cms) });
+  const created = (await exec(tools.create_document)({ collection: "guide", doc: { slug: "notion", title: "Notion 연결", body: "## 연결\n\n노션" }, publish: true }, {})) as { status: string };
+  assert.equal(created.status, "published");
+  const hits = (await exec(tools.search_documents)({ query: "노션" }, {})) as { slug: string }[];
+  assert.equal(hits[0].slug, "notion");
+  const missing = (await exec(tools.get_document)({ collection: "guide", slug: "nope" }, {})) as { error: string };
+  assert.equal(missing.error, "not_found");
+});
+
+test("frontmatter: doc keys, fields and arrays", () => {
+  const d = docFromMarkdown("---\ntitle: 제목\nsummary: '요약: 콜론'\nkeywords: [a, b]\ntags: [x]\npinned: true\n---\n본문\n", "file-name");
+  assert.deepEqual(d, { body: "본문", slug: "file-name", title: "제목", summary: "요약: 콜론", keywords: ["a", "b"], fields: { tags: ["x"], pinned: true } });
+});
+
+test("cli: put creates, then updates with the current version; errors exit 1", async () => {
+  const cms = await seeded();
+  const { secret } = await cms.createKey(admin, { name: "cli", scopes: ["read", "write", "publish"] });
   const lines: string[] = [];
-  const env = (log: string) => ({
-    url: "http://x/api/cms",
-    key: secret,
-    fetch: fetchImpl,
-    log: (l: string) => lines.push(l),
-    git: (args: string[]) => (args[0] === "diff" ? "src/slack/a.ts\nREADME.md\n" : log),
-  });
-  assert.equal(await runCli(["check-coverage", "--pr", "5"], env("feat: change")), 1);
-  assert.ok(lines.join("\n").includes("guide/slack"));
-  assert.equal(await runCli(["check-coverage", "--pr", "5"], env("feat: change\n\nGUIDE-OK")), 0);
-  assert.equal(await runCli(["check-coverage"], { log: () => {} }), 0, "no secrets → skip");
+  const files: Record<string, string> = {
+    "/tmp/a.env": `AGENT_CMS_URL=http://x/api/cms\nAGENT_CMS_KEY=${secret}\n`,
+    "/tmp/post.md": "---\ntitle: 첫 글\n---\n안녕",
+  };
+  const io = { env: {}, fetch: inProcessFetch(cms), readFile: (p: string) => files[p], out: (l: string) => lines.push(l), err: (l: string) => lines.push(l) };
+  assert.equal(await runCli(["put", "guide", "/tmp/post.md", "--publish", "--env", "/tmp/a.env"], io), 0);
+  assert.equal((await cms.get({ kind: "anonymous" }, "guide", "post")).title, "첫 글");
+  files["/tmp/post.md"] = "---\ntitle: 고친 글\n---\n안녕";
+  assert.equal(await runCli(["put", "guide", "/tmp/post.md", "--env", "/tmp/a.env"], io), 0);
+  assert.equal((await cms.get(admin, "guide", "post", { draft: true })).title, "고친 글");
+  assert.equal((await cms.get({ kind: "anonymous" }, "guide", "post")).title, "첫 글", "update without --publish stays a draft");
+  assert.equal(await runCli(["get", "guide", "nope", "--env", "/tmp/a.env"], io), 1);
+  assert.equal(await runCli(["list", "guide"], { ...io, env: {} }), 1, "no url/key → exit 1");
 });

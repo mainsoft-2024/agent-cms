@@ -24,14 +24,10 @@ function toDoc(r: DocRow): CmsDoc {
     body: r.body,
     category: r.category,
     keywords: r.keywords ?? [],
-    covers: r.covers ?? [],
     fields: r.fields ?? {},
     version: r.version,
     publishedVersion: r.publishedVersion,
     published: r.published ?? null,
-    needsReview: r.needsReview,
-    reviewReason: r.reviewReason ?? null,
-    pendingPr: r.pendingPr,
     publishedAt: iso(r.publishedAt),
     createdAt: iso(r.createdAt)!,
     updatedAt: iso(r.updatedAt)!,
@@ -60,7 +56,6 @@ const toVersion = (r: VersionRow): Omit<CmsVersion, "published"> => ({
   authorId: r.authorId,
   authorLabel: r.authorLabel,
   note: r.note,
-  pr: r.pr,
   createdAt: iso(r.createdAt)!,
 });
 
@@ -118,12 +113,11 @@ export class DrizzleRepo implements CmsRepo {
     const [r] = await this.db.select().from(cmsDocuments).where(eq(cmsDocuments.id, id)).limit(1);
     return r ? toDoc(r) : null;
   }
-  async listDocs(f: { collection?: string; statuses?: DocStatus[]; published?: boolean; needsReview?: boolean }) {
+  async listDocs(f: { collection?: string; statuses?: DocStatus[]; published?: boolean }) {
     const conds = [];
     if (f.collection) conds.push(eq(cmsDocuments.collection, f.collection));
     if (f.statuses) conds.push(inArray(cmsDocuments.status, f.statuses));
     if (f.published === true) conds.push(isNotNull(cmsDocuments.publishedVersion), ne(cmsDocuments.status, "archived"));
-    if (f.needsReview !== undefined) conds.push(eq(cmsDocuments.needsReview, f.needsReview));
     const rows = await this.db.select().from(cmsDocuments).where(conds.length ? and(...conds) : undefined);
     const docs = rows.map(toDoc);
     return f.published === false ? docs.filter((d) => d.publishedVersion === null || d.status === "archived") : docs;
@@ -168,7 +162,6 @@ export class DrizzleRepo implements CmsRepo {
         authorId: v.authorId,
         authorLabel: v.authorLabel,
         note: v.note,
-        pr: v.pr,
         createdAt: date(v.createdAt ?? null) ?? undefined,
       })
     );

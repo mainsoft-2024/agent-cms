@@ -1,12 +1,11 @@
 /**
  * The CMS itself: every rule about documents, versions, publishing, access,
- * search, gaps, keys, coverage and deploy sync. Transport-free — REST
- * (`http.ts`), MCP (`mcp.ts`) and agent lookup (`agent.ts`) are thin shells over
- * this object, so the three can never disagree.
+ * search, search misses and keys. Transport-free: REST (`http.ts`), MCP
+ * (`mcp.ts`) and AI SDK tools (`ai.ts`) are thin shells over this object, so
+ * they can never disagree.
  */
 
 import type { ZodTypeAny } from "zod";
-import { matchesAny } from "./glob";
 import { displayPrefix, generateKey, hashKey } from "./keys";
 import { appLinkKeys } from "./markdown";
 import type { CmsRepo, DocPatch } from "./repo";
@@ -29,7 +28,7 @@ export function defineCollection<F extends ZodTypeAny | undefined>(c: Collection
 }
 
 export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const LIMITS = { slug: 120, title: 200, summary: 300, body: 60_000, keyword: 40, keywords: 30, covers: 40 } as const;
+const LIMITS = { slug: 120, title: 200, summary: 300, body: 60_000, keyword: 40, keywords: 30 } as const;
 
 export interface DocInput {
   slug?: string;
@@ -38,7 +37,6 @@ export interface DocInput {
   body?: string;
   category?: string | null;
   keywords?: string[];
-  covers?: string[];
   fields?: Record<string, unknown>;
 }
 
@@ -47,8 +45,6 @@ export interface WriteOptions {
   expectedVersion?: number;
   /** Why it changed (shown in the version list). */
   note?: string | null;
-  /** The PR this change ships with: the doc goes `pending` until that PR deploys. */
-  pr?: number | null;
   /** Publish right away (needs publish permission). */
   publish?: boolean;
 }
@@ -57,16 +53,6 @@ export interface SearchResult {
   hits: SearchHit[];
   /** True when nothing relevant was found (also logged as a gap when enabled). */
   empty: boolean;
-}
-
-export interface CoverageDoc {
-  collection: string;
-  slug: string;
-  title: string;
-  status: DocStatus;
-  matched: string[];
-  /** This PR already carries a version of the doc. */
-  updatedInPr: boolean;
 }
 
 export interface CreateCmsOptions {
@@ -142,7 +128,6 @@ export function createCms(opts: CreateCmsOptions) {
       body: doc.body,
       category: doc.category,
       keywords: [...doc.keywords],
-      covers: [...doc.covers],
       fields: structuredClone(doc.fields ?? {}),
     };
   }
@@ -154,13 +139,11 @@ export function createCms(opts: CreateCmsOptions) {
     out.title = out.title.trim();
     out.summary = (out.summary ?? "").trim();
     out.keywords = [...new Set(out.keywords.map((k) => k.trim()).filter(Boolean))];
-    out.covers = [...new Set(out.covers.map((k) => k.trim()).filter(Boolean))];
     if (!(cfg.slugPattern ?? SLUG_RE).test(out.slug) || out.slug.length > LIMITS.slug) throw new CmsError("invalid", "주소(slug)는 영문 소문자, 숫자, 하이픈만 쓸 수 있음");
     if (!out.title || out.title.length > LIMITS.title) throw new CmsError("invalid", `제목은 1~${LIMITS.title}자`);
     if (out.summary.length > LIMITS.summary) throw new CmsError("invalid", `요약은 ${LIMITS.summary}자 이하`);
     if (out.body.length > LIMITS.body) throw new CmsError("invalid", "본문이 너무 김");
     if (out.keywords.length > LIMITS.keywords || out.keywords.some((k) => k.length > LIMITS.keyword)) throw new CmsError("invalid", "검색어가 너무 많거나 김");
-    if (out.covers.length > LIMITS.covers) throw new CmsError("invalid", "담당 코드가 너무 많음");
     for (const ch of cfg.forbiddenChars ?? []) {
       if (out.body.includes(ch) || out.title.includes(ch) || out.summary.includes(ch)) {
         throw new CmsError("invalid", `‘${ch}’ 문자는 쓸 수 없음`);
@@ -193,7 +176,7 @@ export function createCms(opts: CreateCmsOptions) {
   /** What a reader without write access sees: the published snapshot only. */
   function publicView(doc: CmsDoc): CmsDoc | null {
     if (doc.publishedVersion === null || doc.status === "archived" || !doc.published) return null;
-    return { ...doc, ...contentOf(doc.published), version: doc.publishedVersion, needsReview: false, reviewReason: null, pendingPr: null };
+    return { ...doc, ...contentOf(doc.published), version: doc.publishedVersion };
   }
 
   async function get(actor: Actor, col: string, slug: string, o: { draft?: boolean } = {}): Promise<CmsDoc> {
@@ -210,13 +193,13 @@ export function createCms(opts: CreateCmsOptions) {
   async function list(
     actor: Actor,
     col: string,
-    o: { drafts?: boolean; status?: DocStatus; needsReview?: boolean; category?: string } = {}
+    o: { drafts?: boolean; status?: DocStatus; category?: string } = {}
   ): Promise<CmsDoc[]> {
     collection(col);
     const editor = o.drafts && can(actor, col, "write");
     if (!editor) assert(actor, col, "read");
     const rows = editor
-      ? await repo.listDocs({ collection: col, statuses: o.status ? [o.status] : undefined, needsReview: o.needsReview })
+      ? await repo.listDocs({ collection: col, statuses: o.status ? [o.status] : undefined })
       : (await repo.listDocs({ collection: col, published: true })).map(publicView).filter((d): d is CmsDoc => !!d);
     return rows
       .filter((d) => !o.category || d.category === o.category)
@@ -260,12 +243,7 @@ export function createCms(opts: CreateCmsOptions) {
     if (max > 0) await r.pruneVersions(doc.id, max, doc.publishedVersion ? [doc.publishedVersion] : []);
   }
 
-  function checkOptions(o: WriteOptions) {
-    if (o.publish && o.pr) throw new CmsError("invalid", "publish와 pr은 같이 쓸 수 없음 (pr이면 배포 때 게시됨)");
-  }
-
   async function create(actor: Actor, col: string, input: DocInput, o: WriteOptions = {}): Promise<CmsDoc> {
-    checkOptions(o);
     assert(actor, col, "write");
     if (o.publish) assert(actor, col, "publish");
     const who = actorRef(actor);
@@ -277,30 +255,26 @@ export function createCms(opts: CreateCmsOptions) {
       body: input.body ?? "",
       category: input.category ?? cfg.categories?.[0] ?? null,
       keywords: input.keywords ?? [],
-      covers: input.covers ?? [],
       fields: input.fields ?? {},
     });
     const at = nowIso();
     const doc = await repo.tx(async (r) => {
       if (await r.findDoc(col, content.slug)) throw new CmsError("conflict", `이미 있는 주소: ${content.slug}`);
-      const publish = !!o.publish && !o.pr;
+      const publish = !!o.publish;
       const row = await r.insertDoc({
         collection: col,
         ...content,
-        status: o.pr ? "pending" : publish ? "published" : "draft",
+        status: publish ? "published" : "draft",
         version: 1,
         publishedVersion: publish ? 1 : null,
         published: publish ? content : null,
-        needsReview: false,
-        reviewReason: null,
-        pendingPr: o.pr ?? null,
         publishedAt: publish ? at : null,
         updatedBy: who.label,
         updatedByKind: who.kind,
         createdAt: at,
         updatedAt: at,
       });
-      await r.insertVersion({ documentId: row.id, version: 1, snapshot: content, authorKind: who.kind, authorId: who.id, authorLabel: who.label, note: o.note ?? null, pr: o.pr ?? null, createdAt: at });
+      await r.insertVersion({ documentId: row.id, version: 1, snapshot: content, authorKind: who.kind, authorId: who.id, authorLabel: who.label, note: o.note ?? null, createdAt: at });
       return row;
     });
     changed(doc);
@@ -317,12 +291,10 @@ export function createCms(opts: CreateCmsOptions) {
     if (next.slug !== doc.slug && (await r.findDoc(doc.collection, next.slug))) throw new CmsError("conflict", `이미 있는 주소: ${next.slug}`);
 
     const inPlace = cfg.versions?.drafts === false && doc.publishedVersion !== null && doc.status !== "archived";
-    const publish = !o.pr && (o.publish || inPlace);
+    const publish = !!o.publish || inPlace;
     let patch: DocPatch = { ...next, version: v, updatedBy: who.label, updatedByKind: who.kind, updatedAt: at };
-    if (o.pr) patch = { ...patch, status: "pending", pendingPr: o.pr };
-    else if (publish)
-      patch = { ...patch, status: "published", publishedVersion: v, published: next, publishedAt: doc.publishedAt ?? at, pendingPr: null, needsReview: false, reviewReason: null };
-    else patch = { ...patch, status: doc.status === "archived" ? "archived" : "draft", pendingPr: null };
+    if (publish) patch = { ...patch, status: "published", publishedVersion: v, published: next, publishedAt: doc.publishedAt ?? at };
+    else patch = { ...patch, status: doc.status === "archived" ? "archived" : "draft" };
 
     const updated = await r.updateDoc(doc.id, patch, o.expectedVersion ?? doc.version);
     if (!updated) throw new CmsError("conflict", "다른 곳에서 바뀜. 다시 불러온 뒤 저장해 주세요");
@@ -334,7 +306,6 @@ export function createCms(opts: CreateCmsOptions) {
       authorId: who.id,
       authorLabel: who.label,
       note: o.note ?? (o.restoredFrom ? `v${o.restoredFrom}로 되돌림` : null),
-      pr: o.pr ?? null,
       createdAt: at,
     });
     await prune(r, updated);
@@ -342,7 +313,6 @@ export function createCms(opts: CreateCmsOptions) {
   }
 
   async function update(actor: Actor, col: string, slug: string, input: DocInput, o: WriteOptions = {}): Promise<CmsDoc> {
-    checkOptions(o);
     const doc = await repo.tx(async (r) => {
       const cur = await r.findDoc(col, slug);
       if (!cur) throw new CmsError("not_found", "문서를 찾을 수 없음");
@@ -356,16 +326,10 @@ export function createCms(opts: CreateCmsOptions) {
         body: input.body ?? cur.body,
         category: input.category !== undefined ? input.category : cur.category,
         keywords: input.keywords ?? cur.keywords,
-        covers: input.covers ?? cur.covers,
         fields: input.fields ? { ...cur.fields, ...input.fields } : cur.fields,
       });
       if (same(next, cur)) {
-        // Nothing changed. Still honour "publish" / "this PR covers it".
-        if (o.pr && cur.status !== "published") return (await r.updateDoc(cur.id, { status: "pending", pendingPr: o.pr })) ?? cur;
-        if (o.pr && cur.status === "published") {
-          // Unchanged but reviewed for this PR: record it so the CI guard passes.
-          return commit(r, actor, cur, next, { ...o, note: o.note ?? "변경 없음 확인" });
-        }
+        // Nothing changed. Still honour "publish".
         if (o.publish && cur.publishedVersion !== cur.version) return publishIn(r, actor, cur, cur.version);
         return cur;
       }
@@ -385,9 +349,6 @@ export function createCms(opts: CreateCmsOptions) {
       publishedVersion: n,
       published: v.snapshot,
       publishedAt: doc.publishedAt ?? at,
-      pendingPr: null,
-      needsReview: false,
-      reviewReason: null,
       updatedAt: at,
       updatedBy: actorRef(actor).label,
       updatedByKind: actorRef(actor).kind,
@@ -439,7 +400,6 @@ export function createCms(opts: CreateCmsOptions) {
         status: "draft",
         publishedVersion: null,
         published: null,
-        pendingPr: null,
         updatedAt: nowIso(),
         updatedBy: who.label,
         updatedByKind: who.kind,
@@ -460,15 +420,6 @@ export function createCms(opts: CreateCmsOptions) {
       if (!v) throw new CmsError("not_found", `v${n} 없음`);
       return commit(r, actor, cur, validate(col, { ...v.snapshot, slug: cur.slug }), { ...o, restoredFrom: n });
     });
-    changed(doc);
-    return doc;
-  }
-
-  async function markReviewed(actor: Actor, col: string, slug: string): Promise<CmsDoc> {
-    const cur = await repo.findDoc(col, slug);
-    if (!cur) throw new CmsError("not_found", "문서를 찾을 수 없음");
-    assert(actor, col, "write", cur);
-    const doc = (await repo.updateDoc(cur.id, { needsReview: false, reviewReason: null }))!;
     changed(doc);
     return doc;
   }
@@ -595,63 +546,6 @@ export function createCms(opts: CreateCmsOptions) {
     return repo.hitCounts(since);
   }
 
-  // ── coverage + deploy ─────────────────────────────────────────────────────
-
-  async function coverage(actor: Actor, files: string[], pr: number | null): Promise<CoverageDoc[]> {
-    // Coverage reveals working copies (drafts), so public readers may not call it:
-    // only keys, system, or users with write access.
-    if (actor.kind === "anonymous") throw new CmsError("unauthorized", "API 키가 필요함");
-    const cols = [...collections.values()].filter(
-      (c) => c.coverage && (actor.kind === "user" ? can(actor, c.slug, "write") : can(actor, c.slug, "read"))
-    );
-    if (!cols.length) throw new CmsError("forbidden", "읽을 수 있는 컬렉션 없음");
-    const out: CoverageDoc[] = [];
-    for (const c of cols) {
-      for (const d of await repo.listDocs({ collection: c.slug })) {
-        if (d.status === "archived" || !d.covers.length) continue;
-        const matched = files.filter((f) => matchesAny(f, d.covers));
-        if (!matched.length) continue;
-        const updatedInPr = pr !== null && (d.pendingPr === pr || (await repo.listVersions(d.id)).some((v) => v.pr === pr));
-        out.push({ collection: c.slug, slug: d.slug, title: d.title, status: d.status, matched, updatedInPr });
-      }
-    }
-    return out;
-  }
-
-  /**
-   * After a deploy: publish what waited for these PRs, and flag documents
-   * whose code changed without them for review.
-   */
-  async function deploySync(actor: Actor, o: { prs: number[]; files: string[]; sha?: string | null }) {
-    const cols = [...collections.values()].filter((c) => c.coverage && can(actor, c.slug, "publish"));
-    if (!cols.length) throw new CmsError(actor.kind === "anonymous" ? "unauthorized" : "forbidden", "게시 권한이 있는 컬렉션 없음");
-    const published: string[] = [];
-    const flagged: string[] = [];
-    for (const c of cols) {
-      for (const d of await repo.listDocs({ collection: c.slug })) {
-        if (d.status === "pending" && d.pendingPr !== null && o.prs.includes(d.pendingPr)) {
-          const doc = await repo.tx((r) => publishIn(r, actor, d, d.version));
-          changed(doc);
-          published.push(`${c.slug}/${d.slug}`);
-          continue;
-        }
-        // Never-published drafts have no public copy that could be stale.
-        if (d.status === "archived" || d.publishedVersion === null || !d.covers.length) continue;
-        const matched = o.files.filter((f) => matchesAny(f, d.covers));
-        if (!matched.length) continue;
-        const shippedWith = (await repo.listVersions(d.id)).some((v) => v.pr !== null && o.prs.includes(v.pr));
-        if (shippedWith) continue;
-        const doc = await repo.updateDoc(d.id, {
-          needsReview: true,
-          reviewReason: { pr: o.prs[0] ?? null, sha: o.sha ?? null, files: matched.slice(0, 20), at: nowIso() },
-        });
-        if (doc) changed(doc);
-        flagged.push(`${c.slug}/${d.slug}`);
-      }
-    }
-    return { published, flagged };
-  }
-
   // ── keys ──────────────────────────────────────────────────────────────────
 
   function assertKeyAdmin(actor: Actor) {
@@ -732,7 +626,6 @@ export function createCms(opts: CreateCmsOptions) {
     unarchive: (a: Actor, c: string, s: string) => setArchived(a, c, s, false),
     unpublish,
     restore,
-    markReviewed,
     remove,
     search,
     reportGap,
@@ -740,8 +633,6 @@ export function createCms(opts: CreateCmsOptions) {
     setGapState,
     recordHits,
     hitCounts,
-    coverage,
-    deploySync,
     createKey,
     listKeys,
     revokeKey,

@@ -1,6 +1,6 @@
 /**
- * agent-cms — a small CMS that people (an admin screen) and agents (REST, MCP,
- * AI SDK tools) edit together. Lives inside the app: no separate server.
+ * agent-cms — an add-on CMS that people (an admin screen) and agents (REST,
+ * MCP, AI SDK tools) edit together. Lives inside the app: no separate server.
  *
  * EXTRACTION RULE: nothing under `src/` may import from a host app (`@/`) or
  * any app module. It is written to be lifted into `@mainsoft-2024/agent-cms`
@@ -11,11 +11,10 @@ import type { ZodTypeAny } from "zod";
 
 /**
  * draft     — the latest version is not public (an older one may be).
- * pending   — the latest version waits for a PR to deploy (`deploy-sync`).
  * published — the latest version is the public one.
  * archived  — hidden from the public; history kept.
  */
-export const DOC_STATUSES = ["draft", "pending", "published", "archived"] as const;
+export const DOC_STATUSES = ["draft", "published", "archived"] as const;
 export type DocStatus = (typeof DOC_STATUSES)[number];
 
 export const KEY_SCOPES = ["read", "write", "publish", "admin"] as const;
@@ -36,15 +35,7 @@ export interface DocContent {
   body: string;
   category: string | null;
   keywords: string[];
-  covers: string[];
   fields: Record<string, unknown>;
-}
-
-export interface ReviewReason {
-  pr?: number | null;
-  sha?: string | null;
-  files: string[];
-  at: string;
 }
 
 export interface CmsDoc extends DocContent {
@@ -57,9 +48,6 @@ export interface CmsDoc extends DocContent {
   publishedVersion: number | null;
   /** The public snapshot (null when never published). */
   published: DocContent | null;
-  needsReview: boolean;
-  reviewReason: ReviewReason | null;
-  pendingPr: number | null;
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -77,7 +65,6 @@ export interface CmsVersion {
   authorId: string | null;
   authorLabel: string;
   note: string | null;
-  pr: number | null;
   published: boolean;
   createdAt: string;
 }
@@ -139,8 +126,6 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
   slugPattern?: RegExp;
   /** Characters the house style bans from title, summary and body. */
   forbiddenChars?: readonly string[];
-  /** `covers` globs + the CI coverage guard apply to this collection. */
-  coverage?: boolean;
   search?: {
     /** Index published docs of this collection. Default true. */
     enabled?: boolean;

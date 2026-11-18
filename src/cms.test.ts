@@ -15,7 +15,6 @@ function setup() {
     slug: "guide",
     label: "가이드",
     categories: ["연동", "만들기"],
-    coverage: true,
     forbiddenChars: ["·"],
     search: { gapLogging: true },
     links: { resolve: (k) => (k === "settings.integrations" ? "/settings/integrations" : null) },
@@ -37,7 +36,6 @@ const slack = {
   summary: "Slack을 연결하는 방법",
   category: "연동",
   keywords: ["슬랙", "slack"],
-  covers: ["src/features/settings/**"],
   body: "## 연결하기\n\n1. [[link:settings.integrations|연동 서비스]]를 열어요.\n2. **연결**을 눌러요.\n\n## 연결 끊기\n\n관리에서 연결 해제를 눌러요.",
 };
 
@@ -161,9 +159,8 @@ test("a key cannot mint a key wider than itself", async () => {
   await cms.createKey(k, { name: "ok", scopes: ["read"], collections: ["guide"] });
 });
 
-test("publish and pr together are rejected; unchanged jsonb key order is not a new version", async () => {
+test("unchanged jsonb key order is not a new version", async () => {
   const { cms } = setup();
-  await reject(cms.create(admin, "guide", slack, { publish: true, pr: 3 }), "invalid");
   await cms.create(admin, "updates", { slug: "n", title: "t", fields: { pinned: true } }, { publish: true });
   const d = await cms.update(admin, "updates", "n", { fields: { pinned: true } });
   assert.equal(d.version, 1);
@@ -179,40 +176,6 @@ test("search index follows publish and archive", async () => {
   assert.equal((await cms.search(anon, ["guide"], "슬랙", { logGap: false })).empty, true);
 });
 
-test("coverage + deploy sync: PR drafts publish, untouched docs get flagged", async () => {
-  const { cms } = setup();
-  await cms.create(admin, "guide", slack, { publish: true });
-  await cms.create(admin, "guide", { ...slack, slug: "notion", title: "Notion 연결", keywords: [], covers: ["src/lib/mcp/**"] }, { publish: true });
-
-  const files = ["src/features/settings/ui/integrations-tab.tsx", "src/lib/mcp/catalog.ts"];
-  let cov = await cms.coverage(admin, files, 42);
-  assert.deepEqual(cov.map((c) => [c.slug, c.updatedInPr]).sort(), [["notion", false], ["slack-connect", false]]);
-
-  const d = await cms.update(admin, "guide", "slack-connect", { summary: "새 요약" }, { pr: 42 });
-  assert.equal(d.status, "pending");
-  cov = await cms.coverage(admin, files, 42);
-  assert.equal(cov.find((c) => c.slug === "slack-connect")!.updatedInPr, true);
-  assert.equal((await cms.get(anon, "guide", "slack-connect")).summary, "Slack을 연결하는 방법");
-
-  const r = await cms.deploySync(admin, { prs: [42], files });
-  assert.deepEqual(r.published, ["guide/slack-connect"]);
-  assert.deepEqual(r.flagged, ["guide/notion"]);
-  assert.equal((await cms.get(anon, "guide", "slack-connect")).summary, "새 요약");
-  const notion = await cms.get(admin, "guide", "notion", { draft: true });
-  assert.equal(notion.needsReview, true);
-  assert.deepEqual(notion.reviewReason!.files, ["src/lib/mcp/catalog.ts"]);
-  await cms.markReviewed(admin, "guide", "notion");
-  assert.equal((await cms.get(admin, "guide", "notion", { draft: true })).needsReview, false);
-});
-
-test("an unchanged update tagged with a PR still satisfies coverage", async () => {
-  const { cms } = setup();
-  await cms.create(admin, "guide", slack, { publish: true });
-  await cms.update(admin, "guide", "slack-connect", {}, { pr: 7 });
-  const cov = await cms.coverage(admin, ["src/features/settings/x.ts"], 7);
-  assert.equal(cov[0].updatedInPr, true);
-});
-
 test("old versions are pruned but the published one is kept", async () => {
   const repo = new MemoryRepo();
   const cms = createCms({ repo, collections: [defineCollection({ slug: "g", label: "g", versions: { max: 2 } })] });
@@ -223,11 +186,9 @@ test("old versions are pruned but the published one is kept", async () => {
   assert.equal(vs.find((v) => v.version === 1)!.published, true);
 });
 
-test("coverage is not public; publish and restore honour expectedVersion", async () => {
+test("publish and restore honour expectedVersion", async () => {
   const { cms } = setup();
   await cms.create(admin, "guide", slack);
-  await reject(cms.coverage(anon, ["src/features/settings/a.ts"], null), "unauthorized");
-  await reject(cms.coverage(user, ["src/features/settings/a.ts"], null), "forbidden");
   await cms.update(admin, "guide", "slack-connect", { summary: "B" });
   await reject(cms.publish(admin, "guide", "slack-connect", { expectedVersion: 1 }), "conflict");
   await reject(cms.restore(admin, "guide", "slack-connect", 1, { expectedVersion: 1 }), "conflict");

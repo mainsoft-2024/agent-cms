@@ -1,21 +1,22 @@
 # agent-cms TODO
 
 일반 웹 앱(Next.js 등)에 얹어서 함께 돌아가는 **애드온 CMS**. 사람(어드민 화면)과 에이전트(REST, MCP, AI SDK 도구)가 같은 문서를 같이 고친다.
-지금 코드는 서비서 안 `src/lib/agent-cms/`에 있고, `@/` import 없이 써서 그대로 `@mainsoft-2024/agent-cms`로 떼어 낼 수 있다.
-이 목록은 별도 세션에서 라이브러리를 키울 때의 백로그다. 서비서는 새 버전을 받아 올려 쓴다.
+블로그, 사내 문서, 개발 문서, 공지, 게시판처럼 CMS가 쓰이는 곳이면 어디든 쓸 수 있어야 한다. 특정 앱의 개발 흐름(PR, CI, 배포)에 묶인 기능은 라이브러리에 넣지 않는다. 그런 흐름은 앱이 이 라이브러리의 도구(`./ai`, CLI)를 써서 직접 짠다.
+이 목록은 라이브러리를 키울 때의 백로그다. 서비서(첫 사용처)는 새 버전을 받아 올려 쓴다.
 
 표기: **[P0]** 떼어 내기 전에 필요, **[P1]** 첫 공개 버전, **[P2]** 그 뒤.
 출처: (lead) 리드 에이전트, (A)~(D) 검토 에이전트 4개.
 
 ## 0. 지금 있는 것 (기준선)
 
-- 컬렉션 설정 (`defineCollection`): 분류, zod `fields`, 버전 보관 수, 초안 모드 또는 바로 반영 모드, 금지 문자, `covers` 커버리지, 검색과 못 찾은 질문 기록, `[[link:key|label]]` 화면 링크 검증, 공개 URL, 접근 함수, `afterChange` 훅
-- 문서 상태: draft / pending(PR 대기) / published / archived. 버전마다 전체 스냅샷을 남기고, 되돌리기는 새 버전을 만든다
+- 컬렉션 설정 (`defineCollection`): 분류, zod `fields`, 버전 보관 수, 초안 모드 또는 바로 반영 모드, 금지 문자, 검색과 못 찾은 질문 기록, `[[link:key|label]]` 화면 링크 검증, 공개 URL, 접근 함수, `afterChange` 훅
+- 문서 상태: draft / published / archived. 버전마다 전체 스냅샷을 남기고, 되돌리기는 새 버전을 만든다
 - 동시 편집 보호: `expectedVersion`이 다르면 409
 - 한글 2-gram 메모리 검색 (섹션 단위, 조사 제거, 불용어, 영문 오타 1글자 허용)
 - API 키: sha256 해시만 저장, read / write / publish / admin 범위와 컬렉션 제한
 - REST 하나와 stateless MCP(JSON-RPC)
-- CI 커버리지 검사와 배포 후 동기화(PR 초안 게시, 담당 코드 변경 시 "확인 필요" 표시)
+- 도구 목록 하나(`tools.ts`)를 MCP, AI SDK 도구(`./ai`: `cmsTools`, `remoteCmsTools`, slash-agent-sdk에서도 그대로), CLI가 함께 쓴다
+- CLI: `tools`, `collections`, `list`, `get`, `search`, `put <file.md>`(frontmatter), `publish`, `call`
 - 저장소 인터페이스: `MemoryRepo`(테스트), `DrizzleRepo`(Postgres)
 
 ## 1. 리드 아이디어 (lead)
@@ -83,14 +84,14 @@
 
 ## 3. 에이전트와 검색 (B)
 
-49. **[P0] 도구 스펙 단일 레지스트리와 `/ai` 진입점.** MCP와 AI SDK 도구가 같은 `ToolDef[]`(이름, 설명, zod 입력, 권한)를 쓰게 `tools.ts`로 옮기고, `createAgentTools(cms, { collections })`가 `search_docs`, `get_doc`, `report_gap`을 만든다. 지금 서비서는 앱 쪽에서 직접 감싼다.
+49. **[완료 0.5.0] 도구 스펙 단일 레지스트리와 `/ai` 진입점.** MCP와 AI SDK 도구가 같은 `ToolDef[]`(이름, 설명, zod 입력, 권한)를 쓰게 `tools.ts`로 옮기고, `createAgentTools(cms, { collections })`가 `search_docs`, `get_doc`, `report_gap`을 만든다. 지금 서비서는 앱 쪽에서 직접 감싼다.
 50. **[P0] 토크나이저 기반 컨텍스트 패커.** 지금은 섹션을 1,400자로 자른다. 호출자가 넘긴 프로바이더 `countTokens`로만 예산을 계산하고(문자 수 추정 금지), 문장 경계 절단, 중복 억제, `{ sections, usedTokens, dropped }`를 돌려준다. (Context7 `tokens` 파라미터)
 51. **[P0] 섹션 패치 API.** `patch(actor, col, slug, ops)`; op는 `replace | insert_after | insert_before | delete | append` + `anchor`. 틀린 앵커는 유효 앵커 목록과 함께 422, `dryRun`은 unified diff. 60k 본문을 통째로 다시 쓰는 비용과 불필요한 409를 없앤다. MCP `patch_document`.
 52. **[P0] 인용 계약과 검증.** `citations: [{ id: "cms://guide/slack#connect", quote, charRange }]`와 `verifyCitations(answer, lookup)`. 앱이 출처를 그리고 없는 slug/anchor를 잡는다. (Inkeep, GitBook)
 53. **[P0] 사용 기록에 출처 붙이기.** `cms_hits`에 `source`(ai, mcp, rest)와 MCP `clientInfo`를 남긴다. 이번에 `lookupForAgent`가 기록을 시작했다. (GitBook 분석)
-54. **[P0] coverage 정합성 보강.** (a) PR이 닫히면 `pending → draft`로 되돌리기, (b) `deploySync` 재실행 시 같은 sha 건너뛰기와 매칭된 PR 전체 기록, (c) prune이 PR 표시 버전을 지워 CI가 거짓 실패하지 않게 `cms_pr_links(document_id, pr, version)`, (d) coverage 응답에 `kind: updated | waived | missing`.
+54. **[P1] 에이전트 작업 레시피.** "코드가 바뀌면 에이전트를 불러 관련 문서를 고친다", "출시 때 공지 초안을 쓴다" 같은 흐름을 라이브러리 기능이 아니라 예제(`examples/`)로 보여 준다. `remoteCmsTools` + 모델 호출 몇 줄이면 되게.
 55. **[P1] `llms.txt`, `llms-full.txt`, 문서별 `.md`.** `GET /llms.txt`와 `/:c/:slug.md`를 `changeStamp()` 캐시와 함께 연다. (Mintlify)
-56. **[P1] 컬렉션 설정으로 만드는 MCP `instructions`.** 컬렉션, 링크 키, `pr` 규칙, 금지 문자를 담은 안내문을 생성하고 내용 해시가 바뀔 때만 바꿔 캐시를 지킨다. (Mintlify `skill.md`)
+56. **[P1] 컬렉션 설정으로 만드는 MCP `instructions`.** 컬렉션, 링크 키, 금지 문자, 필드 설명을 담은 안내문을 생성하고 내용 해시가 바뀔 때만 바꿔 캐시를 지킨다. (Mintlify `skill.md`)
 57. **[P2] 계층 색인과 이웃 섹션.** `###`를 자식 단위로 색인하고 결과에 `more: [{ anchor, rel: prev | next | child }]`를 붙여 재검색 없이 넓힌다. (Context7)
 58. **[P1] 순위 함수 수리.** 필드 최댓값만 쓰는 지금 방식에 BM25식 tf 포화, 섹션 길이 정규화, 섹션 단위 coverage(형제 섹션이 대신 맞춰 주지 않게), 신선도 감쇠, `fields` 저가중 색인을 넣는다. (Algolia)
 59. **[P1] 코드 블록과 오류 문자열 색인.** 지금 `plainText`가 펜스 코드를 지워 `ENOTFOUND` 같은 문자열을 못 찾는다. 별도 필드, 정확 일치 보너스, `matchedTerms` 반환.
@@ -100,7 +101,7 @@
 63. **[P1] 질문 의도 분류.** `howto | error | exists | concept`에 따라 섹션 가중치와 반환 범위를 바꾼다. (Algolia query categorization)
 64. **[P1] 섹션 단위 평가와 하드 네거티브.** 기대 `slug#anchor`, 하드 네거티브, recall@1/3, MRR, 답변당 토큰, p95를 재고 `agent-cms eval --baseline`이 떨어진 질의와 이유를 낸다(15번 확장).
 65. **[P1] `lint_document` 사전 검증 도구.** 헤딩 단계 건너뜀, 닫히지 않은 펜스, 중복 헤딩, 요약 누락, 긴 섹션을 `issues[]`로. error는 저장을 막고 warn은 응답에 싣는다. (GitBook Agent)
-66. **[P1] 코드 변경 기반 신선도와 `review_queue`.** `lastReviewedAt`과 배포 파일 이력으로 `freshness`를 계산하고, MCP `review_queue`가 확인 필요, 낡음, PR 대기를 한 번에 준다. (GitBook Agent)
+66. **[P1] 신선도와 `review_queue`.** 문서마다 `reviewEveryDays`(또는 컬렉션 기본값)와 `lastReviewedAt`을 두고, 기한이 지난 문서를 MCP `review_queue`로 돌려준다. 무엇을 계기로 검토할지는 앱이 정한다.
 67. **[P2] 쓰기 권한 에이전트의 초안 포함 검색.** 중복 문서 작성을 막는다. 읽기 전용 actor에게는 초안을 절대 보이지 않는다.
 68. **[P2] 사용 신호 기반 순위 보정.** hits로 문서 prior를 상한 있게 적용하고, 평가 세트를 통과 못 하면 자동으로 끈다.
 
@@ -115,8 +116,8 @@
 75. **[P1] 프로세스 간 무효화를 `pg_notify` + 시퀀스로.** `cms_change_log(seq bigserial)`와 `LISTEN`으로 즉시 무효화하고 폴링은 안전망으로. 지금 `changeStamp()`는 30~60초마다 `count(*)`를 돌린다.
 76. **[P1] 게시본 읽기 캐시 어댑터.** `CacheAdapter`(메모리, Redis, Next `unstable_cache`), 키에 `publishedVersion`, 무효화는 `onChange`와 75번.
 77. **[P1] 페이지네이션과 컬럼 프로젝션.** 목록은 본문 없이, 버전 목록은 스냅샷 없이 요약 모드와 `limit/cursor`. 지금은 버전 100개의 전체 스냅샷을 한 번에 보낸다.
-78. **[P1] 인덱스 추가와 N+1 제거.** `needs_review`, `pending_pr`, `cms_gaps(collection, state, last_seen_at)`, `cms_hits(day)`, `cms_versions(pr)` 인덱스. coverage와 deploySync의 문서별 `listVersions` 호출을 일괄 조회로.
-79. **[P1] glob 안전성.** 패턴당 200자, 캐시 LRU, 저장 시 중괄호 균형 검사로 정규식 폭주와 무한 캐시를 막는다.
+78. **[P1] 인덱스 추가와 N+1 제거.** `cms_gaps(collection, state, last_seen_at)`, `cms_hits(day)` 인덱스. 목록과 검색 색인 빌드의 일괄 조회.
+79. **[P1] CLI 확장.** `put`에 폴더 단위 일괄 처리(`put <collection> ./dir`), `--dry-run`, `diff`(파일과 현재 초안 비교), 출력 형식 `--format table`.
 80. **[P1] 구조화 이벤트와 지표 훅.** `onEvent(e)`로 요청(라우트, actor 종류, 상태, ms), 검색(hit 수, ms), 색인 빌드, 훅 실패를 내보내 OTel/Prometheus에 연결한다.
 81. **[P1] 보존 정책과 주체 삭제.** `retention: { gapsDays, hitsDays, revokedKeysDays }`, `purgeActor(id)`, `exportActor(id)`, `agent-cms retention --dry-run`.
 82. **[P1] 스키마 버전 핀과 `doctor`.** `cms_meta.schema_version`을 부팅 때 비교해 명확히 실패하고, `doctor`가 테이블과 인덱스, 게시 버전 정합성, 고아 행, DDL 드리프트를 검사한다. 복구 절차(Neon PITR + 버전 스냅샷)를 문서화한다.
@@ -159,16 +160,12 @@
 - 동시 생성의 유니크 위반이 500이던 것 (409로)
 - MCP에서 숨긴 도구도 호출되던 불일치, `JSON.stringify` 들여쓰기로 토큰 낭비
 - `recordHits`가 아무 데서도 불리지 않던 것, slug 지정 시 질문을 무시하던 것
-- coverage와 deploySync가 권한 없는 컬렉션 하나 때문에 통째로 403이던 것, 게시된 적 없는 초안까지 "확인 필요"로 표시하던 것
-- `publish`와 `pr`을 같이 주면 조용히 게시를 버리던 것 (422)
 - jsonb 키 순서 때문에 변경 없는 저장이 새 버전을 만들던 것
 
 ## 7. 아직 남은 버그와 약점
 
-- `cli.ts`: `git diff --name-only`가 이름 변경을 삭제와 추가로 보고해 과하게 표시된다(`--find-renames` + `--name-status`). skip 토큰을 부분 문자열로 찾아 `GUIDE-OKAY`도 통과한다(단어 경계).
 - `cms.update`의 `fields`가 얕은 병합이라 중첩 객체를 지울 수 없다(JSON Merge Patch 의미로).
-- 검토 플래그만 바꿔도 `changed()`가 색인을 dirty로 만들고 `afterChange`를 부른다(게시 내용 변화 여부로 구분).
-- 변경 없는 `pr` 저장이 CI 통과용 버전을 새로 만든다(54번 `cms_pr_links`로 대체).
+- 상태만 바뀌어도 `changed()`가 색인을 dirty로 만들고 `afterChange`를 부른다(게시 내용 변화 여부로 구분).
 - `recordHits`의 날짜가 UTC라 KST 오전 9시 전 사용량이 전날로 들어간다(`timeZone` 옵션).
 - `archive` 뒤 재게시해도 `publishedAt`이 최초 시각으로 남는다(`republishedAt` 분리).
 - `normalizeQuery`가 어순을 정렬하지 않아 "슬랙 연결"과 "연결 슬랙"이 다른 gap이 된다.
@@ -176,5 +173,5 @@
 - `toJsonSchema`가 `.min/.max/.default`를 버려 모델이 제한을 모른다.
 - 키 생성의 `% 62` 모듈로 편향(거부 샘플링으로), 쓰이지 않는 `sameHash`.
 - 문서 삭제 시 `cms_gaps.document_slug` 참조가 남는다.
-- `deploy-sync`가 이번 push의 `github.event.before`부터만 보므로, 한 번 실패하면 그 PR 문서는 다음 배포에서도 게시되지 않는다. 마지막으로 성공한 sha를 `cms_meta`에 남기고 그때부터 누적으로 맞춘다.
-- `coverage`는 이제 익명과 쓰기 권한 없는 사용자를 막지만, 읽기 키는 여전히 초안 제목을 본다(CI 용도). 키 범위 `coverage`를 따로 두는 것을 검토한다.
+- `remoteCmsTools`는 키 권한과 상관없이 모든 도구를 노출한다(`only`로 직접 줄여야 함). 시작할 때 `tools/list`로 맞추는 비동기 버전 `await remoteCmsToolsFor(...)`.
+- `cms_documents`에 0.4.0까지 쓰던 `covers`, `needs_review`, `review_reason`, `pending_pr`, `cms_versions.pr` 열이 기존 DB에 남아 있다. 쓰지 않으니 해는 없지만 `doctor`가 알려 주고 지울 SQL을 내야 한다.

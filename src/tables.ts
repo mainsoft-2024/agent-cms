@@ -20,7 +20,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { DocContent, KeyScope, ReviewReason } from "./types";
+import type { DocContent, KeyScope } from "./types";
 
 export const cmsDocuments = pgTable(
   "cms_documents",
@@ -34,14 +34,10 @@ export const cmsDocuments = pgTable(
     body: text("body").notNull().default(""),
     category: text("category"),
     keywords: jsonb("keywords").$type<string[]>().notNull().default([]),
-    covers: jsonb("covers").$type<string[]>().notNull().default([]),
     fields: jsonb("fields").$type<Record<string, unknown>>().notNull().default({}),
     version: integer("version").notNull().default(1),
     publishedVersion: integer("published_version"),
     published: jsonb("published").$type<DocContent | null>(),
-    needsReview: boolean("needs_review").notNull().default(false),
-    reviewReason: jsonb("review_reason").$type<ReviewReason | null>(),
-    pendingPr: integer("pending_pr"),
     updatedBy: text("updated_by"),
     updatedByKind: text("updated_by_kind"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
@@ -67,7 +63,6 @@ export const cmsVersions = pgTable(
     authorId: text("author_id"),
     authorLabel: text("author_label").notNull(),
     note: text("note"),
-    pr: integer("pr"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -151,14 +146,10 @@ CREATE TABLE IF NOT EXISTS "cms_documents" (
   "body" text NOT NULL DEFAULT '',
   "category" text,
   "keywords" jsonb NOT NULL DEFAULT '[]'::jsonb,
-  "covers" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "fields" jsonb NOT NULL DEFAULT '{}'::jsonb,
   "version" integer NOT NULL DEFAULT 1,
   "published_version" integer,
   "published" jsonb,
-  "needs_review" boolean NOT NULL DEFAULT false,
-  "review_reason" jsonb,
-  "pending_pr" integer,
   "updated_by" text,
   "updated_by_kind" text,
   "published_at" timestamptz,
@@ -177,7 +168,6 @@ CREATE TABLE IF NOT EXISTS "cms_versions" (
   "author_id" text,
   "author_label" text NOT NULL,
   "note" text,
-  "pr" integer,
   "created_at" timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "cms_versions_doc_version_idx" ON "cms_versions" ("document_id", "version");

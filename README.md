@@ -1,24 +1,30 @@
 # agent-cms
 
 An add-on CMS that runs **inside your existing web app**: no separate server,
-no new database. People edit in an admin UI; AI agents read and edit the same
-documents over REST and MCP; CI tells you when code changed under a doc.
-
-First used for the 서비서 user guide (`/guide`), where the assistant answers
-"how do I…" questions from these docs instead of guessing.
+no new database. People edit in an admin UI; AI agents read and write the same
+documents through tools. Use it for anything a CMS is for: a blog, release
+notes, a help center, internal docs, a notice board.
 
 - **Collections over one table set.** Every collection lives in the same
-  `cms_*` tables, so adding one needs no migration.
-- **Versions.** Every save is a full snapshot. Drafts, publish, restore, and
-  optimistic concurrency (`expectedVersion` → 409 instead of a silent overwrite).
-- **Search built for agents.** In-memory, Korean-aware (particles and verb
-  endings, 2-grams), returns *sections* rather than whole docs. Questions with
-  no answer are logged as gaps.
+  `cms_*` tables, so adding one needs no migration. Typed per-collection
+  `fields` (zod), categories, slugs, house-style checks.
+- **Versions.** Every save is a full snapshot. Drafts, publish, unpublish,
+  archive, restore. Two writers never overwrite each other: pass
+  `expectedVersion` and a stale save is a conflict (409), not a silent loss.
+- **Agents are first-class editors.** One tool list, three ways in:
+  - **AI SDK tools** (`./ai`) for your own agent: `cmsTools(cms, actor)`
+    in-process, or `remoteCmsTools({ url, key })` against another app. They
+    are plain AI SDK `Tool`s, so they also work unchanged with anything built
+    on the AI SDK, such as slash-agent-sdk.
+  - **MCP** at `/api/cms/mcp` for coding agents (Claude Code, Cursor, …).
+  - **CLI** (`agent-cms put notes/launch.md --publish`) for agents with a shell.
+- **Search built for answering.** In-memory, Korean-aware (particles, verb
+  endings, 2-grams), returns *sections* rather than whole documents, so an
+  agent can quote the part that answers. Searches nothing answered are kept as
+  "gaps": ideas for the next document.
 - **API keys.** Stored as sha256 only, scopes `read` / `write` / `publish` /
-  `admin`, optionally limited to collections. One key works for REST and MCP.
-- **Docs that follow the code.** A document lists the files it `covers`. The
-  CLI fails a PR that touches those files without updating the doc, and after
-  deploy publishes the doc drafts written for that PR.
+  `admin`, optionally limited to some collections. One key works for REST,
+  MCP, the remote tools and the CLI.
 
 > Design follows [Payload](https://payloadcms.com)'s collection, version and
 > MCP shapes, written to run on Next.js 14+/React 18 and Postgres + Drizzle.
@@ -37,12 +43,12 @@ Published to GitHub Packages:
 npm i @mainsoft-2024/agent-cms
 ```
 
-Peer dependencies: `drizzle-orm`, `zod`.
+Peer dependencies: `drizzle-orm`, `zod`, and `ai` (only for `./ai`).
 
 ## Set up
 
-**1. Tables.** Re-export them from your Drizzle schema, or run `cmsDdl`
-(idempotent `CREATE TABLE IF NOT EXISTS …`) in your migration.
+**1. Tables.** Re-export them from your Drizzle schema, or run `cmsDdl()`
+(idempotent `CREATE TABLE IF NOT EXISTS …`) in a migration.
 
 ```ts
 export { cmsDocuments, cmsVersions, cmsApiKeys, cmsGaps, cmsHits, cmsMeta } from "@mainsoft-2024/agent-cms/tables";
@@ -54,22 +60,23 @@ export { cmsDocuments, cmsVersions, cmsApiKeys, cmsGaps, cmsHits, cmsMeta } from
 import { createCms, defineCollection, DrizzleRepo } from "@mainsoft-2024/agent-cms";
 import { z } from "zod";
 
-export const guide = defineCollection({
-  slug: "guide",
-  label: "Guide",
-  coverage: true,                         // CI coverage + deploy-sync
+export const posts = defineCollection({
+  slug: "posts",
+  label: "Blog",
+  categories: ["News", "Engineering"],
   versions: { max: 100, drafts: true },   // edits wait for publish
   search: { enabled: true, gapLogging: true },
-  fields: z.object({ order: z.number().default(100) }),
+  fields: z.object({ cover: z.string().url().optional(), tags: z.array(z.string()).default([]) }),
+  url: (d) => `/blog/${d.slug}`,
   access: { write: ({ actor }) => actor.kind === "user" && actor.isAdmin },
 });
 
-export const cms = createCms({ repo: new DrizzleRepo(db), collections: [guide] });
+export const cms = createCms({ repo: new DrizzleRepo(db), collections: [posts] });
 ```
 
-A collection with `managed: true` is written only by your app code (the
-`system` actor): users and API keys can read it over REST and MCP but never
-change it. Use it when your app wraps saves in its own rules.
+`managed: true` makes a collection writable only by your app code (the
+`system` actor): users and keys can read it but not change it. Use it when the
+app wraps saves in rules of its own.
 
 **3. The route** (`app/api/cms/[...path]/route.ts`):
 
@@ -82,32 +89,88 @@ export { handler as GET, handler as POST, handler as PATCH, handler as DELETE };
 
 That gives you REST under `/api/cms/...` and MCP at `/api/cms/mcp`.
 
-## For agents
+## Agents
 
-- **In your own agent:** `lookupForAgent(cms, actor, question)` from
-  `@mainsoft-2024/agent-cms/agent` returns matching sections, resolved app
-  links (`[[link:key|label]]` in Markdown) and the doc URL. Wrap it as a tool.
-- **External coding agents:** give them a `write` key and the MCP URL
-  (`https://<host>/api/cms/mcp`, header `Authorization: Bearer sgk_…`).
+### Your own agent (AI SDK, slash-agent-sdk)
 
-## CI
+```ts
+import { streamText } from "ai";
+import { cmsTools } from "@mainsoft-2024/agent-cms/ai";
+
+const result = streamText({
+  model,
+  tools: {
+    ...myTools,
+    // Every tool this actor may use; `only` and `prefix` narrow and rename.
+    ...cmsTools(cms, { kind: "system", label: "assistant" }, { prefix: "cms_" }),
+  },
+  messages,
+});
+```
+
+From another process (a script, a scheduled job, another service), use a key:
+
+```ts
+import { remoteCmsTools } from "@mainsoft-2024/agent-cms/ai";
+
+const tools = remoteCmsTools(
+  { url: "https://app.example.com/api/cms", key: process.env.AGENT_CMS_KEY! },
+  { only: ["search_documents", "get_document", "update_document"] }
+);
+```
+
+Tool errors (a conflict, a missing permission) come back as
+`{ error, message }` results, so the model can re-read and retry.
+
+| Tool | Needs |
+|---|---|
+| `list_collections`, `search_documents`, `read_for_answer`, `list_documents`, `get_document` | read |
+| `create_document`, `update_document`, `list_versions`, `restore_version`, `list_gaps`, `resolve_gap` | write |
+| `publish_document`, `unpublish_document`, `archive_document`, `delete_document` | publish |
+
+`lookupForAgent(cms, actor, collections, question)` (`./agent`) is the
+answer-a-user helper behind `read_for_answer`: matching sections, resolved
+`[[link:key|label]]` links and the URL of each section.
+
+### Coding agents (MCP)
+
+Register `https://app.example.com/api/cms/mcp` with the header
+`Authorization: Bearer sgk_…`. The key's scopes decide which tools it sees.
+
+### CLI
 
 ```
-AGENT_CMS_URL=https://<host>/api/cms AGENT_CMS_KEY=sgk_… \
-  npx agent-cms check-coverage --base origin/main --pr 123 --skip-token GUIDE-OK
-
-AGENT_CMS_URL=… AGENT_CMS_KEY=sgk_… \
-  npx agent-cms deploy-sync --from <before-sha> --to <sha>
+export AGENT_CMS_URL=https://app.example.com/api/cms AGENT_CMS_KEY=sgk_…
+npx agent-cms collections
+npx agent-cms search "slack 연결" --collections guide
+npx agent-cms get posts hello-world --draft
+npx agent-cms put posts ./hello-world.md --publish --note "launch post"
+npx agent-cms call archive_document '{"collection":"posts","slug":"old","archived":true}'
 ```
 
-Without the URL or key both commands print why and exit 0.
+`put` creates the document, or updates it with its current version so a
+person's concurrent edit is never overwritten. The file is markdown with
+frontmatter; keys other than `slug`, `title`, `summary`, `category` and
+`keywords` go into `fields`:
+
+```
+---
+title: Hello, world
+summary: Our first post
+category: News
+tags: [launch]
+---
+Body in **markdown**.
+```
+
+`--env <file>` reads `AGENT_CMS_URL` / `AGENT_CMS_KEY` from a file instead.
 
 ## Rendering
 
 `@mainsoft-2024/agent-cms/markdown` is browser-safe: `parseMarkdown` gives a
 small block tree (headings with stable anchors, lists, callouts `> [!tip]`,
-code, tables, app-link rows) and `extractToc` a table of contents. Render it
-with your own components.
+code, tables, link rows) and `extractToc` a table of contents. Render it with
+your own components.
 
 ## Develop
 

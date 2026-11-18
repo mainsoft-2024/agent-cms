@@ -20,7 +20,7 @@ export interface CmsRepo {
 
   findDoc(collection: string, slug: string): Promise<CmsDoc | null>;
   findDocById(id: string): Promise<CmsDoc | null>;
-  listDocs(filter: { collection?: string; statuses?: DocStatus[]; published?: boolean; needsReview?: boolean }): Promise<CmsDoc[]>;
+  listDocs(filter: { collection?: string; statuses?: DocStatus[]; published?: boolean }): Promise<CmsDoc[]>;
   insertDoc(doc: NewDoc): Promise<CmsDoc>;
   /** Returns null when `expectedVersion` is given and the row moved on. */
   updateDoc(id: string, patch: DocPatch, expectedVersion?: number): Promise<CmsDoc | null>;
@@ -82,14 +82,13 @@ export class MemoryRepo implements CmsRepo {
     const d = this.docs.get(id);
     return d ? structuredClone(d) : null;
   }
-  async listDocs(f: { collection?: string; statuses?: DocStatus[]; published?: boolean; needsReview?: boolean }) {
+  async listDocs(f: { collection?: string; statuses?: DocStatus[]; published?: boolean }) {
     return [...this.docs.values()]
       .filter(
         (d) =>
           (!f.collection || d.collection === f.collection) &&
           (!f.statuses || f.statuses.includes(d.status)) &&
-          (f.published === undefined || (d.publishedVersion !== null && d.status !== "archived") === f.published) &&
-          (f.needsReview === undefined || d.needsReview === f.needsReview)
+          (f.published === undefined || (d.publishedVersion !== null && d.status !== "archived") === f.published)
       )
       .map((d) => structuredClone(d));
   }
