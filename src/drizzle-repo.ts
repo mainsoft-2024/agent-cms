@@ -239,12 +239,19 @@ export class DrizzleRepo implements CmsRepo {
       .values(ids.map((documentId) => ({ documentId, day, count: 1 })))
       .onConflictDoUpdate({ target: [cmsHits.documentId, cmsHits.day], set: { count: sql`${cmsHits.count} + 1` } });
   }
-  async hitCounts(sinceDay: string) {
-    const rows = await this.db
-      .select({ id: cmsHits.documentId, n: sql<number>`sum(${cmsHits.count})::int` })
-      .from(cmsHits)
-      .where(gte(cmsHits.day, sinceDay))
-      .groupBy(cmsHits.documentId);
+  async hitCounts(sinceDay: string, collection?: string) {
+    const rows = collection
+      ? await this.db
+          .select({ id: cmsHits.documentId, n: sql<number>`sum(${cmsHits.count})::int` })
+          .from(cmsHits)
+          .innerJoin(cmsDocuments, eq(cmsDocuments.id, cmsHits.documentId))
+          .where(and(gte(cmsHits.day, sinceDay), eq(cmsDocuments.collection, collection)))
+          .groupBy(cmsHits.documentId)
+      : await this.db
+          .select({ id: cmsHits.documentId, n: sql<number>`sum(${cmsHits.count})::int` })
+          .from(cmsHits)
+          .where(gte(cmsHits.day, sinceDay))
+          .groupBy(cmsHits.documentId);
     return new Map(rows.map((r) => [r.id, Number(r.n)]));
   }
   async changeStamp() {

@@ -145,7 +145,11 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
     publish?: (a: AccessArgs) => boolean;
   };
   hooks?: {
-    afterChange?: Array<(doc: CmsDoc) => void | Promise<void>>;
+    /**
+     * After every write. `info.contentChanged` is false when only the draft
+     * changed (the public copy is the same), e.g. to skip ISR revalidation.
+     */
+    afterChange?: Array<(doc: CmsDoc, info: { contentChanged: boolean }) => void | Promise<void>>;
   };
 }
 

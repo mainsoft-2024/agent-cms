@@ -67,3 +67,14 @@ export function remoteCmsTools(client: CmsClientOptions, opts: CmsToolsOptions =
   }
   return out;
 }
+
+/**
+ * Like `remoteCmsTools`, but first asks the server (`tools/list`) which tools
+ * this key may use, so the model is offered only those. One extra request at
+ * startup; tools the server does not know are left out too.
+ */
+export async function remoteCmsToolsFor(client: CmsClientOptions, opts: CmsToolsOptions = {}): Promise<CmsToolMap> {
+  const allowed = new Set((await createCmsClient(client).listTools()).map((t) => t.name));
+  const names = CMS_TOOLS.map((t) => t.name).filter((n) => allowed.has(n) && (!opts.only || opts.only.includes(n)));
+  return remoteCmsTools(client, { ...opts, only: names });
+}

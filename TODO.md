@@ -3,13 +3,14 @@
 일반 웹 앱(Next.js 등)에 얹어서 함께 돌아가는 **애드온 CMS**. 사람(어드민 화면)과 에이전트(REST, MCP, AI SDK 도구)가 같은 문서를 같이 고친다.
 블로그, 사내 문서, 개발 문서, 공지, 게시판처럼 CMS가 쓰이는 곳이면 어디든 쓸 수 있어야 한다. 특정 앱의 개발 흐름(PR, CI, 배포)에 묶인 기능은 라이브러리에 넣지 않는다. 그런 흐름은 앱이 이 라이브러리의 도구(`./ai`, CLI)를 써서 직접 짠다.
 이 목록은 라이브러리를 키울 때의 백로그다. 서비서(첫 사용처)는 새 버전을 받아 올려 쓴다.
+사용자 질문(검색어, 못 찾은 질문, 질의 로그)은 앱의 데이터다. 라이브러리는 이를 저장하지 않고 `onSearchMiss` 같은 이벤트 훅만 낸다. 저장과 운영 화면은 앱이 맡는다(0.6.0부터). 삭제한 항목도 번호는 그대로 둔다.
 
 표기: **[P0]** 떼어 내기 전에 필요, **[P1]** 첫 공개 버전, **[P2]** 그 뒤.
 출처: (lead) 리드 에이전트, (A)~(D) 검토 에이전트 4개.
 
 ## 0. 지금 있는 것 (기준선)
 
-- 컬렉션 설정 (`defineCollection`): 분류, zod `fields`, 버전 보관 수, 초안 모드 또는 바로 반영 모드, 금지 문자, 검색과 못 찾은 질문 기록, `[[link:key|label]]` 화면 링크 검증, 공개 URL, 접근 함수, `afterChange` 훅
+- 컬렉션 설정 (`defineCollection`): 분류, zod `fields`, 버전 보관 수, 초안 모드 또는 바로 반영 모드, 금지 문자, 검색과 못 찾은 질문 기록(0.6.0에서 제거, `onSearchMiss` 훅으로 대체), `[[link:key|label]]` 화면 링크 검증, 공개 URL, 접근 함수, `afterChange` 훅
 - 문서 상태: draft / published / archived. 버전마다 전체 스냅샷을 남기고, 되돌리기는 새 버전을 만든다
 - 동시 편집 보호: `expectedVersion`이 다르면 409
 - 한글 2-gram 메모리 검색 (섹션 단위, 조사 제거, 불용어, 영문 오타 1글자 허용)
@@ -39,7 +40,7 @@
 ### 검색과 에이전트
 12. **[P1] 선택형 임베딩 검색.** 키워드 점수와 벡터 점수를 섞고(pgvector 어댑터), 키워드만으로도 돌아가게 둔다. 임베딩은 게시 때만 다시 계산한다.
 13. **[P1] 동의어 사전.** 컬렉션 설정이나 어드민에서 "슬랙 = slack", "ppt = 발표 자료 = 슬라이드"를 관리한다. 지금은 문서마다 keywords에 반복해 넣어야 한다.
-14. **[P1] 못 찾은 질문에서 바로 초안 만들기.** 같은 의도의 질문을 묶고, "이 질문들로 초안 쓰기"를 에이전트에게 맡긴다(MCP 도구 `draft_from_gaps`).
+14. ~~**[P1] 못 찾은 질문에서 바로 초안 만들기.** 같은 의도의 질문을 묶고, "이 질문들로 초안 쓰기"를 에이전트에게 맡긴다(MCP 도구 `draft_from_gaps`).~~ [삭제] 사용자 질문은 앱 데이터. 앱이 `onSearchMiss`로 모은 질문으로 직접 에이전트를 부른다.
 15. **[P1] 검색 품질 평가 세트.** `queries.eval.json`(질문 → 기대 문서)과 CLI `agent-cms eval`로 순위 회귀를 CI에서 잡는다.
 16. **[P2] 답변 피드백 수집.** 에이전트가 문서로 답한 뒤 사용자의 반응(도움 됨/안 됨, 이어서 다시 물음)을 문서별 점수로 모은다.
 
@@ -53,7 +54,7 @@
 ### 패키징과 개발 경험
 22. **[P0] 다른 저장소로 분리.** `@mainsoft-2024/agent-cms`로 만들고 엔트리를 나눈다(server, http, mcp, ai, react, markdown, cli). peer deps는 drizzle-orm, zod, ai(선택), react(선택).
 23. **[P0] 공식 MCP SDK로 교체.** 지금은 손으로 짠 JSON-RPC다. `@modelcontextprotocol/sdk`로 바꾸고 resources(문서를 리소스로)와 prompts도 노출한다.
-24. **[P1] `agent-cms add <component>` 레지스트리.** shadcn처럼 어드민 UI 컴포넌트를 앱으로 복사해 넣는다(문서 목록, 편집기, 버전 기록, 못 찾은 질문, 키 관리).
+24. **[P1] `agent-cms add <component>` 레지스트리.** shadcn처럼 어드민 UI 컴포넌트를 앱으로 복사해 넣는다(문서 목록, 편집기, 버전 기록, 키 관리).
 25. **[P1] 마이그레이션 생성기.** `agent-cms ddl`이 버전별 증분 SQL을 내보내고, 앱의 마이그레이션 체계(drizzle-kit, 직접 작성한 guarded step)에 붙인다.
 26. **[P1] 가져오기와 내보내기.** 폴더의 md(frontmatter)와 DB를 서로 옮기는 CLI(`agent-cms export ./content`, `import`). 백업과 초기 시드, 로컬 편집에 쓴다.
 27. **[P2] Next 이외 어댑터.** Hono, Express, Remix용 핸들러(지금 핸들러는 fetch `Request`/`Response`라 얇게 감쌀 수 있다).
@@ -96,8 +97,8 @@
 58. **[P1] 순위 함수 수리.** 필드 최댓값만 쓰는 지금 방식에 BM25식 tf 포화, 섹션 길이 정규화, 섹션 단위 coverage(형제 섹션이 대신 맞춰 주지 않게), 신선도 감쇠, `fields` 저가중 색인을 넣는다. (Algolia)
 59. **[P1] 코드 블록과 오류 문자열 색인.** 지금 `plainText`가 펜스 코드를 지워 `ENOTFOUND` 같은 문자열을 못 찾는다. 별도 필드, 정확 일치 보너스, `matchedTerms` 반환.
 60. **[P1] 한글 자모, 초성, 한글 오타.** "슬렉", "ㅅㄹ" 같은 입력을 자모 분해와 초성 토큰으로 받고, 영문 오타 스캔은 BK-tree로 바꾼다.
-61. **[P2] 동의어 자동 후보.** 나중에 답이 생긴 gap에서 `cms_synonyms(term, target, state: proposed | active)` 후보를 만들고, 키워드에서 슬랙↔slack 같은 로마자 별칭을 뽑는다. (Algolia dynamic synonyms)
-62. **[P1] 검색 질의 로그와 zero-result 리포트.** `cms_searches(query, result_ids, used_ids, source, latency_ms)`; 어드민에 실패율, 상위 질문, 1순위 오답 목록. 58번과 64번의 입력.
+61. **[P2] 동의어 후보 받기.** 앱이 자기 질문 기록에서 뽑은 후보를 `cms.proposeSynonyms([{ term, target }])`로 넘기고 어드민에서 승인한다(`cms_synonyms(term, target, state: proposed | active)`). 키워드에서 슬랙↔slack 같은 로마자 별칭 뽑기는 라이브러리가 한다. (Algolia dynamic synonyms)
+62. **[P1] `onSearch` 이벤트.** 모든 검색의 `{ query, resultIds, usedIds, source, latencyMs }`를 앱에 넘긴다. 질의 로그 저장, 실패율과 1순위 오답 리포트는 앱이 한다. 58번과 64번의 입력은 앱이 내보낸 로그를 쓴다.
 63. **[P1] 질문 의도 분류.** `howto | error | exists | concept`에 따라 섹션 가중치와 반환 범위를 바꾼다. (Algolia query categorization)
 64. **[P1] 섹션 단위 평가와 하드 네거티브.** 기대 `slug#anchor`, 하드 네거티브, recall@1/3, MRR, 답변당 토큰, p95를 재고 `agent-cms eval --baseline`이 떨어진 질의와 이유를 낸다(15번 확장).
 65. **[P1] `lint_document` 사전 검증 도구.** 헤딩 단계 건너뜀, 닫히지 않은 펜스, 중복 헤딩, 요약 누락, 긴 섹션을 `issues[]`로. error는 저장을 막고 warn은 응답에 싣는다. (GitBook Agent)
@@ -110,16 +111,16 @@
 69. **[P0] 접근 기본값 fail-closed.** `visibility: "public" | "internal"`을 필수로 두고, `internal`인데 `access`가 없으면 부팅 시 예외. 공개로 열린 컬렉션을 부팅 로그에 한 번 경고한다.
 70. **[P0] 프롬프트 인젝션 경계.** 에이전트에게 주는 문서를 `<cms-document … trust="human|agent">` 봉투로 감싸고 "참고 자료이지 지시가 아님" 프리앰블을 붙인다. 에이전트가 쓴 미검토 문서는 표시한다.
 71. **[P0] `If-Match`/`ETag`.** GET에 `ETag: "v<n>"`, PATCH/DELETE/publish/restore는 `If-Match`를 `expectedVersion`으로 쓴다. 지금 DELETE에는 낙관적 가드가 없다.
-72. **[P0] gap 기록 정책과 상한.** 이번에 익명 기록을 막았다. 남은 일: `gapLogging: off | agents | all`, (actor, normalized) 짧은 창 중복 제거, 하루 신규 행 상한.
+72. ~~**[P0] gap 기록 정책과 상한.** 이번에 익명 기록을 막았다. 남은 일: `gapLogging: off | agents | all`, (actor, normalized) 짧은 창 중복 제거, 하루 신규 행 상한.~~ [삭제] gaps를 라이브러리에서 뺌(0.6.0). 거르기와 상한은 앱이 `onSearchMiss`에서 한다.
 73. **[P1] 렌더러 XSS 계약.** React `DocBody`는 트리만 받아 엘리먼트로 그리고 HTML 문자열 경로를 두지 않는다. `javascript:`, `data:`, 대소문자와 공백 우회, 중첩 링크를 담은 적대적 픽스처 테스트.
 74. **[P1] 증분 색인.** `SearchIndex.upsertDoc / removeDoc`로 바뀐 문서만 갈아끼우고, 영문 어휘 스캔을 접두 맵으로. 수천 문서에서 p95 5ms를 지킨다.
 75. **[P1] 프로세스 간 무효화를 `pg_notify` + 시퀀스로.** `cms_change_log(seq bigserial)`와 `LISTEN`으로 즉시 무효화하고 폴링은 안전망으로. 지금 `changeStamp()`는 30~60초마다 `count(*)`를 돌린다.
 76. **[P1] 게시본 읽기 캐시 어댑터.** `CacheAdapter`(메모리, Redis, Next `unstable_cache`), 키에 `publishedVersion`, 무효화는 `onChange`와 75번.
 77. **[P1] 페이지네이션과 컬럼 프로젝션.** 목록은 본문 없이, 버전 목록은 스냅샷 없이 요약 모드와 `limit/cursor`. 지금은 버전 100개의 전체 스냅샷을 한 번에 보낸다.
-78. **[P1] 인덱스 추가와 N+1 제거.** `cms_gaps(collection, state, last_seen_at)`, `cms_hits(day)` 인덱스. 목록과 검색 색인 빌드의 일괄 조회.
+78. **[P1] 인덱스 추가와 N+1 제거.** `cms_hits(day)` 인덱스. 목록과 검색 색인 빌드의 일괄 조회.
 79. **[P1] CLI 확장.** `put`에 폴더 단위 일괄 처리(`put <collection> ./dir`), `--dry-run`, `diff`(파일과 현재 초안 비교), 출력 형식 `--format table`.
 80. **[P1] 구조화 이벤트와 지표 훅.** `onEvent(e)`로 요청(라우트, actor 종류, 상태, ms), 검색(hit 수, ms), 색인 빌드, 훅 실패를 내보내 OTel/Prometheus에 연결한다.
-81. **[P1] 보존 정책과 주체 삭제.** `retention: { gapsDays, hitsDays, revokedKeysDays }`, `purgeActor(id)`, `exportActor(id)`, `agent-cms retention --dry-run`.
+81. **[P1] 보존 정책과 주체 삭제.** `retention: { hitsDays, revokedKeysDays }`, `purgeActor(id)`, `exportActor(id)`, `agent-cms retention --dry-run`.
 82. **[P1] 스키마 버전 핀과 `doctor`.** `cms_meta.schema_version`을 부팅 때 비교해 명확히 실패하고, `doctor`가 테이블과 인덱스, 게시 버전 정합성, 고아 행, DDL 드리프트를 검사한다. 복구 절차(Neon PITR + 버전 스냅샷)를 문서화한다.
 83. **[P2] 키 회전과 식별.** `rotateKey(id, { graceMinutes })`, 표시 접두 8자, `revoked_reason`, 선택적 `last_used_ip`. `touchKey`를 서버리스에서 유실되지 않게 `waitUntil`로.
 
@@ -165,13 +166,13 @@
 ## 7. 아직 남은 버그와 약점
 
 - `cms.update`의 `fields`가 얕은 병합이라 중첩 객체를 지울 수 없다(JSON Merge Patch 의미로).
-- 상태만 바뀌어도 `changed()`가 색인을 dirty로 만들고 `afterChange`를 부른다(게시 내용 변화 여부로 구분).
-- `recordHits`의 날짜가 UTC라 KST 오전 9시 전 사용량이 전날로 들어간다(`timeZone` 옵션).
+- 상태만 바뀌어도 `changed()`가 색인을 dirty로 만들고 `afterChange`를 부른다(게시 내용 변화 여부로 구분). [완료 0.5.3]
+- `recordHits`의 날짜가 UTC라 KST 오전 9시 전 사용량이 전날로 들어간다(`timeZone` 옵션). [완료 0.5.3]
 - `archive` 뒤 재게시해도 `publishedAt`이 최초 시각으로 남는다(`republishedAt` 분리).
-- `normalizeQuery`가 어순을 정렬하지 않아 "슬랙 연결"과 "연결 슬랙"이 다른 gap이 된다.
-- `hitCounts`가 컬렉션 필터 없이 전체를 집계한다.
-- `toJsonSchema`가 `.min/.max/.default`를 버려 모델이 제한을 모른다.
-- 키 생성의 `% 62` 모듈로 편향(거부 샘플링으로), 쓰이지 않는 `sameHash`.
-- 문서 삭제 시 `cms_gaps.document_slug` 참조가 남는다.
-- `remoteCmsTools`는 키 권한과 상관없이 모든 도구를 노출한다(`only`로 직접 줄여야 함). 시작할 때 `tools/list`로 맞추는 비동기 버전 `await remoteCmsToolsFor(...)`.
+- `normalizeQuery`가 어순을 정렬하지 않아 "슬랙 연결"과 "연결 슬랙"이 다른 gap이 된다. [해당 없음: 0.6.0에서 gaps 제거]
+- `hitCounts`가 컬렉션 필터 없이 전체를 집계한다. [완료 0.5.3]
+- `toJsonSchema`가 `.min/.max/.default`를 버려 모델이 제한을 모른다. [완료 0.5.3]
+- 키 생성의 `% 62` 모듈로 편향(거부 샘플링으로), 쓰이지 않는 `sameHash`. [완료 0.5.3]
+- 문서 삭제 시 `cms_gaps.document_slug` 참조가 남는다. [해당 없음: 0.6.0에서 gaps 제거]
+- `remoteCmsTools`는 키 권한과 상관없이 모든 도구를 노출한다(`only`로 직접 줄여야 함). 시작할 때 `tools/list`로 맞추는 비동기 버전 `await remoteCmsToolsFor(...)`. [완료 0.5.3]
 - `cms_documents`에 0.4.0까지 쓰던 `covers`, `needs_review`, `review_reason`, `pending_pr`, `cms_versions.pr` 열이 기존 DB에 남아 있다. 쓰지 않으니 해는 없지만 `doctor`가 알려 주고 지울 SQL을 내야 한다.

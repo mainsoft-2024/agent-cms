@@ -11,8 +11,8 @@
  *   ./cli        runCli
  */
 
-export { createCms, defineCollection, SLUG_RE } from "./cms";
-export type { Cms, CreateCmsOptions, DocInput, SearchResult, WriteOptions } from "./cms";
+export { createCms, dayIn, defineCollection, SLUG_RE } from "./cms";
+export type { ChangeInfo, Cms, CreateCmsOptions, DocInput, SearchResult, WriteOptions } from "./cms";
 export { DrizzleRepo } from "./drizzle-repo";
 export { MemoryRepo } from "./repo";
 export type { CmsRepo } from "./repo";
