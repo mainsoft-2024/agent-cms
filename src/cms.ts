@@ -423,6 +423,31 @@ export function createCms(opts: CreateCmsOptions) {
     return doc;
   }
 
+  /**
+   * Take a document off the public site and back to draft. Its versions stay;
+   * the first publish time is kept, so publishing again doesn't re-date it.
+   */
+  async function unpublish(actor: Actor, col: string, slug: string): Promise<CmsDoc> {
+    const doc = await repo.tx(async (r) => {
+      const cur = await r.findDoc(col, slug);
+      if (!cur) throw new CmsError("not_found", "문서를 찾을 수 없음");
+      assert(actor, col, "publish", cur);
+      if (cur.publishedVersion === null && cur.status !== "archived") return cur;
+      const who = actorRef(actor);
+      return (await r.updateDoc(cur.id, {
+        status: "draft",
+        publishedVersion: null,
+        published: null,
+        pendingPr: null,
+        updatedAt: nowIso(),
+        updatedBy: who.label,
+        updatedByKind: who.kind,
+      }))!;
+    });
+    changed(doc);
+    return doc;
+  }
+
   async function restore(actor: Actor, col: string, slug: string, n: number, o: WriteOptions = {}): Promise<CmsDoc> {
     const doc = await repo.tx(async (r) => {
       const cur = await r.findDoc(col, slug);
@@ -704,6 +729,7 @@ export function createCms(opts: CreateCmsOptions) {
     publish,
     archive: (a: Actor, c: string, s: string) => setArchived(a, c, s, true),
     unarchive: (a: Actor, c: string, s: string) => setArchived(a, c, s, false),
+    unpublish,
     restore,
     markReviewed,
     remove,

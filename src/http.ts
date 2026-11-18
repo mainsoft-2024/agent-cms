@@ -14,7 +14,7 @@
  *   PATCH  /collections/:c/:slug                update {doc, expectedVersion?, publish?, pr?, note?}
  *   DELETE /collections/:c/:slug
  *   POST   /collections/:c/:slug/publish        {version?}
- *   POST   /collections/:c/:slug/archive | unarchive | reviewed
+ *   POST   /collections/:c/:slug/archive | unarchive | unpublish | reviewed
  *   GET    /collections/:c/:slug/versions[/:n]
  *   POST   /collections/:c/:slug/versions/:n/restore {publish?}
  *   GET    /collections/:c/_gaps                (?state=open)
@@ -238,6 +238,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           }
           if (seg[3] === "archive") return json({ doc: await cms.archive(actor, col, slug) });
           if (seg[3] === "unarchive") return json({ doc: await cms.unarchive(actor, col, slug) });
+          if (seg[3] === "unpublish") return json({ doc: await cms.unpublish(actor, col, slug) });
           if (seg[3] === "reviewed") return json({ doc: await cms.markReviewed(actor, col, slug) });
         }
         if (slug && seg[3] === "versions") {

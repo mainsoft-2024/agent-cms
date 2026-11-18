@@ -233,3 +233,17 @@ test("coverage is not public; publish and restore honour expectedVersion", async
   await reject(cms.restore(admin, "guide", "slack-connect", 1, { expectedVersion: 1 }), "conflict");
   assert.equal((await cms.publish(admin, "guide", "slack-connect", { expectedVersion: 2 })).status, "published");
 });
+
+test("unpublish takes a doc off the public site and keeps its first publish time", async () => {
+  const { cms } = setup();
+  const first = await cms.create(admin, "guide", slack, { publish: true });
+  await cms.archive(admin, "guide", "slack-connect");
+  const d = await cms.unpublish(admin, "guide", "slack-connect");
+  assert.equal(d.status, "draft");
+  assert.equal(d.publishedVersion, null);
+  await reject(cms.get(anon, "guide", "slack-connect"), "not_found");
+  assert.equal((await cms.search(anon, ["guide"], "슬랙", { logGap: false })).empty, true);
+  const again = await cms.publish(admin, "guide", "slack-connect");
+  assert.equal(again.publishedAt, first.publishedAt);
+  await reject(cms.unpublish(user, "guide", "slack-connect"), "forbidden");
+});
