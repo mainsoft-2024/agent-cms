@@ -148,8 +148,10 @@ npx agent-cms put posts ./hello-world.md --publish --note "launch post"
 npx agent-cms call archive_document '{"collection":"posts","slug":"old","archived":true}'
 ```
 
-`put` creates the document, or updates it with its current version so a
-person's concurrent edit is never overwritten. The file is markdown with
+`put` creates the document. To update one that exists, pass the version you
+read (`get <collection> <slug> --draft` shows it) as `--expected-version N`;
+if someone saved since, `put` fails with a conflict instead of overwriting
+their edit. `--force` skips that check. The file is markdown with
 frontmatter; keys other than `slug`, `title`, `summary`, `category` and
 `keywords` go into `fields`:
 

@@ -206,8 +206,8 @@ export class DrizzleRepo implements CmsRepo {
     const rows = await this.db.select().from(cmsGaps).where(conds.length ? and(...conds) : undefined).orderBy(desc(cmsGaps.lastSeenAt)).limit(500);
     return rows.map(toGap);
   }
-  async setGapState(id: string, state: CmsGap["state"]) {
-    const [r] = await this.db.update(cmsGaps).set({ state }).where(eq(cmsGaps.id, id)).returning();
+  async setGapState(id: string, state: CmsGap["state"], collection: string) {
+    const [r] = await this.db.update(cmsGaps).set({ state }).where(and(eq(cmsGaps.id, id), eq(cmsGaps.collection, collection))).returning();
     return r ? toGap(r) : null;
   }
   async insertKey(k: { name: string; prefix: string; hash: string; scopes: KeyScope[]; collections: string[] | null; createdBy: string | null }) {

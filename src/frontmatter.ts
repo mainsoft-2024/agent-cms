@@ -29,9 +29,42 @@ function scalar(raw: string): unknown {
   if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) return v.slice(1, -1);
   if (v.startsWith("[") && v.endsWith("]")) {
     const inner = v.slice(1, -1).trim();
-    return inner ? inner.split(",").map((x) => scalar(x)) : [];
+    return inner ? splitOutsideQuotes(inner, ",").map((x) => scalar(x)) : [];
   }
   return v;
+}
+
+/** Split on `sep` where it is not inside '…' or "…". */
+function splitOutsideQuotes(s: string, sep: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let q: string | null = null;
+  for (const ch of s) {
+    if (q) {
+      if (ch === q) q = null;
+    } else if (ch === '"' || ch === "'") q = ch;
+    else if (ch === sep) {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+/** Drop a ` # comment` that is not inside quotes. */
+function stripComment(line: string): string {
+  let q: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) {
+      if (ch === q) q = null;
+    } else if (ch === '"' || ch === "'") q = ch;
+    else if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i).trimEnd();
+  }
+  return line;
 }
 
 export function parseFrontmatter(text: string): { data: Record<string, unknown>; body: string } {
@@ -40,8 +73,8 @@ export function parseFrontmatter(text: string): { data: Record<string, unknown>;
   if (!m) return { data: {}, body: src.trim() };
   const data: Record<string, unknown> = {};
   for (const line of m[1].split("\n")) {
-    const t = line.replace(/\s+#.*$/, "");
-    if (!t.trim() || t.trimStart().startsWith("#")) continue;
+    const t = stripComment(line);
+    if (!t.trim()) continue;
     const i = t.indexOf(":");
     if (i < 1) throw new Error(`frontmatter: cannot read line "${line}"`);
     data[t.slice(0, i).trim()] = scalar(t.slice(i + 1));

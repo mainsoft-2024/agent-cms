@@ -9,8 +9,11 @@
  *   agent-cms get <collection> <slug> [--draft]
  *   agent-cms search <query> [--collections a,b]
  *   agent-cms put <collection> <file.md> [--publish] [--note "why"]
- *       create, or update (with the current version, so a concurrent edit
- *       is never overwritten). Frontmatter: see frontmatter.ts.
+ *       [--expected-version N]
+ *       create; updating an existing document needs --expected-version (the
+ *       version you read with `get --draft`), so an edit someone made since
+ *       is never overwritten (conflict instead). --force skips the check.
+ *       Frontmatter: see frontmatter.ts.
  *   agent-cms publish <collection> <slug>
  *   agent-cms call <tool> '<json args>'               any tool
  *
@@ -41,7 +44,7 @@ function flag(argv: string[], name: string): string | undefined {
 /** Positional args (flags and their values removed). */
 function positional(argv: string[]): string[] {
   const out: string[] = [];
-  const withValue = new Set(["--env", "--note", "--collections"]);
+  const withValue = new Set(["--env", "--note", "--collections", "--expected-version"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (withValue.has(a)) {
@@ -119,14 +122,25 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         const doc = docFromMarkdown(read(file), basename(file).replace(/\.(md|markdown)$/i, ""));
         const publish = argv.includes("--publish");
         const note = flag(argv, "note");
+        const expectedRaw = flag(argv, "expected-version");
+        const expected = expectedRaw === undefined ? undefined : Number(expectedRaw);
+        if (expected !== undefined && !(Number.isInteger(expected) && expected > 0)) throw new CmsRemoteError("--expected-version must be a positive integer", "usage");
         const current = await api
           .call<{ version: number }>("get_document", { collection, slug: doc.slug, draft: true })
           .catch((e: unknown) => {
             if (isCmsRemoteError(e) && e.code === "not_found") return null;
             throw e;
           });
+        if (current && expected === undefined && !argv.includes("--force")) {
+          // Never overwrite on a version read just now: someone may have edited
+          // since this file was written. Say which version the file is based on.
+          throw new CmsRemoteError(
+            `${collection}/${doc.slug} already exists (v${current.version}). Read it (get --draft), edit, then put with --expected-version <the version you read>.`,
+            "conflict"
+          );
+        }
         const result = current
-          ? await api.call("update_document", { collection, slug: doc.slug, doc, expectedVersion: current.version, publish, note })
+          ? await api.call("update_document", { collection, slug: doc.slug, doc, expectedVersion: expected ?? current.version, publish, note })
           : await api.call("create_document", { collection, doc, publish, note });
         print(result);
         return 0;

@@ -528,8 +528,8 @@ export function createCms(opts: CreateCmsOptions) {
 
   async function setGapState(actor: Actor, col: string, id: string, state: CmsGap["state"]) {
     assert(actor, col, "write");
-    const g = await repo.setGapState(id, state);
-    if (!g || g.collection !== col) throw new CmsError("not_found", "항목을 찾을 수 없음");
+    const g = await repo.setGapState(id, state, col);
+    if (!g) throw new CmsError("not_found", "항목을 찾을 수 없음");
     return g;
   }
 

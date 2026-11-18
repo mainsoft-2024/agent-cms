@@ -34,7 +34,8 @@ export interface CmsRepo {
 
   upsertGap(g: { collection: string; kind: CmsGap["kind"]; query: string; normalized: string; note: string | null; documentSlug: string | null; at: string }): Promise<void>;
   listGaps(filter: { collection?: string; state?: CmsGap["state"] }): Promise<CmsGap[]>;
-  setGapState(id: string, state: CmsGap["state"]): Promise<CmsGap | null>;
+  /** Only a gap of `collection` changes; null when there is none with that id there. */
+  setGapState(id: string, state: CmsGap["state"], collection: string): Promise<CmsGap | null>;
 
   insertKey(k: { name: string; prefix: string; hash: string; scopes: KeyScope[]; collections: string[] | null; createdBy: string | null }): Promise<KeyRow>;
   listKeys(): Promise<KeyRow[]>;
@@ -145,8 +146,8 @@ export class MemoryRepo implements CmsRepo {
   async listGaps(f: { collection?: string; state?: CmsGap["state"] }) {
     return this.gaps.filter((g) => (!f.collection || g.collection === f.collection) && (!f.state || g.state === f.state)).map((g) => ({ ...g }));
   }
-  async setGapState(id: string, state: CmsGap["state"]) {
-    const g = this.gaps.find((x) => x.id === id);
+  async setGapState(id: string, state: CmsGap["state"], collection: string) {
+    const g = this.gaps.find((x) => x.id === id && x.collection === collection);
     if (!g) return null;
     g.state = state;
     return { ...g };

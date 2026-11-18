@@ -170,7 +170,11 @@ test("cli: put creates, then updates with the current version; errors exit 1", a
   assert.equal(await runCli(["put", "guide", "/tmp/post.md", "--publish", "--env", "/tmp/a.env"], io), 0);
   assert.equal((await cms.get({ kind: "anonymous" }, "guide", "post")).title, "첫 글");
   files["/tmp/post.md"] = "---\ntitle: 고친 글\n---\n안녕";
-  assert.equal(await runCli(["put", "guide", "/tmp/post.md", "--env", "/tmp/a.env"], io), 0);
+  assert.equal(await runCli(["put", "guide", "/tmp/post.md", "--env", "/tmp/a.env"], io), 1, "existing doc needs --expected-version");
+  // A person edits in between: the agent's stale version is refused.
+  await cms.update(admin, "guide", "post", { summary: "사람이 고침" });
+  assert.equal(await runCli(["put", "guide", "/tmp/post.md", "--expected-version", "1", "--env", "/tmp/a.env"], io), 1, "stale version → conflict");
+  assert.equal(await runCli(["put", "guide", "/tmp/post.md", "--expected-version", "2", "--env", "/tmp/a.env"], io), 0);
   assert.equal((await cms.get(admin, "guide", "post", { draft: true })).title, "고친 글");
   assert.equal((await cms.get({ kind: "anonymous" }, "guide", "post")).title, "첫 글", "update without --publish stays a draft");
   assert.equal(await runCli(["get", "guide", "nope", "--env", "/tmp/a.env"], io), 1);
@@ -184,4 +188,23 @@ test("errors are recognised across copies of the class (bundlers duplicate it)",
   assert.equal(isCmsError(foreign), true);
   assert.equal(isCmsError(new Error("x")), false);
   assert.equal(isCmsRemoteError(Object.assign(new Error("x"), { isCmsRemoteError: true })), true);
+});
+
+test("frontmatter: # and commas inside quotes are kept", () => {
+  const d = docFromMarkdown('---\ntitle: "Fix #123"  # comment\ntags: ["a, b", c]\n---\n본문');
+  assert.equal(d.title, "Fix #123");
+  assert.deepEqual(d.fields, { tags: ["a, b", "c"] });
+});
+
+test("gaps: a writer of one collection cannot change another collection's gap", async () => {
+  const cms = createCms({
+    repo: new MemoryRepo(),
+    collections: [defineCollection({ slug: "a", label: "a", search: { gapLogging: true } }), defineCollection({ slug: "b", label: "b", search: { gapLogging: true } })],
+  });
+  await cms.reportGap(admin, "b", { question: "없는 질문" });
+  const [gap] = await cms.gaps(admin, "b");
+  const { secret } = await cms.createKey(admin, { name: "a-only", scopes: ["write"], collections: ["a"] });
+  const key = (await cms.authenticateKey(secret))!;
+  await assert.rejects(cms.setGapState(key, "a", gap.id, "done"));
+  assert.equal((await cms.gaps(admin, "b"))[0].state, "open");
 });
