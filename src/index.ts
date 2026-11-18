@@ -17,3 +17,4 @@ export { cmsDdl, cmsTables, cmsApiKeys, cmsDocuments, cmsGaps, cmsHits, cmsMeta,
 export { lookupForAgent } from "./agent";
 export type { AgentLink, AgentLookup, AgentSection } from "./agent";
 export * from "./types";
+export { matchesAny } from "./glob";
