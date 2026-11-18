@@ -1,14 +1,23 @@
 /** API keys: `sgk_` + 40 random base62 chars. Only a sha256 hash is stored. */
 
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 export const KEY_PREFIX = "sgk_";
+const KEY_CHARS = 40;
+/** Largest multiple of 62 below 256: bytes at or above it are dropped so every char is equally likely. */
+const UNBIASED_LIMIT = 256 - (256 % ALPHABET.length);
 
-export function generateKey(): string {
-  const bytes = randomBytes(40);
+/** `random` is injectable for tests; it must return uniformly random bytes. */
+export function generateKey(random: (n: number) => Uint8Array = randomBytes): string {
   let s = "";
-  for (const b of bytes) s += ALPHABET[b % ALPHABET.length];
+  while (s.length < KEY_CHARS) {
+    for (const b of random(KEY_CHARS)) {
+      if (b >= UNBIASED_LIMIT) continue; // rejection sampling, no modulo bias
+      s += ALPHABET[b % ALPHABET.length];
+      if (s.length === KEY_CHARS) break;
+    }
+  }
   return KEY_PREFIX + s;
 }
 
@@ -23,13 +32,6 @@ export function displayPrefix(raw: string): string {
 
 export function looksLikeKey(raw: string | null | undefined): raw is string {
   return !!raw && raw.startsWith(KEY_PREFIX) && raw.length >= KEY_PREFIX.length + 20;
-}
-
-/** Constant-time compare of two hex hashes. */
-export function sameHash(a: string, b: string): boolean {
-  const x = Buffer.from(a, "hex");
-  const y = Buffer.from(b, "hex");
-  return x.length === y.length && timingSafeEqual(x, y);
 }
 
 /** `Authorization: Bearer sgk_…` (also accepts Payload's `… API-Key sgk_…`). */

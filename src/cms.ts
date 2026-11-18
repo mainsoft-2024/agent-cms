@@ -63,7 +63,34 @@ export interface CreateCmsOptions {
   /** Search results below this coverage count as "nothing found". Default 0.5. */
   minCoverage?: number;
   now?: () => Date;
+  /**
+   * IANA time zone that decides which calendar day a usage hit counts for
+   * (e.g. "Asia/Seoul"). Default "UTC".
+   */
+  timeZone?: string;
   onError?: (err: unknown, where: string) => void;
+}
+
+/** Second argument of `afterChange` hooks and `onChange` listeners. */
+export interface ChangeInfo {
+  /**
+   * True when what the public sees changed (published content, publish,
+   * unpublish, archive, unarchive, delete). False for draft-only saves.
+   */
+  contentChanged: boolean;
+}
+
+/** `YYYY-MM-DD` of `d` in `timeZone`. */
+export function dayIn(timeZone: string, d: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+/** `YYYY-MM-DD` shifted by `days` (calendar arithmetic, no time zone). */
+function addDays(day: string, days: number): string {
+  const t = Date.parse(`${day}T00:00:00Z`) + days * 86_400_000;
+  return new Date(t).toISOString().slice(0, 10);
 }
 
 export type Cms = ReturnType<typeof createCms>;
@@ -76,7 +103,9 @@ export function createCms(opts: CreateCmsOptions) {
   const minCoverage = opts.minCoverage ?? 0.5;
   const refreshMs = opts.searchRefreshMs ?? 60_000;
   const report = opts.onError ?? ((err: unknown, where: string) => console.warn(`[agent-cms] ${where}:`, err));
-  const listeners = new Set<(doc: CmsDoc) => void>();
+  const listeners = new Set<(doc: CmsDoc, info: ChangeInfo) => void>();
+  const timeZone = opts.timeZone ?? "UTC";
+  dayIn(timeZone, new Date()); // throws RangeError at boot on an unknown zone
 
   // ── access ────────────────────────────────────────────────────────────────
 
@@ -224,17 +253,30 @@ export function createCms(opts: CreateCmsOptions) {
 
   // ── writes ────────────────────────────────────────────────────────────────
 
-  function changed(doc: CmsDoc) {
-    index.dirty = true;
+  /** What the public sees of a doc, as a comparable string ("" = nothing). */
+  function publicSig(doc: CmsDoc | null): string {
+    const p = doc ? publicView(doc) : null;
+    return p ? `${p.publishedVersion}:${JSON.stringify(stable(contentOf(p)))}` : "";
+  }
+
+  /** `prev` is the row before the write (null for a create); `doc` after (null for a delete). */
+  function changed(prev: CmsDoc | null, doc: CmsDoc | null) {
+    const target = doc ?? prev;
+    if (!target) return;
+    const info: ChangeInfo = { contentChanged: publicSig(prev) !== publicSig(doc) };
+    // Only a change to what the public sees affects the search index.
+    if (info.contentChanged) index.dirty = true;
     for (const l of listeners) {
       try {
-        l(doc);
+        l(target, info);
       } catch (e) {
         report(e, "onChange");
       }
     }
-    for (const h of collection(doc.collection).hooks?.afterChange ?? []) {
-      Promise.resolve(h(doc)).catch((e) => report(e, "afterChange"));
+    for (const h of collection(target.collection).hooks?.afterChange ?? []) {
+      Promise.resolve()
+        .then(() => h(target, info))
+        .catch((e) => report(e, "afterChange"));
     }
   }
 
@@ -277,7 +319,7 @@ export function createCms(opts: CreateCmsOptions) {
       await r.insertVersion({ documentId: row.id, version: 1, snapshot: content, authorKind: who.kind, authorId: who.id, authorLabel: who.label, note: o.note ?? null, createdAt: at });
       return row;
     });
-    changed(doc);
+    changed(null, doc);
     return doc;
   }
 
@@ -313,8 +355,9 @@ export function createCms(opts: CreateCmsOptions) {
   }
 
   async function update(actor: Actor, col: string, slug: string, input: DocInput, o: WriteOptions = {}): Promise<CmsDoc> {
+    let prev: CmsDoc | null = null;
     const doc = await repo.tx(async (r) => {
-      const cur = await r.findDoc(col, slug);
+      const cur = (prev = await r.findDoc(col, slug));
       if (!cur) throw new CmsError("not_found", "문서를 찾을 수 없음");
       assert(actor, col, "write", cur);
       if (o.publish || (collection(col).versions?.drafts === false && cur.publishedVersion !== null)) assert(actor, col, "publish", cur);
@@ -335,7 +378,7 @@ export function createCms(opts: CreateCmsOptions) {
       }
       return commit(r, actor, cur, next, o);
     });
-    changed(doc);
+    changed(prev, doc);
     return doc;
   }
 
@@ -358,20 +401,22 @@ export function createCms(opts: CreateCmsOptions) {
   }
 
   async function publish(actor: Actor, col: string, slug: string, o: { version?: number; expectedVersion?: number } = {}): Promise<CmsDoc> {
+    let prev: CmsDoc | null = null;
     const doc = await repo.tx(async (r) => {
-      const cur = await r.findDoc(col, slug);
+      const cur = (prev = await r.findDoc(col, slug));
       if (!cur) throw new CmsError("not_found", "문서를 찾을 수 없음");
       assert(actor, col, "publish", cur);
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw new CmsError("conflict", "다른 곳에서 바뀜. 다시 불러온 뒤 게시해 주세요");
       return publishIn(r, actor, cur, o.version ?? cur.version);
     });
-    changed(doc);
+    changed(prev, doc);
     return doc;
   }
 
   async function setArchived(actor: Actor, col: string, slug: string, archived: boolean): Promise<CmsDoc> {
+    let prev: CmsDoc | null = null;
     const doc = await repo.tx(async (r) => {
-      const cur = await r.findDoc(col, slug);
+      const cur = (prev = await r.findDoc(col, slug));
       if (!cur) throw new CmsError("not_found", "문서를 찾을 수 없음");
       assert(actor, col, "publish", cur);
       if (archived) {
@@ -381,7 +426,7 @@ export function createCms(opts: CreateCmsOptions) {
       if (cur.status !== "archived") return cur;
       return (await r.updateDoc(cur.id, { status: cur.publishedVersion === cur.version ? "published" : "draft", updatedAt: nowIso() }))!;
     });
-    changed(doc);
+    changed(prev, doc);
     return doc;
   }
 
@@ -390,8 +435,9 @@ export function createCms(opts: CreateCmsOptions) {
    * the first publish time is kept, so publishing again doesn't re-date it.
    */
   async function unpublish(actor: Actor, col: string, slug: string): Promise<CmsDoc> {
+    let prev: CmsDoc | null = null;
     const doc = await repo.tx(async (r) => {
-      const cur = await r.findDoc(col, slug);
+      const cur = (prev = await r.findDoc(col, slug));
       if (!cur) throw new CmsError("not_found", "문서를 찾을 수 없음");
       assert(actor, col, "publish", cur);
       if (cur.publishedVersion === null && cur.status !== "archived") return cur;
@@ -405,13 +451,14 @@ export function createCms(opts: CreateCmsOptions) {
         updatedByKind: who.kind,
       }))!;
     });
-    changed(doc);
+    changed(prev, doc);
     return doc;
   }
 
   async function restore(actor: Actor, col: string, slug: string, n: number, o: WriteOptions = {}): Promise<CmsDoc> {
+    let prev: CmsDoc | null = null;
     const doc = await repo.tx(async (r) => {
-      const cur = await r.findDoc(col, slug);
+      const cur = (prev = await r.findDoc(col, slug));
       if (!cur) throw new CmsError("not_found", "문서를 찾을 수 없음");
       assert(actor, col, "write", cur);
       if (o.publish || (collection(col).versions?.drafts === false && cur.publishedVersion !== null)) assert(actor, col, "publish", cur);
@@ -420,7 +467,7 @@ export function createCms(opts: CreateCmsOptions) {
       if (!v) throw new CmsError("not_found", `v${n} 없음`);
       return commit(r, actor, cur, validate(col, { ...v.snapshot, slug: cur.slug }), { ...o, restoredFrom: n });
     });
-    changed(doc);
+    changed(prev, doc);
     return doc;
   }
 
@@ -429,7 +476,7 @@ export function createCms(opts: CreateCmsOptions) {
     if (!cur) throw new CmsError("not_found", "문서를 찾을 수 없음");
     assert(actor, col, "publish", cur);
     await repo.deleteDoc(cur.id);
-    changed(cur);
+    changed(cur, null);
   }
 
   // ── search ────────────────────────────────────────────────────────────────
@@ -537,13 +584,14 @@ export function createCms(opts: CreateCmsOptions) {
 
   async function recordHits(docIds: string[]) {
     if (!docIds.length) return;
-    await repo.addHits([...new Set(docIds)], nowIso().slice(0, 10)).catch((e) => report(e, "recordHits"));
+    await repo.addHits([...new Set(docIds)], dayIn(timeZone, now())).catch((e) => report(e, "recordHits"));
   }
 
+  /** Hits per document of `col` over the last `days` calendar days (in `timeZone`). */
   async function hitCounts(actor: Actor, col: string, days = 7): Promise<Map<string, number>> {
     assert(actor, col, "write");
-    const since = new Date(now().getTime() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
-    return repo.hitCounts(since);
+    const since = addDays(dayIn(timeZone, now()), -(Math.max(1, days) - 1));
+    return repo.hitCounts(since, col);
   }
 
   // ── keys ──────────────────────────────────────────────────────────────────
@@ -639,7 +687,7 @@ export function createCms(opts: CreateCmsOptions) {
     authenticateKey,
     /** Warm the search index (e.g. at boot) so the first agent call is fast. */
     warm: () => searchIndex().then(() => undefined),
-    onChange(fn: (doc: CmsDoc) => void) {
+    onChange(fn: (doc: CmsDoc, info: ChangeInfo) => void) {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },

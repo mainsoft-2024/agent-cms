@@ -44,7 +44,8 @@ export interface CmsRepo {
   revokeKey(id: string, at: string): Promise<boolean>;
 
   addHits(documentIds: string[], day: string): Promise<void>;
-  hitCounts(sinceDay: string): Promise<Map<string, number>>;
+  /** Hits per document since `sinceDay` (inclusive); only documents of `collection` when given. */
+  hitCounts(sinceDay: string, collection?: string): Promise<Map<string, number>>;
 
   /** Changes whenever any document changes (for cross-process index refresh). */
   changeStamp(): Promise<string>;
@@ -177,10 +178,11 @@ export class MemoryRepo implements CmsRepo {
   async addHits(ids: string[], day: string) {
     for (const id of ids) this.hits.set(`${id}|${day}`, (this.hits.get(`${id}|${day}`) ?? 0) + 1);
   }
-  async hitCounts(sinceDay: string) {
+  async hitCounts(sinceDay: string, collection?: string) {
     const out = new Map<string, number>();
     for (const [k, n] of this.hits) {
       const [id, day] = k.split("|");
+      if (collection && this.docs.get(id)?.collection !== collection) continue;
       if (day >= sinceDay) out.set(id, (out.get(id) ?? 0) + n);
     }
     return out;

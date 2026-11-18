@@ -71,8 +71,13 @@ export const posts = defineCollection({
   access: { write: ({ actor }) => actor.kind === "user" && actor.isAdmin },
 });
 
-export const cms = createCms({ repo: new DrizzleRepo(db), collections: [posts] });
+export const cms = createCms({ repo: new DrizzleRepo(db), collections: [posts], timeZone: "Asia/Seoul" });
 ```
+
+`timeZone` (default `UTC`) decides which calendar day a usage count lands on.
+`afterChange` hooks and `cms.onChange` listeners get a second argument
+`{ contentChanged }`: false when only a draft changed and the public copy is
+the same (skip revalidating pages then).
 
 `managed: true` makes a collection writable only by your app code (the
 `system` actor): users and keys can read it but not change it. Use it when the
@@ -118,6 +123,10 @@ const tools = remoteCmsTools(
   { only: ["search_documents", "get_document", "update_document"] }
 );
 ```
+
+`await remoteCmsToolsFor(client, opts)` does the same but first asks the
+server which tools the key may use (`tools/list`), so a read-only key is
+offered read tools only.
 
 Tool errors (a conflict, a missing permission) come back as
 `{ error, message }` results, so the model can re-read and retry.
