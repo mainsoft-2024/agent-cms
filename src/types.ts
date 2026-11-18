@@ -115,6 +115,12 @@ export interface AccessArgs {
 export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny | undefined> {
   slug: string;
   label: string;
+  /**
+   * Writes only through the host app (the `system` actor). Users and API keys
+   * can read it over REST and MCP but never create, edit, publish or delete,
+   * so app-side rules around a save (tombstones, sync markers) always run.
+   */
+  managed?: boolean;
   /** Allowed category values (null = free text / none). */
   categories?: readonly string[];
   /** zod object for `fields`; parsed (with defaults) on every save. */

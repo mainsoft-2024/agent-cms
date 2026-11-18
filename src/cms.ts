@@ -107,6 +107,7 @@ export function createCms(opts: CreateCmsOptions) {
   function can(actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null): boolean {
     const c = collection(col);
     if (actor.kind === "system") return true;
+    if (c.managed && what !== "read") return false;
     if (actor.kind === "key") {
       if (!keyCovers(actor, col)) return false;
       const need: KeyScope = what;

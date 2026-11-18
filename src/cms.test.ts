@@ -247,3 +247,17 @@ test("unpublish takes a doc off the public site and keeps its first publish time
   assert.equal(again.publishedAt, first.publishedAt);
   await reject(cms.unpublish(user, "guide", "slack-connect"), "forbidden");
 });
+
+test("managed collection: only the host app (system) writes; keys and users read", async () => {
+  const notes = defineCollection({ slug: "notes", label: "Notes", managed: true, versions: { drafts: false } });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [notes] });
+  const sys: Actor = { kind: "system", label: "app" };
+  const key: Actor = { kind: "key", id: "k", label: "k", scopes: ["admin"], collections: null };
+  await cms.create(sys, "notes", { slug: "a", title: "A", body: "x" }, { publish: true });
+  await reject(cms.update(admin, "notes", "a", { title: "B" }), "forbidden");
+  await reject(cms.update(key, "notes", "a", { title: "B" }), "forbidden");
+  await reject(cms.remove(key, "notes", "a"), "forbidden");
+  await reject(cms.create(admin, "notes", { slug: "b", title: "B" }), "forbidden");
+  assert.equal((await cms.get(key, "notes", "a")).title, "A");
+  assert.equal((await cms.update(sys, "notes", "a", { title: "B" })).title, "B");
+});

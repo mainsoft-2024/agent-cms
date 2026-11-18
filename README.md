@@ -67,6 +67,10 @@ export const guide = defineCollection({
 export const cms = createCms({ repo: new DrizzleRepo(db), collections: [guide] });
 ```
 
+A collection with `managed: true` is written only by your app code (the
+`system` actor): users and API keys can read it over REST and MCP but never
+change it. Use it when your app wraps saves in its own rules.
+
 **3. The route** (`app/api/cms/[...path]/route.ts`):
 
 ```ts
