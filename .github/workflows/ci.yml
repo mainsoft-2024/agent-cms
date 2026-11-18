@@ -22,6 +22,7 @@ jobs:
   db:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         target: [pglite, postgres]
     services:

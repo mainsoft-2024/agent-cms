@@ -178,7 +178,7 @@ test("db: upgrade from 0.5.x keeps cms_gaps rows untouched; the UPGRADE copy SQL
     await fresh.update(admin, "guide", "old", { title: "Old 2" }, { expectedVersion: 1 });
 
     // cms_gaps is exactly as it was.
-    const gaps = await rows<{ query: string; count: number }>(db, "select query, count from cms_gaps order by query");
+    const gaps = await rows<{ query: string; count: number }>(db, 'select query, count from cms_gaps order by query collate "C"');
     assert.deepEqual(gaps, [
       { query: "refund", count: 1 },
       { query: "환불 받는 법", count: 3 },
@@ -199,7 +199,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const tables = cmsTables({ prefix: "blog_", schema: "content" });
     await run(db, cmsDdl(tables));
     await run(db, cmsDdl(tables));
-    const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by 1");
+    const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
       ["blog_api_keys", "blog_audit", "blog_documents", "blog_hits", "blog_meta", "blog_versions"]
