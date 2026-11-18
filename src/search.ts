@@ -53,6 +53,9 @@ export function normalizeQuery(q: string): string {
     .map(stemOf)
     // Grouping only (not indexing): "법은" and "법" are the same question.
     .map((w) => (w.length === 2 && /[은는을를이가]$/.test(w) ? w[0] : w))
+    // Word order does not change the question: "슬랙 연결" = "연결 슬랙".
+    .filter((w, i, all) => all.indexOf(w) === i)
+    .sort()
     .join(" ");
 }
 

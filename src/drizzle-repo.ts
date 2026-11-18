@@ -1,160 +1,177 @@
-/** `CmsRepo` on Postgres via Drizzle (node-postgres driver). */
+/** `CmsRepo` on Postgres via Drizzle (node-postgres, pglite and other `PgDatabase` drivers with transactions). */
 
-import { and, desc, eq, gte, inArray, isNotNull, ne, sql } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import type { CmsRepo, DocPatch, KeyRow, NewDoc } from "./repo";
-import { cmsApiKeys, cmsDocuments, cmsGaps, cmsHits, cmsMeta, cmsVersions } from "./tables";
-import { CmsError, type CmsDoc, type CmsGap, type CmsVersion, type DocStatus, type KeyScope } from "./types";
+import { and, desc, eq, gte, inArray, isNotNull, lt, ne, or, sql } from "drizzle-orm";
+import type { PgDatabase } from "drizzle-orm/pg-core";
+import { CmsError } from "./errors";
+import type { AuditQuery, CmsRepo, DocPatch, KeyRow, NewDoc, NewVersion, StoredVersion } from "./repo";
+import { SCHEMA_VERSION } from "./schema-version";
+import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
+import type { AuditEntry, CmsDoc, DocStatus, KeyScope, ReviewMark } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Db = NodePgDatabase<any>;
+type Db = PgDatabase<any, any, any>;
 
 const iso = (d: Date | string | null | undefined) => (d == null ? null : typeof d === "string" ? new Date(d).toISOString() : d.toISOString());
 const date = (s: string | null | undefined) => (s == null ? null : new Date(s));
 
-type DocRow = typeof cmsDocuments.$inferSelect;
-function toDoc(r: DocRow): CmsDoc {
-  return {
-    id: r.id,
-    collection: r.collection,
-    slug: r.slug,
-    status: r.status as DocStatus,
-    title: r.title,
-    summary: r.summary,
-    body: r.body,
-    category: r.category,
-    keywords: r.keywords ?? [],
-    fields: r.fields ?? {},
-    version: r.version,
-    publishedVersion: r.publishedVersion,
-    published: r.published ?? null,
-    publishedAt: iso(r.publishedAt),
-    createdAt: iso(r.createdAt)!,
-    updatedAt: iso(r.updatedAt)!,
-    updatedBy: r.updatedBy,
-    updatedByKind: (r.updatedByKind as CmsDoc["updatedByKind"]) ?? null,
-  };
-}
-
-function patchRow(p: DocPatch): Partial<typeof cmsDocuments.$inferInsert> {
-  const out: Partial<typeof cmsDocuments.$inferInsert> = {};
-  for (const [k, v] of Object.entries(p)) {
-    if (v === undefined) continue;
-    if (k === "publishedAt" || k === "updatedAt") (out as Record<string, unknown>)[k] = date(v as string | null);
-    else (out as Record<string, unknown>)[k] = v;
-  }
-  return out;
-}
-
-type VersionRow = typeof cmsVersions.$inferSelect;
-const toVersion = (r: VersionRow): Omit<CmsVersion, "published"> => ({
-  id: r.id,
-  documentId: r.documentId,
-  version: r.version,
-  snapshot: r.snapshot,
-  authorKind: r.authorKind as CmsVersion["authorKind"],
-  authorId: r.authorId,
-  authorLabel: r.authorLabel,
-  note: r.note,
-  createdAt: iso(r.createdAt)!,
-});
-
-type GapRow = typeof cmsGaps.$inferSelect;
-const toGap = (r: GapRow): CmsGap => ({
-  id: r.id,
-  collection: r.collection,
-  kind: r.kind as CmsGap["kind"],
-  query: r.query,
-  note: r.note,
-  documentSlug: r.documentSlug,
-  count: r.count,
-  state: r.state as CmsGap["state"],
-  firstSeenAt: iso(r.firstSeenAt)!,
-  lastSeenAt: iso(r.lastSeenAt)!,
-});
-
-type KeyDbRow = typeof cmsApiKeys.$inferSelect;
-const toKey = (r: KeyDbRow): KeyRow => ({
-  id: r.id,
-  name: r.name,
-  prefix: r.prefix,
-  hash: r.hash,
-  scopes: r.scopes as KeyScope[],
-  collections: r.collections ?? null,
-  createdBy: r.createdBy,
-  lastUsedAt: iso(r.lastUsedAt),
-  revokedAt: iso(r.revokedAt),
-  createdAt: iso(r.createdAt)!,
-});
-
 /** A unique-index race (two creates with one slug) is a 409, not a 500. */
-async function uniq<T>(p: Promise<T>): Promise<T> {
+async function uniq<T>(p: Promise<T>, slug?: string): Promise<T> {
   try {
     return await p;
   } catch (e) {
     const err = e as { code?: string; cause?: { code?: string } };
-    if (err?.code === "23505" || err?.cause?.code === "23505") throw new CmsError("conflict", "같은 주소나 버전이 이미 있음");
+    if (err?.code === "23505" || err?.cause?.code === "23505") throw new CmsError("slug_taken", { slug: slug ?? "" });
     throw e;
   }
 }
 
+export interface DrizzleRepoOptions {
+  /** A table set from `cmsTables({ prefix, schema })`. Default: the `cms_*` tables. */
+  tables?: CmsTables;
+}
+
 export class DrizzleRepo implements CmsRepo {
-  constructor(private db: Db) {}
+  readonly t: CmsTables;
+  constructor(
+    readonly db: Db,
+    o: DrizzleRepoOptions = {}
+  ) {
+    this.t = o.tables ?? defaultTables;
+  }
+
+  private toDoc(r: typeof this.t.documents.$inferSelect): CmsDoc {
+    return {
+      id: r.id,
+      collection: r.collection,
+      slug: r.slug,
+      status: r.status as DocStatus,
+      title: r.title,
+      summary: r.summary,
+      body: r.body,
+      category: r.category,
+      keywords: r.keywords ?? [],
+      fields: r.fields ?? {},
+      version: r.version,
+      publishedVersion: r.publishedVersion,
+      published: r.published ?? null,
+      publishedAt: iso(r.publishedAt),
+      republishedAt: iso(r.republishedAt),
+      createdAt: iso(r.createdAt)!,
+      updatedAt: iso(r.updatedAt)!,
+      updatedBy: r.updatedBy,
+      updatedByKind: (r.updatedByKind as CmsDoc["updatedByKind"]) ?? null,
+      autosave: r.autosave ? { content: r.autosave, at: iso(r.autosaveAt)!, by: r.autosaveBy, baseVersion: r.autosaveBaseVersion ?? r.version } : null,
+    };
+  }
+
+  private patchRow(p: DocPatch): Partial<typeof this.t.documents.$inferInsert> {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(p)) {
+      if (v === undefined) continue;
+      if (k === "publishedAt" || k === "updatedAt" || k === "republishedAt") out[k] = date(v as string | null);
+      else if (k === "autosave") {
+        const a = v as CmsDoc["autosave"];
+        out.autosave = a?.content ?? null;
+        out.autosaveAt = a ? new Date(a.at) : null;
+        out.autosaveBy = a?.by ?? null;
+        out.autosaveBaseVersion = a?.baseVersion ?? null;
+      } else out[k] = v;
+    }
+    return out;
+  }
+
+  private toVersion(r: typeof this.t.versions.$inferSelect): StoredVersion {
+    return {
+      id: r.id,
+      documentId: r.documentId,
+      version: r.version,
+      snapshot: r.snapshot,
+      authorKind: r.authorKind as StoredVersion["authorKind"],
+      authorId: r.authorId,
+      authorLabel: r.authorLabel,
+      note: r.note,
+      changed: r.changed ?? null,
+      reviewed: r.reviewed ?? [],
+      createdAt: iso(r.createdAt)!,
+    };
+  }
+
+  private toKey(r: typeof this.t.apiKeys.$inferSelect): KeyRow {
+    return {
+      id: r.id,
+      name: r.name,
+      prefix: r.prefix,
+      hash: r.hash,
+      scopes: r.scopes as KeyScope[],
+      collections: r.collections ?? null,
+      createdBy: r.createdBy,
+      lastUsedAt: iso(r.lastUsedAt),
+      revokedAt: iso(r.revokedAt),
+      expiresAt: iso(r.expiresAt),
+      createdAt: iso(r.createdAt)!,
+    };
+  }
 
   tx<T>(fn: (repo: CmsRepo) => Promise<T>): Promise<T> {
-    return this.db.transaction((t) => fn(new DrizzleRepo(t as unknown as Db)));
+    return this.db.transaction((t) => fn(new DrizzleRepo(t as unknown as Db, { tables: this.t })));
   }
 
   async findDoc(collection: string, slug: string) {
-    const [r] = await this.db.select().from(cmsDocuments).where(and(eq(cmsDocuments.collection, collection), eq(cmsDocuments.slug, slug))).limit(1);
-    return r ? toDoc(r) : null;
+    const D = this.t.documents;
+    const [r] = await this.db.select().from(D).where(and(eq(D.collection, collection), eq(D.slug, slug))).limit(1);
+    return r ? this.toDoc(r) : null;
   }
   async findDocById(id: string) {
-    const [r] = await this.db.select().from(cmsDocuments).where(eq(cmsDocuments.id, id)).limit(1);
-    return r ? toDoc(r) : null;
+    const D = this.t.documents;
+    const [r] = await this.db.select().from(D).where(eq(D.id, id)).limit(1);
+    return r ? this.toDoc(r) : null;
   }
   async listDocs(f: { collection?: string; statuses?: DocStatus[]; published?: boolean }) {
+    const D = this.t.documents;
     const conds = [];
-    if (f.collection) conds.push(eq(cmsDocuments.collection, f.collection));
-    if (f.statuses) conds.push(inArray(cmsDocuments.status, f.statuses));
-    if (f.published === true) conds.push(isNotNull(cmsDocuments.publishedVersion), ne(cmsDocuments.status, "archived"));
-    const rows = await this.db.select().from(cmsDocuments).where(conds.length ? and(...conds) : undefined);
-    const docs = rows.map(toDoc);
+    if (f.collection) conds.push(eq(D.collection, f.collection));
+    if (f.statuses) conds.push(inArray(D.status, f.statuses));
+    if (f.published === true) conds.push(isNotNull(D.publishedVersion), ne(D.status, "archived"));
+    const rows = await this.db.select().from(D).where(conds.length ? and(...conds) : undefined);
+    const docs = rows.map((r) => this.toDoc(r));
     return f.published === false ? docs.filter((d) => d.publishedVersion === null || d.status === "archived") : docs;
   }
   async insertDoc(doc: NewDoc) {
     const [r] = await uniq(
       this.db
-        .insert(cmsDocuments)
+        .insert(this.t.documents)
         .values({
-          ...patchRow(doc as DocPatch),
+          ...this.patchRow(doc as DocPatch),
           ...(doc.id ? { id: doc.id } : {}),
           collection: doc.collection,
           slug: doc.slug,
           title: doc.title,
           createdAt: date(doc.createdAt ?? null) ?? undefined,
         })
-        .returning()
+        .returning(),
+      doc.slug
     );
-    return toDoc(r);
+    return this.toDoc(r);
   }
   async updateDoc(id: string, p: DocPatch, expectedVersion?: number) {
-    const where = expectedVersion === undefined ? eq(cmsDocuments.id, id) : and(eq(cmsDocuments.id, id), eq(cmsDocuments.version, expectedVersion));
+    const D = this.t.documents;
+    const where = expectedVersion === undefined ? eq(D.id, id) : and(eq(D.id, id), eq(D.version, expectedVersion));
     const [r] = await uniq(
       this.db
-        .update(cmsDocuments)
-        .set({ ...patchRow(p), updatedAt: date(p.updatedAt ?? null) ?? new Date() })
+        .update(D)
+        .set({ ...this.patchRow(p), updatedAt: date(p.updatedAt ?? null) ?? new Date() })
         .where(where)
-        .returning()
+        .returning(),
+      p.slug
     );
-    return r ? toDoc(r) : null;
+    return r ? this.toDoc(r) : null;
   }
   async deleteDoc(id: string) {
-    await this.db.delete(cmsDocuments).where(eq(cmsDocuments.id, id));
+    await this.db.delete(this.t.documents).where(eq(this.t.documents.id, id));
   }
-  async insertVersion(v: Omit<CmsVersion, "id" | "createdAt" | "published"> & { createdAt?: string }) {
+  async insertVersion(v: NewVersion) {
     await uniq(
-      this.db.insert(cmsVersions).values({
+      this.db.insert(this.t.versions).values({
         documentId: v.documentId,
         version: v.version,
         snapshot: v.snapshot,
@@ -162,112 +179,218 @@ export class DrizzleRepo implements CmsRepo {
         authorId: v.authorId,
         authorLabel: v.authorLabel,
         note: v.note,
+        changed: v.changed ?? null,
         createdAt: date(v.createdAt ?? null) ?? undefined,
       })
     );
   }
   async listVersions(documentId: string) {
-    const rows = await this.db.select().from(cmsVersions).where(eq(cmsVersions.documentId, documentId)).orderBy(desc(cmsVersions.version));
-    return rows.map(toVersion);
+    const V = this.t.versions;
+    const rows = await this.db.select().from(V).where(eq(V.documentId, documentId)).orderBy(desc(V.version));
+    return rows.map((r) => this.toVersion(r));
   }
   async getVersion(documentId: string, version: number) {
-    const [r] = await this.db.select().from(cmsVersions).where(and(eq(cmsVersions.documentId, documentId), eq(cmsVersions.version, version))).limit(1);
-    return r ? toVersion(r) : null;
+    const V = this.t.versions;
+    const [r] = await this.db.select().from(V).where(and(eq(V.documentId, documentId), eq(V.version, version))).limit(1);
+    return r ? this.toVersion(r) : null;
+  }
+  async setVersionReviewed(documentId: string, version: number, reviewed: ReviewMark[]) {
+    const V = this.t.versions;
+    await this.db.update(V).set({ reviewed }).where(and(eq(V.documentId, documentId), eq(V.version, version)));
   }
   async pruneVersions(documentId: string, keep: number, protect: number[]) {
-    const rows = await this.db
-      .select({ id: cmsVersions.id, version: cmsVersions.version })
-      .from(cmsVersions)
-      .where(eq(cmsVersions.documentId, documentId))
-      .orderBy(desc(cmsVersions.version));
+    const V = this.t.versions;
+    const rows = await this.db.select({ id: V.id, version: V.version }).from(V).where(eq(V.documentId, documentId)).orderBy(desc(V.version));
     const drop = rows.slice(keep).filter((r) => !protect.includes(r.version)).map((r) => r.id);
-    if (drop.length) await this.db.delete(cmsVersions).where(inArray(cmsVersions.id, drop));
+    if (drop.length) await this.db.delete(V).where(inArray(V.id, drop));
   }
-  async upsertGap(g: { collection: string; kind: CmsGap["kind"]; query: string; normalized: string; note: string | null; documentSlug: string | null; at: string }) {
-    await this.db
-      .insert(cmsGaps)
-      .values({ collection: g.collection, kind: g.kind, query: g.query, normalized: g.normalized, note: g.note, documentSlug: g.documentSlug, firstSeenAt: new Date(g.at), lastSeenAt: new Date(g.at) })
-      .onConflictDoUpdate({
-        target: [cmsGaps.collection, cmsGaps.kind, cmsGaps.normalized],
-        set: {
-          count: sql`${cmsGaps.count} + 1`,
-          query: g.query,
-          note: sql`coalesce(${g.note}, ${cmsGaps.note})`,
-          documentSlug: sql`coalesce(${g.documentSlug}, ${cmsGaps.documentSlug})`,
-          lastSeenAt: new Date(g.at),
-          state: sql`case when ${cmsGaps.state} = 'done' then 'open' else ${cmsGaps.state} end`,
-        },
-      });
-  }
-  async listGaps(f: { collection?: string; state?: CmsGap["state"] }) {
-    const conds = [];
-    if (f.collection) conds.push(eq(cmsGaps.collection, f.collection));
-    if (f.state) conds.push(eq(cmsGaps.state, f.state));
-    const rows = await this.db.select().from(cmsGaps).where(conds.length ? and(...conds) : undefined).orderBy(desc(cmsGaps.lastSeenAt)).limit(500);
-    return rows.map(toGap);
-  }
-  async setGapState(id: string, state: CmsGap["state"], collection: string) {
-    const [r] = await this.db.update(cmsGaps).set({ state }).where(and(eq(cmsGaps.id, id), eq(cmsGaps.collection, collection))).returning();
-    return r ? toGap(r) : null;
-  }
-  async insertKey(k: { name: string; prefix: string; hash: string; scopes: KeyScope[]; collections: string[] | null; createdBy: string | null }) {
-    const [r] = await this.db.insert(cmsApiKeys).values(k).returning();
-    return toKey(r);
+  async insertKey(k: { name: string; prefix: string; hash: string; scopes: KeyScope[]; collections: string[] | null; createdBy: string | null; expiresAt: string | null }) {
+    const [r] = await this.db
+      .insert(this.t.apiKeys)
+      .values({ ...k, expiresAt: date(k.expiresAt) })
+      .returning();
+    return this.toKey(r);
   }
   async listKeys() {
-    return (await this.db.select().from(cmsApiKeys)).map(toKey);
+    return (await this.db.select().from(this.t.apiKeys)).map((r) => this.toKey(r));
   }
   async findKeyByHash(hash: string) {
-    const [r] = await this.db.select().from(cmsApiKeys).where(eq(cmsApiKeys.hash, hash)).limit(1);
-    return r ? toKey(r) : null;
+    const K = this.t.apiKeys;
+    const [r] = await this.db.select().from(K).where(eq(K.hash, hash)).limit(1);
+    return r ? this.toKey(r) : null;
   }
   async touchKey(id: string, at: string) {
-    await this.db.update(cmsApiKeys).set({ lastUsedAt: new Date(at) }).where(eq(cmsApiKeys.id, id));
+    const K = this.t.apiKeys;
+    await this.db.update(K).set({ lastUsedAt: new Date(at) }).where(eq(K.id, id));
   }
   async revokeKey(id: string, at: string) {
+    const K = this.t.apiKeys;
     const rows = await this.db
-      .update(cmsApiKeys)
+      .update(K)
       .set({ revokedAt: new Date(at) })
-      .where(and(eq(cmsApiKeys.id, id), sql`${cmsApiKeys.revokedAt} is null`))
-      .returning({ id: cmsApiKeys.id });
+      .where(and(eq(K.id, id), sql`${K.revokedAt} is null`))
+      .returning({ id: K.id });
     return rows.length > 0;
   }
-  async addHits(ids: string[], day: string) {
+  async addHits(ids: string[], day: string, source: string) {
     if (!ids.length) return;
+    const H = this.t.hits;
     await this.db
-      .insert(cmsHits)
-      .values(ids.map((documentId) => ({ documentId, day, count: 1 })))
-      .onConflictDoUpdate({ target: [cmsHits.documentId, cmsHits.day], set: { count: sql`${cmsHits.count} + 1` } });
+      .insert(H)
+      .values(ids.map((documentId) => ({ documentId, day, source, count: 1 })))
+      .onConflictDoUpdate({ target: [H.documentId, H.day, H.source], set: { count: sql`${H.count} + 1` } });
   }
   async hitCounts(sinceDay: string, collection?: string) {
+    const H = this.t.hits;
+    const D = this.t.documents;
     const rows = collection
       ? await this.db
-          .select({ id: cmsHits.documentId, n: sql<number>`sum(${cmsHits.count})::int` })
-          .from(cmsHits)
-          .innerJoin(cmsDocuments, eq(cmsDocuments.id, cmsHits.documentId))
-          .where(and(gte(cmsHits.day, sinceDay), eq(cmsDocuments.collection, collection)))
-          .groupBy(cmsHits.documentId)
+          .select({ id: H.documentId, n: sql<number>`sum(${H.count})::int` })
+          .from(H)
+          .innerJoin(D, eq(D.id, H.documentId))
+          .where(and(gte(H.day, sinceDay), eq(D.collection, collection)))
+          .groupBy(H.documentId)
       : await this.db
-          .select({ id: cmsHits.documentId, n: sql<number>`sum(${cmsHits.count})::int` })
-          .from(cmsHits)
-          .where(gte(cmsHits.day, sinceDay))
-          .groupBy(cmsHits.documentId);
+          .select({ id: H.documentId, n: sql<number>`sum(${H.count})::int` })
+          .from(H)
+          .where(gte(H.day, sinceDay))
+          .groupBy(H.documentId);
     return new Map(rows.map((r) => [r.id, Number(r.n)]));
   }
+  async insertAudit(e: Omit<AuditEntry, "id">) {
+    await this.db.insert(this.t.audit).values({ ...e, at: new Date(e.at) });
+  }
+  async listAudit(q: AuditQuery) {
+    const A = this.t.audit;
+    const conds = [];
+    if (q.before) {
+      const [at, id] = q.before.split("|");
+      conds.push(or(lt(A.at, new Date(at)), and(eq(A.at, new Date(at)), lt(A.id, id))));
+    }
+    if (q.action) conds.push(eq(A.action, q.action));
+    if (q.outcome) conds.push(eq(A.outcome, q.outcome));
+    if (q.actorKind) conds.push(eq(A.actorKind, q.actorKind));
+    const rows = await this.db
+      .select()
+      .from(A)
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(A.at), desc(A.id))
+      .limit(q.limit);
+    return rows.map((r) => ({
+      id: r.id,
+      at: iso(r.at)!,
+      actorKind: r.actorKind as AuditEntry["actorKind"],
+      actorId: r.actorId,
+      actorLabel: r.actorLabel,
+      action: r.action as AuditEntry["action"],
+      collection: r.collection,
+      slug: r.slug,
+      version: r.version,
+      outcome: r.outcome as AuditEntry["outcome"],
+      via: (r.via as AuditEntry["via"]) ?? null,
+      detail: r.detail ?? {},
+    }));
+  }
   async changeStamp() {
-    const [r] = await this.db
-      .select({ n: sql<number>`count(*)::int`, max: sql<string | null>`max(${cmsDocuments.updatedAt})::text` })
-      .from(cmsDocuments);
+    const D = this.t.documents;
+    const [r] = await this.db.select({ n: sql<number>`count(*)::int`, max: sql<string | null>`max(${D.updatedAt})::text` }).from(D);
     return `${r?.n ?? 0}:${r?.max ?? ""}`;
   }
   async getMeta(key: string) {
-    const [r] = await this.db.select().from(cmsMeta).where(eq(cmsMeta.key, key)).limit(1);
-    return r?.value ?? null;
+    const M = this.t.meta;
+    try {
+      const [r] = await this.db.select().from(M).where(eq(M.key, key)).limit(1);
+      return r?.value ?? null;
+    } catch (e) {
+      // A missing meta table reads as "no value" (the schema check then says what to run).
+      if ((e as { code?: string; cause?: { code?: string } })?.code === "42P01" || (e as { cause?: { code?: string } })?.cause?.code === "42P01") return null;
+      throw e;
+    }
   }
   async setMeta(key: string, value: unknown) {
+    const M = this.t.meta;
     await this.db
-      .insert(cmsMeta)
+      .insert(M)
       .values({ key, value })
-      .onConflictDoUpdate({ target: cmsMeta.key, set: { value, updatedAt: new Date() } });
+      .onConflictDoUpdate({ target: M.key, set: { value, updatedAt: new Date() } });
   }
+
+  // ── doctor ────────────────────────────────────────────────────────────────
+
+  /** Raw rows of a SQL query, across drivers (node-postgres returns `{ rows }`, pglite too, postgres.js an array). */
+  private async rows<T>(q: ReturnType<typeof sql>): Promise<T[]> {
+    const r = (await this.db.execute(q)) as unknown as { rows?: T[] } | T[];
+    return Array.isArray(r) ? r : (r.rows ?? []);
+  }
+
+  /** What `agent-cms doctor` checks. Read-only. */
+  async inspect(): Promise<DoctorReport> {
+    const { prefix, schema } = this.t.options;
+    const sch = schema ?? null;
+    const cols = await this.rows<{ table_name: string; column_name: string }>(
+      sql`select table_name, column_name from information_schema.columns where table_schema = coalesce(${sch}, current_schema()) and table_name like ${prefix.replace(/_/g, "\\_") + "%"}`
+    );
+    const have = new Map<string, Set<string>>();
+    for (const c of cols) {
+      if (!have.has(c.table_name)) have.set(c.table_name, new Set());
+      have.get(c.table_name)!.add(c.column_name);
+    }
+    const expected: Record<string, string[]> = {};
+    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit })) {
+      expected[prefix + key] = Object.values(tbl).filter((c) => c && typeof c === "object" && "name" in c && "columnType" in c).map((c) => (c as { name: string }).name);
+    }
+    const missingTables = Object.keys(expected).filter((t) => !have.has(t));
+    const missingColumns = Object.entries(expected).flatMap(([t, cs]) => (have.has(t) ? cs.filter((c) => !have.get(t)!.has(c)).map((c) => `${t}.${c}`) : []));
+    const legacyColumns = LEGACY_COLUMNS.filter((l) => have.get(prefix + l.table)?.has(l.column)).map((l) => `${prefix}${l.table}.${l.column}`);
+    const gapsTable = have.has(`${prefix}gaps`);
+    let gapsRows: number | null = null;
+    if (gapsTable) {
+      const tbl = sch ? `"${sch}"."${prefix}gaps"` : `"${prefix}gaps"`;
+      const [r] = await this.rows<{ n: number }>(sql.raw(`select count(*)::int as n from ${tbl}`));
+      gapsRows = Number(r?.n ?? 0);
+    }
+    const found = missingTables.includes(`${prefix}meta`) ? null : await this.getMeta("schema_version");
+    let badPublished = 0;
+    let orphanVersions = 0;
+    if (!missingTables.length) {
+      const D = this.t.documents;
+      const V = this.t.versions;
+      const [bp] = await this.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(D)
+        .where(sql`${D.publishedVersion} is not null and (${D.publishedVersion} > ${D.version} or ${D.published} is null)`);
+      badPublished = Number(bp?.n ?? 0);
+      const [ov] = await this.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(V)
+        .where(sql`not exists (select 1 from ${D} d where d.id = ${V.documentId})`);
+      orphanVersions = Number(ov?.n ?? 0);
+    }
+    return {
+      schemaVersion: typeof found === "number" ? found : found == null ? null : Number(found),
+      expectedSchemaVersion: SCHEMA_VERSION,
+      missingTables,
+      missingColumns,
+      legacyColumns,
+      gapsTable,
+      gapsRows,
+      badPublished,
+      orphanVersions,
+    };
+  }
+}
+
+export interface DoctorReport {
+  schemaVersion: number | null;
+  expectedSchemaVersion: number;
+  missingTables: string[];
+  missingColumns: string[];
+  /** 0.4.0 columns nothing reads any more. */
+  legacyColumns: string[];
+  /** A `cms_gaps` table from 0.5.x is still there (move it to the app, then drop it yourself). */
+  gapsTable: boolean;
+  gapsRows: number | null;
+  /** Documents whose published pointer is broken. */
+  badPublished: number;
+  orphanVersions: number;
 }

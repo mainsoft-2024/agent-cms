@@ -10,15 +10,15 @@
  *   tools: { ...remoteCmsTools({ url: "https://app/api/cms", key: process.env.CMS_KEY! }) }
  *
  * Both expose the same list as the MCP endpoint (`CMS_TOOLS` in tools.ts).
- * Errors come back as `{ error, message }` results rather than throws, so the
- * model can read a conflict and retry instead of the run failing.
+ * Errors come back as `{ error, kind, message, params, … }` results rather
+ * than throws, so the model can read a conflict and retry instead of failing.
  */
 
 import { tool, zodSchema, type Tool } from "ai";
-import type { Cms } from "./cms";
+import { coreOf, type CmsLike } from "./cms";
 import { createCmsClient, isCmsRemoteError, type CmsClientOptions } from "./client";
 import { CMS_TOOLS, toolsFor, type CmsToolDef } from "./tools";
-import { CmsError, isCmsError, type Actor } from "./types";
+import { isCmsError, type Actor } from "./types";
 
 export interface CmsToolsOptions {
   /** Only these tools (by name). Default: every tool the actor may use. */
@@ -37,7 +37,8 @@ function wrap(def: CmsToolDef, run: (args: Record<string, unknown>) => Promise<u
       try {
         return await run(args);
       } catch (err) {
-        if (isCmsError(err) || isCmsRemoteError(err)) return { error: err.code, message: err.message };
+        if (isCmsError(err)) return err.toJSON();
+        if (isCmsRemoteError(err)) return { error: err.code, kind: err.kind, message: err.message, params: err.params ?? {}, ...(err.diagnostics ? { diagnostics: err.diagnostics } : {}), ...(err.current !== undefined ? { current: err.current } : {}) };
         throw err;
       }
     },
@@ -45,10 +46,20 @@ function wrap(def: CmsToolDef, run: (args: Record<string, unknown>) => Promise<u
 }
 
 /** Tools that act on a CMS in this process, as `actor`. */
-export function cmsTools(cms: Cms, actor: Actor, opts: CmsToolsOptions = {}): CmsToolMap {
+export function cmsTools(cms: CmsLike, actor: Actor, opts: CmsToolsOptions = {}): CmsToolMap {
+  const core = coreOf(cms);
+  const tagged: Actor = { ...actor, via: actor.via ?? "ai" };
   const out: CmsToolMap = {};
-  for (const def of toolsFor(cms, actor, opts.only)) {
-    out[(opts.prefix ?? "") + def.name] = wrap(def, (args) => def.run(cms, actor, def.input.parse(args) as Record<string, unknown>));
+  for (const def of toolsFor(core, tagged, opts.only)) {
+    out[(opts.prefix ?? "") + def.name] = wrap(def, async (args) => {
+      try {
+        return await def.run(core, tagged, def.input.parse(args) as Record<string, unknown>);
+      } catch (e) {
+        // Messages in the CMS's language.
+        if (isCmsError(e)) Object.defineProperty(e, "message", { value: core.message(e) });
+        throw e;
+      }
+    });
   }
   return out;
 }

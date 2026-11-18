@@ -17,7 +17,7 @@ const tick = () => new Promise((r) => setImmediate(r));
 test("0.5.3 #1: a draft-only save does not touch the public copy (contentChanged false)", async () => {
   const seen: ChangeInfo[] = [];
   const hooked: boolean[] = [];
-  const guide = defineCollection({ slug: "guide", label: "Guide", hooks: { afterChange: [(_d, info) => void hooked.push(info.contentChanged)] } });
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public", hooks: { afterChange: [(_d, info) => void hooked.push(info.contentChanged)] } });
   const cms = createCms({ repo: new MemoryRepo(), collections: [guide], searchRefreshMs: 0 });
   cms.onChange((_d, info) => seen.push(info));
 
@@ -37,7 +37,7 @@ test("0.5.3 #1: a draft-only save does not touch the public copy (contentChanged
 });
 
 test("0.5.3 #1: search still follows a draft save that does not change the index", async () => {
-  const cms = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "g", label: "g" })], searchRefreshMs: 1e9 });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "g", label: "g", visibility: "public" })], searchRefreshMs: 1e9 });
   await cms.create(admin, "g", { slug: "a", title: "Alpha", body: "## s\n\nzebra" }, { publish: true });
   assert.equal((await cms.search(admin, ["g"], "zebra")).empty, false);
   await cms.update(admin, "g", "a", { body: "## s\n\nyak" }); // draft only
@@ -53,16 +53,16 @@ test("0.5.3 #2: usage hits count by the configured time zone's calendar day", as
   assert.equal(dayIn("Asia/Seoul", at), "2026-11-19");
   assert.equal(dayIn("UTC", at), "2026-11-18");
   const repo = new MemoryRepo();
-  const cms = createCms({ repo, collections: [defineCollection({ slug: "g", label: "g" })], now: () => at, timeZone: "Asia/Seoul" });
+  const cms = createCms({ repo, collections: [defineCollection({ slug: "g", label: "g", visibility: "public" })], now: () => at, timeZone: "Asia/Seoul" });
   const d = await cms.create(admin, "g", { slug: "a", title: "A" });
   await cms.recordHits([d.id]);
-  assert.deepEqual([...repo.hits.keys()], [`${d.id}|2026-11-19`]);
+  assert.deepEqual([...repo.hits.keys()], [`${d.id}|2026-11-19|app`]);
   assert.equal((await cms.hitCounts(admin, "g", 1)).get(d.id), 1);
   assert.throws(() => createCms({ repo, collections: [], timeZone: "Mars/Olympus" }), RangeError);
 });
 
 test("0.5.3 #3: hitCounts only counts documents of the asked collection", async () => {
-  const cms = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "a", label: "a" }), defineCollection({ slug: "b", label: "b" })] });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "a", label: "a", visibility: "public" }), defineCollection({ slug: "b", label: "b", visibility: "public" })] });
   const x = await cms.create(admin, "a", { slug: "x", title: "x" });
   const y = await cms.create(admin, "b", { slug: "y", title: "y" });
   await cms.recordHits([x.id, y.id]);
@@ -103,7 +103,7 @@ test("0.5.3 #5: key generation drops biased bytes instead of folding them", () =
 });
 
 test("0.5.3 #6: remoteCmsToolsFor offers only the tools the key can use", async () => {
-  const cms = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "g", label: "g" })] });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "g", label: "g", visibility: "public" })] });
   const { secret } = await cms.createKey(admin, { name: "reader", scopes: ["read"] });
   const h = createCmsHandler({ cms, resolveUser: async () => null });
   const f = ((input: RequestInfo | URL, init?: RequestInit) => h(new Request(String(input), init))) as typeof fetch;
@@ -112,4 +112,12 @@ test("0.5.3 #6: remoteCmsToolsFor offers only the tools the key can use", async 
   assert.ok(!("update_document" in tools) && !("publish_document" in tools));
   const only = await remoteCmsToolsFor({ url: "http://x/api/cms", key: secret, fetch: f }, { only: ["get_document", "update_document"] });
   assert.deepEqual(Object.keys(only), ["get_document"]);
+});
+
+test("toJsonSchema: zod 4 schemas use zod's own converter", async () => {
+  const { z: z4 } = await import("zod/v4");
+  const s = toJsonSchema(z4.object({ name: z4.string().min(2), tags: z4.array(z4.string()).optional() }) as never) as { properties: Record<string, Record<string, unknown>>; required: string[] };
+  assert.equal(s.properties.name.minLength, 2);
+  assert.deepEqual(s.required, ["name"]);
+  assert.equal("$schema" in s, false);
 });

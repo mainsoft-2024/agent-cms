@@ -1,6 +1,6 @@
 {
   "name": "@mainsoft-2024/agent-cms",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (REST, MCP, AI SDK tools) together.",
   "license": "MIT",
   "type": "module",
@@ -17,6 +17,8 @@
   "files": [
     "dist",
     "README.md",
+    "UPGRADE-0.6.md",
+    "CHANGELOG.md",
     "TODO.md",
     "LICENSE"
   ],
@@ -29,87 +31,222 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./http": {
-      "types": "./dist/http.d.ts",
-      "import": "./dist/http.js",
-      "require": "./dist/http.cjs"
+      "import": {
+        "types": "./dist/http.d.ts",
+        "default": "./dist/http.js"
+      },
+      "require": {
+        "types": "./dist/http.d.cts",
+        "default": "./dist/http.cjs"
+      }
     },
     "./mcp": {
-      "types": "./dist/mcp.d.ts",
-      "import": "./dist/mcp.js",
-      "require": "./dist/mcp.cjs"
+      "import": {
+        "types": "./dist/mcp.d.ts",
+        "default": "./dist/mcp.js"
+      },
+      "require": {
+        "types": "./dist/mcp.d.cts",
+        "default": "./dist/mcp.cjs"
+      }
     },
     "./ai": {
-      "types": "./dist/ai.d.ts",
-      "import": "./dist/ai.js",
-      "require": "./dist/ai.cjs"
+      "import": {
+        "types": "./dist/ai.d.ts",
+        "default": "./dist/ai.js"
+      },
+      "require": {
+        "types": "./dist/ai.d.cts",
+        "default": "./dist/ai.cjs"
+      }
     },
     "./client": {
-      "types": "./dist/client.d.ts",
-      "import": "./dist/client.js",
-      "require": "./dist/client.cjs"
+      "import": {
+        "types": "./dist/client.d.ts",
+        "default": "./dist/client.js"
+      },
+      "require": {
+        "types": "./dist/client.d.cts",
+        "default": "./dist/client.cjs"
+      }
     },
     "./tools": {
-      "types": "./dist/tools.d.ts",
-      "import": "./dist/tools.js",
-      "require": "./dist/tools.cjs"
+      "import": {
+        "types": "./dist/tools.d.ts",
+        "default": "./dist/tools.js"
+      },
+      "require": {
+        "types": "./dist/tools.d.cts",
+        "default": "./dist/tools.cjs"
+      }
     },
     "./agent": {
-      "types": "./dist/agent.d.ts",
-      "import": "./dist/agent.js",
-      "require": "./dist/agent.cjs"
+      "import": {
+        "types": "./dist/agent.d.ts",
+        "default": "./dist/agent.js"
+      },
+      "require": {
+        "types": "./dist/agent.d.cts",
+        "default": "./dist/agent.cjs"
+      }
     },
     "./markdown": {
-      "types": "./dist/markdown.d.ts",
-      "import": "./dist/markdown.js",
-      "require": "./dist/markdown.cjs"
+      "import": {
+        "types": "./dist/markdown.d.ts",
+        "default": "./dist/markdown.js"
+      },
+      "require": {
+        "types": "./dist/markdown.d.cts",
+        "default": "./dist/markdown.cjs"
+      }
     },
     "./frontmatter": {
-      "types": "./dist/frontmatter.d.ts",
-      "import": "./dist/frontmatter.js",
-      "require": "./dist/frontmatter.cjs"
+      "import": {
+        "types": "./dist/frontmatter.d.ts",
+        "default": "./dist/frontmatter.js"
+      },
+      "require": {
+        "types": "./dist/frontmatter.d.cts",
+        "default": "./dist/frontmatter.cjs"
+      }
     },
     "./types": {
-      "types": "./dist/types.d.ts",
-      "import": "./dist/types.js",
-      "require": "./dist/types.cjs"
+      "import": {
+        "types": "./dist/types.d.ts",
+        "default": "./dist/types.js"
+      },
+      "require": {
+        "types": "./dist/types.d.cts",
+        "default": "./dist/types.cjs"
+      }
     },
     "./tables": {
-      "types": "./dist/tables.d.ts",
-      "import": "./dist/tables.js",
-      "require": "./dist/tables.cjs"
+      "import": {
+        "types": "./dist/tables.d.ts",
+        "default": "./dist/tables.js"
+      },
+      "require": {
+        "types": "./dist/tables.d.cts",
+        "default": "./dist/tables.cjs"
+      }
     },
     "./cli": {
-      "types": "./dist/cli.d.ts",
-      "import": "./dist/cli.js",
-      "require": "./dist/cli.cjs"
+      "import": {
+        "types": "./dist/cli.d.ts",
+        "default": "./dist/cli.js"
+      },
+      "require": {
+        "types": "./dist/cli.d.cts",
+        "default": "./dist/cli.cjs"
+      }
     },
+    "./diff": {
+      "import": {
+        "types": "./dist/diff.d.ts",
+        "default": "./dist/diff.js"
+      },
+      "require": {
+        "types": "./dist/diff.d.cts",
+        "default": "./dist/diff.cjs"
+      }
+    },
+    "./errors": {
+      "import": {
+        "types": "./dist/errors.d.ts",
+        "default": "./dist/errors.js"
+      },
+      "require": {
+        "types": "./dist/errors.d.cts",
+        "default": "./dist/errors.cjs"
+      }
+    },
+    "./config": {
+      "import": {
+        "types": "./dist/config.d.ts",
+        "default": "./dist/config.js"
+      },
+      "require": {
+        "types": "./dist/config.d.cts",
+        "default": "./dist/config.cjs"
+      }
+    },
+    "./messages/en": {
+      "import": {
+        "types": "./dist/messages/en.d.ts",
+        "default": "./dist/messages/en.js"
+      },
+      "require": {
+        "types": "./dist/messages/en.d.cts",
+        "default": "./dist/messages/en.cjs"
+      }
+    },
+    "./messages/ko": {
+      "import": {
+        "types": "./dist/messages/ko.d.ts",
+        "default": "./dist/messages/ko.js"
+      },
+      "require": {
+        "types": "./dist/messages/ko.d.cts",
+        "default": "./dist/messages/ko.cjs"
+      }
+    },
+    "./registry/*": "./dist/registry/*",
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsx scripts/build-registry.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts",
+    "test:db": "tsx --test src/db/*.test.ts",
+    "test:ui": "tsx --tsconfig registry/tsconfig.json --test registry/__tests__/*.test.tsx",
+    "test:e2e": "playwright test -c e2e/playwright.config.ts",
+    "check:pack": "publint --strict && attw --pack . --profile node16",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "peerDependencies": {
+    "ai": ">=5.0.0",
     "drizzle-orm": ">=0.36.0",
-    "zod": "^3.23.0",
-    "ai": ">=5.0.0"
+    "zod": "^3.25.0 || ^4.0.0"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
+    "@electric-sql/pglite": "0.5.16",
+    "@playwright/test": "1.65.1",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.12",
+    "@types/jsdom": "21.1.7",
     "@types/node": "^22.10.0",
+    "@types/pg": "8.23.1",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "ai": "^7.0.31",
+    "axe-core": "4.14.1",
     "drizzle-orm": "0.45.2",
+    "global-jsdom": "26.0.0",
+    "jsdom": "26.1.0",
+    "pg": "8.23.1",
+    "publint": "0.3.25",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "zod": "^3.23.8",
-    "ai": "^7.0.31"
+    "zod": "3.25.76"
   },
+  "workspaces": [
+    "examples/next"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -127,5 +264,9 @@
     "ai": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "jiti": "2.7.0"
   }
 }
