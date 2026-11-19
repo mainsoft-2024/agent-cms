@@ -5,8 +5,8 @@ import { z } from "zod";
 export const SECTIONS = ["Get started", "Guides", "Agents", "Admin screens", "Reference", "Upgrade"] as const;
 export type Section = (typeof SECTIONS)[number];
 
-// Access: the defaults. Everyone reads published pages; organisation members
-// (admins) write and publish; API keys do what their scopes allow.
+// Access: the defaults. Everyone reads published pages; people with push
+// access to the repository (admins) write and publish; API keys do what their scopes allow.
 
 const order = z.number().int().default(100);
 

@@ -2,7 +2,7 @@ import NextAuth from "next-auth";
 import type { Provider } from "next-auth/providers";
 import Credentials from "next-auth/providers/credentials";
 import GitHub from "next-auth/providers/github";
-import { isOrgMember, RECHECK_MS } from "./org";
+import { canEditDocs, RECHECK_MS } from "./org";
 
 /**
  * E2E tests swap GitHub for a login form that takes `member` or `outsider`.
@@ -23,11 +23,11 @@ const providers: Provider[] = testLogin
         },
       }),
     ]
-  : [GitHub({ authorization: { params: { scope: "read:user user:email read:org" } } })];
+  : [GitHub({ authorization: { params: { scope: "read:user user:email" } } })];
 
 declare module "next-auth" {
   interface Session {
-    /** Active member of the docs organisation (re-checked hourly). */
+    /** Can push to the docs repository (re-checked hourly). */
     member: boolean;
     login: string | null;
   }
@@ -46,14 +46,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           token.member = user?.id === "member";
         } else {
           token.accessToken = account.access_token;
-          token.member = account.access_token ? await isOrgMember(account.access_token) : false;
+          token.member = account.access_token ? await canEditDocs(account.access_token) : false;
         }
         token.checkedAt = Date.now();
         return token;
       }
       const at = typeof token.accessToken === "string" ? token.accessToken : null;
       if (at && Date.now() - Number(token.checkedAt ?? 0) > RECHECK_MS) {
-        token.member = await isOrgMember(at);
+        token.member = await canEditDocs(at);
         token.checkedAt = Date.now();
       }
       return token;

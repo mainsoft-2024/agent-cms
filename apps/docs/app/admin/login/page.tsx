@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth, signIn, signOut, usesTestLogin } from "@/lib/auth";
-import { DOCS_ORG } from "@/lib/org";
+import { DOCS_REPO } from "@/lib/org";
 import { Logo } from "@/components/site/header";
 
 function GithubMark() {
@@ -39,7 +39,7 @@ export default async function Login({ searchParams }: PageProps<"/admin/login">)
         <div className="site-card p-8">
           <h1 className="display d32 mb-2">Edit the docs</h1>
           <p className="mb-6 text-[var(--pencil-gray)]">
-            Members of the <b className="text-black">{DOCS_ORG}</b> GitHub organisation can edit and publish these pages. Agents use an API key instead.
+            People who can push to <b className="text-black">{DOCS_REPO}</b> on GitHub can edit and publish these pages. Agents use an API key instead.
           </p>
           {usesTestLogin ? (
             <form action={test} className="space-y-3">
@@ -62,8 +62,8 @@ export default async function Login({ searchParams }: PageProps<"/admin/login">)
             <div role="alert" className="callout mt-5 !mb-0">
               <span className="callout-bar" aria-hidden />
               <div>
-                <p className="!mb-1 font-medium">This account is not a member of {DOCS_ORG}.</p>
-                <p className="!mb-2 text-[var(--pencil-gray)]">Ask an owner to invite you, or sign in with another account.</p>
+                <p className="!mb-1 font-medium">This account can't push to {DOCS_REPO}.</p>
+                <p className="!mb-2 text-[var(--pencil-gray)]">Ask the owner to add you as a collaborator, or sign in with another account.</p>
                 <form action={other}>
                   <button type="submit" className="link text-[13px]">
                     Use another account

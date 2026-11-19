@@ -81,7 +81,7 @@ test("admin: outsiders are refused, members edit and publish", async ({ page }) 
   await expect(page).toHaveURL(/\/admin\/login/);
   await page.getByLabel(/Test user/).fill("outsider");
   await page.getByRole("button", { name: "Sign in (test)" }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "not a member" })).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "can't push" })).toBeVisible();
   await page.getByRole("button", { name: "Use another account" }).click();
   await page.getByLabel(/Test user/).fill("member");
   await page.getByRole("button", { name: "Sign in (test)" }).click();

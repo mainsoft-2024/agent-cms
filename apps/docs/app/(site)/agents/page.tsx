@@ -60,7 +60,7 @@ export default function Agents() {
       <div className="callnote">
         <h3>Writing is for keys</h3>
         <p>
-          Agents that edit these docs use an API key with the write scope; organisation members review their changes in the admin before publishing. To do the same in your app, see{" "}
+          Agents that edit these docs use an API key with the write scope; maintainers review their changes in the admin before publishing. To do the same in your app, see{" "}
           <Link href="/docs/mcp" className="underline">
             MCP
           </Link>
