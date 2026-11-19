@@ -153,9 +153,9 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
       <Label htmlFor={id} className="sr-only">
         {text}
       </Label>
-      <Select value={value === null ? undefined : String(value)} onValueChange={(v) => set(Number(v))}>
+      <Select value={value === null ? undefined : String(value)} onValueChange={(v: string | null) => v && set(Number(v))}>
         <SelectTrigger id={id} className={cn("h-8 text-[13px]", mobile ? "w-full" : "w-40")}>
-          <SelectValue />
+          <SelectValue>{value === null ? null : label(value)}</SelectValue>
         </SelectTrigger>
         <SelectContent>
           {versions.map((v) => (

@@ -9,7 +9,7 @@
       "title": "agent-cms client and helpers",
       "description": "CmsProvider and useCms (REST client, UI strings in English and Korean), small hooks, shared parts (state badge, copy box, confirm dialog, page header, markdown preview).",
       "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
-      "registryDependencies": ["badge", "button", "dialog", "toggle-group"],
+      "registryDependencies": ["badge", "button", "dialog"],
       "files": [
         { "path": "registry/cms/use-cms.ts", "type": "registry:lib" },
         { "path": "registry/cms/cms-messages.ts", "type": "registry:lib" },
@@ -70,7 +70,7 @@
       "title": "Version history",
       "description": "Versions with author, note and changed fields; compare any two side by side or unified with word highlights; restore or publish a version.",
       "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
-      "registryDependencies": ["badge", "button", "dialog", "label", "select", "toggle-group", "cms-lib"],
+      "registryDependencies": ["badge", "button", "dialog", "label", "select", "cms-lib"],
       "files": [{ "path": "registry/cms/cms-versions.tsx", "type": "registry:component" }]
     },
     {
@@ -79,7 +79,7 @@
       "title": "API keys",
       "description": "Keys with scopes, collections, last use and expiry; revoke; create with the secret shown once and MCP and CLI setup to copy.",
       "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
-      "registryDependencies": ["badge", "button", "checkbox", "dialog", "input", "label", "table", "tabs", "toggle-group", "cms-lib"],
+      "registryDependencies": ["badge", "button", "checkbox", "dialog", "input", "label", "table", "tabs", "cms-lib"],
       "files": [{ "path": "registry/cms/cms-keys.tsx", "type": "registry:component" }]
     },
     {

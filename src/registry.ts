@@ -80,6 +80,53 @@ export function buildRegistry(srcDir: string, outDir: string): string[] {
   return written;
 }
 
+export interface PublicRegistryOptions {
+  /** URL of the folder that serves the item JSON files, e.g. `https://example.com/r`. */
+  baseUrl: string;
+  /** Version range written into `dependencies` for this package. Default `^<this version>`. */
+  packageRange?: string;
+}
+
+/**
+ * One item as the shadcn CLI expects it (`npx shadcn add <baseUrl>/<name>.json`):
+ * every file goes to `<components>/cms/` (they import each other with `./`),
+ * internal dependencies become URLs, and this package gets a version range.
+ */
+export function toShadcnItem(it: RegistryItem, own: Set<string>, o: PublicRegistryOptions): RegistryItem {
+  const base = o.baseUrl.replace(/\/+$/, "");
+  const range = o.packageRange ?? `^${VERSION}`;
+  return {
+    ...it,
+    dependencies: it.dependencies?.map((d) => (d === "@mainsoft-2024/agent-cms" ? `${d}@${range}` : d)),
+    registryDependencies: it.registryDependencies?.map((d) => (own.has(d) ? `${base}/${d}.json` : d)),
+    files: it.files.map((f) => ({ ...f, target: `@components/cms/${basename(f.path)}` })),
+  };
+}
+
+/**
+ * Build the registry for the shadcn CLI: `registry.json` (index) and one
+ * `<name>.json` per item with file contents, as `shadcn build` would.
+ */
+export function buildPublicRegistry(srcDir: string, outDir: string, o: PublicRegistryOptions): string[] {
+  const reg = loadRegistry({ dir: srcDir, built: false });
+  const own = new Set(reg.items.map((i) => i.name));
+  const items = reg.items.map((it) => toShadcnItem(it, own, o));
+  mkdirSync(outDir, { recursive: true });
+  const index = {
+    $schema: "https://ui.shadcn.com/schema/registry.json",
+    name: reg.name,
+    homepage: reg.homepage,
+    items: items.map((it) => ({ ...it, files: it.files.map(({ content: _c, ...f }) => f) })),
+  };
+  writeFileSync(join(outDir, "registry.json"), JSON.stringify(index, null, 2) + "\n");
+  const written = ["registry.json"];
+  for (const it of items) {
+    writeFileSync(join(outDir, `${it.name}.json`), JSON.stringify({ $schema: "https://ui.shadcn.com/schema/registry-item.json", ...it }, null, 2) + "\n");
+    written.push(`${it.name}.json`);
+  }
+  return written;
+}
+
 /** Items in install order (dependencies first) for the names asked. */
 export function resolveItems(reg: Registry, names: string[]): RegistryItem[] {
   const byName = new Map(reg.items.map((i) => [i.name, i]));

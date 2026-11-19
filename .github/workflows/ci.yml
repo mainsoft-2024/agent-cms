@@ -58,6 +58,25 @@ jobs:
       - run: npm run build
       - run: bash scripts/pack-smoke.sh
 
+  shadcn-smoke:
+    # `npx shadcn add <url>` into a fresh Next.js app, for both shadcn bases.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        base: [base, radix]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: bash scripts/shadcn-smoke.sh
+        env:
+          BASE: ${{ matrix.base }}
+
   ui:
     runs-on: ubuntu-latest
     steps:

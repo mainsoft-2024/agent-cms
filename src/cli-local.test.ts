@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { runCli } from "./cli";
-import type { Registry } from "./registry";
-import { resolveItems, rewriteImports, shadcnParts } from "./registry";
+import type { Registry, RegistryItem } from "./registry";
+import { buildPublicRegistry, resolveItems, rewriteImports, shadcnParts, toShadcnItem } from "./registry";
+import { VERSION } from "./version";
 
 function app(o: { src?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agent-cms-app-"));
@@ -39,6 +40,32 @@ test("registry: dependency order, shadcn parts, alias rewrite", () => {
   assert.deepEqual(shadcnParts(reg, reg.items), ["button", "checkbox"]);
   assert.equal(rewriteImports(`from "@/components/ui/button"; from '@/lib/utils'`, { ui: "~/ui", utils: "~/lib/cn" }), `from "~/ui/button"; from '~/lib/cn'`);
   assert.throws(() => resolveItems(reg, ["nope"]), /unknown item "nope"/);
+});
+
+test("shadcn registry: one folder, internal deps as URLs, package pinned", () => {
+  const reg = registry("1");
+  const own = new Set(reg.items.map((i) => i.name));
+  const list = reg.items[1]!;
+  const item = toShadcnItem({ ...list, dependencies: ["@mainsoft-2024/agent-cms", "lucide-react"] }, own, { baseUrl: "https://docs.example/r/" });
+  assert.deepEqual(item.registryDependencies, ["https://docs.example/r/cms-lib.json", "button", "checkbox"]);
+  assert.deepEqual(item.dependencies, [`@mainsoft-2024/agent-cms@^${VERSION}`, "lucide-react"]);
+  assert.equal(item.files[0]!.target, "@components/cms/cms-doc-list.tsx");
+  assert.equal(toShadcnItem(reg.items[0]!, own, { baseUrl: "x", packageRange: "file:a.tgz" }).files[0]!.target, "@components/cms/use-cms.ts");
+
+  // The real registry: every file lands in components/cms, every internal dep is a URL.
+  const out = mkdtempSync(join(tmpdir(), "agent-cms-r-"));
+  const files = buildPublicRegistry(join(import.meta.dirname, "..", "registry"), out, { baseUrl: "https://docs.example/r" });
+  assert.ok(files.includes("registry.json") && files.includes("cms-shell.json"));
+  for (const f of files.filter((x) => x !== "registry.json")) {
+    const it = JSON.parse(readFileSync(join(out, f), "utf8")) as RegistryItem & { $schema?: string };
+    assert.equal(it.$schema, "https://ui.shadcn.com/schema/registry-item.json");
+    for (const file of it.files) {
+      assert.match(file.target ?? "", /^@components\/cms\/[\w-]+\.tsx?$/);
+      assert.ok(file.content?.length, `${f}: ${file.path} has content`);
+    }
+    for (const d of it.registryDependencies ?? []) assert.ok(/^https:\/\/docs\.example\/r\/cms-[\w-]+\.json$/.test(d) || /^[a-z-]+$/.test(d), `${f}: ${d}`);
+    assert.ok(!(it.registryDependencies ?? []).some((d) => d.startsWith("cms-")), `${f}: no bare internal names`);
+  }
 });
 
 test("add: copies items with dependencies, rewrites aliases, lists missing parts, writes the lock", async () => {

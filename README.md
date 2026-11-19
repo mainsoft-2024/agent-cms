@@ -46,14 +46,6 @@ Upgrading from 0.5? Read [UPGRADE-0.6.md](./UPGRADE-0.6.md) first (the
 
 ## Install
 
-Published to GitHub Packages:
-
-```
-# .npmrc
-@mainsoft-2024:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
-
 ```
 npm i @mainsoft-2024/agent-cms
 npx agent-cms init
@@ -161,6 +153,18 @@ npx agent-cms add --update    # update files you did not edit; yours get a .new 
 
 Missing shadcn parts are listed with the `npx shadcn add …` line to run
 (`--yes` runs it). `agent-cms.json` records what was copied.
+
+The same screens install with the shadcn CLI, from any host that serves the
+registry (`npm run build:registry -- --base-url <url> --out <dir>` writes it).
+Files go to `<components>/cms/`; the shadcn parts and the screens an item
+needs come along:
+
+```
+npx shadcn@latest add <registry-url>/cms-doc-editor.json
+```
+
+`agent-cms add --diff` and `--update` only know about copies made with
+`agent-cms add`.
 
 | Item | What it is |
 |---|---|
@@ -331,7 +335,11 @@ npm run check:pack     # publint and arethetypeswrong
 the browser tests run against it.
 
 Release: bump `version` in `package.json`, push a `v<version>` tag; the
-Publish workflow pushes it to GitHub Packages.
+Publish workflow publishes it to npmjs.com with provenance.
+
+`bash scripts/shadcn-smoke.sh` (`npm run test:shadcn`) builds the shadcn
+registry, serves it locally and installs a screen into a fresh Next.js app
+with `npx shadcn add`, then type-checks and builds that app.
 
 The roadmap is in [TODO.md](./TODO.md).
 

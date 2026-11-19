@@ -11,7 +11,7 @@ import { Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, 
 import { isCmsRemoteError, type CollectionSchema } from "@mainsoft-2024/agent-cms/client";
 import { splitLines } from "@mainsoft-2024/agent-cms/diff";
 import { docState, type CmsDoc, type AutosaveState } from "@mainsoft-2024/agent-cms/types";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
@@ -568,25 +568,17 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           ) : null}
           {publicUrl || previewAllowed ? (
             <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label={t("more")}>
-                  <MoreHorizontal aria-hidden className="h-4 w-4" />
-                </Button>
+              <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon", className: "h-8 w-8" })} aria-label={t("more")}>
+                <MoreHorizontal aria-hidden className="h-4 w-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {publicUrl ? (
-                  <DropdownMenuItem asChild>
-                    <a href={publicUrl} target="_blank" rel="noreferrer">
-                      {t("public_page")}
-                    </a>
-                  </DropdownMenuItem>
-                ) : null}
-                {previewAllowed ? <DropdownMenuItem onSelect={() => setPreviewOpen(true)}>{t("preview_link")}</DropdownMenuItem> : null}
+                {publicUrl ? <DropdownMenuItem onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")}>{t("public_page")}</DropdownMenuItem> : null}
+                {previewAllowed ? <DropdownMenuItem onClick={() => setPreviewOpen(true)}>{t("preview_link")}</DropdownMenuItem> : null}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
         </PageHeader>
-        <Tabs value={mobileTab} onValueChange={setMobileTab} className="flex min-h-0 flex-1 flex-col">
+        <Tabs value={mobileTab} onValueChange={(v) => setMobileTab(String(v))} className="flex min-h-0 flex-1 flex-col">
           <div className="flex items-center gap-1.5 border-b px-4 py-2">
             {stateBits}
             <span className="flex-1" />

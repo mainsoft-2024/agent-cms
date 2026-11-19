@@ -190,8 +190,26 @@ lines you may run.
    JSON.
 8. **Restore notes** read `restored v3` (were Korean).
 
+## From GitHub Packages to npmjs (0.6.1)
+
+From 0.6.1 the package is published to npmjs.com only; GitHub Packages keeps
+0.6.0 and older. Delete these lines from `.npmrc` (and the `GITHUB_TOKEN`
+you set for them in CI or Vercel, if nothing else uses it), then reinstall:
+
+```
+@mainsoft-2024:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+```
+
+```
+npm i @mainsoft-2024/agent-cms@^0.6.1
+```
+
+The lockfile then points at `registry.npmjs.org`. No code changes.
+
 ## Checklist for servicer
 
+- [ ] `.npmrc`: remove the GitHub Packages lines, `npm i @mainsoft-2024/agent-cms@^0.6.1`
 - [ ] `visibility` on the guide and notice collections (`public`), `messages: ko`
 - [ ] Copy `cms_gaps` to `app_search_misses` (step 1), add the table (step 3)
 - [ ] `onSearchMiss` writing to it (step 4); `logGap` → `reportMiss`

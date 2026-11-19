@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import { Bot, FileText, KeyRound, Plus } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { CodeBox } from "./cms-parts";
 import { cmsUrl, useCms } from "./use-cms";
@@ -61,12 +61,10 @@ export function CmsEmpty({ collection, onNewDocument, keysHref, onCreateKey, ico
           {me?.isAdmin && (keysHref || onCreateKey) ? (
             <div className="mt-3">
               {keysHref ? (
-                <Button asChild variant="outline" size="sm" className="gap-1.5">
-                  <a href={keysHref}>
-                    <KeyRound aria-hidden className="h-4 w-4" />
-                    {t("create_api_key")}
-                  </a>
-                </Button>
+                <a href={keysHref} className={buttonVariants({ variant: "outline", size: "sm", className: "gap-1.5" })}>
+                  <KeyRound aria-hidden className="h-4 w-4" />
+                  {t("create_api_key")}
+                </a>
               ) : (
                 <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={onCreateKey}>
                   <KeyRound aria-hidden className="h-4 w-4" />

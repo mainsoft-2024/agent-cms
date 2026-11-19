@@ -292,9 +292,9 @@ export function FieldInput({ spec, idPrefix, value, onChange, problems }: { spec
       );
     case "select":
       return shell(
-        <Select value={typeof value === "string" ? value : ""} onValueChange={(v) => onChange(v === "__none" ? undefined : v)}>
+        <Select value={typeof value === "string" ? value : ""} onValueChange={(v: string | null) => onChange(!v || v === "__none" ? undefined : v)}>
           <SelectTrigger {...common} className="h-9">
-            <SelectValue placeholder={t("pick_one")} />
+            <SelectValue>{typeof value === "string" && value ? value : <span className="text-muted-foreground">{t("pick_one")}</span>}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             {!spec.required ? <SelectItem value="__none">{t("none")}</SelectItem> : null}
@@ -407,9 +407,9 @@ export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocke
       {text("slug", t("field_slug"), { mono: true, disabled: slugLocked, help: slugLocked ? t("field_slug_locked") : undefined })}
       {schema.categories?.length ? (
         <FieldShell id={catId} label={t("field_category")} errors={catErr}>
-          <Select value={value.category ?? "__none"} onValueChange={(v) => set("category", v === "__none" ? null : v)}>
+          <Select value={value.category ?? "__none"} onValueChange={(v: string | null) => set("category", !v || v === "__none" ? null : v)}>
             <SelectTrigger id={catId} className="h-9" aria-invalid={catErr?.some((e) => e.severity === "error") || undefined} aria-describedby={describedBy({ id: catId, errors: catErr })}>
-              <SelectValue />
+              <SelectValue>{value.category ?? t("no_category")}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="__none">{t("no_category")}</SelectItem>
