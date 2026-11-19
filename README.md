@@ -281,6 +281,18 @@ Register `https://app.example.com/api/cms/mcp` with the header
 Published documents are also resources (`cms://<collection>/<slug>`), and
 two prompts (`answer_from_cms`, `edit_document`) show the safe way to work.
 
+For public docs that any agent may read without a key, turn on anonymous read:
+
+```ts
+createCmsHandler({ cms, resolveUser, mcp: { anonymous: "read" } });
+```
+
+A request without a key then gets the read tools only (`list_collections`,
+`search_documents`, `read_for_answer`, `list_documents`, `get_document`) and
+sees published documents of collections anyone may read. Write tools are not
+listed and calling one fails with `unknown_tool`. Requests with a key work as
+before. The default stays off (401 without a key).
+
 ### CLI
 
 ```

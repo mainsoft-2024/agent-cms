@@ -43,7 +43,7 @@ import { z } from "zod";
 import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "./cms";
 import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
-import { handleMcp, toJsonSchema } from "./mcp";
+import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
 import { DOC_STATUSES, KEY_SCOPES, type Actor, type CmsDoc } from "./types";
 
 export interface CmsHandlerOptions {
@@ -54,6 +54,12 @@ export interface CmsHandlerOptions {
   basePath?: string;
   /** Refuse PATCH and DELETE of a document without If-Match / expectedVersion (428). Default false. */
   requireIfMatch?: boolean;
+  /**
+   * MCP options. `anonymous: "read"` lets requests without a key use the MCP
+   * endpoint with read tools only (published documents of collections anyone
+   * can read). Default: a key is required (401).
+   */
+  mcp?: McpOptions;
 }
 
 const DocInput = z
@@ -185,7 +191,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         return v;
       };
 
-      if (seg[0] === "mcp" && seg.length === 1) return handleMcp(core, actor, req);
+      if (seg[0] === "mcp" && seg.length === 1) return handleMcp(core, actor, req, opts.mcp);
 
       if (seg[0] === "_me" && m === "GET") {
         return json({
