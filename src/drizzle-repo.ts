@@ -1,12 +1,12 @@
 /** `CmsRepo` on Postgres via Drizzle (node-postgres, pglite and other `PgDatabase` drivers with transactions). */
 
-import { and, desc, eq, gte, inArray, isNotNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
-import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocPatch, KeyRow, NewAsset, NewAudit, NewDoc, NewVersion, StoredVersion } from "./repo";
+import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, NewFilter, NewRelease, NewVersion, ReleasePatch, StoredVersion, VersionPatch } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
-import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsDoc, DocStatus, KeyScope, ReviewMark } from "./types";
+import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsRelease, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PgDatabase<any, any, any>;
@@ -62,6 +62,11 @@ export class DrizzleRepo implements CmsRepo {
       updatedByKind: (r.updatedByKind as CmsDoc["updatedByKind"]) ?? null,
       updatedByAgent: r.updatedByAgent ?? null,
       autosave: r.autosave ? { content: r.autosave, at: iso(r.autosaveAt)!, by: r.autosaveBy, baseVersion: r.autosaveBaseVersion ?? r.version } : null,
+      deletedAt: iso(r.deletedAt),
+      deletedBy: r.deletedBy ?? null,
+      schedule: r.schedule ?? null,
+      dueAt: iso(r.dueAt),
+      review: r.review ?? null,
     };
   }
 
@@ -69,7 +74,7 @@ export class DrizzleRepo implements CmsRepo {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(p)) {
       if (v === undefined) continue;
-      if (k === "publishedAt" || k === "updatedAt" || k === "republishedAt") out[k] = date(v as string | null);
+      if (k === "publishedAt" || k === "updatedAt" || k === "republishedAt" || k === "deletedAt" || k === "dueAt") out[k] = date(v as string | null);
       else if (k === "autosave") {
         const a = v as CmsDoc["autosave"];
         out.autosave = a?.content ?? null;
@@ -94,6 +99,10 @@ export class DrizzleRepo implements CmsRepo {
       note: r.note,
       changed: r.changed ?? null,
       reviewed: r.reviewed ?? [],
+      label: r.label ?? null,
+      pinned: !!r.pinned,
+      approvedBy: r.approvedBy ?? null,
+      approvedAt: iso(r.approvedAt),
       createdAt: iso(r.createdAt)!,
     };
   }
@@ -121,7 +130,21 @@ export class DrizzleRepo implements CmsRepo {
       createdByAgent: r.createdByAgent ?? null,
       createdAt: iso(r.createdAt)!,
       updatedAt: iso(r.updatedAt)!,
+      deletedAt: iso(r.deletedAt),
+      deletedBy: r.deletedBy ?? null,
     };
+  }
+
+  private toComment(r: typeof this.t.comments.$inferSelect): CmsComment {
+    return { id: r.id, documentId: r.documentId, threadId: r.threadId, anchor: r.anchor, quote: r.quote, body: r.body, authorKind: r.authorKind as CmsComment["authorKind"], authorId: r.authorId, authorLabel: r.authorLabel, authorAgent: r.authorAgent ?? null, createdAt: iso(r.createdAt)!, resolvedAt: iso(r.resolvedAt), resolvedBy: r.resolvedBy ?? null };
+  }
+
+  private toRelease(r: typeof this.t.releases.$inferSelect): CmsRelease {
+    return { id: r.id, name: r.name, state: r.state as CmsRelease["state"], publishAt: iso(r.publishAt), items: r.items ?? [], createdBy: r.createdBy, createdById: r.createdById, createdAt: iso(r.createdAt)!, updatedAt: iso(r.updatedAt)!, publishedAt: iso(r.publishedAt), publishedBy: r.publishedBy ?? null, lastError: r.lastError ?? null };
+  }
+
+  private toFilter(r: typeof this.t.savedFilters.$inferSelect): SavedFilter {
+    return { id: r.id, collection: r.collection, name: r.name, query: r.query ?? {}, ownerId: r.ownerId, ownerLabel: r.ownerLabel, shared: r.shared, createdAt: iso(r.createdAt)! };
   }
 
   private toKey(r: typeof this.t.apiKeys.$inferSelect): KeyRow {
@@ -144,23 +167,24 @@ export class DrizzleRepo implements CmsRepo {
     return this.db.transaction((t) => fn(new DrizzleRepo(t as unknown as Db, { tables: this.t })));
   }
 
-  async findDoc(collection: string, slug: string) {
+  async findDoc(collection: string, slug: string, o: FindOptions = {}) {
     const D = this.t.documents;
     const [r] = await this.db.select().from(D).where(and(eq(D.collection, collection), eq(D.slug, slug))).limit(1);
-    return r ? this.toDoc(r) : null;
+    return r && (!r.deletedAt || o.trashed) ? this.toDoc(r) : null;
   }
-  async findDocById(id: string) {
+  async findDocById(id: string, o: FindOptions = {}) {
     const D = this.t.documents;
     const [r] = await this.db.select().from(D).where(eq(D.id, id)).limit(1);
-    return r ? this.toDoc(r) : null;
+    return r && (!r.deletedAt || o.trashed) ? this.toDoc(r) : null;
   }
-  async listDocs(f: { collection?: string; statuses?: DocStatus[]; published?: boolean }) {
+  async listDocs(f: DocFilter) {
     const D = this.t.documents;
-    const conds = [];
+    const conds = [f.trashed ? isNotNull(D.deletedAt) : isNull(D.deletedAt)];
+    if (f.dueBefore) conds.push(lte(D.dueAt, new Date(f.dueBefore)));
     if (f.collection) conds.push(eq(D.collection, f.collection));
     if (f.statuses) conds.push(inArray(D.status, f.statuses));
     if (f.published === true) conds.push(isNotNull(D.publishedVersion), ne(D.status, "archived"));
-    const rows = await this.db.select().from(D).where(conds.length ? and(...conds) : undefined);
+    const rows = await this.db.select().from(D).where(and(...conds));
     const docs = rows.map((r) => this.toDoc(r));
     return f.published === false ? docs.filter((d) => d.publishedVersion === null || d.status === "archived") : docs;
   }
@@ -208,6 +232,7 @@ export class DrizzleRepo implements CmsRepo {
         authorLabel: v.authorLabel,
         authorAgent: v.authorAgent ?? null,
         note: v.note,
+        label: v.label ?? null,
         changed: v.changed ?? null,
         createdAt: date(v.createdAt ?? null) ?? undefined,
       })
@@ -227,10 +252,16 @@ export class DrizzleRepo implements CmsRepo {
     const V = this.t.versions;
     await this.db.update(V).set({ reviewed }).where(and(eq(V.documentId, documentId), eq(V.version, version)));
   }
+  async updateVersion(documentId: string, version: number, patch: VersionPatch) {
+    const V = this.t.versions;
+    const { approvedAt, ...rest } = patch;
+    const set = { ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)), ...(approvedAt !== undefined ? { approvedAt: date(approvedAt) } : {}) };
+    if (Object.keys(set).length) await this.db.update(V).set(set).where(and(eq(V.documentId, documentId), eq(V.version, version)));
+  }
   async pruneVersions(documentId: string, keep: number, protect: number[]) {
     const V = this.t.versions;
-    const rows = await this.db.select({ id: V.id, version: V.version }).from(V).where(eq(V.documentId, documentId)).orderBy(desc(V.version));
-    const drop = rows.slice(keep).filter((r) => !protect.includes(r.version)).map((r) => r.id);
+    const rows = await this.db.select({ id: V.id, version: V.version, pinned: V.pinned }).from(V).where(eq(V.documentId, documentId)).orderBy(desc(V.version));
+    const drop = rows.slice(keep).filter((r) => !protect.includes(r.version) && !r.pinned).map((r) => r.id);
     if (drop.length) await this.db.delete(V).where(inArray(V.id, drop));
   }
   async insertKey(k: { name: string; prefix: string; hash: string; scopes: KeyScope[]; collections: string[] | null; createdBy: string | null; expiresAt: string | null }) {
@@ -329,15 +360,15 @@ export class DrizzleRepo implements CmsRepo {
       .returning();
     return this.toAsset(r);
   }
-  async findAsset(id: string) {
+  async findAsset(id: string, o: FindOptions = {}) {
     const A = this.t.assets;
     const [r] = await this.db.select().from(A).where(eq(A.id, id)).limit(1);
-    return r ? this.toAsset(r) : null;
+    return r && (!r.deletedAt || o.trashed) ? this.toAsset(r) : null;
   }
   async findAssets(ids: readonly string[]) {
     if (!ids.length) return [];
     const A = this.t.assets;
-    return (await this.db.select().from(A).where(inArray(A.id, [...ids]))).map((r) => this.toAsset(r));
+    return (await this.db.select().from(A).where(and(inArray(A.id, [...ids]), isNull(A.deletedAt)))).map((r) => this.toAsset(r));
   }
   async findAssetByKey(store: string, key: string) {
     const A = this.t.assets;
@@ -353,7 +384,7 @@ export class DrizzleRepo implements CmsRepo {
   }
   async listAssets(q: AssetQuery) {
     const A = this.t.assets;
-    const conds = [];
+    const conds: (SQL | undefined)[] = [q.trashed ? isNotNull(A.deletedAt) : isNull(A.deletedAt)];
     if (q.store) conds.push(eq(A.store, q.store));
     if (q.folder !== undefined) conds.push(eq(A.folder, q.folder));
     if (q.under) conds.push(or(eq(A.folder, q.under), sql`starts_with(${A.folder}, ${`${q.under}/`})`));
@@ -371,7 +402,7 @@ export class DrizzleRepo implements CmsRepo {
     const rows = await this.db
       .select()
       .from(A)
-      .where(conds.length ? and(...conds) : undefined)
+      .where(and(...conds))
       .orderBy(desc(A.createdAt), desc(A.id))
       .limit(q.limit ?? 1000);
     return rows.map((r) => this.toAsset(r));
@@ -381,14 +412,14 @@ export class DrizzleRepo implements CmsRepo {
     const rows = await this.db
       .select({ store: A.store, folder: A.folder, kind: A.kind, n: sql<number>`count(*)::int` })
       .from(A)
-      .where(store ? and(eq(A.status, "ready"), eq(A.store, store)) : eq(A.status, "ready"))
+      .where(and(eq(A.status, "ready"), isNull(A.deletedAt), store ? eq(A.store, store) : undefined))
       .groupBy(A.store, A.folder, A.kind);
     return rows.map((r) => ({ store: r.store, folder: r.folder, kind: r.kind as AssetKind, n: Number(r.n) }));
   }
   async updateAsset(id: string, patch: AssetPatch) {
     const A = this.t.assets;
-    const { updatedAt, ...rest } = patch;
-    const set = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+    const { updatedAt, deletedAt, ...rest } = patch;
+    const set = { ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)), ...(deletedAt !== undefined ? { deletedAt: date(deletedAt) } : {}) };
     const [r] = await this.db
       .update(A)
       .set({ ...set, updatedAt: updatedAt ? new Date(updatedAt) : new Date() })
@@ -413,6 +444,101 @@ export class DrizzleRepo implements CmsRepo {
   async listAssetRefs(assetId: string) {
     const R = this.t.assetRefs;
     return (await this.db.select().from(R).where(eq(R.assetId, assetId))).map((r) => ({ assetId: r.assetId, documentId: r.documentId, inDraft: r.inDraft, inPublished: r.inPublished }));
+  }
+  async insertComment(c: NewComment) {
+    const [r] = await this.db.insert(this.t.comments).values({ ...c, createdAt: new Date(c.createdAt) }).returning();
+    return this.toComment(r);
+  }
+  async findComment(id: string) {
+    const C = this.t.comments;
+    const [r] = await this.db.select().from(C).where(eq(C.id, id)).limit(1);
+    return r ? this.toComment(r) : null;
+  }
+  async listComments(documentId: string) {
+    const C = this.t.comments;
+    return (await this.db.select().from(C).where(eq(C.documentId, documentId)).orderBy(asc(C.createdAt), asc(C.id))).map((r) => this.toComment(r));
+  }
+  async updateComment(id: string, patch: Pick<CmsComment, "resolvedAt" | "resolvedBy">) {
+    const C = this.t.comments;
+    const [r] = await this.db.update(C).set({ resolvedAt: date(patch.resolvedAt), resolvedBy: patch.resolvedBy }).where(eq(C.id, id)).returning();
+    return r ? this.toComment(r) : null;
+  }
+  async countComments(documentIds: readonly string[]) {
+    if (!documentIds.length) return new Map<string, number>();
+    const C = this.t.comments;
+    const rows = await this.db
+      .select({ id: C.documentId, n: sql<number>`count(*)::int` })
+      .from(C)
+      .where(and(inArray(C.documentId, [...documentIds]), isNull(C.threadId), isNull(C.resolvedAt)))
+      .groupBy(C.documentId);
+    return new Map(rows.map((r) => [r.id, Number(r.n)]));
+  }
+  async insertRelease(n: NewRelease) {
+    const [r] = await this.db.insert(this.t.releases).values({ name: n.name, createdBy: n.createdBy, createdById: n.createdById, createdAt: new Date(n.createdAt), updatedAt: new Date(n.createdAt) }).returning();
+    return this.toRelease(r);
+  }
+  async findRelease(id: string) {
+    const R = this.t.releases;
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+    const [r] = await this.db.select().from(R).where(eq(R.id, id)).limit(1);
+    return r ? this.toRelease(r) : null;
+  }
+  async listReleases() {
+    const R = this.t.releases;
+    return (await this.db.select().from(R).orderBy(desc(R.createdAt))).map((r) => this.toRelease(r));
+  }
+  async updateRelease(id: string, patch: ReleasePatch, expectedState?: CmsRelease["state"]) {
+    const R = this.t.releases;
+    const { publishAt, publishedAt, updatedAt, ...rest } = patch;
+    const set = {
+      ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)),
+      ...(publishAt !== undefined ? { publishAt: date(publishAt) } : {}),
+      ...(publishedAt !== undefined ? { publishedAt: date(publishedAt) } : {}),
+      updatedAt: updatedAt ? new Date(updatedAt) : new Date(),
+    };
+    const [r] = await this.db.update(R).set(set).where(expectedState ? and(eq(R.id, id), eq(R.state, expectedState)) : eq(R.id, id)).returning();
+    return r ? this.toRelease(r) : null;
+  }
+  async deleteRelease(id: string) {
+    await this.db.delete(this.t.releases).where(eq(this.t.releases.id, id));
+  }
+  async insertFilter(f: NewFilter) {
+    const [r] = await this.db.insert(this.t.savedFilters).values({ ...f, createdAt: new Date(f.createdAt) }).returning();
+    return this.toFilter(r);
+  }
+  async findFilter(id: string) {
+    const F = this.t.savedFilters;
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+    const [r] = await this.db.select().from(F).where(eq(F.id, id)).limit(1);
+    return r ? this.toFilter(r) : null;
+  }
+  async listFilters(collection: string) {
+    const F = this.t.savedFilters;
+    return (await this.db.select().from(F).where(eq(F.collection, collection)).orderBy(asc(F.name))).map((r) => this.toFilter(r));
+  }
+  async deleteFilter(id: string) {
+    await this.db.delete(this.t.savedFilters).where(eq(this.t.savedFilters.id, id));
+  }
+  async touchPresence(p: Presence) {
+    const P = this.t.presence;
+    const row = { label: p.label, kind: p.kind, agent: p.agent, cursor: p.cursor, selection: p.selection, seenAt: new Date(p.seenAt) };
+    await this.db
+      .insert(P)
+      .values({ documentId: p.documentId, actorId: p.actorId, ...row })
+      .onConflictDoUpdate({ target: [P.documentId, P.actorId], set: row });
+  }
+  async listPresence(since: string, documentIds?: readonly string[]) {
+    const P = this.t.presence;
+    if (documentIds && !documentIds.length) return [];
+    const rows = await this.db.select().from(P).where(and(gte(P.seenAt, new Date(since)), documentIds ? inArray(P.documentId, [...documentIds]) : undefined));
+    return rows.map((r) => ({ documentId: r.documentId, actorId: r.actorId, label: r.label, kind: r.kind as Presence["kind"], agent: r.agent ?? null, cursor: r.cursor ?? null, selection: r.selection ?? null, seenAt: iso(r.seenAt)! }));
+  }
+  async dropPresence(documentId: string, actorId: string) {
+    const P = this.t.presence;
+    await this.db.delete(P).where(and(eq(P.documentId, documentId), eq(P.actorId, actorId)));
+  }
+  async prunePresence(before: string) {
+    await this.db.delete(this.t.presence).where(lt(this.t.presence.seenAt, new Date(before)));
   }
   async changeStamp() {
     const D = this.t.documents;
@@ -459,7 +585,7 @@ export class DrizzleRepo implements CmsRepo {
       have.get(c.table_name)!.add(c.column_name);
     }
     const expected: Record<string, string[]> = {};
-    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs })) {
+    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence })) {
       expected[prefix + key] = Object.values(tbl).filter((c) => c && typeof c === "object" && "name" in c && "columnType" in c).map((c) => (c as { name: string }).name);
     }
     const missingTables = Object.keys(expected).filter((t) => !have.has(t));

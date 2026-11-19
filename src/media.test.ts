@@ -46,6 +46,7 @@ function setup(extra: { accept?: string[]; maxFileSize?: number; requireAlt?: bo
   const cms = createCms({
     repo,
     collections: [blog, notes],
+    trash: { days: 0 },
     media: {
       stores: { public: { visibility: "public", adapter: pub, label: "Public" }, private: { visibility: "private", adapter: priv } },
       accept: extra.accept,

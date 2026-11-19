@@ -26,7 +26,10 @@ export type Inline =
   /** `[[link:key|label]]` — an app screen, resolved by the collection. */
   | { t: "applink"; key: string; v: string };
 
-export type Block =
+/** With `parseMarkdown(src, { lines: true })` every top-level block says which lines of the source it came from (1-based). */
+export type Block = BlockBody & { line?: number; endLine?: number };
+
+type BlockBody =
   | { t: "heading"; level: 2 | 3; id: string; text: string; inline: Inline[] }
   | { t: "p"; inline: Inline[] }
   | { t: "list"; ordered: boolean; items: Inline[][] }
@@ -113,12 +116,15 @@ export function inlineText(inline: Inline[]): string {
   return inline.map((i) => i.v).join("");
 }
 
-export function parseMarkdown(source: string): Block[] {
+export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Block[] {
   const lines = source.replace(/\r/g, "").split("\n");
-  const blocks: Block[] = [];
+  const out: Block[] = [];
+  /** `from`, `to`: 0-based source lines of the block. */
+  const push = (b: Block, from: number, to: number) => out.push(o.lines ? { ...b, line: from + 1, endLine: to + 1 } : b);
   const used = new Map<string, number>();
   let para: string[] = [];
-  let list: { ordered: boolean; items: string[] } | null = null;
+  let paraAt = [0, 0];
+  let list: { ordered: boolean; items: string[]; from: number; to: number } | null = null;
 
   const uniqueId = (text: string) => {
     const base = anchorOf(text);
@@ -134,15 +140,12 @@ export function parseMarkdown(source: string): Block[] {
     const inline = parseInline(text);
     const onlyLinks = inline.every((i) => i.t === "applink" || (i.t === "text" && !i.v.trim()));
     if (onlyLinks && inline.some((i) => i.t === "applink")) {
-      blocks.push({
-        t: "links",
-        items: inline.filter((i): i is Extract<Inline, { t: "applink" }> => i.t === "applink").map((i) => ({ key: i.key, v: i.v })),
-      });
-    } else blocks.push({ t: "p", inline });
+      push({ t: "links", items: inline.filter((i): i is Extract<Inline, { t: "applink" }> => i.t === "applink").map((i) => ({ key: i.key, v: i.v })) }, paraAt[0], paraAt[1]);
+    } else push({ t: "p", inline }, paraAt[0], paraAt[1]);
   };
   const flushList = () => {
     if (!list) return;
-    blocks.push({ t: "list", ordered: list.ordered, items: list.items.map(parseInline) });
+    push({ t: "list", ordered: list.ordered, items: list.items.map(parseInline) }, list.from, list.to);
     list = null;
   };
   const flush = () => {
@@ -156,9 +159,9 @@ export function parseMarkdown(source: string): Block[] {
     if (fence) {
       flush();
       const buf: string[] = [];
-      i++;
+      const from = i++;
       while (i < lines.length && !/^```\s*$/.test(lines[i])) buf.push(lines[i++]);
-      blocks.push({ t: "code", lang: fence[1] ?? "", v: buf.join("\n") });
+      push({ t: "code", lang: fence[1] ?? "", v: buf.join("\n") }, from, Math.min(i, lines.length - 1));
       continue;
     }
     const h = /^(#{2,3})\s+(.+?)\s*#*\s*$/.exec(line);
@@ -166,24 +169,25 @@ export function parseMarkdown(source: string): Block[] {
       flush();
       const text = h[2];
       const inline = parseInline(text);
-      blocks.push({ t: "heading", level: h[1].length as 2 | 3, id: uniqueId(inlineText(inline)), text: inlineText(inline), inline });
+      push({ t: "heading", level: h[1].length as 2 | 3, id: uniqueId(inlineText(inline)), text: inlineText(inline), inline }, i, i);
       continue;
     }
     if (/^#\s+/.test(line)) {
       // A document's title lives in its own field; a stray H1 renders as H2.
       flush();
       const inline = parseInline(line.replace(/^#\s+/, ""));
-      blocks.push({ t: "heading", level: 2, id: uniqueId(inlineText(inline)), text: inlineText(inline), inline });
+      push({ t: "heading", level: 2, id: uniqueId(inlineText(inline)), text: inlineText(inline), inline }, i, i);
       continue;
     }
     if (/^\s*(---|\*\*\*)\s*$/.test(line)) {
       flush();
-      blocks.push({ t: "hr" });
+      push({ t: "hr" }, i, i);
       continue;
     }
     if (/^>\s?/.test(line)) {
       flush();
       const buf: string[] = [];
+      const from = i;
       while (i < lines.length && /^>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ""));
       i--;
       let callout: "note" | "tip" | "warning" | null = null;
@@ -193,14 +197,14 @@ export function parseMarkdown(source: string): Block[] {
         buf.shift();
       }
       const inner = parseMarkdown(buf.join("\n")).map((b) => (b.t === "heading" ? ({ t: "p", inline: b.inline } as Block) : b));
-      blocks.push({ t: "quote", callout, blocks: inner });
+      push({ t: "quote", callout, blocks: inner }, from, i);
       continue;
     }
     const img = IMAGE_LINE.exec(line);
     const target = img ? mediaTarget(img[2]) : null;
     if (img && target) {
       flush();
-      blocks.push({ t: "media", ...target, alt: img[1].trim(), caption: (img[3] ?? "").trim() });
+      push({ t: "media", ...target, alt: img[1].trim(), caption: (img[3] ?? "").trim() }, i, i);
       continue;
     }
     const ul = /^\s*[-*]\s+(.*)$/.exec(line);
@@ -209,8 +213,9 @@ export function parseMarkdown(source: string): Block[] {
       flushPara();
       const ordered = !!ol;
       if (list && list.ordered !== ordered) flushList();
-      if (!list) list = { ordered, items: [] };
+      if (!list) list = { ordered, items: [], from: i, to: i };
       list.items.push((ul ?? ol)![1]);
+      list.to = i;
       continue;
     }
     if (!line.trim()) {
@@ -220,13 +225,15 @@ export function parseMarkdown(source: string): Block[] {
     if (list && /^\s{2,}\S/.test(line)) {
       // Continuation of the previous list item.
       list.items[list.items.length - 1] += " " + line.trim();
+      list.to = i;
       continue;
     }
     flushList();
+    paraAt = para.length ? [paraAt[0], i] : [i, i];
     para.push(line.trim());
   }
   flush();
-  return blocks;
+  return out;
 }
 
 export function extractToc(blocks: Block[]): TocItem[] {

@@ -205,7 +205,7 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "delete_document",
     needs: "publish",
-    description: "Delete a document and its history permanently. Prefer archive_document unless asked to delete.",
+    description: "Delete a document. It goes to the trash, where it can be restored (restore_from_trash) until the trash is emptied; in an app without a trash it is gone for good. Prefer archive_document unless asked to delete.",
     input: z.object({ collection: col, slug, expectedVersion }),
     run: async (cms, actor, a) => {
       await cms.remove(actor, a.collection as string, a.slug as string, { expectedVersion: a.expectedVersion as number | undefined });
@@ -232,6 +232,9 @@ export const CMS_TOOLS: CmsToolDef[] = [
         authorKind: v.authorKind,
         agent: v.authorAgent ?? null,
         note: v.note,
+        label: v.label,
+        pinned: v.pinned,
+        approvedBy: v.approvedBy,
         published: v.published,
         changed: v.changed?.fields ?? [],
         createdAt: v.createdAt,
@@ -244,6 +247,150 @@ export const CMS_TOOLS: CmsToolDef[] = [
     input: z.object({ collection: col, slug, version: z.number().int().positive(), publish: z.boolean().optional(), expectedVersion }),
     run: async (cms, actor, a) =>
       cms.restore(actor, a.collection as string, a.slug as string, a.version as number, { publish: a.publish as boolean | undefined, expectedVersion: a.expectedVersion as number | undefined }),
+  },
+  {
+    name: "label_version",
+    needs: "write",
+    description: "Name a version (\"launch copy\") and/or pin it so it is never pruned.",
+    input: z.object({ collection: col, slug, version: z.number().int().positive(), label: z.string().nullable().optional().describe("null or \"\" removes the name"), pinned: z.boolean().optional() }),
+    run: async (cms, actor, a) => {
+      const v = await cms.labelVersion(actor, a.collection as string, a.slug as string, a.version as number, { label: a.label as string | null | undefined, pinned: a.pinned as boolean | undefined });
+      return { version: v.version, label: v.label, pinned: v.pinned };
+    },
+  },
+  {
+    name: "preview_document",
+    needs: "write",
+    description: "See what a document would be without saving it: every problem (like diagnose_document), the table of contents, the unified diff against the saved body and the public address. Pass slug to preview an edit of an existing document.",
+    input: z.object({ collection: col, slug: z.string().optional().describe("The existing document this is an edit of"), doc: z.object(docInput) }),
+    run: async (cms, actor, a) => {
+      const p = await cms.preview(actor, a.collection as string, a.doc as Record<string, never>, { slug: a.slug as string | undefined });
+      return { diagnostics: p.diagnostics, toc: p.toc, diff: p.diff, publicUrl: p.publicUrl, blocks: p.blocks.length };
+    },
+  },
+  {
+    name: "schedule_document",
+    needs: "publish",
+    description: "Publish and/or unpublish a document at a time (ISO 8601 with a time zone). The version that is current now is what goes public, even if the draft changes later. Runs when the app's cron calls the CMS, so it can be a few minutes late.",
+    input: z.object({ collection: col, slug, publishAt: z.string().nullable().optional(), unpublishAt: z.string().nullable().optional(), expectedVersion }),
+    run: async (cms, actor, a) => {
+      const d = await cms.schedule(actor, a.collection as string, a.slug as string, { publishAt: a.publishAt as string | null | undefined, unpublishAt: a.unpublishAt as string | null | undefined, expectedVersion: a.expectedVersion as number | undefined });
+      return { slug: d.slug, schedule: d.schedule };
+    },
+  },
+  {
+    name: "unschedule_document",
+    needs: "publish",
+    description: "Cancel a document's schedule.",
+    input: z.object({ collection: col, slug }),
+    run: async (cms, actor, a) => {
+      await cms.unschedule(actor, a.collection as string, a.slug as string);
+      return { unscheduled: true };
+    },
+  },
+  {
+    name: "request_review",
+    needs: "write",
+    description: "Ask a person to review the current version. Use this where publishing answers review_required; say in the note what changed and what to look at. A person approves (which publishes) or sends it back with a note.",
+    input: z.object({ collection: col, slug, note: z.string().max(2000).optional() }),
+    run: async (cms, actor, a) => {
+      const d = await cms.requestReview(actor, a.collection as string, a.slug as string, { note: a.note as string | undefined });
+      return { slug: d.slug, review: d.review };
+    },
+  },
+  {
+    name: "list_review_requests",
+    needs: "write",
+    description: "Documents waiting for a review, and their notes. A document whose review says changes_requested was sent back: read its note (get_document draft=true), fix it and request a review again.",
+    input: z.object({ collection: z.string().optional() }),
+    run: async (cms, actor, a) => (await cms.reviewRequests(actor, { collection: a.collection as string | undefined })).map((d) => ({ collection: d.collection, slug: d.slug, title: d.title, version: d.version, review: d.review, updatedAt: d.updatedAt })),
+  },
+  {
+    name: "list_comments",
+    needs: "write",
+    description: "Comments people (and agents) left on a document, as threads. Each says which section (anchor) and quoted text it is about, whether that text is still there, and whether it is resolved.",
+    input: z.object({ collection: col, slug, open: z.boolean().optional().describe("true: only unresolved threads") }),
+    run: async (cms, actor, a) =>
+      (await cms.comments(actor, a.collection as string, a.slug as string))
+        .filter((t) => !a.open || !t.resolvedAt)
+        .map((t) => ({ id: t.id, anchor: t.anchor, quote: t.quote, located: t.located, line: t.line, body: t.body, author: t.authorAgent ?? t.authorLabel, authorKind: t.authorKind, at: t.createdAt, resolved: !!t.resolvedAt, replies: t.replies.map((r) => ({ id: r.id, body: r.body, author: r.authorAgent ?? r.authorLabel, authorKind: r.authorKind, at: r.createdAt })) })),
+  },
+  {
+    name: "add_comment",
+    needs: "write",
+    description: "Comment on a document, or answer a thread (threadId). A new thread sits on a section (anchor, from get_document draft=true sections) and optionally on a quoted piece of its text.",
+    input: z.object({ collection: col, slug, body: z.string().min(1).max(4000), anchor: z.string().optional().describe("Section anchor; \"\" or omitted: the top of the document"), quote: z.string().max(500).optional().describe("The exact text the comment is about"), threadId: z.string().optional().describe("Answer this thread instead of starting one") }),
+    run: async (cms, actor, a) => {
+      const c = await cms.addComment(actor, a.collection as string, a.slug as string, { body: a.body as string, anchor: a.anchor as string | undefined, quote: a.quote as string | undefined, threadId: a.threadId as string | undefined });
+      return { id: c.id, threadId: c.threadId };
+    },
+  },
+  {
+    name: "resolve_comment",
+    needs: "write",
+    description: "Mark a comment thread resolved after you dealt with it (answer first with add_comment so people see what you did). resolved=false opens it again.",
+    input: z.object({ collection: col, slug, id: z.string(), resolved: z.boolean().optional() }),
+    run: async (cms, actor, a) => {
+      const c = await cms.resolveComment(actor, a.collection as string, a.slug as string, a.id as string, { resolved: a.resolved as boolean | undefined });
+      return { id: c.id, resolved: !!c.resolvedAt };
+    },
+  },
+  {
+    name: "list_trash",
+    needs: "write",
+    description: "Deleted documents and files that can still be restored, with when each is deleted for good.",
+    input: z.object({ kind: z.enum(["document", "asset"]).optional() }),
+    run: async (cms, actor, a) => {
+      const t = await cms.trash.list(actor, { kind: a.kind as "document" | "asset" | undefined });
+      return { days: t.days, items: t.items.map((i) => ({ kind: i.kind, id: i.id, title: i.title, collection: i.collection, slug: i.slug, was: i.state, deletedAt: i.deletedAt, deletedBy: i.deletedBy, purgeAt: i.purgeAt })) };
+    },
+  },
+  {
+    name: "restore_from_trash",
+    needs: "publish",
+    description: "Take documents or files out of the trash (ids from list_trash). A document that was published is public again at once.",
+    input: z.object({ items: z.array(z.object({ kind: z.enum(["document", "asset"]), id: z.string() })).min(1).max(50) }),
+    run: async (cms, actor, a) => cms.trash.restore(actor, a.items as { kind: "document" | "asset"; id: string }[]),
+  },
+  {
+    name: "list_releases",
+    needs: "write",
+    description: "Releases: sets of documents that are published (or unpublished) together. Pass id for one release with each document's pinned and latest version.",
+    input: z.object({ id: z.string().optional() }),
+    run: async (cms, actor, a) => {
+      if (a.id) return cms.releases.get(actor, a.id as string);
+      return (await cms.releases.list(actor)).map((r) => ({ id: r.id, name: r.name, state: r.state, publishAt: r.publishAt, documents: r.items.length, publishedAt: r.publishedAt, lastError: r.lastError }));
+    },
+  },
+  {
+    name: "create_release",
+    needs: "write",
+    description: "Start a release. Add documents with add_to_release.",
+    input: z.object({ name: z.string().min(1).max(80) }),
+    run: async (cms, actor, a) => {
+      const r = await cms.releases.create(actor, { name: a.name as string });
+      return { id: r.id, name: r.name };
+    },
+  },
+  {
+    name: "add_to_release",
+    needs: "write",
+    description: "Put documents in a release. Each is pinned at its latest version now; add it again after more edits to move the pin. action unpublish takes the document down when the release goes out. A document can be in one open release only.",
+    input: z.object({ id: z.string().describe("Release id (list_releases)"), items: z.array(z.object({ collection: col, slug, action: z.enum(["publish", "unpublish"]).optional() })).min(1).max(50) }),
+    run: async (cms, actor, a) => {
+      const r = await cms.releases.add(actor, a.id as string, a.items as { collection: string; slug: string; action?: "publish" | "unpublish" }[]);
+      return { id: r.id, name: r.name, items: r.items.map((i) => ({ collection: i.collection, slug: i.slug, action: i.action, version: i.version })) };
+    },
+  },
+  {
+    name: "publish_release",
+    needs: "publish",
+    description: "Publish everything in a release at once. All or nothing: if any document is blocked (a failed check, no permission, a missing review) nothing is published and the error lists what blocked.",
+    input: z.object({ id: z.string() }),
+    run: async (cms, actor, a) => {
+      const r = await cms.releases.publish(actor, a.id as string);
+      return { id: r.id, name: r.name, state: r.state, documents: r.items.length };
+    },
   },
   {
     name: "list_assets",
