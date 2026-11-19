@@ -30,6 +30,18 @@ import { VERSION } from "./version";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyDef = Record<string, any>;
 
+export interface McpOptions {
+  /**
+   * `"read"`: requests without a key get the read tools below and see only
+   * published documents of collections anyone may read. Default `false`
+   * (401 without a key).
+   */
+  anonymous?: "read" | false;
+}
+
+/** Tools a keyless caller gets with `mcp: { anonymous: "read" }`. */
+export const ANONYMOUS_READ_TOOLS = ["list_collections", "search_documents", "read_for_answer", "list_documents", "get_document"] as const;
+
 /**
  * JSON Schema for a zod schema (the subset tool inputs and collection fields
  * use). Reads `_def.typeName` rather than `instanceof`, so schemas made by
@@ -141,7 +153,8 @@ const textResult = (value: unknown) => {
 export function createMcpServer(cms: CmsLike, actor: Actor): Server {
   const core: CmsCore = coreOf(cms);
   const server = new Server({ name: "agent-cms", version: VERSION }, { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: MCP_INSTRUCTIONS });
-  const visible = () => toolsFor(core, actor);
+  // A keyless caller only ever gets the read tools, whatever the collection rules say.
+  const visible = () => toolsFor(core, actor, actor.kind === "anonymous" ? ANONYMOUS_READ_TOOLS : undefined);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: visible().map((t) => ({ name: t.name, description: t.description, inputSchema: toJsonSchema(t.input) as { type: "object"; properties?: Record<string, object> } })),
@@ -239,8 +252,8 @@ const MAX_BODY_BYTES = 512 * 1024;
 const rpcError = (status: number, code: number, message: string, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code, message } }), { status, headers: { "content-type": "application/json", ...extra } });
 
-export async function handleMcp(cms: CmsLike, actor: Actor, req: Request): Promise<Response> {
-  if (actor.kind === "anonymous") return rpcError(401, -32001, "API key required", { "www-authenticate": 'Bearer realm="agent-cms"' });
+export async function handleMcp(cms: CmsLike, actor: Actor, req: Request, opts: McpOptions = {}): Promise<Response> {
+  if (actor.kind === "anonymous" && opts.anonymous !== "read") return rpcError(401, -32001, "API key required", { "www-authenticate": 'Bearer realm="agent-cms"' });
   if (req.method.toUpperCase() !== "POST") return rpcError(405, -32000, "Method not allowed (stateless server: POST only)", { allow: "POST" });
   const text = await req.text();
   if (text.length > MAX_BODY_BYTES) return rpcError(413, -32600, "Request too large");

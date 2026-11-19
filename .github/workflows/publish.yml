@@ -1,10 +1,10 @@
 name: Publish
 # Push a tag `v<version>` (matching package.json) to publish to npmjs.com.
 #
-# Auth: npm trusted publishing (OIDC, no stored token) once the package has
-# a Trusted Publisher for this repository and workflow. Before that (first
-# release), put an npm automation token in the `NPM_TOKEN` secret; remove it
-# after switching to trusted publishing.
+# Auth: npm trusted publishing (OIDC). The package's Trusted Publisher on
+# npmjs.com is this repository and this workflow file, so no token is stored.
+# setup-node writes an .npmrc that reads NODE_AUTH_TOKEN; it is left unset on
+# purpose so npm takes the OIDC path.
 on:
   push:
     tags: ["v*"]
@@ -26,5 +26,3 @@ jobs:
         run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
       - run: npm ci
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
