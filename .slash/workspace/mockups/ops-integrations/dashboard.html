@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>대시보드</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="../media-library/app.css">
+<link rel="stylesheet" href="../publish-flow/x.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <div class="nav on"><span data-icon="layout-dashboard"></span><span>대시보드</span></div>
+    <h2>컬렉션</h2>
+    <div class="nav"><span data-icon="book-open"></span><span>Blog</span><span class="n">5</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span>Guide</span><span class="n">6</span></div>
+    <div class="nav"><span data-icon="settings"></span><span>사이트 설정</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav"><span data-icon="image"></span><span>미디어</span></div>
+    <div class="nav"><span data-icon="hard-drive"></span><span>파일</span></div>
+    <div class="nav"><span data-icon="clipboard-list"></span><span>폼</span></div>
+    <div class="nav"><span data-icon="package"></span><span>릴리스</span></div>
+    <div class="nav"><span data-icon="trash-2"></span><span>휴지통</span></div>
+    <h2>운영</h2>
+    <div class="nav"><span data-icon="key-round"></span><span>API 키</span></div>
+    <div class="nav"><span data-icon="scroll-text"></span><span>감사 로그</span></div>
+    <div class="nav"><span data-icon="webhook"></span><span>웹훅</span></div>
+    <div class="nav"><span data-icon="workflow"></span><span>자동화</span></div>
+    <div class="nav"><span data-icon="shield"></span><span>역할</span></div>
+    <div class="nav"><span data-icon="corner-down-right"></span><span>리다이렉트</span></div>
+    <div class="nav"><span data-icon="replace"></span><span>동의어</span></div>
+    <div class="nav"><span data-icon="arrow-left-right"></span><span>가져오기와 내보내기</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="phd">
+      <h1>대시보드</h1>
+      <span class="grow"></span>
+      <div class="acts">
+        <div class="seg" data-label="기간 선택"><span>7일</span><span class="on">14일</span><span>30일</span></div>
+      </div>
+    </header>
+    <div class="pad">
+      <div class="cols" style="grid-template-columns:repeat(4,minmax(0,1fr))" data-label="요약 카드">
+        <div class="card2"><span class="lbl">문서</span><span class="big-n">11</span></div>
+        <div class="card2"><span class="lbl">게시됨</span><span class="big-n">7</span></div>
+        <div class="card2"><span class="lbl">검토 대기</span><span class="big-n">1</span></div>
+        <div class="card2"><span class="lbl">예약됨</span><span class="big-n">1</span></div>
+      </div>
+
+      <div class="cols" style="grid-template-columns:minmax(0,1.6fr) minmax(0,1fr)">
+        <div class="card2" data-label="변경 그래프">
+          <div class="row"><h3>변경</h3><span class="grow"></span><span class="key"><i></i>사람</span><span class="key"><i class="g"></i>에이전트</span></div>
+          <div class="bars">
+            <i style="height:22%"><b style="height:40%"></b></i><i style="height:35%"><b style="height:30%"></b></i><i style="height:12%"><b style="height:0"></b></i><i style="height:8%"><b style="height:100%"></b></i><i style="height:48%"><b style="height:55%"></b></i><i style="height:62%"><b style="height:35%"></b></i><i style="height:40%"><b style="height:50%"></b></i>
+            <i style="height:30%"><b style="height:20%"></b></i><i style="height:18%"><b style="height:60%"></b></i><i style="height:10%"><b style="height:0"></b></i><i style="height:55%"><b style="height:45%"></b></i><i style="height:78%"><b style="height:40%"></b></i><i style="height:92%"><b style="height:30%"></b></i><i style="height:66%"><b style="height:52%"></b></i>
+          </div>
+          <div class="row xs muted num"><span>11. 6.</span><span class="grow"></span><span>11. 19.</span></div>
+        </div>
+        <div class="card2" data-label="많이 본 문서">
+          <h3>많이 본 문서</h3>
+          <div class="row"><span class="grow trunc">Hello, world</span><span class="num muted">128</span></div>
+          <div class="row"><span class="grow trunc">Getting started</span><span class="num muted">96</span></div>
+          <div class="row"><span class="grow trunc">Year in review</span><span class="num muted">41</span></div>
+          <div class="row"><span class="grow trunc">Connect Slack</span><span class="num muted">37</span></div>
+          <div class="row"><span class="grow trunc">Pricing FAQ</span><span class="num muted">22</span></div>
+        </div>
+      </div>
+
+      <div class="card2" data-label="최근 활동">
+        <h3>최근 활동</h3>
+        <div class="row"><span data-icon="bot" class="muted"></span><span class="grow trunc">docs-bot, 미디어 올리는 법 검토 요청</span><span class="xs muted">10분 전</span></div>
+        <div class="row"><span data-icon="user" class="muted"></span><span class="grow trunc">박민호, Draft ideas 수정</span><span class="xs muted">방금</span></div>
+        <div class="row"><span data-icon="user" class="muted"></span><span class="grow trunc">김지수, 0.7 출시 안내 예약</span><span class="xs muted">어제</span></div>
+        <div class="row"><span data-icon="bot" class="muted"></span><span class="grow trunc">docs-bot, launch-hero.jpg 올림</span><span class="xs muted">어제</span></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

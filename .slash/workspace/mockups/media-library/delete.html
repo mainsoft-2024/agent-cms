@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사용 중인 파일 삭제</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="app.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <h2 class="first">컬렉션</h2>
+    <div class="nav"><span data-icon="book-open"></span><span class="grow trunc">Blog</span><span class="n">2</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span class="grow trunc">Guide</span><span class="n">1</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav on"><span data-icon="image"></span><span class="grow">미디어</span></div>
+    <h2>운영</h2>
+    <div class="nav"><span data-icon="key-round"></span><span class="grow">API 키</span></div>
+    <div class="nav"><span data-icon="scroll-text"></span><span class="grow">감사 로그</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="phd">
+      <h1>미디어</h1>
+      <span class="grow"></span>
+      <div class="acts">
+        <span class="b out"><span data-icon="folder-plus"></span>새 폴더</span>
+        <span class="b"><span data-icon="upload"></span>올리기</span>
+      </div>
+    </header>
+    <div class="content">
+      <section class="pane">
+        <div class="grid c3">
+          <div class="tile on"><div class="thumb p1"></div><div class="name trunc">launch-hero.jpg</div><div class="meta num">1920×1080, 412KB</div></div>
+          <div class="tile"><div class="thumb p2"></div><div class="name trunc">team-photo.jpg</div><div class="meta num">2400×1600, 1.8MB</div></div>
+          <div class="tile"><div class="thumb p7"></div><div class="name trunc">og-default.png</div><div class="meta num">1200×630, 58KB</div></div>
+        </div>
+      </section>
+      <aside class="detail"><div class="big p1"></div></aside>
+    </div>
+  </main>
+
+  <div class="veil">
+    <div class="dlg" role="alertdialog" data-label="삭제 확인 창">
+      <div>
+        <h2>파일 1개를 삭제할까요?</h2>
+        <p>삭제한 파일은 되살릴 수 없어요.</p>
+      </div>
+      <div class="rows" data-label="삭제할 파일">
+        <div><span data-icon="image" class="muted"></span><span class="grow trunc" style="font-weight:500">launch-hero.jpg</span><span class="xs muted num">412KB</span></div>
+      </div>
+      <div class="field" data-label="이 파일을 쓰는 문서">
+        <span class="lbl">이 파일을 쓰는 문서 2개</span>
+        <div class="rows">
+          <div><span class="grow trunc" style="font-weight:500">Hello, world</span><span class="xs muted">Blog</span><span class="badge"><i class="dot"></i>게시됨</span></div>
+          <div><span class="grow trunc" style="font-weight:500">Draft ideas</span><span class="xs muted">Blog</span><span class="badge"><i class="dot draft"></i>초안</span></div>
+        </div>
+      </div>
+      <div class="btns">
+        <span class="b out">취소</span>
+        <span class="b del">삭제</span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

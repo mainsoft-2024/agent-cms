@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>본문과 필드에 넣은 모습</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="editor.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <h2 class="first">컬렉션</h2>
+    <div class="nav on"><span data-icon="book-open"></span><span class="grow trunc">Blog</span><span class="n">2</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span class="grow trunc">Guide</span><span class="n">1</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav"><span data-icon="image"></span><span class="grow">미디어</span></div>
+    <h2>운영</h2>
+    <div class="nav"><span data-icon="key-round"></span><span class="grow">API 키</span></div>
+    <div class="nav"><span data-icon="scroll-text"></span><span class="grow">감사 로그</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="phd">
+      <span class="crumbs">Blog <span>/</span></span>
+      <h1>Hello, world</h1>
+      <span class="badge"><i class="dot"></i>게시됨</span>
+      <span class="grow"></span>
+      <div class="acts">
+        <span class="b ghost" style="padding:0 8px"><span data-icon="external-link"></span>공개 화면</span>
+        <span class="b ghost"><span data-icon="link"></span>미리보기 링크</span>
+        <span class="b ghost"><span data-icon="history"></span>버전 기록</span>
+        <span class="b out">저장</span>
+        <span class="b">게시</span>
+      </div>
+    </header>
+
+    <div class="form">
+      <div class="field"><label>제목</label><div class="inp">Hello, world</div></div>
+      <div class="field"><label>주소</label><div class="inp mono muted">hello-world</div></div>
+      <div class="field"><label>분류</label><div class="inp"><span class="grow">News</span><span data-icon="chevron-down" class="i14 muted"></span></div></div>
+      <div class="field"><label>요약</label><div class="inp">Our first post</div></div>
+      <div class="field"><label>Tags</label><div class="inp" style="gap:4px;padding:0 8px"><span class="chip">launch<span data-icon="x" class="i12 muted"></span></span></div></div>
+      <div class="field" data-label="이미지 필드">
+        <label>Cover</label>
+        <div class="cover">
+          <div class="mini p1"></div>
+          <span class="grow trunc" style="font-size:13.5px">launch-hero.jpg</span>
+          <span class="b out xsb" data-label="바꾸기 버튼">바꾸기</span>
+          <span class="b ghost xsb" data-label="제거 버튼">제거</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="split">
+      <section>
+        <div class="bar2">
+          <span data-icon="file-text" class="i14"></span><b>마크다운</b>
+          <span class="grow"></span>
+          <span class="b ghost xsb" style="height:26px;padding:0 8px;font-size:12px" data-label="미디어 넣기 버튼"><span data-icon="image-plus" class="i14"></span>미디어 넣기</span>
+          <span class="num">214자</span>
+        </div>
+        <div class="src" data-label="마크다운 원문">## Welcome
+
+This blog runs on agent-cms.
+
+<mark data-label="본문의 이미지 줄">![편집 화면에서 사람과 에이전트가 같은 문서를 함께 고치는 모습](asset:8k2m4x9p/launch-hero.jpg "0.7에서 새로 생긴 편집 화면")</mark>
+
+## What next
+
+Write with people and agents.
+
+<mark data-label="대체 텍스트가 없는 이미지 줄">![](asset:c7t1n5qd/team-photo.jpg)</mark></div>
+      </section>
+      <section>
+        <div class="bar2">
+          <span data-icon="eye" class="i14"></span><b>미리보기</b>
+          <span class="grow"></span>
+          <div class="seg" style="padding:2px"><span style="height:22px;padding:0 8px;font-size:12px">375</span><span style="height:22px;padding:0 8px;font-size:12px">768</span><span class="on" style="height:22px;padding:0 8px;font-size:12px">전체</span></div>
+        </div>
+        <div class="pv" data-label="미리보기">
+          <h1>Hello, world</h1>
+          <p class="muted">Our first post</p>
+          <h2>Welcome</h2>
+          <p>This blog runs on agent-cms.</p>
+          <figure data-label="미리보기의 이미지"><div class="img p1"></div><figcaption>0.7에서 새로 생긴 편집 화면</figcaption></figure>
+          <h2>What next</h2>
+          <p>Write with people and agents.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="footb">
+      <span class="warn" style="display:inline-flex;align-items:center;gap:6px" data-label="대체 텍스트 경고"><span data-icon="circle-alert" class="i14"></span>문제 1개<span data-icon="chevron-down" class="i12"></span></span>
+      <span class="warn"><span class="mono">body</span>: 11번째 줄의 이미지에 대체 텍스트가 없어요.</span>
+      <span class="grow"></span>
+      <span style="display:inline-flex;align-items:center;gap:6px"><span data-icon="cloud" class="i14"></span>자동 저장됨 오후 9:42</span>
+    </div>
+  </main>
+</div>
+</body>
+</html>

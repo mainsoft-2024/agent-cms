@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>버킷 탐색</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="app.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+<style>
+  .bulk { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; padding: 6px 8px 6px 12px; border: 1px solid var(--border-c); border-radius: var(--radius-lg); background: hsl(0 0% 96.1% / 0.4); }
+  .nm { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+  .path { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; }
+  .path b { font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <h2 class="first">컬렉션</h2>
+    <div class="nav"><span data-icon="book-open"></span><span class="grow trunc">Blog</span><span class="n">2</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span class="grow trunc">Guide</span><span class="n">1</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav"><span data-icon="image"></span><span class="grow">미디어</span></div>
+    <div class="nav on" data-label="파일 메뉴"><span data-icon="hard-drive"></span><span class="grow">파일</span></div>
+    <h2>운영</h2>
+    <div class="nav"><span data-icon="key-round"></span><span class="grow">API 키</span></div>
+    <div class="nav"><span data-icon="scroll-text"></span><span class="grow">감사 로그</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="phd">
+      <h1>파일</h1>
+      <span class="grow"></span>
+      <div class="acts">
+        <span class="b out"><span data-icon="folder-plus"></span>새 폴더</span>
+        <span class="b"><span data-icon="upload"></span>올리기</span>
+      </div>
+    </header>
+
+    <div class="content">
+      <section class="pane">
+        <div class="tools">
+          <div class="sel" data-label="저장소 고르기"><span data-icon="lock" class="i14 muted"></span>비공개<span data-icon="chevron-down" class="i14 muted"></span></div>
+          <div class="path" data-label="현재 경로"><span class="muted">example-private</span><span data-icon="chevron-right" class="i14 muted"></span><span class="muted">contracts</span><span data-icon="chevron-right" class="i14 muted"></span><b>2026</b></div>
+          <span class="grow"></span>
+          <div class="inp ph-text" style="width:220px"><span data-icon="search"></span>이 폴더에서 찾기</div>
+        </div>
+
+        <div class="bulk" data-label="선택 동작 줄">
+          <span style="font-size:13px;font-weight:500;margin-right:4px">2개 선택됨</span>
+          <span class="b out xsb"><span data-icon="folder-input" class="i14"></span>이동</span>
+          <span class="b out xsb"><span data-icon="download" class="i14"></span>내려받기</span>
+          <span class="b out xsb" data-label="링크 만들기 버튼"><span data-icon="link" class="i14"></span>링크 만들기</span>
+          <span class="b out xsb danger-text"><span data-icon="trash-2" class="i14"></span>삭제</span>
+          <span class="grow"></span>
+          <span class="b ghost xsb">선택 해제</span>
+        </div>
+
+        <table data-label="파일 표">
+          <thead>
+            <tr><th style="width:36px"><span class="check"></span></th><th>이름</th><th style="width:150px">종류</th><th class="r" style="width:100px">크기</th><th style="width:140px">마지막 수정</th><th style="width:40px"></th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="check"></span></td><td><span class="nm"><span data-icon="folder" class="muted"></span>signed</span></td><td class="muted">폴더</td><td class="r muted num"></td><td class="num">2026. 11. 14.</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+            <tr><td><span class="check"></span></td><td><span class="nm"><span data-icon="folder" class="muted"></span>drafts</span></td><td class="muted">폴더</td><td class="r muted num"></td><td class="num">2026. 11. 02.</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+            <tr class="picked"><td><span class="check on"><span data-icon="check" class="i12"></span></span></td><td><span class="nm"><span data-icon="file-text" class="muted"></span>msa-acme-2026.pdf</span></td><td>PDF</td><td class="r num">842KB</td><td class="num">2026. 11. 18.</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+            <tr class="picked"><td><span class="check on"><span data-icon="check" class="i12"></span></span></td><td><span class="nm"><span data-icon="file-text" class="muted"></span>nda-template.docx</span></td><td>Word 문서</td><td class="r num">64KB</td><td class="num">2026. 11. 10.</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+            <tr><td><span class="check"></span></td><td><span class="nm"><span data-icon="film" class="muted"></span>partner-briefing.mp4</span></td><td>MP4 영상</td><td class="r num">1.8GB</td><td class="num">2026. 11. 06.</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+            <tr><td><span class="check"></span></td><td><span class="nm"><span data-icon="file-archive" class="muted"></span>export-2026-10.zip</span></td><td>압축 파일</td><td class="r num">312MB</td><td class="num">2026. 11. 01.</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+            <tr><td><span class="check"></span></td><td><span class="nm"><span data-icon="image" class="muted"></span>signature-scan.png</span></td><td>PNG 이미지</td><td class="r num">218KB</td><td class="num">2026. 10. 28.</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          </tbody>
+        </table>
+
+        <div class="foot"><span class="num">폴더 2개, 파일 5개</span></div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

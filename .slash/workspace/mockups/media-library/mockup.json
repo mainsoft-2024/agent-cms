@@ -1,0 +1,82 @@
+{
+  "canvas": "media-library",
+  "title": "미디어 라이브러리와 파일 관리자",
+  "description": "미디어 목록, 파일 정보, 올리기, 문서에 넣기, 버킷 탐색 화면의 구성을 정한다",
+  "sections": [
+    {
+      "title": "1단계: 미디어 라이브러리",
+      "artboards": [
+        {
+          "id": "library",
+          "path": ".slash/workspace/mockups/media-library/library.html",
+          "label": "1. 미디어 목록",
+          "device": "browser"
+        },
+        {
+          "id": "detail",
+          "path": ".slash/workspace/mockups/media-library/detail.html",
+          "label": "2. 파일 정보",
+          "device": "browser"
+        },
+        {
+          "id": "upload",
+          "path": ".slash/workspace/mockups/media-library/upload.html",
+          "label": "3. 올리는 중",
+          "device": "browser"
+        },
+        {
+          "id": "delete",
+          "path": ".slash/workspace/mockups/media-library/delete.html",
+          "label": "4. 사용 중인 파일 삭제",
+          "device": "browser"
+        }
+      ]
+    },
+    {
+      "title": "문서 편집기에서 쓰기",
+      "artboards": [
+        {
+          "id": "editor",
+          "path": ".slash/workspace/mockups/media-library/editor.html",
+          "label": "5. 본문과 필드에 넣은 모습",
+          "device": "browser"
+        },
+        {
+          "id": "picker",
+          "path": ".slash/workspace/mockups/media-library/picker.html",
+          "label": "6. 미디어 선택",
+          "device": "browser"
+        }
+      ]
+    },
+    {
+      "title": "휴대폰",
+      "artboards": [
+        {
+          "id": "library-phone",
+          "path": ".slash/workspace/mockups/media-library/library-phone.html",
+          "label": "7. 미디어 목록",
+          "device": "iphone"
+        }
+      ]
+    },
+    {
+      "title": "2단계: 파일 관리자",
+      "artboards": [
+        {
+          "id": "files",
+          "path": ".slash/workspace/mockups/media-library/files.html",
+          "label": "8. 버킷 탐색",
+          "device": "browser"
+        }
+      ]
+    }
+  ],
+  "versions": [
+    {
+      "version": 1,
+      "mockupId": "zKGY5lo7Sl6AwcvV99O1G",
+      "createdAt": "2026-11-19T13:09:01.045Z"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>가져오기와 내보내기</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="../media-library/app.css">
+<link rel="stylesheet" href="../publish-flow/x.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <div class="nav"><span data-icon="layout-dashboard"></span><span>대시보드</span></div>
+    <h2>컬렉션</h2>
+    <div class="nav"><span data-icon="book-open"></span><span>Blog</span><span class="n">5</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span>Guide</span><span class="n">6</span></div>
+    <div class="nav"><span data-icon="settings"></span><span>사이트 설정</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav"><span data-icon="image"></span><span>미디어</span></div>
+    <div class="nav"><span data-icon="hard-drive"></span><span>파일</span></div>
+    <div class="nav"><span data-icon="clipboard-list"></span><span>폼</span></div>
+    <div class="nav"><span data-icon="package"></span><span>릴리스</span></div>
+    <div class="nav"><span data-icon="trash-2"></span><span>휴지통</span></div>
+    <h2>운영</h2>
+    <div class="nav"><span data-icon="key-round"></span><span>API 키</span></div>
+    <div class="nav"><span data-icon="scroll-text"></span><span>감사 로그</span></div>
+    <div class="nav"><span data-icon="webhook"></span><span>웹훅</span></div>
+    <div class="nav"><span data-icon="workflow"></span><span>자동화</span></div>
+    <div class="nav"><span data-icon="shield"></span><span>역할</span></div>
+    <div class="nav"><span data-icon="corner-down-right"></span><span>리다이렉트</span></div>
+    <div class="nav"><span data-icon="replace"></span><span>동의어</span></div>
+    <div class="nav on"><span data-icon="arrow-left-right"></span><span>가져오기와 내보내기</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="phd"><h1>가져오기와 내보내기</h1></header>
+    <div class="tabs2" data-label="탭"><span class="on"><span data-icon="download"></span>가져오기</span><span><span data-icon="upload"></span>내보내기</span></div>
+    <div class="pad">
+      <div class="row">
+        <div class="field" style="width:200px"><label>컬렉션</label><div class="inp"><span class="grow">Guide</span><span data-icon="chevron-down" class="i14 muted"></span></div></div>
+        <div class="field" style="width:240px" data-label="겹칠 때 선택"><label>같은 주소가 있을 때</label><div class="inp"><span class="grow">새 버전으로 저장</span><span data-icon="chevron-down" class="i14 muted"></span></div></div>
+        <span class="grow"></span>
+        <div class="row" style="align-self:flex-end"><span data-icon="file-archive" class="muted"></span><span>guide-export.zip</span><span class="xs muted num">48KB</span><span class="b ghost xsb">바꾸기</span></div>
+      </div>
+      <table data-label="가져올 문서 표">
+        <thead><tr><th style="width:36px"><span class="check on"><span data-icon="check" class="i12"></span></span></th><th style="width:260px">파일</th><th>제목</th><th style="width:150px">바뀌는 것</th><th style="width:130px">문제</th></tr></thead>
+        <tbody>
+          <tr><td><span class="check on"><span data-icon="check" class="i12"></span></span></td><td class="mono" style="font-size:12.5px">getting-started.md</td><td style="font-weight:500">Getting started</td><td class="num">v7 → v8</td><td class="muted">문제 없음</td></tr>
+          <tr><td><span class="check on"><span data-icon="check" class="i12"></span></span></td><td class="mono" style="font-size:12.5px">connect-slack.md</td><td style="font-weight:500">Connect Slack</td><td class="muted">같음</td><td class="muted">문제 없음</td></tr>
+          <tr><td><span class="check on"><span data-icon="check" class="i12"></span></span></td><td class="mono" style="font-size:12.5px">upload-media.md</td><td style="font-weight:500">미디어 올리는 법</td><td>새 문서</td><td class="muted">문제 없음</td></tr>
+          <tr data-label="문제가 있는 파일"><td><span class="check"></span></td><td class="mono" style="font-size:12.5px">pricing-faq.md</td><td style="font-weight:500">Pricing FAQ</td><td>새 문서</td><td style="color:#b45309"><span class="row"><span data-icon="circle-alert" class="i14"></span>문제 1개</span></td></tr>
+        </tbody>
+      </table>
+      <div class="foot">
+        <span class="num">파일 4개 중 3개 선택됨</span>
+        <span class="b sm" data-label="가져오기 버튼">가져오기</span>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
