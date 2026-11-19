@@ -57,6 +57,7 @@ export const en: Messages = {
   upload_incomplete: "The file did not arrive completely. Upload it again",
   import_blocked: "That address cannot be fetched",
   import_failed: "Could not fetch the file ({reason})",
+  asset_rejected: "This file did not pass the check",
   asset_missing: "The file {id} does not exist",
   asset_wrong_kind: "The file {id} is not a kind this field takes",
   asset_alt_missing: "The image on line {line} has no alt text",

@@ -268,6 +268,26 @@ has the same three levels. The server checks the name and declared type when
 an upload starts, and the first bytes of what actually arrived when it ends:
 a web page named `photo.png` is deleted again (`asset_type_mismatch`).
 
+**Your own check.** `media.scan` is called once for every file that arrives:
+when a browser upload completes, when a file is imported or stored by the
+server, and when a file that was already in the bucket gets registered. It
+is where a virus scanner or a content policy goes:
+
+```ts
+media: {
+  stores: { /* … */ },
+  scan: async ({ url, bytes, name, mime, size }) => {
+    // `url`: a signed address that works for 10 minutes. `bytes` instead when the CMS holds the file in memory.
+    const verdict = await myScanner.check(url ?? bytes);
+    return verdict.clean ? true : { ok: false, reason: verdict.name };
+  },
+},
+```
+
+A refused file is deleted from the storage and never becomes usable (a
+registered one is left where it was); the caller gets `asset_rejected` and
+the audit log has the reason. A check that throws refuses the file too.
+
 **In a document** a file is named by its id, so moving or renaming it never
 breaks a page:
 

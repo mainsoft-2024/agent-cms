@@ -81,7 +81,7 @@ export type { PatchOp, SectionRange } from "./patch";
 export { normalizeQuery } from "./search";
 export { callTool, CMS_TOOLS, CMS_TOOL_NAMES, runTool, toolErrorResult, toolsFor } from "./tools";
 export { assetFields, assetId, humanSize } from "./assets";
-export type { AssetInfo, AssetListOptions, AssetUsage, AssetView, CmsAssets, MediaOptions, MediaStoreConfig, UploadInstructions, UploadRequest } from "./assets";
+export type { AssetInfo, AssetListOptions, AssetUsage, AssetView, CmsAssets, MediaOptions, MediaStoreConfig, ScanFile, UploadInstructions, UploadRequest } from "./assets";
 export { DEFAULT_ACCEPT, MemoryStorage } from "./storage";
 export type { StorageAdapter } from "./storage";
 export type { CallToolOptions, CmsToolDef, ToolErrorResult, ToolOutcome } from "./tools";

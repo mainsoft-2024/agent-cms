@@ -57,6 +57,7 @@ export const ko: Messages = {
   upload_incomplete: "파일이 다 올라오지 않았어요. 다시 올려 주세요",
   import_blocked: "가져올 수 없는 주소예요",
   import_failed: "파일을 가져오지 못했어요({reason})",
+  asset_rejected: "검사를 통과하지 못한 파일이에요",
   asset_missing: "없는 파일이에요: {id}",
   asset_wrong_kind: "이 필드에 넣을 수 없는 종류의 파일이에요: {id}",
   asset_alt_missing: "{line}번째 줄의 이미지에 대체 텍스트가 없어요",

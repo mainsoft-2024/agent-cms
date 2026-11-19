@@ -67,6 +67,7 @@ export const ERROR_CODES = {
   upload_incomplete: "invalid",
   import_blocked: "invalid",
   import_failed: "invalid",
+  asset_rejected: "invalid",
   asset_missing: "invalid",
   asset_wrong_kind: "invalid",
   asset_alt_missing: "invalid",

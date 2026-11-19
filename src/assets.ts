@@ -54,6 +54,16 @@ export interface MediaStoreConfig {
   maxFileSize?: number;
 }
 
+export interface ScanFile {
+  store: string;
+  key: string;
+  name: string;
+  mime: string;
+  size: number;
+  url: string | null;
+  bytes?: Uint8Array;
+}
+
 export interface MediaOptions {
   /** The first one is the default store. */
   stores: Record<string, MediaStoreConfig>;
@@ -67,6 +77,17 @@ export interface MediaOptions {
   linkTtlSeconds?: number;
   /** Largest file an agent may import by URL, in bytes. Default 50MB. */
   importMaxBytes?: number;
+  /**
+   * Your own check of every file that arrives (a virus scanner, a content
+   * policy). Called once when an upload completes, a file is imported or
+   * stored by the server, or a file already in the bucket is registered.
+   * `url` is a signed address that works for 10 minutes (null when the file
+   * is not stored yet; then `bytes` is set). Return `false` or
+   * `{ ok: false, reason }` to refuse; throwing refuses too. A refused file
+   * is deleted (a registered one is left alone) and the caller gets
+   * `asset_rejected`.
+   */
+  scan?: (file: ScanFile) => boolean | void | { ok: boolean; reason?: string } | Promise<boolean | void | { ok: boolean; reason?: string }>;
   /** Where the CMS route serves files. Default `/api/cms/files`. */
   filesUrl?: string;
   /** For tests and unusual networks: how `import` fetches and resolves host names. */
@@ -380,6 +401,10 @@ export function createAssets(ctx: AssetsContext) {
       await discard({ ...a, uploadId: null });
       throw fail("asset_type_mismatch", { name: a.name, mime: a.mime });
     }
+    await scanned(actor, { store: a.store, key: a.key, name: a.name, mime: a.mime, size: head.size }, adapter).catch(async (e) => {
+      await discard({ ...a, uploadId: null });
+      throw e;
+    });
     const given = dims(meta);
     const read = a.kind === "image" && !given.width ? imageSize(start) : null;
     const row = (await repo.updateAsset(a.id, { status: "ready", uploadId: null, width: given.width ?? read?.width ?? null, height: given.height ?? read?.height ?? null, duration: given.duration, updatedAt: ctx.nowIso() }))!;
@@ -414,6 +439,7 @@ export function createAssets(ctx: AssetsContext) {
     const a = admit(store, { ...input, size: input.bytes.length });
     if (!contentMatches(a.mime, input.bytes.subarray(0, 4096))) throw fail("asset_type_mismatch", { name: a.name, mime: a.mime });
     const free = await freeKey(store, a.folder, a.name);
+    await scanned(actor, { store: store.name, key: free.key, name: free.name, mime: a.mime, size: input.bytes.length, bytes: input.bytes }, null);
     await store.cfg.adapter.put(free.key, input.bytes, { mime: a.mime, disposition: dispositionFor(free.name, a.mime) });
     const who = ctx.actorRef(actor);
     const given = dims(input);
@@ -715,6 +741,21 @@ export function createAssets(ctx: AssetsContext) {
   }
 
   /** What the admin needs to know: stores, their rules, and what this actor may do. */
+  /** The app's own check (`media.scan`). Refusing or throwing rejects the file: better no file than an unchecked one. */
+  async function scanned(actor: Actor, f: Omit<ScanFile, "url">, adapter: MediaStoreConfig["adapter"] | null): Promise<void> {
+    if (!media?.scan) return;
+    let reason: string | null = null;
+    try {
+      const r = await media.scan({ ...f, url: adapter ? await adapter.presignGet(f.key, { expires: 600, download: null }) : null });
+      if (r === false || (typeof r === "object" && r && !r.ok)) reason = (typeof r === "object" && r.reason) || "refused";
+    } catch (e) {
+      reason = e instanceof Error ? e.message : String(e);
+    }
+    if (reason === null) return;
+    ctx.audit(actor, "asset.upload", { outcome: "denied", detail: { store: f.store, key: f.key, reason } });
+    throw fail("asset_rejected", { name: f.name, reason });
+  }
+
   // ── the whole bucket (file manager) ───────────────────────────────────────
   //
   // The media library shows the files the CMS knows. These functions look at
@@ -786,6 +827,7 @@ export function createAssets(ctx: AssetsContext) {
     const { folder, name } = split(key);
     const mime = mimeOf(name, head.mime);
     const kind = kindOf(mime);
+    await scanned(actor, { store: store.name, key, name, mime, size: head.size }, store.cfg.adapter);
     const size = kind === "image" ? imageSize((await store.cfg.adapter.readStart(key, 256 * 1024).catch(() => null)) ?? new Uint8Array()) : null;
     const who = ctx.actorRef(actor);
     const now = ctx.nowIso();
