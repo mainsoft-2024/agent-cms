@@ -59,6 +59,10 @@ export type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocPatch, KeyRow, New
 export {
   cmsApiKeys,
   cmsAssetRefs,
+  cmsComments,
+  cmsPresence,
+  cmsReleases,
+  cmsSavedFilters,
   cmsAssets,
   cmsAudit,
   cmsDdl,

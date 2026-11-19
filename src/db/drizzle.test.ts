@@ -99,6 +99,13 @@ test("db: DDL is idempotent and the repo passes the CMS flow", async () => {
     assert.deepEqual(bulk.map((b) => b.ok), [true, false]);
     assert.equal((await cms.counts(admin, "guide")).archived, 1);
     await cms.remove(admin, "guide", "slack");
+    // In the trash: gone for readers, the row and its versions wait for a restore or a purge.
+    assert.equal(await cms.get(admin, "guide", "slack", { draft: true }).catch((e) => e.code), "not_found");
+    assert.deepEqual((await cms.trash.list(admin)).items.map((i) => [i.kind, i.slug, i.state]), [["document", "slack", "archived"]]);
+    await cms.trash.restore(admin, [{ kind: "document", id: (await cms.trash.list(admin)).items[0].id }]);
+    assert.equal((await cms.get(admin, "guide", "slack", { draft: true })).status, "archived");
+    await cms.remove(admin, "guide", "slack");
+    assert.deepEqual(await cms.trash.purge(admin, "all"), { purged: 1 });
     assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from cms_versions"))[0].n, 0);
   } finally {
     await close();
@@ -203,7 +210,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_documents", "blog_hits", "blog_meta", "blog_versions"]
+      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_comments", "blog_documents", "blog_hits", "blog_meta", "blog_presence", "blog_releases", "blog_saved_filters", "blog_versions"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -224,7 +231,9 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     await run(db, cmsDdl());
     await run(
       db,
-      `DROP TABLE cms_asset_refs; DROP TABLE cms_assets;
+      `DROP TABLE cms_asset_refs; DROP TABLE cms_assets; DROP TABLE cms_comments; DROP TABLE cms_presence; DROP TABLE cms_releases; DROP TABLE cms_saved_filters;
+       ALTER TABLE cms_documents DROP COLUMN deleted_at, DROP COLUMN deleted_by, DROP COLUMN schedule, DROP COLUMN due_at, DROP COLUMN review;
+       ALTER TABLE cms_versions DROP COLUMN label, DROP COLUMN pinned, DROP COLUMN approved_by, DROP COLUMN approved_at;
        ALTER TABLE cms_documents DROP COLUMN updated_by_agent; ALTER TABLE cms_versions DROP COLUMN author_agent; ALTER TABLE cms_audit DROP COLUMN actor_agent;
        UPDATE cms_meta SET value = '2'::jsonb WHERE key = 'schema_version';`
     );
@@ -233,10 +242,11 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     await assert.rejects(cms.get(anon, "guide", "x"), (e: unknown) => isCmsError(e) && e.code === "schema_outdated");
     const before = await repo.inspect();
     assert.equal(before.schemaVersion, 2);
-    assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets"]);
+    assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_presence", "cms_releases", "cms_saved_filters"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 1], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.10\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -300,6 +310,11 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.equal(await repo.findAsset("bbbbbbbbbbbb"), null);
     await repo.setAssetRefs(d.id, [{ assetId: "aaaaaaaaaaaa", inDraft: true, inPublished: false }]);
     await fresh.remove(admin, "guide", "a");
+    // The document is in the trash and still names the file; emptying the trash drops the use with it.
+    assert.equal((await repo.listAssetRefs("aaaaaaaaaaaa")).length, 1);
+    assert.equal(await repo.findDoc("guide", "a"), null);
+    assert.equal((await repo.findDoc("guide", "a", { trashed: true }))?.deletedBy, "Admin");
+    await fresh.trash.purge(admin, "all");
     assert.deepEqual(await repo.listAssetRefs("aaaaaaaaaaaa"), []);
     assert.ok(await repo.findAsset("aaaaaaaaaaaa"), "the file itself stays");
   } finally {
@@ -341,6 +356,9 @@ test("db: the media library on a real database (uses follow saves, publishes and
     await assert.rejects(cms.assets.remove(admin, file.id), (e) => isCmsError(e) && e.code === "asset_in_use");
     await cms.remove(admin, "guide", "b");
     await cms.assets.remove(admin, file.id);
+    // Both are in the trash; the rows go when the trash is emptied.
+    assert.deepEqual((await cms.trash.list(admin)).items.map((i) => i.kind).sort(), ["asset", "document"]);
+    assert.deepEqual(await cms.trash.purge(admin, "all"), { purged: 2 });
     assert.equal((await rows(db, "SELECT 1 FROM cms_asset_refs")).length, 0);
     assert.equal((await cms.assets.cleanup({ olderThanMs: -1000 })).removed, 1, "the upload that never finished");
     assert.equal((await rows(db, "SELECT 1 FROM cms_assets")).length, 0);

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased (0.10.0, server part)
+
+The rules, REST routes, admin client and agent tools of the editing and publishing flow. The screens come next. Read [UPGRADE-0.10.md](./UPGRADE-0.10.md): deletes now go to a trash, and the schema is version 4.
+
+- **Scheduled publishing:** `cms.schedule(actor, col, slug, { publishAt, unpublishAt })`. What goes public is the version that was current when it was scheduled, not what the draft holds later. `cms.runScheduled()` does what is due; the `/_cron` route calls it and has its own secret (`createCms({ cronSecret })`, `Authorization: Bearer`). A version that no longer passes its checks is not published and the failure is in the audit log.
+- **Trash:** a deleted document or file goes to the trash for 30 days (`createCms({ trash: { days } })`, `0` deletes at once). It is gone for readers, search and agents, keeps its address, and comes back as it was. `cms.trash.list / restore / purge`; purging is for admins; `runScheduled` empties what is older.
+- **Review:** `defineCollection({ review: { agents: "required" } })` stops API keys and agents acting for a person from publishing a version nobody approved (`review_required`); `everyone: "required"` also stops people from approving their own request. `requestReview`, `approveReview` (publishes exactly the requested version), `rejectReview` (with a note), `reviewRequests`.
+- **Comments:** threads on a section and a quoted piece of text, answers one level deep, resolve and reopen. Each thread says whether its text is still there. A preview link made with `comments: true` lets its holder read and write them without an account.
+- **Releases:** documents that go out together, each pinned at a version. `cms.releases.publish` is one transaction: any blocked document stops all of it and the error lists what blocked. A release can be scheduled.
+- **Versions:** a name and a pin (`labelVersion`); pinned versions are never pruned.
+- **Saved filters**, **presence** (who has a document open, also agents while they save) and **`cms.preview`** (blocks with source lines, table of contents, problems and diff of unsaved text; `parseMarkdown(src, { lines: true })`).
+- List states `scheduled` and `review`; `counts` has both.
+- Agent tools (16 → 31, plus the file tools): `schedule_document`, `unschedule_document`, `request_review`, `list_review_requests`, `list_comments`, `add_comment`, `resolve_comment`, `list_trash`, `restore_from_trash`, `list_releases`, `create_release`, `add_to_release`, `publish_release`, `label_version`, `preview_document`. Approving a review is a person's job and has no tool.
+- Schema version 4 (run `npx agent-cms migrate apply`).
+
 ## Unreleased (0.9.0)
 
 - **File manager:** `cms-files` shows a storage bucket as it is, folder by folder, also files nobody uploaded through the CMS. Move, download, share links and delete for several files and whole folders at once; opening a file shows the media library's panel. `cms-shell` shows "Files" to whoever may look around a store (`access.browse`, default: whoever may read it).
