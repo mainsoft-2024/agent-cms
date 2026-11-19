@@ -9,6 +9,10 @@
  *       print: the full idempotent DDL; apply: run it
  *   agent-cms add <item...> [--diff | --update] [--yes] [--overwrite] [--dir path]
  *       copy admin screens into the app (see `agent-cms add --list`)
+ *   agent-cms storage check [--origin https://your-site]
+ *       try every file store for real (upload, signed addresses, large-file parts, CORS)
+ *       and print what each store accepts. Needs `media` in agent-cms.config.ts.
+ *   agent-cms storage cleanup              remove uploads that were started and never finished
  *
  * Against a running app, with an API key (same operations as the MCP tools):
  *   agent-cms tools | collections
@@ -20,6 +24,8 @@
  *       so an edit someone made since is never overwritten. Frontmatter: see frontmatter.ts.
  *   agent-cms patch <collection> <slug> <ops.json> [--expected-version N] [--dry-run]
  *   agent-cms publish <collection> <slug>
+ *   agent-cms upload <files...> [--store name] [--folder path] [--alt "text"] [--tag a,b]
+ *       put files into the media library (large files go up in parts)
  *   agent-cms call <tool> '<json args>'
  *
  * Env: AGENT_CMS_URL (https://app/api/cms) and AGENT_CMS_KEY (sgk_…), or
@@ -27,12 +33,16 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { createCmsClient, CmsRemoteError, isCmsRemoteError } from "./client";
+import { humanSize, type MediaOptions } from "./assets";
+import { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
+import { createCmsCore } from "./cms";
 import { loadConfig } from "./config";
 import { DrizzleRepo, type DoctorReport } from "./drizzle-repo";
 import { docFromMarkdown } from "./frontmatter";
+import { imageSize } from "./net-guard";
+import { DEFAULT_ACCEPT, DEFAULT_MAX_FILE_SIZE } from "./storage";
 import { addItems, loadRegistry, type Registry } from "./registry";
 import { cmsDdl, cmsTables, SCHEMA_VERSION, schemaVersionSql, splitSql, upgradeSteps } from "./tables";
 import { VERSION } from "./version";
@@ -50,11 +60,15 @@ export interface CliIo {
   /** Database for `doctor` / `migrate` (tests). Default: `db()` from agent-cms.config.ts. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db?: any;
+  /** Read a file as bytes (for `upload`; tests). Default: from disk, part by part. */
+  readBytes?: (path: string) => Uint8Array;
+  /** File stores for `storage` (tests). Default: `media` from agent-cms.config.ts. */
+  media?: MediaOptions;
   /** Run a command (for `add --yes`). */
   run?: (cmd: string, args: string[], cwd: string) => number;
 }
 
-const WITH_VALUE = new Set(["--env", "--note", "--collections", "--expected-version", "--dir", "--format"]);
+const WITH_VALUE = new Set(["--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin"]);
 
 function flag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -88,11 +102,11 @@ export function parseEnvFile(text: string): Record<string, string> {
 }
 
 const USAGE = `agent-cms ${VERSION}
-in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update]
-with a key:    tools | collections | list | get | search | put | patch | publish | call
+in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup>
+with a key:    tools | collections | list | get | search | put | patch | publish | upload | call
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
-const LOCAL = new Set(["init", "doctor", "migrate", "add"]);
+const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage"]);
 
 export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
   const out = io.out ?? ((l: string) => console.log(l));
@@ -192,6 +206,14 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
       print(result);
       return 0;
     }
+    case "upload": {
+      need(1);
+      const rest = createRestClient({ url: env.AGENT_CMS_URL, fetch: io.fetch, headers: { authorization: `Bearer ${env.AGENT_CMS_KEY}`, "x-agent-cms-client": "cli" } });
+      const done = [];
+      for (const path of args) done.push(await uploadFile(rest, path, { store: flag(argv, "store"), folder: flag(argv, "folder"), alt: flag(argv, "alt"), tags: flag(argv, "tag")?.split(",").map((t) => t.trim()).filter(Boolean) }, io));
+      print(done);
+      return 0;
+    }
     case "call": {
       need(1);
       const parsed = args[1] ? JSON.parse(args[1]) : {};
@@ -213,6 +235,12 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
   if (cmd === "add") return add(args, argv, io);
   const loaded = await loadConfig(io.cwd);
   const tables = cmsTables(loaded?.config.tables);
+  const media = async () => io.media ?? (typeof loaded?.config.media === "function" ? await loaded.config.media() : loaded?.config.media);
+  if (cmd === "storage" && (args[0] ?? "check") === "check") {
+    const m = await media();
+    if (!m) return noMedia(io);
+    return storageCheck(m, flag(argv, "origin"), io);
+  }
   if (cmd === "migrate" && args[0] === "print") {
     io.out(cmsDdl(tables));
     return 0;
@@ -231,7 +259,23 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
     return 1;
   }
   const repo = new DrizzleRepo(db, { tables });
-  if (cmd === "doctor") return doctor(await repo.inspect(), tables.options, io);
+  if (cmd === "storage") {
+    if (args[0] !== "cleanup") {
+      io.err(`unknown: storage ${args[0]} (check | cleanup)`);
+      return 1;
+    }
+    const m = await media();
+    if (!m) return noMedia(io);
+    const { removed } = await createCmsCore({ repo, collections: [], media: m }).assets.cleanup();
+    io.out(`[agent-cms] removed ${removed} unfinished upload(s).`);
+    return 0;
+  }
+  if (cmd === "doctor") {
+    const report = await repo.inspect();
+    let stale = 0;
+    if (!report.missingTables.length && !report.missingColumns.length) stale = (await repo.listAssets({ status: "pending", createdBefore: new Date(Date.now() - 24 * 3600 * 1000).toISOString(), limit: 500 })).length;
+    return doctor(report, tables.options, io, stale);
+  }
   if (cmd === "migrate") {
     const sub = args[0] ?? "check";
     if (sub === "apply") {
@@ -272,7 +316,7 @@ export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTable
   return { sql: `${meta}${steps.map((s) => `-- ${s.name}\n${s.sql}`).join("\n\n")}\n${schemaVersionSql(tables)}`, steps: steps.map((s) => s.name) };
 }
 
-function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, io: LocalIo): number {
+function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, io: LocalIo, staleUploads = 0): number {
   const lines: string[] = [];
   let bad = false;
   const ok = (m: string) => lines.push(`ok    ${m}`);
@@ -289,6 +333,7 @@ function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, i
   else ok(`schema version ${r.schemaVersion}`);
   if (r.badPublished) fail(`${r.badPublished} document(s) point at a published version that is missing`);
   if (r.orphanVersions) warn(`${r.orphanVersions} version row(s) without a document`);
+  if (staleUploads) warn(`${staleUploads === 500 ? "500+" : staleUploads} upload(s) started more than a day ago and never finished (npx agent-cms storage cleanup)`);
   if (r.legacyColumns.length) {
     warn(`old columns nothing reads any more: ${r.legacyColumns.join(", ")}. To drop them:`);
     const t = (name: string) => (o.schema ? `"${o.schema}"."${name}"` : `"${name}"`);
@@ -302,6 +347,149 @@ function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, i
     warn(`${o.prefix}gaps is still here (${r.gapsRows ?? "?"} rows). agent-cms 0.6 no longer uses it. Move it to your app (UPGRADE-0.6.md), then drop it yourself.`);
   }
   for (const l of lines) io.out(l);
+  return bad ? 1 : 0;
+}
+
+// ── files ───────────────────────────────────────────────────────────────────
+
+function noMedia(io: LocalIo): number {
+  io.err("[agent-cms] no file stores: add `media` (the same object you pass to createCms) to agent-cms.config.ts.");
+  return 1;
+}
+
+/** Upload one file the way a browser does: ask, send to the storage, confirm. */
+async function uploadFile(rest: ReturnType<typeof createRestClient>, path: string, o: { store?: string; folder?: string; alt?: string; tags?: string[] }, io: CliIo) {
+  const doFetch = io.fetch ?? fetch;
+  const whole = io.readBytes?.(path);
+  const size = whole ? whole.length : statSync(path).size;
+  const fd = whole ? null : openSync(path, "r");
+  const slice = (start: number, end: number): Uint8Array => {
+    if (whole) return whole.subarray(start, end);
+    const buf = new Uint8Array(end - start);
+    readSync(fd!, buf, 0, buf.length, start);
+    return buf;
+  };
+  const send = async (url: string, bytes: Uint8Array, headers: Record<string, string> = {}) => {
+    let last = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await doFetch(url, { method: "PUT", headers, body: bytes as BodyInit }).catch((e: unknown) => ({ ok: false, status: 0, text: async () => String(e) }));
+      if (res.ok) return;
+      last = `${res.status} ${(await res.text()).slice(0, 200)}`;
+    }
+    throw new CmsRemoteError(`the storage refused the upload of ${path}: ${last}`, "upload_failed");
+  };
+  try {
+    const { asset, upload } = await rest.requestUpload({ name: basename(path), size, store: o.store, folder: o.folder, alt: o.alt, tags: o.tags });
+    try {
+      if (upload.kind === "single") await send(upload.url, slice(0, size), upload.headers);
+      else {
+        for (let first = 1; first <= upload.partCount; first += 4) {
+          const numbers = Array.from({ length: Math.min(4, upload.partCount - first + 1) }, (_, i) => first + i);
+          const urls = await rest.uploadPartUrls(asset.id, numbers);
+          await Promise.all(urls.map((u) => send(u.url, slice((u.partNumber - 1) * upload.partSize, Math.min(u.partNumber * upload.partSize, size)))));
+        }
+      }
+      // Phone photos keep their size far into the file, so read more than the server does.
+      const dims = asset.kind === "image" ? imageSize(slice(0, Math.min(size, 256 * 1024))) : null;
+      const done = await rest.completeUpload(asset.id, dims ?? {});
+      return { id: done.id, name: done.name, store: done.store, folder: done.folder, size: done.size, url: done.publicUrl ?? done.href, markdown: `${done.kind === "image" || done.kind === "video" || done.kind === "audio" ? "!" : ""}[${done.kind === "image" ? done.alt : done.name}](asset:${done.id}/${encodeURIComponent(done.name)})` };
+    } catch (e) {
+      await rest.abortUpload(asset.id).catch(() => {});
+      throw e;
+    }
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+/** Try each store for real and say what works. Exit 1 when something a store needs does not. */
+async function storageCheck(media: MediaOptions, origin: string | undefined, io: LocalIo): Promise<number> {
+  const doFetch = io.fetch ?? fetch;
+  let bad = false;
+  const run = `_cms/check-${Date.now().toString(36)}`;
+  for (const [name, cfg] of Object.entries(media.stores)) {
+    const a = cfg.adapter;
+    io.out(`store "${name}" (${cfg.visibility})`);
+    io.out(`      accepts: ${(cfg.accept ?? media.accept ?? DEFAULT_ACCEPT).join(", ")}`);
+    io.out(`      largest file: ${humanSize(cfg.maxFileSize ?? media.maxFileSize ?? DEFAULT_MAX_FILE_SIZE)}`);
+    const step = async (label: string, fn: () => Promise<string | void>, o: { warnOnly?: boolean } = {}) => {
+      try {
+        const note = await fn();
+        io.out(`ok    ${label}${note ? ` (${note})` : ""}`);
+      } catch (e) {
+        if (!o.warnOnly) bad = true;
+        io.out(`${o.warnOnly ? "warn " : "FAIL "} ${label}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    };
+    const expect = (ok: unknown, message: string) => {
+      if (!ok) throw new Error(message);
+    };
+    const text = new TextEncoder().encode("agent-cms storage check");
+    await step("write, read and size from the server", async () => {
+      await a.put(`${run}/a.txt`, text, { mime: "text/plain" });
+      expect((await a.head(`${run}/a.txt`))?.size === text.length, "the stored size differs");
+      expect((await a.readStart(`${run}/a.txt`, 5))?.length === 5, "could not read the first bytes");
+    });
+    let signedPut = "";
+    await step("upload with a signed address, as browsers do", async () => {
+      const signed = await a.presignPut(`${run}/b.txt`, { mime: "text/plain", expires: 300 });
+      signedPut = signed.url;
+      const res = await doFetch(signed.url, { method: "PUT", headers: signed.headers, body: text as BodyInit });
+      expect(res.ok, `PUT answered ${res.status}`);
+      expect((await a.head(`${run}/b.txt`))?.size === text.length, "the file did not arrive");
+    });
+    await step("large files in parts", async () => {
+      const id = await a.createMultipart(`${run}/c.bin`, { mime: "application/octet-stream" });
+      const sizes = [5 * 1024 * 1024, 1024];
+      for (const n of [1, 2]) {
+        const res = await doFetch(await a.presignPart(`${run}/c.bin`, id, n, 300), { method: "PUT", body: new Uint8Array(sizes[n - 1]) as BodyInit });
+        expect(res.ok, `part ${n} answered ${res.status}`);
+      }
+      const parts = await a.listParts(`${run}/c.bin`, id);
+      expect(parts.length === 2, `the storage lists ${parts.length} of 2 parts`);
+      await a.completeMultipart(`${run}/c.bin`, id, parts);
+      expect((await a.head(`${run}/c.bin`))?.size === sizes[0] + sizes[1], "the joined file has the wrong size");
+    });
+    await step("short-lived link to read a file", async () => {
+      const url = await a.presignGet(`${run}/a.txt`, { expires: 60 });
+      const res = await doFetch(url);
+      expect(res.ok, `GET answered ${res.status}`);
+      await res.arrayBuffer();
+    });
+    if (cfg.visibility === "private") {
+      await step("files cannot be read without a link", async () => {
+        const res = await doFetch((await a.presignGet(`${run}/a.txt`, { expires: 60 })).split("?")[0]);
+        await res.arrayBuffer().catch(() => {});
+        expect(!res.ok, "the bucket answers anyone: a private store needs a bucket that is not public");
+      });
+    } else {
+      await step("public address", async () => {
+        const url = a.publicUrl(`${run}/a.txt`);
+        expect(url, "no publicUrl: files open through a short-lived link instead (set publicUrl on the adapter for direct, cacheable addresses)");
+        const res = await doFetch(url!);
+        await res.arrayBuffer().catch(() => {});
+        expect(res.ok, `${url} answered ${res.status}: the bucket (or its CDN) is not public`);
+        return url!.split(run)[0];
+      }, { warnOnly: true });
+    }
+    await step("move (copy and delete)", async () => {
+      await a.copy(`${run}/a.txt`, `${run}/d.txt`);
+      await a.delete(`${run}/a.txt`);
+      expect(!(await a.head(`${run}/a.txt`)) && (await a.head(`${run}/d.txt`)), "copy or delete did not take effect");
+    });
+    if (origin && signedPut) {
+      await step(`browsers on ${origin} may upload (CORS)`, async () => {
+        const res = await doFetch(signedPut, { method: "OPTIONS", headers: { origin, "access-control-request-method": "PUT", "access-control-request-headers": "content-type" } });
+        const allow = res.headers.get("access-control-allow-origin");
+        await res.arrayBuffer().catch(() => {});
+        expect(allow === "*" || allow === origin, `the bucket's CORS rule does not allow ${origin}`);
+      });
+    } else io.out("skip  CORS (pass --origin https://your-site to test it)");
+    for (const k of ["a.txt", "b.txt", "c.bin", "d.txt"]) await a.delete(`${run}/${k}`).catch(() => {});
+  }
+  io.out("");
+  io.out("CORS rule the bucket needs (replace the origin with your site):");
+  io.out(JSON.stringify([{ AllowedOrigins: [origin ?? "https://your-site.example"], AllowedMethods: ["GET", "HEAD", "PUT"], AllowedHeaders: ["*"], ExposeHeaders: ["ETag"], MaxAgeSeconds: 3600 }], null, 2));
   return bad ? 1 : 0;
 }
 
@@ -324,7 +512,7 @@ export default defineConfig({
     [
       `${appDir}lib/cms-schema.ts`,
       `// Re-export the agent-cms tables from your Drizzle schema so drizzle-kit sees them.
-export { cmsApiKeys, cmsAudit, cmsDocuments, cmsHits, cmsMeta, cmsVersions } from "@mainsoft/agent-cms/tables";
+export { cmsApiKeys, cmsAssetRefs, cmsAssets, cmsAudit, cmsDocuments, cmsHits, cmsMeta, cmsVersions } from "@mainsoft/agent-cms/tables";
 `,
     ],
     [

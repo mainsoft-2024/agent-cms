@@ -5,6 +5,8 @@
  *   ./mcp        createMcpServer, handleMcp (official MCP SDK)
  *   ./client     createCmsClient (MCP with a key), createRestClient (admin screens)
  *   ./tools      CMS_TOOLS (the one tool list behind MCP and the CLI), toolsFor, callTool
+ *   ./storage    StorageAdapter (what a file store must do), MemoryStorage, DEFAULT_ACCEPT, acceptsFile
+ *   ./storage-s3 s3Storage: S3-compatible storage (AWS S3, R2, MinIO) for the media library
  *   ./agent      lookupForAgent, envelope, verifyCitations
  *   ./diff       line diff, hunks, merge3, mergeDocs (safe in the browser)
  *   ./markdown   parseMarkdown, extractToc (safe in the browser)
@@ -78,6 +80,10 @@ export { applyPatch, sectionRanges } from "./patch";
 export type { PatchOp, SectionRange } from "./patch";
 export { normalizeQuery } from "./search";
 export { callTool, CMS_TOOLS, CMS_TOOL_NAMES, runTool, toolErrorResult, toolsFor } from "./tools";
+export { assetFields, assetId, humanSize } from "./assets";
+export type { AssetInfo, AssetListOptions, AssetUsage, AssetView, CmsAssets, MediaOptions, MediaStoreConfig, UploadInstructions, UploadRequest } from "./assets";
+export { DEFAULT_ACCEPT, MemoryStorage } from "./storage";
+export type { StorageAdapter } from "./storage";
 export type { CallToolOptions, CmsToolDef, ToolErrorResult, ToolOutcome } from "./tools";
 export { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
 export type { CmsClient, CmsClientOptions, RestClient, RestClientOptions } from "./client";

@@ -206,7 +206,18 @@ export interface AccessArgs {
 export interface FieldAdmin {
   label?: string;
   help?: string;
-  widget?: "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json";
+  widget?: "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json" | "image" | "file";
+  /**
+   * For `image` and `file` (the value is a media library file id): which
+   * files the field takes, as MIME types (`image/png`), groups (`image/*`)
+   * or extensions (`.pdf`). Applied on top of the store's own rule. Default
+   * for `image`: `["image/*"]`.
+   */
+  accept?: readonly string[];
+  /** For `image` and `file`: largest file (bytes) the field takes. */
+  maxFileSize?: number;
+  /** For `image` and `file`: the only store the field picks from and uploads to. */
+  store?: string;
 }
 
 export const ASSET_KINDS = ["image", "video", "audio", "document", "other", "folder"] as const;
@@ -302,6 +313,10 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
   admin?: {
     /** Per field path (`tags`, `seo.title`): label, help text, widget. */
     fields?: Record<string, FieldAdmin>;
+  };
+  media?: {
+    /** true: an image without alt text is an error, not a warning. */
+    requireAlt?: boolean;
   };
   hooks?: {
     /**

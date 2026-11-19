@@ -37,6 +37,24 @@
  *   GET    /keys | POST /keys {name, scopes, collections?, expiresAt?} | DELETE /keys/:id
  *   GET    /audit?cursor=&action=&outcome=&actorKind= (also /_audit)
  *   POST   /mcp                                       MCP (official SDK, streamable HTTP, stateless)
+ *
+ * Media library (only with `createCms({ media })`):
+ *
+ *   GET    /assets?store=&folder=&kind=image,video&q=&tag=&cursor=&limit=
+ *   GET    /assets/_folders                           stores with their folders and file counts
+ *   POST   /assets/_folders {store?, path}            DELETE /assets/_folders?store=&path= (empty folders only)
+ *   POST   /assets/uploads {name, mime?, size, folder?, store?, alt?, tags?, field?}
+ *                                                     → {asset, upload: {kind: "single", url, headers} | {kind: "multipart", partSize, partCount}}
+ *   GET    /assets/uploads/:id                        which parts have arrived     DELETE: give up
+ *   POST   /assets/uploads/:id/parts {parts: [1, 2]}  signed addresses for parts
+ *   POST   /assets/uploads/:id/complete {width?, height?, duration?}
+ *   POST   /assets/_import {url, name?, folder?, store?, alt?, tags?}
+ *   GET    /assets/:id                                the file and the documents that use it
+ *   PATCH  /assets/:id {alt?, tags?}
+ *   POST   /assets/:id/move {folder?, name?}
+ *   POST   /assets/:id/thumb                          body: a WebP, JPEG or PNG up to 512KB
+ *   DELETE /assets/:id                                409 asset_in_use with the documents; ?confirm=1 deletes anyway
+ *   GET    /files/:id/:name                           redirect to the file (?thumb=1, ?download=1); private files need a session or key
  */
 
 import { z } from "zod";
@@ -44,7 +62,7 @@ import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "
 import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
-import { DOC_STATUSES, KEY_SCOPES, type Actor, type CmsDoc } from "./types";
+import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, type Actor, type AssetKind, type CmsDoc } from "./types";
 
 export interface CmsHandlerOptions {
   cms: CmsLike;
@@ -202,6 +220,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           actor: actor.kind === "anonymous" ? { kind: "anonymous" } : { kind: actor.kind, label: actor.label, id: "id" in actor ? actor.id : null },
           isAdmin: core.isAdmin(actor),
           previewLinks: core.previewEnabled(),
+          media: core.assets.describe(actor),
           collections: core
             .collections()
             .filter((c) => core.can(actor, c.slug, "read"))
@@ -250,6 +269,82 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         }
       }
 
+      if (seg[0] === "files" && seg[1] && seg.length <= 3 && (m === "GET" || m === "HEAD")) {
+        const to = await core.assets.open(actor, seg[1], { thumb: q.get("thumb") === "1", download: q.get("download") === "1" });
+        // A public address may be cached briefly; a signed one is for this request only.
+        return new Response(null, { status: 302, headers: { location: to.url, "cache-control": to.visibility === "public" && q.get("download") !== "1" ? "public, max-age=300" : "private, no-store" } });
+      }
+
+      if (seg[0] === "assets") {
+        const assets = core.assets;
+        const tags = z.array(z.string().max(40)).max(30).optional();
+        if (seg.length === 1 && m === "GET") {
+          const kinds = (q.get("kind") ?? "").split(",").filter((k): k is AssetKind => (ASSET_KINDS as readonly string[]).includes(k) && k !== "folder");
+          return json(await assets.list(actor, { store: q.get("store"), folder: q.get("folder"), kinds, q: q.get("q") ?? undefined, tag: q.get("tag") ?? undefined, cursor: q.get("cursor"), limit: Number(q.get("limit") ?? 48) || 48 }));
+        }
+        if (seg[1] === "_folders" && seg.length === 2) {
+          if (m === "GET") return json({ stores: await assets.folders(actor) });
+          if (m === "POST") return json(await assets.createFolder(actor, await body(req, z.object({ store: z.string().nullable().optional(), path: z.string().min(1).max(400) }))), 201);
+          if (m === "DELETE") {
+            await assets.deleteFolder(actor, { store: q.get("store"), path: q.get("path") ?? "" });
+            return json({ ok: true });
+          }
+        }
+        if (seg[1] === "_import" && seg.length === 2 && m === "POST") {
+          const b = await body(req, z.object({ url: z.string().max(2000), name: z.string().max(300).nullable().optional(), folder: z.string().max(400).nullable().optional(), store: z.string().nullable().optional(), alt: z.string().max(500).optional(), tags }));
+          return json({ asset: await assets.import(actor, b) }, 201);
+        }
+        if (seg[1] === "uploads") {
+          if (seg.length === 2 && m === "POST") {
+            const b = await body(
+              req,
+              z.object({
+                name: z.string().min(1).max(300),
+                mime: z.string().max(200).nullable().optional(),
+                size: z.number().int().positive(),
+                folder: z.string().max(400).nullable().optional(),
+                store: z.string().nullable().optional(),
+                alt: z.string().max(500).optional(),
+                tags,
+                field: z.object({ collection: z.string(), path: z.string() }).nullable().optional(),
+              })
+            );
+            return json(await assets.requestUpload(actor, b), 201);
+          }
+          const id = seg[2];
+          if (id && seg.length === 3 && m === "GET") return json(await assets.uploadStatus(actor, id));
+          if (id && seg.length === 3 && m === "DELETE") {
+            await assets.abortUpload(actor, id);
+            return json({ ok: true });
+          }
+          if (id && seg[3] === "parts" && seg.length === 4 && m === "POST") {
+            const b = await body(req, z.object({ parts: z.array(z.number().int().positive()).min(1).max(200) }));
+            return json({ parts: await assets.partUrls(actor, id, b.parts) });
+          }
+          if (id && seg[3] === "complete" && seg.length === 4 && m === "POST") {
+            const n = z.number().nonnegative().nullable().optional();
+            return json({ asset: await assets.completeUpload(actor, id, await body(req, z.object({ width: n, height: n, duration: n }), true)) });
+          }
+        }
+        const id = seg[1];
+        if (id && !id.startsWith("_") && id !== "uploads") {
+          if (seg.length === 2 && m === "GET") return json({ asset: await assets.get(actor, id) });
+          if (seg.length === 2 && m === "PATCH") return json({ asset: await assets.update(actor, id, await body(req, z.object({ alt: z.string().max(500).optional(), tags }))) });
+          if (seg.length === 2 && m === "DELETE") {
+            await assets.remove(actor, id, { confirm: q.get("confirm") === "1" });
+            return json({ ok: true });
+          }
+          if (seg[2] === "move" && seg.length === 3 && m === "POST") {
+            return json({ asset: await assets.move(actor, id, await body(req, z.object({ folder: z.string().max(400).nullable().optional(), name: z.string().max(300).nullable().optional() }))) });
+          }
+          if (seg[2] === "thumb" && seg.length === 3 && m === "POST") {
+            const bytes = new Uint8Array(await req.arrayBuffer());
+            if (bytes.length > MAX_BODY_BYTES) throw new CmsError("body_too_large", {}, { status: 413 });
+            return json({ asset: await assets.setThumb(actor, id, bytes) });
+          }
+        }
+      }
+
       if (seg[0] === "collections" && seg[1]) {
         const col = seg[1];
         const cfg = core.collection(col);
@@ -265,6 +360,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             hasUrl: !!cfg.url,
             fields: cfg.fields ? toJsonSchema(cfg.fields) : null,
             admin: cfg.admin?.fields ?? {},
+            requireAlt: !!cfg.media?.requireAlt,
             forbiddenChars: cfg.forbiddenChars ?? [],
             canWrite: core.can(actor, col, "write"),
             canPublish: core.can(actor, col, "publish"),

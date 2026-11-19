@@ -8,6 +8,7 @@
  *   cookie. This is what the copied admin screens use.
  */
 
+import type { AssetListOptions, AssetUsage, AssetView, UploadInstructions, UploadRequest } from "./assets";
 import type { AgentChange, BulkAction, BulkResult, DocDiff, PreviewLink, PreviewTtl } from "./cms";
 import type { Diagnostic, ErrorParams } from "./errors";
 import type { PatchOp } from "./patch";
@@ -141,8 +142,36 @@ export interface Me {
   actor: { kind: string; label?: string; id?: string | null };
   isAdmin: boolean;
   previewLinks: boolean;
+  /** The media library, when the app has one and this actor may see it. */
+  media?: MediaInfo | null;
   collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean }[];
 }
+
+export interface MediaStoreInfo {
+  name: string;
+  label: string;
+  visibility: "public" | "private";
+  /** File types the store takes (MIME types, `image/*` groups, `.ext`). */
+  accept: readonly string[];
+  maxFileSize: number;
+  can: { write: boolean; delete: boolean };
+}
+
+export interface MediaInfo {
+  stores: MediaStoreInfo[];
+  partSize: number;
+}
+
+export interface FolderTree {
+  store: string;
+  label: string;
+  visibility: "public" | "private";
+  total: number;
+  folders: { path: string; count: number }[];
+}
+
+export type AssetCounts = Record<"all" | "image" | "video" | "audio" | "document" | "other", number>;
+export type AssetDetail = AssetView & { usage: AssetUsage[]; usageHidden: number };
 
 export interface CollectionSchema {
   slug: string;
@@ -152,7 +181,9 @@ export interface CollectionSchema {
   draftsMode: boolean;
   hasUrl: boolean;
   fields: Record<string, unknown> | null;
-  admin: Record<string, { label?: string; help?: string; widget?: string }>;
+  admin: Record<string, { label?: string; help?: string; widget?: string; accept?: string[]; maxFileSize?: number; store?: string }>;
+  /** Images without alt text stop a save in this collection. */
+  requireAlt?: boolean;
   forbiddenChars: string[];
   canWrite: boolean;
   canPublish: boolean;
@@ -243,6 +274,35 @@ export function createRestClient(opts: RestClientOptions) {
     keys: () => req<{ keys: CmsKey[] }>("GET", "/keys").then((r) => r.keys),
     createKey: (k: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null }) => req<{ key: CmsKey; secret: string }>("POST", "/keys", { body: k }),
     revokeKey: (id: string) => req<{ ok: true }>("DELETE", `/keys/${enc(id)}`),
+    assets: (q: Omit<AssetListOptions, "kinds"> & { kind?: string } = {}) => req<{ assets: AssetView[]; cursor: string | null; counts: AssetCounts }>("GET", "/assets", { query: { ...q } }),
+    assetFolders: () => req<{ stores: FolderTree[] }>("GET", "/assets/_folders").then((r) => r.stores),
+    createAssetFolder: (path: string, store?: string | null) => req<{ store: string; path: string }>("POST", "/assets/_folders", { body: { path, store } }),
+    deleteAssetFolder: (path: string, store?: string | null) => req<{ ok: true }>("DELETE", "/assets/_folders", { query: { path, store } }),
+    asset: (id: string) => req<{ asset: AssetDetail }>("GET", `/assets/${enc(id)}`).then((r) => r.asset),
+    updateAsset: (id: string, patch: { alt?: string; tags?: string[] }) => req<{ asset: AssetView }>("PATCH", `/assets/${enc(id)}`, { body: patch }).then((r) => r.asset),
+    moveAsset: (id: string, to: { folder?: string | null; name?: string | null }) => req<{ asset: AssetView }>("POST", `/assets/${enc(id)}/move`, { body: to }).then((r) => r.asset),
+    /** Fails with `asset_in_use` (the documents are in `error.current`) unless `confirm` is set. */
+    removeAsset: (id: string, o: { confirm?: boolean } = {}) => req<{ ok: true }>("DELETE", `/assets/${enc(id)}`, { query: { confirm: o.confirm } }),
+    importAsset: (b: { url: string; name?: string | null; folder?: string | null; store?: string | null; alt?: string; tags?: string[] }) => req<{ asset: AssetView }>("POST", "/assets/_import", { body: b }).then((r) => r.asset),
+    requestUpload: (b: UploadRequest) => req<{ asset: AssetView; upload: UploadInstructions }>("POST", "/assets/uploads", { body: b }),
+    uploadStatus: (id: string) => req<{ asset: AssetView; partSize: number; partCount: number; done: number[] }>("GET", `/assets/uploads/${enc(id)}`),
+    uploadPartUrls: (id: string, parts: number[]) => req<{ parts: { partNumber: number; url: string }[] }>("POST", `/assets/uploads/${enc(id)}/parts`, { body: { parts } }).then((r) => r.parts),
+    completeUpload: (id: string, meta: { width?: number | null; height?: number | null; duration?: number | null } = {}) => req<{ asset: AssetView }>("POST", `/assets/uploads/${enc(id)}/complete`, { body: meta }).then((r) => r.asset),
+    abortUpload: (id: string) => req<{ ok: true }>("DELETE", `/assets/uploads/${enc(id)}`),
+    /** Store a small picture of the file (WebP, JPEG or PNG, up to 512KB). */
+    async setAssetThumb(id: string, bytes: Blob | Uint8Array): Promise<AssetView> {
+      let res: Response;
+      try {
+        res = await doFetch(`${base}/assets/${enc(id)}/thumb`, { method: "POST", credentials: "same-origin", headers: { accept: "application/json", "content-type": "application/octet-stream", ...opts.headers }, body: bytes as BodyInit });
+      } catch (e) {
+        throw new CmsRemoteError(e instanceof Error ? e.message : String(e), "network");
+      }
+      const data = (await res.json().catch(() => null)) as { asset?: AssetView; error?: string; message?: string; kind?: string; params?: ErrorParams } | null;
+      if (!res.ok || !data?.asset) throw new CmsRemoteError(data?.message ?? `HTTP ${res.status}`, data?.error ?? "http", { kind: data?.kind, status: res.status, params: data?.params });
+      return data.asset;
+    },
+    /** Address of a file through the CMS route (`thumb`: its small picture). */
+    fileUrl: (a: { id: string; name: string }, o: { thumb?: boolean; download?: boolean } = {}) => `${base}/files/${enc(a.id)}/${enc(a.name)}${o.thumb ? "?thumb=1" : o.download ? "?download=1" : ""}`,
     audit: (q: { cursor?: string | null; action?: string; outcome?: string; actorKind?: "user" | "key" | "system" | "anonymous"; limit?: number } = {}) => req<{ entries: AuditEntry[]; nextCursor: string | null }>("GET", "/audit", { query: q }),
   };
 }

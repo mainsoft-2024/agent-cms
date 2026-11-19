@@ -86,3 +86,20 @@ null`). `AgentChange.authorKind` can now be `"user"`, and `AgentChange.behalf`
 names the person the agent acted for. A custom `CmsRepo` has new methods for
 files (`insertAsset` … `listAssetRefs`); `MemoryRepo` and `DrizzleRepo`
 implement them.
+
+## 4. The media library is opt-in
+
+Nothing changes until you pass `media` to `createCms` (README, "Media
+library"). Two things to know even if you never do:
+
+- `parseMarkdown` has a new block (`media`) and two new inlines (`image`,
+  `file`). A renderer with an exhaustive `switch` needs cases for them; one
+  that ignores unknown blocks shows nothing for a media line.
+- A line that is only `![alt](https://…)` used to render as text and is now
+  an image block. `![alt](asset:…)` in a body is checked on save: without a
+  media library it fails with `asset_missing`.
+
+When you turn it on: re-export `cmsAssets` and `cmsAssetRefs` from your
+Drizzle schema next to the other tables, add the same `media` object to
+`agent-cms.config.ts`, and run `npx agent-cms storage check --origin
+https://your-site` once per environment.

@@ -81,6 +81,26 @@
         "default": "./dist/tools.cjs"
       }
     },
+    "./storage": {
+      "import": {
+        "types": "./dist/storage.d.ts",
+        "default": "./dist/storage.js"
+      },
+      "require": {
+        "types": "./dist/storage.d.cts",
+        "default": "./dist/storage.cjs"
+      }
+    },
+    "./storage-s3": {
+      "import": {
+        "types": "./dist/storage-s3.d.ts",
+        "default": "./dist/storage-s3.js"
+      },
+      "require": {
+        "types": "./dist/storage-s3.d.cts",
+        "default": "./dist/storage-s3.cjs"
+      }
+    },
     "./agent": {
       "import": {
         "types": "./dist/agent.d.ts",
@@ -199,6 +219,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts",
     "test:db": "tsx --test src/db/*.test.ts",
+    "test:s3": "tsx --test src/storage-s3.test.ts",
+    "s3:dev": "bash scripts/s3-dev.sh",
     "test:ui": "tsx --tsconfig registry/tsconfig.json --test registry/__tests__/*.test.tsx",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
     "check:pack": "publint --strict && attw --pack . --profile node16",
@@ -250,10 +272,13 @@
     "drizzle",
     "postgres",
     "shadcn",
-    "shadcn-registry"
+    "shadcn-registry",
+    "media-library",
+    "s3"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
+    "aws4fetch": "^1.0.20",
     "jiti": "2.7.0"
   },
   "bugs": {

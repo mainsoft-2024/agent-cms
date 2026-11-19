@@ -14,6 +14,7 @@ import { migrationSql, runCli } from "../cli";
 import { createCms, defineCollection } from "../cms";
 import { DrizzleRepo } from "../drizzle-repo";
 import { isCmsError } from "../errors";
+import { MemoryStorage } from "../storage";
 import { cmsDdl, cmsTables, SCHEMA_VERSION, splitSql } from "../tables";
 import type { Actor } from "../types";
 
@@ -301,6 +302,48 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     await fresh.remove(admin, "guide", "a");
     assert.deepEqual(await repo.listAssetRefs("aaaaaaaaaaaa"), []);
     assert.ok(await repo.findAsset("aaaaaaaaaaaa"), "the file itself stays");
+  } finally {
+    await close();
+  }
+});
+
+test("db: the media library on a real database (uses follow saves, publishes and deletes)", async () => {
+  const { db, close } = await freshDb();
+  try {
+    for (const stmt of splitSql(cmsDdl())) await run(db, stmt);
+    const store = new MemoryStorage({ publicUrl: "https://cdn.example.com" });
+    const cms = createCms({ repo: new DrizzleRepo(db), collections: [guide], media: { stores: { public: { visibility: "public", adapter: store } } } });
+    const png = new Uint8Array(64);
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 3, 32, 0, 0, 2, 88]);
+    const { asset, upload } = await cms.assets.requestUpload(admin, { name: "hero.png", size: png.length, folder: "guide", tags: ["launch"] });
+    if (upload.kind === "single") await store.send(upload.url, png);
+    const file = await cms.assets.completeUpload(admin, asset.id);
+    assert.deepEqual([file.status, file.width, file.height, file.size], ["ready", 800, 600, 64]);
+    assert.equal((await cms.assets.requestUpload(admin, { name: "hero.png", size: 10, folder: "guide" })).asset.name, "hero-2.png", "a name in use gets a number");
+
+    await cms.create(admin, "guide", { slug: "a", title: "A", body: `![Hero](asset:${file.id}/hero.png)` }, { publish: true });
+    await cms.create(admin, "guide", { slug: "b", title: "B", body: "text" });
+    await cms.update(admin, "guide", "b", { body: `[the picture](asset:${file.id}/hero.png)` });
+    const used = async () => (await cms.assets.get(admin, file.id)).usage.map((u) => `${u.slug}:${u.inDraft ? "d" : ""}${u.inPublished ? "p" : ""}`).sort();
+    assert.deepEqual(await used(), ["a:dp", "b:d"]);
+    // The published copy still shows the picture after the draft drops it.
+    await cms.update(admin, "guide", "a", { body: "no picture" });
+    assert.deepEqual(await used(), ["a:p", "b:d"]);
+    await cms.publish(admin, "guide", "a");
+    assert.deepEqual(await used(), ["b:d"]);
+    // A save that fails leaves the uses as they were (same transaction).
+    await assert.rejects(cms.update(admin, "guide", "b", { body: "![x](asset:zzzzzzzzzzzz/x.png)" }), (e) => isCmsError(e) && e.code === "asset_missing");
+    assert.deepEqual(await used(), ["b:d"]);
+    assert.deepEqual(Object.keys(await cms.assetsFor(await cms.get(admin, "guide", "b", { draft: true }))), [file.id]);
+    assert.deepEqual((await cms.assets.list(admin, { tag: "launch", q: "HERO" })).assets.map((a) => a.id), [file.id]);
+    assert.deepEqual((await cms.assets.folders(admin))[0].folders, [{ path: "guide", count: 1 }]);
+
+    await assert.rejects(cms.assets.remove(admin, file.id), (e) => isCmsError(e) && e.code === "asset_in_use");
+    await cms.remove(admin, "guide", "b");
+    await cms.assets.remove(admin, file.id);
+    assert.equal((await rows(db, "SELECT 1 FROM cms_asset_refs")).length, 0);
+    assert.equal((await cms.assets.cleanup({ olderThanMs: -1000 })).removed, 1, "the upload that never finished");
+    assert.equal((await rows(db, "SELECT 1 FROM cms_assets")).length, 0);
   } finally {
     await close();
   }

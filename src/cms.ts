@@ -9,6 +9,7 @@
  * the app decides what to keep.
  */
 
+import { createAssets, type MediaOptions } from "./assets";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { z, ZodTypeAny } from "zod";
 import { fieldChanges, hunks, splitLines, unifiedDiff, type FieldChange, type Hunk } from "./diff";
@@ -133,6 +134,12 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
   onError?: (err: unknown, where: string) => void;
   /** Deprecation and setup warnings (default console.warn), each once. */
   warn?: (message: string) => void;
+  /**
+   * The media library: where files are stored and what may be uploaded.
+   * Without it documents hold text only. See `./storage-s3` for S3-compatible
+   * storage.
+   */
+  media?: MediaOptions;
 }
 
 /** Second argument of `afterChange` hooks and `onChange` listeners. */
@@ -369,6 +376,22 @@ export function createCmsCore(opts: CreateCmsOptions) {
     throw fail("unauthorized");
   }
 
+  // ── media ─────────────────────────────────────────────────────────────────
+
+  const assets = createAssets({
+    repo,
+    media: opts.media,
+    fail,
+    diag: (path, code, params, severity) => ({ path, code, params, severity, message: formatMessage(messages, code, params) }),
+    audit: (actor, action, o) => audit(actor, action, o),
+    nowIso,
+    actorRef,
+    collection,
+    canReadDoc: (actor, doc) => collections.has(doc.collection) && can(actor, doc.collection, "read", doc),
+    warn: warnOnce,
+    ready: ensureSchema,
+  });
+
   // ── validation ────────────────────────────────────────────────────────────
 
   /** Every problem with `c` at once (and the cleaned content). */
@@ -421,6 +444,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (cur && content.slug !== cur.slug && cur.publishedVersion !== null) diagnostics.push({ path: "slug", code: "slug_locked", params: {}, severity: "error", message: formatMessage(messages, "slug_locked") });
     const other = content.slug ? await repo.findDoc(col, content.slug) : null;
     if (other && other.id !== cur?.id) diagnostics.push({ path: "slug", code: "slug_taken", params: { slug: content.slug }, severity: "error", message: formatMessage(messages, "slug_taken", { slug: content.slug }) });
+    diagnostics.push(...(await assets.checkDoc(cfg, content, cur ? assets.idsIn(cfg, cur) : undefined)));
     return diagnostics;
   }
 
@@ -638,6 +662,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       keywords: input.keywords ?? [],
       fields: (input.fields as Record<string, unknown>) ?? {},
     });
+    await assets.assertDoc(cfg, content);
     const at = nowIso();
     const doc = await repo.tx(async (r) => {
       if (await r.findDoc(col, content.slug)) throw fail("slug_taken", { slug: content.slug });
@@ -657,6 +682,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
         updatedAt: at,
       });
       await r.insertVersion({ documentId: row.id, version: 1, snapshot: content, authorKind: who.kind, authorId: who.id, authorLabel: who.label, authorAgent: who.agent, note: o.note ?? null, createdAt: at, changed: changeOf(1, null, content) });
+      await assets.syncRefs(r, row);
       return row;
     });
     if (o.publish) audit(actor, "doc.publish", { collection: col, slug: doc.slug, version: 1 });
@@ -700,6 +726,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       changed: changeOf(v, doc, next),
     });
     await prune(r, updated);
+    await assets.syncRefs(r, updated);
     return updated;
   }
 
@@ -714,6 +741,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (o.publish || (collection(col).versions?.drafts === false && cur.publishedVersion !== null)) assert(actor, col, "publish", cur);
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
       const next = validate(col, merged(cur, make(cur)));
+      await assets.assertDoc(collection(col), next, cur, r);
       if (same(next, cur)) {
         // Nothing changed. Still honour "publish".
         if (o.publish && cur.publishedVersion !== cur.version) return publishIn(r, actor, cur, cur.version);
@@ -746,6 +774,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
       const body = applyPatch(cur.body, ops);
       const { diagnostics } = check(col, { ...cur, body });
+      diagnostics.push(...(await assets.checkDoc(collection(col), { ...cur, body }, assets.idsIn(collection(col), cur))));
       return { doc: null, diff: unifiedDiff(cur.body, body, { from: `v${cur.version}`, to: "patched" }), diagnostics, saved: false };
     }
     let before = "";
@@ -802,6 +831,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       updatedByAgent: actorRef(actor).agent,
     });
     if (!updated) throw fail("not_found", { collection: doc.collection, slug: doc.slug });
+    await assets.syncRefs(r, updated);
     return updated;
   }
 
@@ -854,7 +884,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
       if (cur.publishedVersion === null && cur.status !== "archived") return cur;
       const who = actorRef(actor);
-      return (await r.updateDoc(cur.id, { status: "draft", publishedVersion: null, published: null, updatedAt: nowIso(), updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent }))!;
+      const out = (await r.updateDoc(cur.id, { status: "draft", publishedVersion: null, published: null, updatedAt: nowIso(), updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent }))!;
+      await assets.syncRefs(r, out);
+      return out;
     });
     audit(actor, "doc.unpublish", { collection: col, slug, version: doc.version });
     return doc;
@@ -1239,6 +1271,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
     revokeKey,
     authenticateKey,
     audit: auditLog,
+    /** The media library (`createCms({ media })`). */
+    assets,
+    /** The files a document uses, by id: address, size, alt text. For rendering. */
+    assetsFor: assets.assetsFor,
+    /** An image's address at a width, through `media.imageUrl` when set. */
+    imageUrl: assets.imageUrl,
     message,
     messages,
     /** Fails with `schema_outdated` when the database needs a migration. */

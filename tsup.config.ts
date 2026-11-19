@@ -8,6 +8,8 @@ export default defineConfig([
       mcp: "src/mcp.ts",
       client: "src/client.ts",
       tools: "src/tools.ts",
+      storage: "src/storage.ts",
+      "storage-s3": "src/storage-s3.ts",
       agent: "src/agent.ts",
       markdown: "src/markdown.ts",
       frontmatter: "src/frontmatter.ts",
