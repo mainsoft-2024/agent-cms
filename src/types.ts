@@ -160,6 +160,8 @@ export const AUDIT_ACTIONS = [
   "asset.upload",
   "asset.move",
   "asset.delete",
+  "asset.register",
+  "asset.share",
   "access.denied",
   "auth.failed",
 ] as const;

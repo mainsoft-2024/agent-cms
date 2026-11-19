@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased (0.9.0)
+
+- **File manager:** `cms-files` shows a storage bucket as it is, folder by folder, also files nobody uploaded through the CMS. Move, download, share links and delete for several files and whole folders at once; opening a file shows the media library's panel. `cms-shell` shows "Files" to whoever may look around a store (`access.browse`, default: whoever may read it).
+- A file the CMS did not know gets a row when it is opened, shared or registered (`cms.assets.register`), and then works in documents. `agent-cms storage sync` registers a whole bucket and lists rows whose file is gone.
+- Share links: `cms.assets.share(actor, id, { ttl: "1h" | "24h" | "7d" })`. A private file's link is a signed address that cannot be taken back; a public file gives its public address. Needs the permission to delete in the store; audited as `asset.share`.
+- REST: `GET /stores/:store/files`, `…/_open`, `POST …/_register`, `…/_move`, `…/_delete` (`check: true` only counts), `POST /assets/:id/share`. Agent tools (22 → 25 with a media library): `list_store_files`, `register_asset`, `create_share_link`.
+- No schema change.
+
 ## 0.8.0
 
 Read [UPGRADE-0.8.md](./UPGRADE-0.8.md). What comes next is in [docs/roadmap](./docs/roadmap/README.md).

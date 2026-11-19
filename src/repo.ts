@@ -102,6 +102,7 @@ export interface CmsRepo {
   findAsset(id: string): Promise<CmsAsset | null>;
   findAssets(ids: readonly string[]): Promise<CmsAsset[]>;
   findAssetByKey(store: string, key: string): Promise<CmsAsset | null>;
+  findAssetsByKeys(store: string, keys: readonly string[]): Promise<CmsAsset[]>;
   /** Newest first. */
   listAssets(q: AssetQuery): Promise<CmsAsset[]>;
   /** Ready files per folder and kind (folder rows included). */
@@ -277,6 +278,10 @@ export class MemoryRepo implements CmsRepo {
   async findAssetByKey(store: string, key: string) {
     for (const a of this.assets.values()) if (a.store === store && a.key === key) return structuredClone(a);
     return null;
+  }
+  async findAssetsByKeys(store: string, keys: readonly string[]) {
+    const want = new Set(keys);
+    return [...this.assets.values()].filter((a) => a.store === store && want.has(a.key)).map((a) => structuredClone(a));
   }
   async listAssets(q: AssetQuery) {
     const needle = q.q?.trim().toLowerCase();

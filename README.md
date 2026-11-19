@@ -148,7 +148,7 @@ they go and how imports are written) and talk to the CMS through
 
 ```
 npx agent-cms add --list
-npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media
+npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media cms-files
 npx agent-cms add --diff      # what a new release would change in your copies
 npx agent-cms add --update    # update files you did not edit; yours get a .new copy
 ```
@@ -180,6 +180,7 @@ npx shadcn@latest add <registry-url>/cms-doc-editor.json
 | `cms-command` | ⌘K to find any document, drafts included |
 | `cms-media` | The media library: stores and folders, grid or list, a file's alt text, tags and the documents that use it, uploads with progress, delete with a look at where the file is used |
 | `cms-media-picker` | The "choose media" dialog behind image and file fields and the editor's "Insert media" (comes with `cms-doc-editor`) |
+| `cms-files` | The file manager: a bucket folder by folder, also files nobody uploaded through the CMS; move, download, share links and delete for several at once |
 | `cms-empty` | Empty collection: new document, or how to write with an agent |
 
 UI text is English by default; a Korean catalog ships with the screens.
@@ -348,6 +349,33 @@ addresses inside your network are refused), `update_asset` (write),
 npx agent-cms upload ./hero.png ./talk.mp4 --folder launch --alt "The launch screen" --tag launch
 ```
 
+### File manager
+
+The media library shows the files the CMS knows. The file manager
+(`npx agent-cms add cms-files`, a page with `<CmsFiles />`) shows a bucket as
+it is, folder by folder: files another program put there appear too. The
+sidebar shows "Files" to whoever may look around a store (by default whoever
+may read it; a store's `access.browse` narrows that).
+
+- A file the CMS did not know gets a row when someone opens it, tags it,
+  shares it or an agent registers it. From then on it works in documents like
+  any other file. `npx agent-cms storage sync [--store name] [--folder path]`
+  registers everything at once and lists files the CMS knows that are gone
+  from the bucket (it deletes nothing).
+- Several files and whole folders can be moved or deleted at once (up to
+  1000 objects per request). A move copies and deletes, one file after the
+  other: files that fail are reported, and moving again takes the rest. A name
+  that is taken at the destination gets a number; nothing is overwritten.
+  Deleting shows the documents that use any of the files first.
+- "Make a link" gives an address for someone outside. For a private store it
+  works for 1 hour, 24 hours or 7 days and **cannot be taken back** (it is a
+  signed address); for a public store it is the file's public address. Making
+  one needs the permission to delete in that store, and is in the audit log.
+- The CMS's own folder (`_cms/`, thumbnails) is hidden and cannot be touched.
+
+Agents get three more tools: `list_store_files` (read), `register_asset`
+(write) and `create_share_link` (publish).
+
 ## Agents
 
 This package never calls a model. It has no model or key settings. It hands
@@ -401,6 +429,9 @@ expected, current } }`. Every code is in `./errors` (`ERROR_CODES`).
 | `list_assets`, `get_asset` (with a media library) | read |
 | `import_asset`, `update_asset` | write |
 | `move_asset`, `delete_asset` | publish |
+| `list_store_files` (the bucket as it is) | read |
+| `register_asset` | write |
+| `create_share_link` | publish |
 
 `lookupForAgent(cms, actor, collections, question, { budget, countTokens })`
 (`./agent`) is the answer-a-user helper behind `read_for_answer`: matching

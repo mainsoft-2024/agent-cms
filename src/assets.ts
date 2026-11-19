@@ -32,7 +32,9 @@ import {
   newAssetId,
   numberedName,
   PART_SIZE,
+  RESERVED_FOLDER,
   sniff,
+  type StorageList,
   THUMB_PREFIX,
   type StorageAdapter,
 } from "./storage";
@@ -45,7 +47,7 @@ export interface MediaStoreConfig {
   visibility: "public" | "private";
   adapter: StorageAdapter;
   /** Replace the default rule for one action. Default: see `canAsset`. */
-  access?: Partial<Record<"read" | "write" | "delete", (a: { actor: Actor; store: string }) => boolean>>;
+  access?: Partial<Record<"read" | "write" | "delete" | "browse", (a: { actor: Actor; store: string }) => boolean>>;
   /** File types this store takes (replaces `media.accept` for this store). */
   accept?: readonly string[];
   /** Largest file in bytes (replaces `media.maxFileSize` for this store). */
@@ -713,13 +715,245 @@ export function createAssets(ctx: AssetsContext) {
   }
 
   /** What the admin needs to know: stores, their rules, and what this actor may do. */
+  // ── the whole bucket (file manager) ───────────────────────────────────────
+  //
+  // The media library shows the files the CMS knows. These functions look at
+  // the storage itself: files that got there some other way show up too, and
+  // get a row only when someone uses them ("register").
+
+  const reserved = (key: string) => key === RESERVED_FOLDER || key.startsWith(`${RESERVED_FOLDER}/`);
+  /** Looking around a bucket: the store's `access.browse`, else whoever may read it. */
+  const canBrowse = (actor: Actor, store: string): boolean => {
+    const own = media?.stores[store]?.access?.browse;
+    return own ? actor.kind === "system" || own({ actor, store }) : canAsset(actor, store, "read");
+  };
+  function needBrowse(actor: Actor, store: string) {
+    if (!canBrowse(actor, store)) throw actor.kind === "anonymous" ? fail("unauthorized") : fail("forbidden_media", { store });
+  }
+  /** An object key as the caller gave it: inside the bucket, and not the CMS's own folder. */
+  function objectKey(key: unknown): string {
+    const k = String(key ?? "").replace(/^\/+/, "");
+    if (!k || k.length > 1024 || reserved(k) || /[\u0000-\u001f]/.test(k) || k.split("/").some((p) => p === ".." || p === ".")) throw fail("invalid_folder", { folder: String(key) });
+    return k;
+  }
+  /** A folder of the bucket as it is named there (not cleaned up: other programs name folders their own way). */
+  function folderPath(folder: unknown, o: { top?: boolean } = {}): string {
+    const f = String(folder ?? "").split("/").filter(Boolean).join("/");
+    if ((f && objectKey(f) !== f) || (!f && !o.top)) throw fail("invalid_folder", { folder: String(folder) });
+    return f;
+  }
+  const split = (key: string) => {
+    const k = key.replace(/\/$/, "");
+    const cut = k.lastIndexOf("/");
+    return { folder: cut < 0 ? "" : k.slice(0, cut), name: k.slice(cut + 1) };
+  };
+
+  /** One level of a bucket: its sub-folders and files, with what the CMS knows about each file. */
+  async function browse(actor: Actor, input: { store?: string | null; prefix?: string | null; q?: string | null; cursor?: string | null; limit?: number } = {}) {
+    await ctx.ready();
+    const store = storeOf(input.store);
+    needBrowse(actor, store.name);
+    const folder = folderPath(input.prefix, { top: true });
+    const base = folder ? `${folder}/` : "";
+    // Storage can only search by how a name starts.
+    const r = await store.cfg.adapter.list({ prefix: base + String(input.q ?? "").replace(/\//g, ""), delimiter: "/", cursor: input.cursor || null, limit: Math.min(Math.max(input.limit ?? 200, 1), 1000) });
+    const objects = r.objects.filter((o) => !o.key.endsWith("/") && !reserved(o.key));
+    const known = new Map((await repo.findAssetsByKeys(store.name, objects.map((o) => o.key))).map((a) => [a.key, a]));
+    return {
+      store: store.name,
+      prefix: folder,
+      folders: r.prefixes.map((p) => p.replace(/\/$/, "")).filter((p) => !reserved(p)).map((p) => ({ path: p, name: p.slice(base.length) })),
+      files: objects.map((o) => {
+        const a = known.get(o.key);
+        const name = split(o.key).name;
+        const mime = a?.mime ?? mimeOf(name, o.mime);
+        return { key: o.key, name, size: o.size, mime, kind: a?.kind ?? kindOf(mime), updatedAt: o.lastModified, asset: a?.status === "ready" ? view(a) : null };
+      }),
+      cursor: r.cursor,
+    };
+  }
+
+  /** Give a file that is already in the bucket a row, so it can be described, used in documents and shared. */
+  async function register(actor: Actor, input: { store?: string | null; key: string; alt?: string; tags?: string[] }): Promise<AssetView> {
+    await ctx.ready();
+    const store = storeOf(input.store);
+    need(actor, store.name, "write");
+    const key = objectKey(input.key);
+    const existing = await repo.findAssetByKey(store.name, key);
+    if (existing?.status === "ready") return view(existing);
+    const head = existing || key.endsWith("/") ? null : await store.cfg.adapter.head(key);
+    if (!head) throw fail("asset_not_found", { id: key });
+    const { folder, name } = split(key);
+    const mime = mimeOf(name, head.mime);
+    const kind = kindOf(mime);
+    const size = kind === "image" ? imageSize((await store.cfg.adapter.readStart(key, 256 * 1024).catch(() => null)) ?? new Uint8Array()) : null;
+    const who = ctx.actorRef(actor);
+    const now = ctx.nowIso();
+    const row = await repo.insertAsset({ id: newAssetId(), store: store.name, key, folder, name, kind, mime, size: head.size, width: size?.width ?? null, height: size?.height ?? null, duration: null, alt: (input.alt ?? "").trim().slice(0, 500), tags: cleanTags(input.tags), thumbKey: null, status: "ready", uploadId: null, createdBy: who.label, createdByKind: who.kind, createdByAgent: who.agent, createdAt: now, updatedAt: now });
+    ctx.audit(actor, "asset.register", { detail: { id: row.id, store: row.store, key } });
+    return view(row);
+  }
+
+  const MANY = 1000;
+  /** Every object under the chosen files and folders (a folder: everything below it, its marker included). */
+  async function expand(store: { name: string; cfg: MediaStoreConfig }, input: { keys?: readonly string[]; folders?: readonly string[] }, max = MANY): Promise<string[]> {
+    const out = new Set<string>((input.keys ?? []).map(objectKey));
+    for (const f of input.folders ?? []) {
+      let cursor: string | null = null;
+      do {
+        const r: StorageList = await store.cfg.adapter.list({ prefix: `${folderPath(f)}/`, cursor, limit: 1000 });
+        for (const o of r.objects) out.add(o.key);
+        cursor = r.cursor;
+        if (out.size > max) throw fail("too_many_files", { max });
+      } while (cursor);
+    }
+    if (out.size > max) throw fail("too_many_files", { max });
+    return [...out];
+  }
+
+  /**
+   * Move files and whole folders into the folder `to`. A file that fails is
+   * reported and the rest goes on; running it again moves what is left.
+   * Documents keep working: they point at ids, and the rows follow the files.
+   */
+  async function moveMany(actor: Actor, input: { store?: string | null; keys?: readonly string[]; folders?: readonly string[]; to: string | null }): Promise<{ moved: number; failed: { key: string; message: string }[] }> {
+    await ctx.ready();
+    const store = storeOf(input.store);
+    need(actor, store.name, "delete");
+    const to = folderPath(input.to, { top: true });
+    const plan: { from: string; dest: string }[] = (input.keys ?? []).map(objectKey).map((k) => ({ from: k, dest: joinKey(to, split(k).name) }));
+    for (const f of input.folders ?? []) {
+      const folder = folderPath(f);
+      const base = joinKey(to, split(folder).name);
+      if (base === folder) continue;
+      if (base.startsWith(`${folder}/`)) throw fail("invalid_folder", { folder: to });
+      for (const k of await expand(store, { folders: [folder] })) plan.push({ from: k, dest: base + k.slice(folder.length) });
+      if (plan.length > MANY) throw fail("too_many_files", { max: MANY });
+    }
+    const adapter = store.cfg.adapter;
+    const failed: { key: string; message: string }[] = [];
+    let moved = 0;
+    for (const p of plan) {
+      if (p.from === p.dest) continue;
+      try {
+        const row = await repo.findAssetByKey(store.name, p.from);
+        const marker = p.from.endsWith("/");
+        // A name that is taken at the destination gets a number; nothing is overwritten.
+        const dest = marker ? p.dest : (await freeKey(store, split(p.dest).folder, split(p.dest).name, row?.id)).key;
+        await adapter.copy(p.from, dest);
+        if (row) await repo.updateAsset(row.id, { key: dest, ...split(dest), updatedAt: ctx.nowIso() });
+        await adapter.delete(p.from);
+        if (!marker) moved++;
+      } catch (e) {
+        failed.push({ key: p.from, message: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    ctx.audit(actor, "asset.move", { outcome: failed.length ? "failed" : "ok", detail: { store: store.name, to, moved, failed: failed.length } });
+    return { moved, failed };
+  }
+
+  /** Delete files and whole folders. Files that documents use stop it with `asset_in_use` unless `confirm` is set. */
+  async function removeMany(actor: Actor, input: { store?: string | null; keys?: readonly string[]; folders?: readonly string[]; confirm?: boolean; check?: boolean }): Promise<{ deleted: number; files: number; used: number; documents: AssetUsage[]; hidden: number }> {
+    await ctx.ready();
+    const store = storeOf(input.store);
+    need(actor, store.name, "delete");
+    const keys = await expand(store, input);
+    const rows = await repo.findAssetsByKeys(store.name, keys);
+    const files = keys.filter((k) => !k.endsWith("/")).length;
+    let used = 0;
+    let hidden = 0;
+    const documents = new Map<string, AssetUsage>();
+    for (const a of rows) {
+      const u = await usage(actor, a);
+      if (u.documents.length + u.hidden) used++;
+      hidden += u.hidden;
+      for (const d of u.documents) documents.set(`${d.collection}/${d.slug}`, d);
+    }
+    const found = { files, used, documents: [...documents.values()], hidden };
+    // `check`: only count, so a screen can say what a folder holds before anything is deleted.
+    if (input.check) return { deleted: 0, ...found };
+    if (used && !input.confirm) throw fail("asset_in_use", { count: documents.size + hidden, documents: [...documents.keys()] }, { current: { documents: [...documents.values()], hidden, files, used } });
+    const byKey = new Map(rows.map((a) => [a.key, a]));
+    for (const k of keys) {
+      const a = byKey.get(k);
+      if (a) await discard(a);
+      else await store.cfg.adapter.delete(k);
+    }
+    ctx.audit(actor, "asset.delete", { detail: { store: store.name, files, usedBy: documents.size + hidden } });
+    return { deleted: files, ...found };
+  }
+
+  const SHARE_SECONDS = { "1h": 3600, "24h": 24 * 3600, "7d": 7 * 24 * 3600 } as const;
+  /**
+   * An address to hand to someone outside. Private store: works until
+   * `expiresAt` and cannot be taken back (it is a signed address). Public
+   * store: the file's public address, which does not expire.
+   */
+  async function share(actor: Actor, id: string, o: { ttl?: keyof typeof SHARE_SECONDS } = {}): Promise<{ url: string; expiresAt: string | null }> {
+    await ctx.ready();
+    const a = await load(id);
+    need(actor, a.store, "delete");
+    const store = storeOf(a.store);
+    const period = o.ttl ?? "24h";
+    const seconds = SHARE_SECONDS[period];
+    if (!seconds) throw fail("invalid", { reason: "ttl must be 1h, 24h or 7d" });
+    const direct = store.cfg.visibility === "public" ? store.cfg.adapter.publicUrl(a.key) : null;
+    const url = direct ?? (await store.cfg.adapter.presignGet(a.key, { expires: seconds, download: null }));
+    ctx.audit(actor, "asset.share", { detail: { id: a.id, store: a.store, key: a.key, ttl: direct ? null : period } });
+    return { url, expiresAt: direct ? null : new Date(Date.parse(ctx.nowIso()) + seconds * 1000).toISOString() };
+  }
+
+  /** Where to send someone who asks for a file by its key (files without a row have no id). */
+  async function openKey(actor: Actor, input: { store?: string | null; key: string; download?: boolean }): Promise<{ url: string; visibility: "public" | "private" }> {
+    await ctx.ready();
+    const store = storeOf(input.store);
+    needBrowse(actor, store.name);
+    const key = objectKey(input.key);
+    const direct = store.cfg.visibility === "public" && !input.download ? store.cfg.adapter.publicUrl(key) : null;
+    return { url: direct ?? (await store.cfg.adapter.presignGet(key, { expires: ttl, download: input.download ? split(key).name : null })), visibility: store.cfg.visibility };
+  }
+
+  /**
+   * Register every file of a store (or of one folder) that has no row yet,
+   * and report rows whose file is gone. Nothing is deleted: a document may
+   * still point at a missing file, and its check will say so.
+   */
+  async function sync(input: { store?: string | null; prefix?: string | null } = {}): Promise<{ registered: number; known: number; missing: { id: string; key: string }[] }> {
+    await ctx.ready();
+    const store = storeOf(input.store);
+    const folder = folderPath(input.prefix, { top: true });
+    const system: Actor = { kind: "system", label: "storage sync" };
+    const seen = new Set<string>();
+    let registered = 0;
+    let cursor: string | null = null;
+    do {
+      const r: StorageList = await store.cfg.adapter.list({ prefix: folder ? `${folder}/` : "", cursor, limit: 1000 });
+      const objects = r.objects.filter((o) => !o.key.endsWith("/") && !reserved(o.key));
+      const have = new Set((await repo.findAssetsByKeys(store.name, objects.map((o) => o.key))).map((a) => a.key));
+      for (const o of objects) {
+        seen.add(o.key);
+        if (!have.has(o.key)) (await register(system, { store: store.name, key: o.key }), registered++);
+      }
+      cursor = r.cursor;
+    } while (cursor);
+    const missing: { id: string; key: string }[] = [];
+    let before: string | undefined;
+    for (;;) {
+      const rows = await repo.listAssets({ store: store.name, under: folder || undefined, status: "ready", notKinds: ["folder"], before, limit: 500 });
+      for (const a of rows) if (!seen.has(a.key)) missing.push({ id: a.id, key: a.key });
+      if (rows.length < 500) break;
+      before = `${rows[rows.length - 1].createdAt}|${rows[rows.length - 1].id}`;
+    }
+    return { registered, known: seen.size - registered, missing };
+  }
+
   function describe(actor: Actor) {
     if (!media) return null;
     const stores = names
       .filter((n) => canAsset(actor, n, "read"))
       .map((n) => {
         const cfg = media.stores[n];
-        return { name: n, label: cfg.label ?? n, visibility: cfg.visibility, ...rulesOf(cfg), can: { write: canAsset(actor, n, "write"), delete: canAsset(actor, n, "delete") } };
+        return { name: n, label: cfg.label ?? n, visibility: cfg.visibility, ...rulesOf(cfg), can: { write: canAsset(actor, n, "write"), delete: canAsset(actor, n, "delete"), browse: canBrowse(actor, n) } };
       });
     return stores.length ? { stores, partSize: PART_SIZE } : null;
   }
@@ -747,6 +981,13 @@ export function createAssets(ctx: AssetsContext) {
     remove,
     open,
     cleanup,
+    browse,
+    register,
+    moveMany,
+    removeMany,
+    share,
+    openKey,
+    sync,
     checkDoc,
     assertDoc,
     syncRefs,

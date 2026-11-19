@@ -296,6 +296,30 @@ export const CMS_TOOLS: CmsToolDef[] = [
       return { deleted: true };
     },
   },
+  {
+    name: "list_store_files",
+    media: "read",
+    description: "Look into a storage bucket folder by folder: also files nobody uploaded through the CMS. Each file says whether the CMS knows it (`id`). To use an unknown file in a document, call register_asset with its key first.",
+    input: z.object({ store, prefix: z.string().optional().describe('Folder to list, e.g. "contracts/2026". Default: the top'), q: z.string().optional().describe("Only names in this folder that start with this"), cursor: z.string().optional(), limit: z.number().int().min(1).max(500).optional() }),
+    run: async (cms, actor, a) => {
+      const r = await cms.assets.browse(actor, { store: a.store as string | undefined, prefix: a.prefix as string | undefined, q: a.q as string | undefined, cursor: a.cursor as string | undefined, limit: (a.limit as number | undefined) ?? 100 });
+      return { store: r.store, prefix: r.prefix, folders: r.folders.map((f) => f.path), files: r.files.map((f) => ({ key: f.key, size: f.size, kind: f.kind, updatedAt: f.updatedAt, id: f.asset?.id ?? null })), cursor: r.cursor };
+    },
+  },
+  {
+    name: "register_asset",
+    media: "write",
+    description: "Make a file that is already in the bucket (see list_store_files) known to the CMS, so it can be described and used in documents. Returns the markdown to put it in a document.",
+    input: z.object({ key: z.string().describe("The file's key in the bucket, e.g. contracts/2026/msa.pdf"), store, alt: z.string().optional(), tags: z.array(z.string()).optional() }),
+    run: async (cms, actor, a) => assetOut(await cms.assets.register(actor, a as { key: string })),
+  },
+  {
+    name: "create_share_link",
+    media: "delete",
+    description: "Make an address for a file that someone outside can open. For a private file it works for the chosen time and cannot be taken back; only do this when the person asked for it.",
+    input: z.object({ id: assetId, ttl: z.enum(["1h", "24h", "7d"]).optional().describe("How long a private file's link works. Default 24h") }),
+    run: async (cms, actor, a) => cms.assets.share(actor, a.id as string, { ttl: a.ttl as "1h" | "24h" | "7d" | undefined }),
+  },
 ];
 
 export const CMS_TOOL_NAMES = CMS_TOOLS.map((t) => t.name);

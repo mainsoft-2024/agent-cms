@@ -13,6 +13,9 @@
  *       try every file store for real (upload, signed addresses, large-file parts, CORS)
  *       and print what each store accepts. Needs `media` in agent-cms.config.ts.
  *   agent-cms storage cleanup              remove uploads that were started and never finished
+ *   agent-cms storage sync [--store name] [--folder path]
+ *       make every file of a bucket known to the CMS (files that got there some other way),
+ *       and list files the CMS knows that are gone from the bucket
  *
  * Against a running app, with an API key (same operations as the MCP tools):
  *   agent-cms tools | collections
@@ -102,7 +105,7 @@ export function parseEnvFile(text: string): Record<string, string> {
 }
 
 const USAGE = `agent-cms ${VERSION}
-in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup>
+in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync>
 with a key:    tools | collections | list | get | search | put | patch | publish | upload | call
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
@@ -260,12 +263,19 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
   }
   const repo = new DrizzleRepo(db, { tables });
   if (cmd === "storage") {
-    if (args[0] !== "cleanup") {
-      io.err(`unknown: storage ${args[0]} (check | cleanup)`);
+    if (args[0] !== "cleanup" && args[0] !== "sync") {
+      io.err(`unknown: storage ${args[0]} (check | cleanup | sync)`);
       return 1;
     }
     const m = await media();
     if (!m) return noMedia(io);
+    if (args[0] === "sync") {
+      const r = await createCmsCore({ repo, collections: [], media: m }).assets.sync({ store: flag(argv, "store"), prefix: flag(argv, "folder") });
+      io.out(`[agent-cms] ${r.registered} file(s) registered, ${r.known} already known.`);
+      if (r.missing.length) io.out(`[agent-cms] ${r.missing.length} file(s) the CMS knows are gone from the bucket (nothing was deleted):`);
+      for (const f of r.missing.slice(0, 200)) io.out(`  ${f.id}  ${f.key}`);
+      return 0;
+    }
     const { removed } = await createCmsCore({ repo, collections: [], media: m }).assets.cleanup();
     io.out(`[agent-cms] removed ${removed} unfinished upload(s).`);
     return 0;

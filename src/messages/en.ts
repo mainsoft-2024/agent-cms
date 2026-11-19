@@ -64,6 +64,7 @@ export const en: Messages = {
   asset_private_in_public: "A private file is used in a document anyone can read: {id}",
   asset_in_use: "{count} documents use this file",
   folder_not_empty: "The folder is not empty",
+  too_many_files: "Too many files at once. The limit is {max}",
   precondition_required: "Send If-Match (or expectedVersion) to change this document",
   internal: "Something went wrong",
 };

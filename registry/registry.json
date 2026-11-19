@@ -210,6 +210,33 @@
       ]
     },
     {
+      "name": "cms-files",
+      "type": "registry:component",
+      "title": "File manager",
+      "description": "A storage bucket as it is, folder by folder, also files nobody uploaded through the CMS: move, download, share links and delete for several files at once. Needs `createCms({ media })`.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "checkbox",
+        "dialog",
+        "input",
+        "label",
+        "table",
+        "cms-lib",
+        "cms-media-picker",
+        "cms-media"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-files.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
       "name": "cms-versions",
       "type": "registry:component",
       "title": "Version history",

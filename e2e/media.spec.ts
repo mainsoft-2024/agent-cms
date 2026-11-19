@@ -84,3 +84,22 @@ test("media: a refused file says why @mobile", async ({ page, isMobile }) => {
   await expect(page.getByText("The file content does not match its extension")).toBeVisible({ timeout: 20_000 });
   if (isMobile) await expect(page.getByLabel("Folder", { exact: true })).toBeVisible();
 });
+
+test("files: upload into the bucket view, select the file and make a link", async ({ page, isMobile }) => {
+  test.skip(!on || isMobile, "needs S3_ENDPOINT; desktop only");
+  const name = `files-${Date.now()}.png`;
+  await page.goto("/admin/files");
+  await page.getByLabel("Upload", { exact: true }).setInputFiles({ name, mimeType: "image/png", buffer: png(320, 200) });
+  await expect(page.getByRole("button", { name, exact: true })).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("checkbox", { name: new RegExp(name.replace(".", "\\.")) }).click();
+  const bar = page.getByRole("toolbar");
+  await expect(bar.getByRole("status")).toHaveText("1 selected");
+  await bar.getByRole("button", { name: "Make a link" }).click();
+  const dialog = page.getByRole("dialog", { name: "Make a link" });
+  const link = dialog.locator("code").first();
+  await expect(link).toContainText(name);
+  // The address really serves the file.
+  const res = await page.request.get((await link.textContent()) ?? "");
+  expect(res.status()).toBe(200);
+  expect((await res.body()).length).toBeGreaterThan(50);
+});

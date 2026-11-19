@@ -64,6 +64,7 @@ export const ko: Messages = {
   asset_private_in_public: "누구나 읽는 문서에 비공개 파일이 들어 있어요: {id}",
   asset_in_use: "이 파일을 쓰는 문서가 {count}개 있어요",
   folder_not_empty: "폴더가 비어 있지 않아요",
+  too_many_files: "파일이 너무 많아요. 한 번에 {max}개까지 할 수 있어요",
   precondition_required: "이 문서를 바꾸려면 If-Match(또는 expectedVersion)를 보내 주세요",
   internal: "처리 중 오류가 났어요",
 };

@@ -249,7 +249,7 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
   );
 }
 
-function NewFolderDialog({ open, onOpenChange, onCreate }: { open: boolean; onOpenChange: (o: boolean) => void; onCreate: (name: string) => Promise<void> }) {
+export function NewFolderDialog({ open, onOpenChange, onCreate }: { open: boolean; onOpenChange: (o: boolean) => void; onCreate: (name: string) => Promise<void> }) {
   const { t } = useCms();
   const [name, setName] = React.useState("");
   const [error, setError] = React.useState<unknown>(null);
@@ -296,7 +296,7 @@ function NewFolderDialog({ open, onOpenChange, onCreate }: { open: boolean; onOp
 
 // ── one file ─────────────────────────────────────────────────────────────────
 
-function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDeleted }: { id: string; basePath: string; docHref?: CmsMediaProps["docHref"]; onClose: () => void; onChanged: (a: AssetView) => void; onDeleted: () => void }) {
+export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDeleted }: { id: string; basePath: string; docHref?: CmsMediaProps["docHref"]; onClose: () => void; onChanged: (a: AssetView) => void; onDeleted: () => void }) {
   const { client, t, me, appUrl, slots, locale } = useCms();
   const mobile = useIsMobile();
   const { data: asset, error, setData } = useAsync<AssetDetail>(() => client.asset(id), [client, id]);
@@ -482,7 +482,7 @@ function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDeleted }: { 
   );
 }
 
-function UsageList({ asset, basePath, docHref }: { asset: AssetDetail; basePath: string; docHref?: CmsMediaProps["docHref"] }) {
+export function UsageList({ asset, basePath, docHref }: { asset: Pick<AssetDetail, "usage">; basePath: string; docHref?: CmsMediaProps["docHref"] }) {
   const { me } = useCms();
   return (
     <ul className="divide-y rounded-md border text-sm">

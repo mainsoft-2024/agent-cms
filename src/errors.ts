@@ -79,6 +79,7 @@ export const ERROR_CODES = {
   slug_taken: "conflict",
   asset_in_use: "conflict",
   folder_not_empty: "conflict",
+  too_many_files: "invalid",
   precondition_required: "precondition",
   // anything else
   internal: "internal",

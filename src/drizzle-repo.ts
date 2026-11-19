@@ -344,6 +344,13 @@ export class DrizzleRepo implements CmsRepo {
     const [r] = await this.db.select().from(A).where(and(eq(A.store, store), eq(A.key, key))).limit(1);
     return r ? this.toAsset(r) : null;
   }
+  async findAssetsByKeys(store: string, keys: readonly string[]) {
+    const A = this.t.assets;
+    const out: CmsAsset[] = [];
+    // In chunks: a folder listing can hold a thousand keys.
+    for (let i = 0; i < keys.length; i += 200) out.push(...(await this.db.select().from(A).where(and(eq(A.store, store), inArray(A.key, keys.slice(i, i + 200))))).map((r) => this.toAsset(r)));
+    return out;
+  }
   async listAssets(q: AssetQuery) {
     const A = this.t.assets;
     const conds = [];

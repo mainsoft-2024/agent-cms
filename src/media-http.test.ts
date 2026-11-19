@@ -58,7 +58,7 @@ test("rest: the admin learns about the library from /_me and the field rules fro
   const schema = await rest.schema("blog");
   assert.deepEqual([schema.admin.cover, schema.requireAlt], [{ widget: "image", maxFileSize: 5000 }, true]);
   as(member);
-  assert.deepEqual((await rest.me()).media?.stores.map((s) => s.can), [{ write: false, delete: false }, { write: false, delete: false }]);
+  assert.deepEqual((await rest.me()).media?.stores.map((s) => s.can), [{ write: false, delete: false, browse: true }, { write: false, delete: false, browse: true }]);
   as(null);
   assert.equal((await rest.me()).media, null);
 });
@@ -135,13 +135,13 @@ test("rest: the rules reach the browser as errors it can show", async () => {
 test("tools: six file tools, offered by what the key may do", async () => {
   const { cms } = setup();
   const key = async (scopes: ("read" | "write" | "publish")[]) => (await cms.authenticateKey((await cms.createKey(admin, { name: scopes.join("+"), scopes })).secret))!;
-  const names = (a: Actor) => toolsFor(cms, a).map((t) => t.name).filter((n) => n.endsWith("_asset") || n === "list_assets");
+  const names = (a: Actor) => toolsFor(cms, a).map((t) => t.name).filter((n) => ["list_assets", "get_asset", "import_asset", "update_asset", "move_asset", "delete_asset"].includes(n));
   assert.deepEqual(names({ kind: "anonymous" }), []);
   assert.deepEqual(names(await key(["read"])), ["list_assets", "get_asset"]);
   assert.deepEqual(names(await key(["read", "write"])), ["list_assets", "get_asset", "import_asset", "update_asset"]);
   const publisher = await key(["read", "write", "publish"]);
   assert.deepEqual(names(publisher), ["list_assets", "get_asset", "import_asset", "update_asset", "move_asset", "delete_asset"]);
-  assert.equal(toolsFor(cms, publisher).length, 22);
+  assert.equal(toolsFor(cms, publisher).length, 25, "16 document tools, 6 for the library, 3 for the bucket");
   const plain = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "g", label: "G", visibility: "public" })] });
   assert.equal(toolsFor(plain, { kind: "system", label: "s" }).length, 16, "no file tools without a media library");
 

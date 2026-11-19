@@ -156,7 +156,7 @@ export interface MediaStoreInfo {
   /** File types the store takes (MIME types, `image/*` groups, `.ext`). */
   accept: readonly string[];
   maxFileSize: number;
-  can: { write: boolean; delete: boolean };
+  can: { write: boolean; delete: boolean; browse: boolean };
 }
 
 export interface MediaInfo {
@@ -171,6 +171,25 @@ export interface FolderTree {
   total: number;
   folders: { path: string; count: number }[];
 }
+
+/** One entry of a bucket listing. `asset` is set when the CMS has a row for the file. */
+export interface StoreFile {
+  key: string;
+  name: string;
+  size: number;
+  mime: string;
+  kind: AssetView["kind"];
+  updatedAt: string | null;
+  asset: AssetView | null;
+}
+export interface StoreListing {
+  store: string;
+  prefix: string;
+  folders: { path: string; name: string }[];
+  files: StoreFile[];
+  cursor: string | null;
+}
+export type ShareTtl = "1h" | "24h" | "7d";
 
 export type AssetCounts = Record<"all" | "image" | "video" | "audio" | "document" | "other", number>;
 export type AssetDetail = AssetView & { usage: AssetUsage[]; usageHidden: number };
@@ -303,6 +322,15 @@ export function createRestClient(opts: RestClientOptions) {
       if (!res.ok || !data?.asset) throw new CmsRemoteError(data?.message ?? `HTTP ${res.status}`, data?.error ?? "http", { kind: data?.kind, status: res.status, params: data?.params });
       return data.asset;
     },
+    storeFiles: (store: string, q: { prefix?: string | null; q?: string; cursor?: string | null; limit?: number } = {}) => req<StoreListing>("GET", `/stores/${enc(store)}/files`, { query: { ...q } }),
+    registerFile: (store: string, key: string, more: { alt?: string; tags?: string[] } = {}) => req<{ asset: AssetView }>("POST", `/stores/${enc(store)}/files/_register`, { body: { key, ...more } }).then((r) => r.asset),
+    /** Move files and whole folders into the folder `to` ("" = the top). */
+    moveFiles: (store: string, b: { keys?: string[]; folders?: string[]; to: string }) => req<{ moved: number; failed: { key: string; message: string }[] }>("POST", `/stores/${enc(store)}/files/_move`, { body: b }),
+    /** Fails with `asset_in_use` unless `confirm` is set. `check: true` deletes nothing and only counts the files and their uses. */
+    removeFiles: (store: string, b: { keys?: string[]; folders?: string[]; confirm?: boolean; check?: boolean }) => req<{ deleted: number; files: number; used: number; documents: AssetUsage[]; hidden: number }>("POST", `/stores/${enc(store)}/files/_delete`, { body: b }),
+    shareAsset: (id: string, ttl: ShareTtl = "24h") => req<{ url: string; expiresAt: string | null }>("POST", `/assets/${enc(id)}/share`, { body: { ttl } }),
+    /** Address of a file by its key (files the CMS has no row for). */
+    storeFileUrl: (store: string, key: string, o: { download?: boolean } = {}) => `${base}/stores/${enc(store)}/files/_open?key=${enc(key)}${o.download ? "&download=1" : ""}`,
     /** Address of a file through the CMS route (`thumb`: its small picture). */
     fileUrl: (a: { id: string; name: string }, o: { thumb?: boolean; download?: boolean } = {}) => `${base}/files/${enc(a.id)}/${enc(a.name)}${o.thumb ? "?thumb=1" : o.download ? "?download=1" : ""}`,
     audit: (q: { cursor?: string | null; action?: string; outcome?: string; actorKind?: "user" | "key" | "system" | "anonymous"; limit?: number } = {}) => req<{ entries: AuditEntry[]; nextCursor: string | null }>("GET", "/audit", { query: q }),
