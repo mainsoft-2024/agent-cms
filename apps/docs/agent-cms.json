@@ -1,70 +1,90 @@
 {
-  "version": "0.7.0",
+  "version": "0.8.0",
   "files": {
     "components/cms/use-cms.ts": {
       "item": "cms-lib",
-      "version": "0.7.0",
-      "hash": "1fed3b29cd41dd4232a62980bad8517fd814d49008ddecd0aa3771dd491d5983"
+      "version": "0.8.0",
+      "hash": "48ecbf1cab565ae73af2fa5eb8d4f7a8931a5f3274b8dea9ede9ed66b4a8af02"
     },
     "components/cms/cms-messages.ts": {
       "item": "cms-lib",
-      "version": "0.7.0",
-      "hash": "585003466c45c614997579f3e28fd4e528ae36547a14af5da85db40d31966f36"
+      "version": "0.8.0",
+      "hash": "ad9504f7533be856a312f5dd10ca95342bf367ebee418318f1ba859dec1a4175"
     },
     "components/cms/cms-parts.tsx": {
       "item": "cms-lib",
-      "version": "0.7.0",
-      "hash": "aeab43380c4af8cf27c971933bc647b736110328c1f57cecad9c54a5c60c6ba4"
+      "version": "0.8.0",
+      "hash": "fe796707f3a2705235ca4f4926da0c7e81a85a054ec5b83ac9e28f960f27f80e"
     },
     "components/cms/cms-shell.tsx": {
       "item": "cms-shell",
-      "version": "0.7.0",
-      "hash": "7e1c1441c1de79e08f1c1515f6472db7f9b033911b3694aac3d4cf801875a2d8"
+      "version": "0.8.0",
+      "hash": "cafe1d7a986217f94004322f9ad72f399e3517332092be1b9bcc635d43fd14be"
     },
     "components/cms/cms-empty.tsx": {
       "item": "cms-empty",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "hash": "571d6711ff7807a3c4a72bae54cd78c9525d7dbecf33a6265e7b0522789ec5b1"
     },
     "components/cms/cms-doc-list.tsx": {
       "item": "cms-doc-list",
-      "version": "0.7.0",
-      "hash": "9c8fd46f2b76a2ed9a463ea2a86e7f9bc31155d756cc45f3f2b400f9cd5c384c"
+      "version": "0.8.0",
+      "hash": "b13cc7f8fad74176b03992438f4f886b4c44783f213bcc5ebf40229066a388d5"
     },
     "components/cms/cms-merge.tsx": {
       "item": "cms-merge",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "hash": "b580964d77b29dc89bea76b4bcf28da0b2ab75a9488bbf2a27df2e310d472742"
     },
     "components/cms/cms-doc-editor.tsx": {
       "item": "cms-doc-editor",
-      "version": "0.7.0",
-      "hash": "7294f7a648c7fd653e126101a0a3d134404d65b7361ee8191fa83dbe8b26fa2c"
+      "version": "0.8.0",
+      "hash": "759b71db2025c7ffa7008591b6232d22d642c6875b146ecc5659f20dbba53932"
     },
     "components/cms/cms-field-form.tsx": {
       "item": "cms-doc-editor",
-      "version": "0.7.0",
-      "hash": "2ba4bed9ee9adc9ec16f6cf4f3d4dc703ca0f63b83f657d6c8b39ea18fad9d7f"
+      "version": "0.8.0",
+      "hash": "7156c7542aaef8e16a6bd6a418a3092382e4ce345e797f94c7d14c35ff0c25ae"
     },
     "components/cms/cms-versions.tsx": {
       "item": "cms-versions",
-      "version": "0.7.0",
-      "hash": "f9cf5711d47c3a04c56e4f4ea8b401e4bf58856dfa3940bcc5323a9e593f3172"
+      "version": "0.8.0",
+      "hash": "2c9b32f900959a2abc718763f74221a96b0033b38e3f14681c1c8d88228a4dc2"
     },
     "components/cms/cms-keys.tsx": {
       "item": "cms-keys",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "hash": "1a5c1e8a0f6a200aa01309e2f6419db1687d41361b76abab53846ba331c2912e"
     },
     "components/cms/cms-audit.tsx": {
       "item": "cms-audit",
-      "version": "0.7.0",
-      "hash": "f26e27105c1ce2e273a445e6089974c7e610709e795b6fd14c922b6f3dca69d4"
+      "version": "0.8.0",
+      "hash": "2ec1212f2795c844d1d043c88b0526abcf45b3d8c04b011babe7eb83dee25a53"
     },
     "components/cms/cms-command.tsx": {
       "item": "cms-command",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "hash": "a5f798051a9d99b86b54ebdcf652b0b655a88fd921ae8be56c3d1fe29ef53dc9"
+    },
+    "components/cms/cms-upload.ts": {
+      "item": "cms-media-picker",
+      "version": "0.8.0",
+      "hash": "86eab248be51370d9a08419f31ad9095c4f2d7aca3f94dd8eb201836f3290470"
+    },
+    "components/cms/cms-media-picker.tsx": {
+      "item": "cms-media-picker",
+      "version": "0.8.0",
+      "hash": "70ca7efc84fe5b8413ca78c8234ab2c60400fac71411c8a2781b9449b8f363e6"
+    },
+    "components/cms/cms-media.tsx": {
+      "item": "cms-media",
+      "version": "0.8.0",
+      "hash": "a8657289e327bbb68c7b2bd50fea7946d505103234da9c6b37110aebb0c77017"
+    },
+    "components/cms/cms-files.tsx": {
+      "item": "cms-files",
+      "version": "0.8.0",
+      "hash": "6035d5f3cf9cc7d1349032e0ca47af4815c1106abe036327e5d63988a9b30819"
     }
   }
 }

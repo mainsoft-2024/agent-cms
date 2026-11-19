@@ -144,7 +144,7 @@ export default async function Home() {
         ) : null}
         <Headline />
         <p className="mx-auto mb-7 max-w-[560px] text-[16px] text-[var(--pencil-gray)]">
-          Add it to your Next.js app and Postgres. People edit in the admin screens; agents edit the same documents through MCP, AI SDK tools, the CLI and REST.
+          Add it to your Next.js app and Postgres. People edit in the admin screens; agents edit the same documents through MCP, the CLI and REST, or the same tools inside your own agent.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-2.5">
           <span className="mono inline-flex items-center gap-2 rounded-[6px] bg-white py-1.5 pr-1.5 pl-3.5 text-[13px] shadow-[var(--hair)]">
@@ -184,7 +184,7 @@ export default async function Home() {
           <h2 className="mt-3 mb-1.5 text-[16px] font-semibold">Four ways in for agents</h2>
           <p className="text-[var(--pencil-gray)]">One tool list, scoped by API key.</p>
           <div className="mono mt-3.5 grid grid-cols-2 gap-1.5 text-[12px]">
-            {["MCP", "AI SDK", "CLI", "REST"].map((w) => (
+            {["MCP", "CLI", "REST", "Tools"].map((w) => (
               <span key={w} className="rounded-[6px] bg-[var(--drafting-gray)] px-2 py-1.5">
                 {w}
               </span>
@@ -194,7 +194,7 @@ export default async function Home() {
         <div className="site-card p-6">
           <PanelsTopLeft className="size-5 text-[var(--indigo-ink)]" aria-hidden />
           <h2 className="mt-3 mb-1.5 text-[16px] font-semibold">Admin screens you own</h2>
-          <p className="text-[var(--pencil-gray)]">Copy nine screens into your app with shadcn, then change anything.</p>
+          <p className="text-[var(--pencil-gray)]">Copy the screens into your app with shadcn, then change anything.</p>
           <div className="mono mt-3.5 text-[12px]">
             <Link href="/components" className="block rounded-[6px] bg-[var(--drafting-gray)] px-2 py-1.5">
               npx shadcn add …/r/cms-shell.json

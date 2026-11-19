@@ -14,11 +14,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { AssetThumb, assetMeta, CmsMediaPicker } from "./cms-media-picker";
 import type { DocContent } from "./use-cms";
-import { useCms } from "./use-cms";
+import { useAsset, useCms } from "./use-cms";
 
-export type Widget = "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json";
+export type Widget = "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json" | "image" | "file";
 
 type JsonSchema = {
   type?: string | string[];
@@ -40,6 +42,10 @@ export interface FieldSpec {
   required: boolean;
   options?: string[];
   integer?: boolean;
+  /** For `image` and `file`: the collection the field belongs to and the field's own upload rules. */
+  collection?: string;
+  accept?: string[];
+  store?: string;
 }
 
 /** Drop `null` from `anyOf: [X, null]` (nullable fields). */
@@ -78,7 +84,7 @@ export function fieldSpecs(schema: CollectionSchema): FieldSpec[] {
     const hint = schema.admin?.[key];
     const widget = widgetFor(raw, hint?.widget);
     const options = (widget === "select" ? s.enum : widget === "multiselect" ? (s.items ? unwrap(s.items).enum : undefined) : undefined) as string[] | undefined;
-    return { key, label: hint?.label ?? key, help: hint?.help ?? s.description, widget, required: req.has(key), options, integer: s.type === "integer" };
+    return { key, label: hint?.label ?? key, help: hint?.help ?? s.description, widget, required: req.has(key), options, integer: s.type === "integer", collection: schema.slug, accept: hint?.accept ?? (widget === "image" ? ["image/*"] : undefined), store: hint?.store };
   });
 }
 
@@ -333,6 +339,9 @@ export function FieldInput({ spec, idPrefix, value, onChange, problems }: { spec
         { asGroup: true }
       );
     }
+    case "image":
+    case "file":
+      return shell(<AssetField spec={spec} id={id} value={typeof value === "string" ? value : null} onChange={onChange} invalid={invalid} describedBy={by} />, { className: "md:col-span-2", asGroup: true });
     case "date":
       return shell(<Input {...common} type="date" value={typeof value === "string" ? value.slice(0, 10) : ""} onChange={(e) => onChange(e.target.value || undefined)} />);
     case "tags":
@@ -342,6 +351,38 @@ export function FieldInput({ spec, idPrefix, value, onChange, problems }: { spec
     default:
       return shell(<Input {...common} value={typeof value === "string" ? value : value === undefined || value === null ? "" : String(value)} onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value)} />);
   }
+}
+
+/** A file from the media library: its small picture and name, or a button that opens the picker. */
+function AssetField({ spec, id, value, onChange, invalid, describedBy: by }: { spec: FieldSpec; id: string; value: string | null; onChange: (v: unknown) => void; invalid?: boolean; describedBy?: string }) {
+  const { t, me } = useCms();
+  const asset = useAsset(value);
+  const [open, setOpen] = React.useState(false);
+  if (!me?.media) return <Input id={id} value={value ?? ""} aria-invalid={invalid || undefined} aria-describedby={by} onChange={(e) => onChange(e.target.value || undefined)} />;
+  return (
+    <div className={cn("flex min-h-[60px] items-center gap-3 rounded-md border border-input p-2", invalid && "border-destructive")} aria-describedby={by}>
+      {value ? (
+        <>
+          {asset ? <AssetThumb asset={asset} className="aspect-[4/3] w-16 shrink-0" /> : <span className="aspect-[4/3] w-16 shrink-0 rounded-md border bg-muted" />}
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">{asset?.name ?? value}</div>
+            {asset ? <div className="truncate text-xs tabular-nums text-muted-foreground">{assetMeta(asset)}</div> : null}
+          </div>
+          <Button type="button" variant="outline" size="sm" id={id} onClick={() => setOpen(true)}>
+            {t("media_replace")}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => onChange(undefined)}>
+            {t("media_remove")}
+          </Button>
+        </>
+      ) : (
+        <Button type="button" variant="outline" size="sm" id={id} onClick={() => setOpen(true)}>
+          {t("media_choose")}
+        </Button>
+      )}
+      <CmsMediaPicker open={open} onOpenChange={setOpen} onPick={(a) => onChange(a.id)} kinds={spec.widget === "image" ? ["image"] : undefined} accept={spec.accept} store={spec.store} field={spec.collection ? { collection: spec.collection, path: spec.key } : undefined} />
+    </div>
+  );
 }
 
 // ── the whole form ───────────────────────────────────────────────────────────

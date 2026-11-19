@@ -64,3 +64,8 @@ export async function listPublished(collection: "components" | "changelog") {
   const cms = await getCms();
   return cms.list(anonymous, collection);
 }
+
+/** The files a page uses (pictures, video, downloads), by id. Empty without a media library. */
+export async function filesOf(doc: CmsDoc) {
+  return (await getCms()).assetsFor(doc);
+}

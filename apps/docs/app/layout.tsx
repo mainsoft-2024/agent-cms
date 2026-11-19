@@ -13,7 +13,7 @@ const siteUrl = process.env.SITE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_U
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: { default: "agent-cms: serverless CMS for agents and humans", template: "%s | agent-cms" },
-  description: "Add a CMS to your Next.js app and Postgres. People edit in the admin screens; agents edit the same documents through MCP, AI SDK tools, the CLI and REST.",
+  description: "Add a CMS to your Next.js app and Postgres. People edit in the admin screens; agents edit the same documents through MCP, the CLI and REST, or the same tools inside your own agent.",
   openGraph: { siteName: "agent-cms", type: "website" },
 };
 

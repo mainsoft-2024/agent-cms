@@ -1,5 +1,6 @@
 import "server-only";
 import { createCms, defineCollection, MemoryRepo, type Actor } from "@mainsoft/agent-cms";
+import { MemoryStorage } from "@mainsoft/agent-cms/storage";
 
 /**
  * The gallery's live demo: a CMS in memory, reset every 30 minutes. Visitors act
@@ -16,13 +17,39 @@ const posts = defineCollection({
   url: (d) => `/posts/${d.slug}`,
 });
 
+/** A drawn placeholder: the demo ships no photographs. */
+const picture = (label: string, w: number, h: number, ink: string, paper: string) =>
+  new TextEncoder().encode(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="${w}" height="${h}" fill="${paper}"/><g stroke="${ink}" stroke-width="1" opacity=".18">${Array.from({ length: Math.ceil(w / 40) }, (_, i) => `<path d="M${i * 40} 0V${h}"/>`).join("")}${Array.from({ length: Math.ceil(h / 40) }, (_, i) => `<path d="M0 ${i * 40}H${w}"/>`).join("")}</g><rect x="${w * 0.12}" y="${h * 0.2}" width="${w * 0.76}" height="${h * 0.6}" rx="10" fill="none" stroke="${ink}" stroke-width="2"/><text x="50%" y="52%" text-anchor="middle" font-family="ui-monospace,monospace" font-size="${Math.round(h / 12)}" fill="${ink}">${label}</text></svg>`
+  );
+
+const PICTURES = [
+  { name: "dashboard.svg", folder: "guides", alt: "The dashboard with three charts", tags: ["guide"], label: "dashboard", w: 1600, h: 900, ink: "#111111", paper: "#f3f1ec" },
+  { name: "install-steps.svg", folder: "guides", alt: "Three install steps in a row", tags: ["guide", "install"], label: "install steps", w: 1200, h: 800, ink: "#1d4ed8", paper: "#eef2ff" },
+  { name: "launch-hero.svg", folder: "news", alt: "Launch announcement banner", tags: ["launch"], label: "launch", w: 1920, h: 1080, ink: "#9a3412", paper: "#fff7ed" },
+  { name: "team.svg", folder: "news", alt: "", tags: [], label: "team", w: 1200, h: 1200, ink: "#166534", paper: "#f0fdf4" },
+  { name: "logo-mark.svg", folder: "brand", alt: "The ac mark", tags: ["brand"], label: "ac", w: 512, h: 512, ink: "#111111", paper: "#ffffff" },
+];
+
 async function seed() {
-  const cms = createCms({ repo: new MemoryRepo(), collections: [posts], previewSecret: "demo-preview-secret-not-for-production" });
+  // The demo library is read-only: visitors share one demo, and the docs site does not host what strangers upload.
+  const store = new MemoryStorage({ name: "demo", publicUrl: "/api/demo-files" });
+  const cms = createCms({
+    repo: new MemoryRepo(),
+    collections: [posts],
+    previewSecret: "demo-preview-secret-not-for-production",
+    media: { stores: { demo: { label: "Demo pictures", visibility: "public", adapter: store, access: { write: ({ actor }) => actor.kind === "system", delete: ({ actor }) => actor.kind === "system" } } }, accept: ["image/*"], filesUrl: "/api/demo/files" },
+  });
   const a = demoAdmin;
+  const ids: Record<string, string> = {};
+  for (const p of PICTURES) {
+    const made = await cms.assets.put({ kind: "system", label: "demo" }, { name: p.name, mime: "image/svg+xml", bytes: picture(p.label, p.w, p.h, p.ink, p.paper), folder: p.folder, alt: p.alt, tags: p.tags, width: p.w, height: p.h } as never);
+    ids[p.name] = made.id;
+  }
   await cms.create(a, "posts", { slug: "welcome", title: "Welcome to the demo", category: "Guides", summary: "Click around: nothing here is saved for long.", body: "## What this is\n\nA live copy of the agent-cms admin screens.\n\n## Try\n\n- Edit this page and publish it.\n- Open the version history.\n" }, { publish: true });
-  await cms.create(a, "posts", { slug: "release-notes", title: "Release notes", category: "News", body: "## 0.7.0\n\nAgents can read public docs over MCP without a key.\n" }, { publish: true });
+  await cms.create(a, "posts", { slug: "release-notes", title: "Release notes", category: "News", body: "## 0.8.0\n\nA media library: pictures, video and files in your own bucket.\n\n## 0.7.0\n\nAgents can read public docs over MCP without a key.\n" }, { publish: true });
   await cms.create(a, "posts", { slug: "maintenance", title: "Maintenance on Sunday", category: "Notices", body: "The site is read-only from 02:00 to 03:00.\n" });
-  await cms.create(a, "posts", { slug: "install-guide", title: "Install guide", category: "Guides", body: "## Install\n\nRun npm i @mainsoft/agent-cms.\n\n## Tables\n\nRun npx agent-cms migrate check.\n" }, { publish: true });
+  await cms.create(a, "posts", { slug: "install-guide", title: "Install guide", category: "Guides", body: `![Three install steps in a row](asset:${ids["install-steps.svg"]}/install-steps.svg "The three steps")\n\n` + "## Install\n\nRun npm i @mainsoft/agent-cms.\n\n## Tables\n\nRun npx agent-cms migrate check.\n" }, { publish: true });
   // An agent edits a published page: the editor shows its change for review.
   const { secret } = await cms.createKey(a, { name: "docs-bot", scopes: ["write"] });
   const bot = await cms.authenticateKey(secret);
@@ -30,12 +57,22 @@ async function seed() {
     const doc = await cms.get(a, "posts", "install-guide", { draft: true });
     await cms.update(bot, "posts", "install-guide", { body: doc.body.replace("Run npm i @mainsoft/agent-cms.", "Run npm i @mainsoft/agent-cms drizzle-orm zod.\n\nPeer dependencies: drizzle-orm and zod (^3.25 or ^4).") }, { expectedVersion: doc.version, note: "add peer dependencies" });
   }
-  return cms;
+  return { cms, store };
 }
 
-const g = globalThis as unknown as { __demo?: { at: number; cms: ReturnType<typeof seed> } };
+const g = globalThis as unknown as { __demo2?: { at: number; made: ReturnType<typeof seed> } };
 
-export function demoCms() {
-  if (!g.__demo || Date.now() - g.__demo.at > RESET_MS) g.__demo = { at: Date.now(), cms: seed() };
-  return g.__demo.cms;
+function demo() {
+  if (!g.__demo2 || Date.now() - g.__demo2.at > RESET_MS) g.__demo2 = { at: Date.now(), made: seed() };
+  return g.__demo2.made;
+}
+
+export async function demoCms() {
+  return (await demo()).cms;
+}
+
+/** One object of the demo library (the route /api/demo-files serves these). */
+export async function demoFile(key: string): Promise<{ body: Uint8Array; mime: string } | null> {
+  const o = (await demo()).store.objects.get(key);
+  return o ? { body: o.body, mime: o.mime ?? "application/octet-stream" } : null;
 }

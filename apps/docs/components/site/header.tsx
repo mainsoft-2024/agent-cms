@@ -46,10 +46,23 @@ export function SiteHeader() {
   const lang = path.startsWith("/ko") ? "ko" : "en";
   const [menu, setMenu] = useState(false);
   useEffect(() => setMenu(false), [path]);
+  // While the menu is open the page behind it does not scroll, and Escape closes it.
+  useEffect(() => {
+    if (!menu) return;
+    const before = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(false);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = before;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
 
   const isOn = (href: string) => path === href || path.startsWith(`${href}/`) || (href === "/docs" && path.startsWith("/ko/docs"));
 
   return (
+    <>
     <header className="sticky top-0 z-30 bg-[var(--drafting-gray)]/95 backdrop-blur">
       <div className="mx-auto flex max-w-[1440px] items-center gap-7 px-5 py-4 md:px-10">
         <Logo />
@@ -77,19 +90,21 @@ export function SiteHeader() {
         </a>
         <div className="flex items-center md:hidden">
           <SearchButton lang={lang} compact />
-          <button type="button" className="grid size-8 place-items-center" aria-label={menu ? "Close menu" : "Open menu"} aria-expanded={menu} onClick={() => setMenu((m) => !m)}>
+          <button type="button" className="grid size-8 place-items-center" aria-label={menu ? "Close menu" : "Open menu"} aria-expanded={menu} aria-controls="site-menu" onClick={() => setMenu((m) => !m)}>
             {menu ? <X className="size-5" aria-hidden /> : <Menu className="size-5" aria-hidden />}
           </button>
         </div>
       </div>
-      {menu ? <MobileMenu lang={lang} path={path} /> : null}
     </header>
+    {/* Outside the header: its backdrop blur would become the box a fixed child is placed in, and the menu would be as short as the header. */}
+    {menu ? <MobileMenu lang={lang} path={path} /> : null}
+    </>
   );
 }
 
 function MobileMenu({ lang, path }: { lang: "en" | "ko"; path: string }) {
   return (
-    <div className="fixed inset-x-0 top-[64px] bottom-0 z-40 overflow-y-auto bg-[var(--drafting-gray)] px-5 pb-10 md:hidden">
+    <div id="site-menu" className="fixed inset-x-0 top-[64px] z-40 h-[calc(100dvh-64px)] overflow-y-auto overscroll-contain bg-[var(--drafting-gray)] px-5 pb-[calc(40px+env(safe-area-inset-bottom))] md:hidden">
       <nav aria-label="Menu" className="flex flex-col">
         {NAV.map((n) => (
           <Link key={n.href} href={lang === "ko" ? n.ko : n.href} className="display d32 border-b border-[var(--line)] py-4">

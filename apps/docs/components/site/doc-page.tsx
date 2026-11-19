@@ -5,7 +5,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CopyButton } from "./code-block";
 import { Markdown } from "./markdown";
-import { collectionFor, docHref, docsNav, publicVersions, publishedDoc, type Lang, type NavGroup } from "@/lib/content";
+import { collectionFor, docHref, docsNav, publicVersions, publishedDoc, type Lang, type NavGroup, filesOf } from "@/lib/content";
 
 const T = {
   en: { onThisPage: "On this page", copyMd: "Copy as markdown", viewMd: "View as markdown", history: "Version history", updated: "Updated", by: "by", version: "Version", docs: "Docs", agent: "agent" },
@@ -67,7 +67,7 @@ export async function DocPage({ lang, slug }: { lang: Lang; slug: string }) {
   const sourceVersion = Number((doc.fields as { sourceVersion?: number }).sourceVersion ?? 0);
   const stale = english && english.publishedVersion !== null && sourceVersion > 0 && english.publishedVersion > sourceVersion;
   const toc = extractToc(parseMarkdown(doc.body));
-  const versions = await publicVersions(doc);
+  const [versions, files] = await Promise.all([publicVersions(doc), filesOf(doc)]);
   const md = `# ${doc.title}\n\n${doc.summary ? `${doc.summary}\n\n` : ""}${doc.body}\n`;
   const mdHref = `${docHref(lang, slug)}.md`;
 
@@ -135,7 +135,7 @@ export async function DocPage({ lang, slug }: { lang: Lang; slug: string }) {
         ) : null}
 
         <div className="max-w-[720px]">
-          <Markdown source={doc.body} lang={lang} />
+          <Markdown source={doc.body} lang={lang} files={files} />
         </div>
       </article>
 

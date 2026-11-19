@@ -17,7 +17,7 @@ A key can have an expiry date; expired keys answer `key_expired`. A key cannot c
 
 ## Audit log
 
-Key changes, publishing, deletes and refused requests go to `cms_audit`: who, through which channel (REST, MCP, AI SDK, CLI), what and the result. The **Audit log** screen filters it.
+Key changes, publishing, deletes and refused requests go to `cms_audit`: who, through which channel (REST, MCP, tools, CLI), what and the result. The **Audit log** screen filters it.
 
 ## Agent text
 

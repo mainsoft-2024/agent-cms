@@ -11,7 +11,7 @@ npm i @mainsoft/agent-cms drizzle-orm zod
 npx agent-cms init
 ```
 
-Peer dependencies: `drizzle-orm`, `zod` (`^3.25` or `^4`), and `ai` only if you use the AI SDK tools (`@mainsoft/agent-cms/ai`).
+Peer dependencies: `drizzle-orm`, `zod` (`^3.25` or `^4`), nothing else. The package never calls a model, so there is no model library to install.
 
 `init` writes `agent-cms.config.ts`, `lib/cms.ts`, the API route, a schema re-export and `.env.example` lines. It never overwrites a file.
 

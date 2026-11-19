@@ -5,7 +5,7 @@ category: Reference
 order: 2
 sourceVersion: 1
 ---
-REST, MCP, AI SDK 도구, CLI 모두 같은 모양으로 돌려줘요.
+REST, MCP, 도구(`callTool`), CLI 모두 같은 모양으로 돌려줘요.
 
 ```json
 { "error": "conflict_version", "kind": "conflict", "message": "…", "params": { "expected": 3, "current": 4 } }

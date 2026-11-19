@@ -1,6 +1,6 @@
 ---
 title: Admin screens
-summary: Copy the nine screens into your app, theme them, and keep them up to date.
+summary: Copy the screens into your app, theme them, and keep them up to date.
 category: Admin screens
 order: 1
 ---
@@ -18,6 +18,7 @@ Or with the agent-cms CLI:
 
 ```sh
 npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
+npx agent-cms add cms-media cms-files   # with a media library (0.8.0 and later)
 ```
 
 Files go to `<components>/cms/`. The shadcn parts and the screens an item needs come along. Browse every screen with a live demo in [Components](/components).
@@ -36,7 +37,7 @@ Files go to `<components>/cms/`. The shadcn parts and the screens an item needs 
 
 ## Theme them
 
-The screens use the shadcn variables (`--background`, `--primary`, `--radius`, fonts). Change those and the screens follow. This site's admin is the same nine screens with its own variables; the gallery switches between the two looks.
+The screens use the shadcn variables (`--background`, `--primary`, `--radius`, fonts). Change those and the screens follow. This site's admin is the same screens with its own variables; the gallery switches between the two looks.
 
 ## Update them
 
