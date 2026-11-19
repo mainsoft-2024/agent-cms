@@ -7,7 +7,7 @@
 "use client";
 
 import * as React from "react";
-import { createRestClient, type Me, type RestClient } from "@mainsoft/agent-cms/client";
+import { createRestClient, type AssetDetail, type Me, type RestClient } from "@mainsoft/agent-cms/client";
 import type { DocLike } from "@mainsoft/agent-cms/diff";
 import { createT, en, type CmsMessages, type T } from "./cms-messages";
 
@@ -23,7 +23,14 @@ export interface CmsProviderProps {
   appUrl?: string;
   /** Custom fetch (tests, server-side rendering). */
   fetch?: typeof fetch;
+  /** Places where an extension package adds its own controls. An empty slot shows nothing. */
+  slots?: CmsSlots;
   children?: React.ReactNode;
+}
+
+export interface CmsSlots {
+  /** Next to a file's alt text field in the media library. `setAlt` fills the field (the person still saves it). */
+  assetAlt?: (asset: AssetDetail, o: { setAlt: (alt: string) => void }) => React.ReactNode;
 }
 
 export interface CmsContextValue {
@@ -36,11 +43,14 @@ export interface CmsContextValue {
   me: Me | null;
   meError: unknown;
   reloadMe: () => void;
+  slots: CmsSlots;
 }
 
 const CmsContext = React.createContext<CmsContextValue | null>(null);
 
-export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, children }: CmsProviderProps) {
+const NO_SLOTS: CmsSlots = {};
+
+export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, slots = NO_SLOTS, children }: CmsProviderProps) {
   const client = React.useMemo(() => createRestClient({ url: baseUrl, fetch: f }), [baseUrl, f]);
   const t = React.useMemo(() => createT(messages), [messages]);
   const locale = messages?._locale ?? en._locale;
@@ -59,8 +69,8 @@ export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, 
   }, [client, tick]);
   const origin = appUrl ?? (typeof window !== "undefined" ? window.location.origin : "");
   const value = React.useMemo<CmsContextValue>(
-    () => ({ client, t, locale, baseUrl, appUrl: origin.replace(/\/+$/, ""), me, meError, reloadMe: () => setTick((n) => n + 1) }),
-    [client, t, locale, baseUrl, origin, me, meError]
+    () => ({ client, t, locale, baseUrl, appUrl: origin.replace(/\/+$/, ""), me, meError, reloadMe: () => setTick((n) => n + 1), slots }),
+    [client, t, locale, baseUrl, origin, me, meError, slots]
   );
   return React.createElement(CmsContext.Provider, { value }, children);
 }
@@ -69,6 +79,33 @@ export function useCms(): CmsContextValue {
   const v = React.useContext(CmsContext);
   if (!v) throw new Error("agent-cms: wrap the admin screens in <CmsProvider>.");
   return v;
+}
+
+const assetCache = new WeakMap<RestClient, Map<string, Promise<AssetDetail | null>>>();
+
+/** Forget what `useAsset` remembers (after a file changed or was deleted). */
+export function forgetAsset(client: RestClient, id?: string): void {
+  if (id) assetCache.get(client)?.delete(id);
+  else assetCache.delete(client);
+}
+
+/** A media library file by id: undefined while loading, null when it is gone or may not be seen. */
+export function useAsset(id: string | null | undefined): AssetDetail | null | undefined {
+  const { client } = useCms();
+  const [state, setState] = React.useState<{ id: string; asset: AssetDetail | null } | null>(null);
+  React.useEffect(() => {
+    if (!id) return;
+    let live = true;
+    let known = assetCache.get(client);
+    if (!known) assetCache.set(client, (known = new Map()));
+    let p = known.get(id);
+    if (!p) known.set(id, (p = client.asset(id).catch(() => null)));
+    void p.then((asset) => live && setState({ id, asset }));
+    return () => {
+      live = false;
+    };
+  }, [client, id]);
+  return !id ? null : state?.id === id ? state.asset : undefined;
 }
 
 /** Full URL of the CMS endpoint (e.g. https://app.example.com/api/cms). */

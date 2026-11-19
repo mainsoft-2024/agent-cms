@@ -1,5 +1,6 @@
 // What `npx agent-cms init` writes, filled in for the example.
-import { createCms, defineCollection, DrizzleRepo, type Actor } from "@mainsoft/agent-cms";
+import { assetId, createCms, defineCollection, DrizzleRepo, type Actor, type MediaOptions } from "@mainsoft/agent-cms";
+import { s3Storage } from "@mainsoft/agent-cms/storage-s3";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, ready } from "./db";
@@ -10,8 +11,8 @@ export const posts = defineCollection({
   visibility: "public",
   categories: ["News", "Engineering"],
   url: (d) => `/posts/${d.slug}`,
-  fields: z.object({ tags: z.array(z.string()).default([]), featured: z.boolean().default(false) }),
-  admin: { fields: { tags: { label: "Tags", widget: "tags" }, featured: { label: "Featured", widget: "switch" } } },
+  fields: z.object({ cover: assetId().optional(), tags: z.array(z.string()).default([]), featured: z.boolean().default(false) }),
+  admin: { fields: { cover: { label: "Cover", widget: "image" }, tags: { label: "Tags", widget: "tags" }, featured: { label: "Featured", widget: "switch" } } },
 });
 
 export const guide = defineCollection({
@@ -21,12 +22,22 @@ export const guide = defineCollection({
   access: { read: ({ actor }) => actor.kind !== "anonymous" },
 });
 
+// The media library is on when the app is given a storage: `npm run s3:dev`
+// in the repository root starts a local one, then
+//   S3_ENDPOINT=http://127.0.0.1:9100 S3_KEY=test S3_SECRET=testsecret1 npm run dev
+// A real bucket with a public address would also set `publicUrl` on the adapter.
+const s3 = (bucket: string) => s3Storage({ bucket, endpoint: process.env.S3_ENDPOINT, region: process.env.S3_REGION, accessKeyId: process.env.S3_KEY ?? "", secretAccessKey: process.env.S3_SECRET ?? "" });
+export const media: MediaOptions | undefined = process.env.S3_ENDPOINT
+  ? { stores: { public: { visibility: "public", adapter: s3(process.env.S3_BUCKET ?? "media") }, private: { visibility: "private", adapter: s3(process.env.S3_PRIVATE_BUCKET ?? "private") } } }
+  : undefined;
+
 const g = globalThis as unknown as { __exampleCms?: ReturnType<typeof make> };
 
 function make() {
   return createCms({
     repo: new DrizzleRepo(db),
     collections: [posts, guide],
+    media,
     previewSecret: process.env.CMS_PREVIEW_SECRET ?? "example-preview-secret-at-least-32-chars",
     timeZone: "Asia/Seoul",
     // The app keeps search misses in its own table (see UPGRADE-0.6.md).

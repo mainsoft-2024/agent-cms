@@ -8,60 +8,205 @@
       "type": "registry:lib",
       "title": "agent-cms client and helpers",
       "description": "CmsProvider and useCms (REST client, UI strings in English and Korean), small hooks, shared parts (state badge, copy box, confirm dialog, page header, markdown preview).",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["badge", "button", "dialog"],
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "badge",
+        "button",
+        "dialog"
+      ],
       "files": [
-        { "path": "registry/cms/use-cms.ts", "type": "registry:lib" },
-        { "path": "registry/cms/cms-messages.ts", "type": "registry:lib" },
-        { "path": "registry/cms/cms-parts.tsx", "type": "registry:lib" }
+        {
+          "path": "registry/cms/use-cms.ts",
+          "type": "registry:lib"
+        },
+        {
+          "path": "registry/cms/cms-messages.ts",
+          "type": "registry:lib"
+        },
+        {
+          "path": "registry/cms/cms-parts.tsx",
+          "type": "registry:lib"
+        }
       ]
     },
     {
       "name": "cms-shell",
       "type": "registry:component",
       "title": "Admin layout",
-      "description": "Sidebar with collections, API keys and audit log, plus extraNav for your app's own screens. A sheet menu under 768px.",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["sheet", "cms-lib"],
-      "files": [{ "path": "registry/cms/cms-shell.tsx", "type": "registry:component" }]
+      "description": "Sidebar with collections, API keys and audit log, plus extraNav for your app's own screens. A sheet menu under 768px. Shows \"Media\" when the app has a media library.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "sheet",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-shell.tsx",
+          "type": "registry:component"
+        }
+      ]
     },
     {
       "name": "cms-empty",
       "type": "registry:component",
       "title": "Empty collection",
       "description": "New document, and how to write with an agent instead (CLI one-liner, MCP URL, API key link).",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["button", "cms-lib"],
-      "files": [{ "path": "registry/cms/cms-empty.tsx", "type": "registry:component" }]
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-empty.tsx",
+          "type": "registry:component"
+        }
+      ]
     },
     {
       "name": "cms-doc-list",
       "type": "registry:component",
       "title": "Document list",
       "description": "State tabs with counts, category and author filters, search, 7-day views, selection with bulk publish, unpublish, hide, unhide and delete. Cards with long-press selection on phones.",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["button", "checkbox", "dialog", "dropdown-menu", "input", "select", "table", "cms-lib", "cms-empty"],
-      "files": [{ "path": "registry/cms/cms-doc-list.tsx", "type": "registry:component" }]
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "checkbox",
+        "dialog",
+        "dropdown-menu",
+        "input",
+        "select",
+        "table",
+        "cms-lib",
+        "cms-empty"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-doc-list.tsx",
+          "type": "registry:component"
+        }
+      ]
     },
     {
       "name": "cms-merge",
       "type": "registry:component",
       "title": "Merge after a conflict",
       "description": "Three-way merge when someone saved first: what merged automatically, and theirs, mine or both for each conflict.",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["badge", "button", "label", "radio-group", "table", "cms-lib"],
-      "files": [{ "path": "registry/cms/cms-merge.tsx", "type": "registry:component" }]
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "badge",
+        "button",
+        "label",
+        "radio-group",
+        "table",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-merge.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-media-picker",
+      "type": "registry:component",
+      "title": "Media picker",
+      "description": "The dialog that chooses a file from the media library (search, type tabs, folders, upload), the upload logic (straight to the storage, parts for large files, retry of what is missing, browser-made thumbnails) and the tiles and upload panel shared with the media library.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "dialog",
+        "input",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-upload.ts",
+          "type": "registry:lib"
+        },
+        {
+          "path": "registry/cms/cms-media-picker.tsx",
+          "type": "registry:component"
+        }
+      ]
     },
     {
       "name": "cms-doc-editor",
       "type": "registry:component",
       "title": "Document editor",
-      "description": "Info form generated from the collection schema, markdown with live preview, autosave and restore, problems on the fields, agent change review (accept, revert), save, publish, preview links.",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["button", "checkbox", "dialog", "dropdown-menu", "input", "label", "select", "tabs", "textarea", "cms-lib", "cms-merge"],
+      "description": "Info form generated from the collection schema, markdown with live preview, autosave and restore, problems on the fields, agent change review (accept, revert), save, publish, preview links. Image and file fields and \"Insert media\" open the media picker when the app has a media library.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "checkbox",
+        "dialog",
+        "dropdown-menu",
+        "input",
+        "label",
+        "select",
+        "tabs",
+        "textarea",
+        "cms-lib",
+        "cms-merge",
+        "cms-media-picker"
+      ],
       "files": [
-        { "path": "registry/cms/cms-doc-editor.tsx", "type": "registry:component" },
-        { "path": "registry/cms/cms-field-form.tsx", "type": "registry:component" }
+        {
+          "path": "registry/cms/cms-doc-editor.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-field-form.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-media",
+      "type": "registry:component",
+      "title": "Media library",
+      "description": "Stores and folders, files as a grid or a list, search and type tabs, a panel with one file's alt text, tags and the documents that use it, uploads with progress, and delete with a look at where the file is used. Needs `createCms({ media })`.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "dialog",
+        "input",
+        "label",
+        "table",
+        "textarea",
+        "cms-lib",
+        "cms-media-picker"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-media.tsx",
+          "type": "registry:component"
+        }
       ]
     },
     {
@@ -69,36 +214,95 @@
       "type": "registry:component",
       "title": "Version history",
       "description": "Versions with author, note and changed fields; compare any two side by side or unified with word highlights; restore or publish a version.",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["badge", "button", "dialog", "label", "select", "cms-lib"],
-      "files": [{ "path": "registry/cms/cms-versions.tsx", "type": "registry:component" }]
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "badge",
+        "button",
+        "dialog",
+        "label",
+        "select",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-versions.tsx",
+          "type": "registry:component"
+        }
+      ]
     },
     {
       "name": "cms-keys",
       "type": "registry:component",
       "title": "API keys",
       "description": "Keys with scopes, collections, last use and expiry; revoke; create with the secret shown once and MCP and CLI setup to copy.",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["badge", "button", "checkbox", "dialog", "input", "label", "table", "tabs", "cms-lib"],
-      "files": [{ "path": "registry/cms/cms-keys.tsx", "type": "registry:component" }]
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "badge",
+        "button",
+        "checkbox",
+        "dialog",
+        "input",
+        "label",
+        "table",
+        "tabs",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-keys.tsx",
+          "type": "registry:component"
+        }
+      ]
     },
     {
       "name": "cms-audit",
       "type": "registry:component",
       "title": "Audit log",
       "description": "Who did what through which channel, filtered by action, who and result.",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["badge", "button", "select", "table", "cms-lib"],
-      "files": [{ "path": "registry/cms/cms-audit.tsx", "type": "registry:component" }]
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "badge",
+        "button",
+        "select",
+        "table",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-audit.tsx",
+          "type": "registry:component"
+        }
+      ]
     },
     {
       "name": "cms-command",
       "type": "registry:component",
       "title": "Command menu",
       "description": "Cmd+K or Ctrl+K: find documents (drafts included) across collections and open, publish or start a new one.",
-      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
-      "registryDependencies": ["command", "dialog", "cms-lib"],
-      "files": [{ "path": "registry/cms/cms-command.tsx", "type": "registry:component" }]
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "command",
+        "dialog",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-command.tsx",
+          "type": "registry:component"
+        }
+      ]
     }
   ]
 }

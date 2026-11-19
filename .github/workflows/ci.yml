@@ -115,4 +115,10 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx playwright install --with-deps chromium
+      # The media library tests need a storage; without S3_ENDPOINT they are skipped.
+      - run: bash scripts/s3-dev.sh
       - run: npm run test:e2e
+        env:
+          S3_ENDPOINT: http://127.0.0.1:9100
+          S3_KEY: test
+          S3_SECRET: testsecret1

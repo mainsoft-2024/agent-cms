@@ -103,3 +103,15 @@ When you turn it on: re-export `cmsAssets` and `cmsAssetRefs` from your
 Drizzle schema next to the other tables, add the same `media` object to
 `agent-cms.config.ts`, and run `npx agent-cms storage check --origin
 https://your-site` once per environment.
+
+## 5. Admin screens
+
+Run `npx agent-cms add --update` (or `--diff` first) to get this version of
+the screens you copied. What changed in them:
+
+- `cms-doc-editor` now imports `./cms-media-picker` (and `cms-upload.ts`
+  with it), also in apps without a media library; `add` brings both.
+- `cms-shell`'s `hrefFor` may be asked for `{ kind: "media" }`. The default
+  is `<basePath>/media`; add that page with `cms-media` when you turn the
+  library on.
+- New strings start with `media_` in `cms-messages.ts` (English and Korean).

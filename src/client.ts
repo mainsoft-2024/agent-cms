@@ -147,6 +147,8 @@ export interface Me {
   collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean }[];
 }
 
+export type { AssetUsage, AssetView } from "./assets";
+
 export interface MediaStoreInfo {
   name: string;
   label: string;

@@ -8,14 +8,16 @@ import { createCms, defineCollection } from "../../src/cms";
 import { createCmsHandler } from "../../src/http";
 import { MemoryRepo } from "../../src/repo";
 import type { Actor } from "../../src/types";
-import { CmsProvider } from "../cms/use-cms";
+import { CmsProvider, type CmsSlots } from "../cms/use-cms";
+import { MemoryStorage } from "@mainsoft/agent-cms/storage";
 import type { CmsMessages } from "../cms/cms-messages";
 
 export const BASE = "http://localhost/api/cms";
 export const admin: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u1", label: "Admin", isAdmin: true };
 export const agent: Actor = { kind: "key", id: "k-agent", label: "docs-agent", scopes: ["read", "write"], collections: null };
 
-export function makeServer(o: { previewSecret?: string | null } = {}) {
+export function makeServer(o: { previewSecret?: string | null; media?: boolean } = {}) {
+  const stores = { public: new MemoryStorage({ name: "public", publicUrl: "https://cdn.example.com" }), private: new MemoryStorage({ name: "private" }) };
   const guide = defineCollection({
     slug: "guide",
     label: "Guide",
@@ -28,8 +30,9 @@ export function makeServer(o: { previewSecret?: string | null } = {}) {
       order: z.number().int().min(0).max(100).optional(),
       audience: z.enum(["everyone", "admins"]).optional(),
       tags: z.array(z.string()).optional(),
+      ...(o.media ? { cover: z.string().optional() } : {}),
     }),
-    admin: { fields: { plans: { label: "Plans", help: "Who sees this" }, order: { label: "Order", help: "0 to 100" } } },
+    admin: { fields: { plans: { label: "Plans", help: "Who sees this" }, order: { label: "Order", help: "0 to 100" }, ...(o.media ? { cover: { label: "Cover", widget: "image" as const } } : {}) } },
   });
   const notices = defineCollection({ slug: "notices", label: "Notices", visibility: "internal", access: { read: ({ actor }) => actor.kind !== "anonymous" } });
   const cms = createCms({
@@ -38,23 +41,32 @@ export function makeServer(o: { previewSecret?: string | null } = {}) {
     previewSecret: o.previewSecret === null ? undefined : (o.previewSecret ?? "x".repeat(40)),
     warn: () => {},
     schemaCheck: false,
+    media: o.media ? { stores: { public: { visibility: "public", adapter: stores.public }, private: { visibility: "private", adapter: stores.private } } } : undefined,
   });
+  /** Put a small PNG into the library the way a browser would. */
+  const addFile = async (name: string, more: { folder?: string; store?: string; alt?: string; tags?: string[] } = {}) => {
+    const bytes = new Uint8Array(200);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 4, 176, 0, 0, 2, 118]);
+    const { asset, upload } = await cms.assets.requestUpload(admin, { name, size: bytes.length, ...more });
+    if (upload.kind === "single") await stores[(more.store as "private") ?? "public"].send(upload.url, bytes);
+    return cms.assets.completeUpload(admin, asset.id);
+  };
   const handler = createCmsHandler({ cms, resolveUser: async () => admin });
   const requests: { method: string; path: string; body: unknown }[] = [];
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     requests.push({ method: init?.method ?? "GET", path: url.slice(BASE.length), body });
     return handler(new Request(url, init));
   }) as typeof fetch;
-  return { cms, fetch: fetchFn, requests };
+  return { cms, fetch: fetchFn, requests, stores, addFile };
 }
 
 export type Server = ReturnType<typeof makeServer>;
 
-export function renderWith(server: Server, ui: React.ReactElement, o: { messages?: Partial<CmsMessages> } = {}): RenderResult {
+export function renderWith(server: Server, ui: React.ReactElement, o: { messages?: Partial<CmsMessages>; slots?: CmsSlots } = {}): RenderResult {
   return render(
-    <CmsProvider baseUrl={BASE} fetch={server.fetch} messages={o.messages} appUrl="https://app.example.com">
+    <CmsProvider baseUrl={BASE} fetch={server.fetch} messages={o.messages} slots={o.slots} appUrl="https://app.example.com">
       {ui}
     </CmsProvider>
   );

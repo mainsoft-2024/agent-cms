@@ -148,7 +148,7 @@ they go and how imports are written) and talk to the CMS through
 
 ```
 npx agent-cms add --list
-npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
+npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media
 npx agent-cms add --diff      # what a new release would change in your copies
 npx agent-cms add --update    # update files you did not edit; yours get a .new copy
 ```
@@ -178,6 +178,8 @@ npx shadcn@latest add <registry-url>/cms-doc-editor.json
 | `cms-keys` | Keys with expiry; the secret is shown once with MCP and CLI set-up |
 | `cms-audit` | Who did what, filterable |
 | `cms-command` | ⌘K to find any document, drafts included |
+| `cms-media` | The media library: stores and folders, grid or list, a file's alt text, tags and the documents that use it, uploads with progress, delete with a look at where the file is used |
+| `cms-media-picker` | The "choose media" dialog behind image and file fields and the editor's "Insert media" (comes with `cms-doc-editor`) |
 | `cms-empty` | Empty collection: new document, or how to write with an agent |
 
 UI text is English by default; a Korean catalog ships with the screens.
@@ -317,6 +319,25 @@ The file route is `GET /api/cms/files/<id>/<name>`: it checks permission and
 redirects to the public address or to a short-lived signed one
 (`media.linkTtlSeconds`, default 300). Set `media.filesUrl` when your handler
 is not mounted at `/api/cms`.
+
+**In the admin**, add the screen (`npx agent-cms add cms-media`) and a page
+for it; the sidebar shows "Media" by itself when the app has a library:
+
+```tsx
+// app/admin/media/page.tsx
+"use client";
+import { CmsMedia } from "@/components/cms/cms-media";
+export default function MediaPage() {
+  return <CmsMedia />;
+}
+```
+
+The browser sends files straight to the storage, four parts at a time for
+large ones, tries a failed part again three times, and "Try again" sends only
+what is still missing. It also makes a small picture of each image and video
+(480px, WebP) for the library, and reads width, height and length.
+`<CmsProvider slots={{ assetAlt }}>` lets an extension package put its own
+control next to a file's alt text field.
 
 Agents get six more tools when the app has a media library: `list_assets`,
 `get_asset` (read), `import_asset` (fetch an https address into the library;
