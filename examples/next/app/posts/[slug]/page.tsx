@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { isCmsError } from "@mainsoft/agent-cms";
+import { CmsPreviewComments } from "@/components/cms/cms-preview-comments";
 import { PostBody } from "@/components/post-body";
 import { cms, seed } from "@/lib/cms";
 
@@ -10,7 +11,8 @@ export default async function Post({ params, searchParams }: { params: { slug: s
   await seed();
   try {
     const token = searchParams.cms_preview;
-    const doc = token ? (await cms.readPreview(token)).doc : await cms.get({ kind: "anonymous" }, "posts", params.slug);
+    const preview = token ? await cms.readPreview(token) : null;
+    const doc = preview ? preview.doc : await cms.get({ kind: "anonymous" }, "posts", params.slug);
     const files = await cms.assetsFor({ collection: "posts", body: doc.body, fields: doc.fields });
     const cover = typeof doc.fields.cover === "string" ? files[doc.fields.cover] : null;
     return (
@@ -21,6 +23,8 @@ export default async function Post({ params, searchParams }: { params: { slug: s
         {/* eslint-disable-next-line @next/next/no-img-element */}
         {cover ? <img src={cms.imageUrl(cover, { width: 1200 })} alt={cover.alt} width={cover.width ?? undefined} height={cover.height ?? undefined} className="h-auto w-full rounded" /> : null}
         <PostBody body={doc.body} files={files} />
+        {/* A preview link made with "Allow comments" lets the reader comment without an account. */}
+        {token && preview?.comments ? <CmsPreviewComments token={token} /> : null}
       </main>
     );
   } catch (e) {

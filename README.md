@@ -183,6 +183,7 @@ npx shadcn@latest add <registry-url>/cms-doc-editor.json
 | `cms-files` | The file manager: a bucket folder by folder, also files nobody uploaded through the CMS; move, download, share links and delete for several at once |
 | `cms-trash` | Deleted documents and files: restore, or delete forever (admins) |
 | `cms-releases` | Releases: documents that go out together, the version of each, what blocks them, publish now or at a set time |
+| `cms-preview-comments` | For your public page: the comments on a draft opened through a preview link, and a box for a guest to add one |
 | `cms-empty` | Empty collection: new document, or how to write with an agent |
 
 UI text is English by default; a Korean catalog ships with the screens.
@@ -236,7 +237,13 @@ the publishing flow. Nothing here needs set-up except the cron call.
 - **Comments.** On a section or on selected text, with replies and resolve.
   They follow the text while it is edited, and move to "Lost their place" when
   the text is gone. A preview link made with "Allow comments" lets someone
-  without an account comment.
+  without an account comment: `readPreview(token)` returns `comments: true`
+  for such a link, and `<CmsPreviewComments token={token} />` on your page
+  (`add cms-preview-comments`, no provider needed) shows the box.
+- **Paste.** Text copied from a web page or a document program is pasted as
+  markdown (headings, lists, bold, links, tables, code); invisible characters
+  and curly quotes are tidied. Colours and font sizes are left out, and the
+  editor says so once.
 - **Editing together.** Who else has the document open is shown in the editor
   and in the list, with their cursors in the body. When someone else saves,
   the editor takes the new version, merging it with unsaved edits when the

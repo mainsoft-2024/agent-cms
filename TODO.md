@@ -68,7 +68,7 @@
 31. **[P0] 버전을 만들지 않는 자동 저장.** `autosave jsonb`, `autosave_at`, `autosave_by`에 저장하고 버전은 사람이 저장할 때만 만든다. 다시 열면 "저장하지 않은 내용을 복구할까요?"를 띄운다. 자동 저장이 `versions.max`를 채워 실제 이력을 밀어내는 것을 막는다. (Payload autosave) [완료 0.6.0]
 32. **[P0] 복사형 어드민의 접근성 계약.** `role="status"` 저장 알림, `label`과 `aria-describedby`, 포커스 트랩과 복귀, 키보드만으로 생성부터 게시와 되돌리기까지. jsdom과 axe 검사로 고정한다. (Sanity Studio) [완료 0.6.0]
 33. **[P1] "에이전트가 바꾼 곳" 표시와 부분 되돌리기.** `commit()`이 필드 단위 diff를 `cms_versions.changed`에 남기고, 편집 화면 상단에 "에이전트가 v12에서 제목, 본문 2곳을 바꿨어요"를 띄운다. hunk마다 "이 부분만 되돌리기"는 새 버전을 만든다. (Sanity AI Assist, Directus) [완료 0.6.0]
-34. **[P1] 섹션에 붙는 댓글.** `cms_comments`(anchor, quote, thread, resolvedAt). 앵커는 `splitSections()`의 것을 쓴다. 서명된 미리보기 링크로 온 외부 리뷰어도 댓글만 남길 수 있다. 에이전트는 댓글을 읽고 수정안을 새 버전으로 만든다. (Directus, Sanity) **상태:** 0.10.0에서 완료 (공개 미리보기 페이지의 외부 검토자 댓글 상자는 REST만 있고 화면은 아직).
+34. **[P1] 섹션에 붙는 댓글.** `cms_comments`(anchor, quote, thread, resolvedAt). 앵커는 `splitSections()`의 것을 쓴다. 서명된 미리보기 링크로 온 외부 리뷰어도 댓글만 남길 수 있다. 에이전트는 댓글을 읽고 수정안을 새 버전으로 만든다. (Directus, Sanity) **상태:** 0.10.0에서 완료.
 35. **[P1] 분할 라이브 미리보기와 스크롤 동기화.** 저장 전 로컬 상태로 200ms 디바운스 렌더, 커서 섹션과 미리보기 앵커를 양방향으로 맞추고, 375/768/전체 폭 전환을 둔다. `renderBlocks(blocks, components)`로 앱 컴포넌트를 주입한다. (Payload live preview, TinaCMS) [0.6.0에서 일부: 미리보기와 폭 전환. 스크롤 맞춤과 컴포넌트 주입은 남음]
 36. **[P1] 미리보기에서 소스로 점프.** 블록에 `line`, `endLine`을 남겨 제목을 누르면 편집기의 해당 줄을 선택한다. 댓글 인용과 섹션 diff에도 같은 좌표를 쓴다. (TinaCMS click-to-edit) **상태:** 0.10.0에서 `line`, `endLine`까지 완료. 미리보기를 눌러 줄을 찾는 동작은 아직.
 37. **[P1] 저장 없는 미리보기 API.** `cms.preview(actor, col, input)`가 `{ blocks, toc, diagnostics, diff, publicUrl }`를 돌려준다. 어드민 미리보기와 에이전트의 저장 전 자기 점검이 같은 코드를 쓴다. **상태:** 0.10.0에서 완료.
@@ -79,7 +79,7 @@
 42. **[P1] 재사용 스니펫.** `[[snippet:key]]`로 다른 문서를 끼워 넣고, 순환 감지와 "이 스니펫을 쓰는 문서 5개" 역색인을 둔다. (Mintlify snippets)
 43. **[P1] 내부 링크와 고아 문서 리포트.** `cms.linkReport()`가 `{ broken, orphans, unreachable }`를 돌려주고 어드민 "링크" 탭과 MCP 도구로 노출한다.
 44. **[P1] 외부 URL 미디어와 figure 블록.** `{ url, alt, caption, width, height }`, alt 필수, https만, CLS 방지 상자, lazy 로딩. 업로드 저장소는 그 뒤. (Strapi) [0.8.0에서 107번에 흡수]
-45. **[P1] 붙여넣기 정규화.** HTML을 지원 부분집합 마크다운으로 바꾸고(turndown), 제로폭 문자와 스마트 따옴표를 정리하며, 사라질 문법은 편집기에서 경고한다. (Payload Lexical)
+45. **[P1] 붙여넣기 정규화.** HTML을 지원 부분집합 마크다운으로 바꾸고(turndown), 제로폭 문자와 스마트 따옴표를 정리하며, 사라질 문법은 편집기에서 경고한다. (Payload Lexical) **상태:** 0.10.0에서 완료 (turndown 없이 직접 변환).
 46. **[P2] 버전 이름표와 고정.** `cms_versions.label`, `pinned`; prune이 고정 버전을 보호한다. (Directus) **상태:** 0.10.0에서 완료.
 47. **[P1] 어드민 ⌘K 빠른 열기.** 초안 포함 문서 퍼지 검색, 최근 편집, 게시와 버전 기록 같은 액션. (Sanity) [완료 0.6.0]
 48. **[P2] 섹션 단위 편집기.** 섹션 카드로 편집, 순서 변경, 삽입. 댓글, 점프, 린트의 위치 기준이 된다. (Sanity Portable Text)

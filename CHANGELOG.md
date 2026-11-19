@@ -22,7 +22,9 @@ Screens (`npx agent-cms add --update`, then `add cms-trash cms-releases`):
 - **`cms-trash`** (new) and **`cms-releases`** (new: `<CmsReleases>` and `<CmsRelease id>`); `cms-shell` links to both for people who can edit (`CmsShellTarget` has `releases` and `trash`).
 - **`cms-versions`:** name a version, pin it, see who approved it. It needs the shadcn `dialog` and `input` parts now.
 - Korean copy picks the particle that fits a name ("김지수가", "docs-bot이"): `format()` reads `{who|이|가}`.
-- Not in this release: a CodeMirror editor (the body stays a text box, with a layer behind it for marks and cursors), paste clean-up, section reordering, preview scroll sync, and the comment box for guests on your preview page (the REST routes for it exist).
+- **Paste clean-up** in the body: HTML from a web page, Google Docs or Word becomes markdown (headings, lists, bold, italic, links, tables, code, quotes, https images); zero-width characters, non-breaking spaces and curly quotes are tidied; a paste from a code editor stays plain text. No new dependency. Third file of the item: `cms-paste.ts`.
+- **`cms-preview-comments`** (new): the comment box for guests on your public preview page.
+- Not in this release: a CodeMirror editor (the body stays a text box, with a layer behind it for marks and cursors), section reordering, preview scroll sync, and a click in the preview that finds the line in the body.
 
 ## 0.9.0
 

@@ -185,6 +185,10 @@
         {
           "path": "registry/cms/cms-flow.tsx",
           "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-paste.ts",
+          "type": "registry:lib"
         }
       ]
     },
@@ -285,6 +289,28 @@
       "files": [
         {
           "path": "registry/cms/cms-releases.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-preview-comments",
+      "type": "registry:component",
+      "title": "Preview comments",
+      "description": "For your public page when it shows a draft through a preview link made with \"Allow comments\": the comments on the draft and a box for someone without an account to add one. Needs no provider.",
+      "dependencies": [
+        "@mainsoft/agent-cms"
+      ],
+      "registryDependencies": [
+        "button",
+        "input",
+        "label",
+        "textarea",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-preview-comments.tsx",
           "type": "registry:component"
         }
       ]

@@ -23,6 +23,7 @@ import { errorMessage } from "./cms-messages";
 import { CmsFieldForm, problemKey, type FieldProblem } from "./cms-field-form";
 import { AddToReleaseDialog, BodyBackdrop, CommentsPanel, offsetOf, placeOf, PublishButton, ReviewStrip, ScheduleStrip, type BodyCursor } from "./cms-flow";
 import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
+import { pasteAsMarkdown } from "./cms-paste";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText } from "./cms-parts";
 import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, type DocContent } from "./use-cms";
@@ -707,6 +708,20 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           aria-describedby={bodyErr?.length ? `${bodyId}-err` : undefined}
           className="relative min-h-[360px] flex-1 resize-none rounded-none border-0 bg-transparent font-mono text-[13px] leading-6 shadow-none focus-visible:ring-0 dark:bg-transparent"
           onChange={(e) => setContent({ ...content, body: e.target.value })}
+          onPaste={(e) => {
+            if (!canWrite) return;
+            const r = pasteAsMarkdown({ html: e.clipboardData.getData("text/html"), plain: e.clipboardData.getData("text/plain") });
+            if (!r) return; // nothing to tidy: the browser pastes as usual
+            e.preventDefault();
+            const el = e.currentTarget;
+            const [a, b] = [el.selectionStart, el.selectionEnd];
+            // insertText keeps the browser's undo history; where it is missing, set the text directly.
+            if (!(typeof document.execCommand === "function" && document.execCommand("insertText", false, r.text))) {
+              setContent({ ...content, body: content.body.slice(0, a) + r.text + content.body.slice(b) });
+              requestAnimationFrame(() => el.setSelectionRange(a + r.text.length, a + r.text.length));
+            }
+            if (r.dropped) setStatus({ text: t("paste_dropped"), tone: "muted" });
+          }}
         />
       </div>
       {bodyErr?.length ? (

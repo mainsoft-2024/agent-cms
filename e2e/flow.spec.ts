@@ -120,3 +120,42 @@ test("phone: the trash and a release fit the screen @mobile", async ({ page, req
   await expect(page.getByRole("heading", { name: "Releases" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test("a guest comments through a preview link that allows it", async ({ page, request }) => {
+  const slug = `guest-${Date.now()}`;
+  await createDoc(request, "posts", slug);
+  const link = (await (await request.post(`${api}/collections/posts/${slug}/preview`, { data: { ttl: "1h", comments: true } })).json()) as { url: string };
+  await page.goto(link.url);
+  await expect(page.getByRole("status")).toHaveText("Draft preview");
+  await page.getByLabel("Name").fill("Lee");
+  await page.getByLabel("Write a comment").fill("Reads well");
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(page.getByText("Reads well")).toBeVisible();
+  const all = (await (await request.get(`${api}/collections/posts/${slug}/comments`)).json()) as { comments: { authorKind: string; authorLabel: string; body: string }[] };
+  expect(all.comments.map((c) => [c.authorKind, c.authorLabel, c.body])).toEqual([["guest", "Lee", "Reads well"]]);
+  // A link without "Allow comments" shows no box.
+  const plain = (await (await request.post(`${api}/collections/posts/${slug}/preview`, { data: { ttl: "1h" } })).json()) as { url: string };
+  await page.goto(plain.url);
+  await expect(page.getByRole("status")).toHaveText("Draft preview");
+  await expect(page.getByLabel("Write a comment")).toHaveCount(0);
+});
+
+test("a paste from a web page lands as markdown and can be undone", async ({ page, request }) => {
+  const slug = `paste-${Date.now()}`;
+  await createDoc(request, "posts", slug);
+  await page.goto(`/admin/posts/${slug}`);
+  const box = page.getByRole("textbox", { name: "Markdown", exact: true });
+  await expect(box).toHaveValue(BODY);
+  await box.evaluate((el: HTMLTextAreaElement) => {
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+    const data = new DataTransfer();
+    data.setData("text/html", '<h2>Pasted</h2><p>With <b>bold</b> and <span style="color:red">red</span>.</p>');
+    data.setData("text/plain", "Pasted\nWith bold and red.");
+    el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(box).toHaveValue(`${BODY}## Pasted\n\nWith **bold** and red.`);
+  await expect(page.getByText("Pasted as markdown. Colours and font sizes were left out.")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(box).toHaveValue(BODY);
+});

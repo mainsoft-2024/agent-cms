@@ -416,6 +416,7 @@ export const en = {
   "audit.release.publish": "Publish release",
   "audit.asset.restore": "Restore file",
 
+  paste_dropped: "Pasted as markdown. Colours and font sizes were left out.",
   other_saved: "{who} saved v{version}",
   other_merged: "{who} saved v{version}. It was merged with your edits.",
 
@@ -900,6 +901,7 @@ export const ko: CmsMessages = {
   "audit.release.publish": "릴리스 게시",
   "audit.asset.restore": "파일 복구",
 
+  paste_dropped: "마크다운으로 붙여넣었어요. 색과 글자 크기는 빠졌어요.",
   other_saved: "{who}{who|이|가} v{version}{version|을|를} 저장했어요",
   other_merged: "{who}{who|이|가} 저장한 v{version}{version|을|를} 내 수정과 합쳤어요",
 

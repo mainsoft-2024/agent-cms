@@ -8,13 +8,15 @@ import { CmsDocEditor } from "../cms/cms-doc-editor";
 import { CmsDocList } from "../cms/cms-doc-list";
 import { offsetOf, placeOf, sectionAt } from "../cms/cms-flow";
 import { createT, ko } from "../cms/cms-messages";
+import { cleanText, htmlToMarkdown, pasteAsMarkdown } from "../cms/cms-paste";
+import { CmsPreviewComments } from "../cms/cms-preview-comments";
 import { CmsRelease, CmsReleases } from "../cms/cms-releases";
 import { CmsShell } from "../cms/cms-shell";
 import { CmsTrash, daysLeft } from "../cms/cms-trash";
 import { CmsVersions } from "../cms/cms-versions";
 import { zonedParts, zonedToIso } from "../cms/use-cms";
 import { setMobile } from "./setup";
-import { admin, agent, axeViolations, editor2, makeServer, renderWith } from "./server";
+import { admin, agent, axeViolations, BASE, editor2, makeServer, renderWith } from "./server";
 
 afterEach(() => {
   cleanup();
@@ -328,4 +330,56 @@ test("flow: on a phone the comments are a tab and the schedule panel opens upwar
   assert.deepEqual(await axeViolations(), []);
   await user.click(screen.getByRole("button", { name: "Publish options" }));
   assert.ok(screen.getByRole("dialog", { name: "Schedule publishing" }).className.includes("bottom-full"));
+});
+
+test("flow: a paste from a web page or a document program becomes markdown", async () => {
+  assert.equal(cleanText("a\u200Bb\u00A0c \u201Cq\u201D \u2018s\u2019\r\nd"), 'ab c "q" \'s\'\nd');
+  const web = htmlToMarkdown('<meta charset="utf-8"><h2>Set up</h2><p>Open <strong>Settings</strong>, then <a href="https://example.com/x">this page</a>.</p><ul><li>One</li><li>Two<ul><li>Inner</li></ul></li></ul><ol start="3"><li>Third</li></ol><pre><code class="language-ts">const a = 1;\n</code></pre><blockquote><p>Quoted</p></blockquote><table><tr><th>Plan</th><th>Price</th></tr><tr><td>Team</td><td>$10</td></tr></table><p><img src="https://example.com/a.png" alt="A"><img src="data:image/png;base64,xx" alt="B"></p>');
+  assert.equal(web.markdown, ["## Set up", "Open **Settings**, then [this page](https://example.com/x).", "- One\n- Two\n  - Inner", "3. Third", "```ts\nconst a = 1;\n```", "> Quoted", "| Plan | Price |\n| --- | --- |\n| Team | $10 |", "![A](https://example.com/a.png)"].join("\n\n"));
+  assert.equal(web.dropped, false);
+  // Google Docs: one <b> around everything, bold and italic as styles, colours that markdown cannot keep.
+  const docs = htmlToMarkdown('<b style="font-weight:normal;" id="docs-internal-guid-1"><p dir="ltr"><span style="font-weight:700;">Bold</span><span style="font-weight:400;"> and </span><span style="font-style:italic;">slanted</span><span style="color:#ff0000;"> red</span></p><p dir="ltr"><span>Second</span></p></b>');
+  assert.equal(docs.markdown, "**Bold** and *slanted* red\n\nSecond");
+  assert.equal(docs.dropped, true);
+  // A code editor copies coloured divs: its plain text is what is wanted.
+  assert.equal(pasteAsMarkdown({ html: '<div style="color:#ccc"><div><span style="color:#569cd6">## Title</span></div><div>text</div></div>', plain: "## Title\ntext" }), null);
+  assert.deepEqual(pasteAsMarkdown({ html: "", plain: "curly \u201Cquotes\u201D" }), { text: 'curly "quotes"', dropped: false });
+
+  const s = makeServer();
+  await s.cms.create(admin, "guide", { slug: "slack", title: "Connect Slack", body: "## One\n" });
+  renderWith(s, <CmsDocEditor collection="guide" slug="slack" presenceMs={0} autosaveDelay={100000} />);
+  await screen.findByDisplayValue("Connect Slack");
+  body().setSelectionRange(body().value.length, body().value.length);
+  fireEvent.paste(body(), { clipboardData: { getData: (k: string) => (k === "text/html" ? '<p>From a <font color="red">page</font></p><ul><li>Item</li></ul>' : "From a page\nItem") } });
+  await waitFor(() => assert.equal(body().value, "## One\nFrom a page\n\n- Item"));
+  await screen.findByText("Pasted as markdown. Colours and font sizes were left out.");
+});
+
+test("flow: a guest comments on a draft through a preview link that allows it", async () => {
+  const s = makeServer({ previewSecret: "p".repeat(32) });
+  await s.cms.create(admin, "guide", { slug: "slack", title: "Connect Slack", body: BODY });
+  await s.cms.addComment(admin, "guide", "slack", { body: "Check step 2", anchor: "connect", quote: "2. Press Add." });
+  const open = await s.cms.createPreviewLink(admin, "guide", "slack", { ttl: "1h", comments: true });
+  const closed = await s.cms.createPreviewLink(admin, "guide", "slack", { ttl: "1h" });
+  const tokenOf = (url: string) => new URL(url, "http://x").searchParams.get("cms_preview")!;
+  const { render } = await import("@testing-library/react");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = s.fetch as typeof fetch;
+  try {
+    render(<CmsPreviewComments token={tokenOf(open.url)} baseUrl={BASE} />);
+    const user = userEvent.setup();
+    await screen.findByText("Check step 2");
+    assert.deepEqual(await axeViolations(), []);
+    await user.type(screen.getByLabelText("Name"), "Lee");
+    await user.type(screen.getByLabelText("Write a comment"), "Looks right to me");
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+    await screen.findByText("Looks right to me");
+    const all = await s.cms.comments(admin, "guide", "slack");
+    assert.deepEqual(all.filter((c) => c.authorKind === "guest").map((c) => [c.authorLabel, c.body]), [["Lee", "Looks right to me"]]);
+    cleanup();
+    render(<CmsPreviewComments token={tokenOf(closed.url)} baseUrl={BASE} />);
+    assert.ok((await screen.findByRole("alert")).textContent);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
