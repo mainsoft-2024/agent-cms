@@ -258,7 +258,8 @@
     "zod": "3.25.76"
   },
   "workspaces": [
-    "examples/next"
+    "examples/next",
+    "apps/docs"
   ],
   "engines": {
     "node": ">=20"

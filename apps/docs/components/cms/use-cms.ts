@@ -1,0 +1,247 @@
+// agent-cms registry: cms-lib (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+//
+// The one place the admin screens get their REST client, strings and a few
+// small hooks from. Wrap the admin pages once:
+//
+//   <CmsProvider baseUrl="/api/cms" messages={ko}>{children}</CmsProvider>
+"use client";
+
+import * as React from "react";
+import { createRestClient, type Me, type RestClient } from "@mainsoft/agent-cms/client";
+import type { DocLike } from "@mainsoft/agent-cms/diff";
+import { createT, en, type CmsMessages, type T } from "./cms-messages";
+
+/** What create / update / autosave take. */
+export type DocInputWire = Parameters<RestClient["update"]>[2];
+
+export interface CmsProviderProps {
+  /** Where the CMS route is mounted. Default "/api/cms". */
+  baseUrl?: string;
+  /** UI strings (any subset); e.g. `ko` from ./cms-messages. Default English. */
+  messages?: Partial<CmsMessages>;
+  /** The app's public origin, for the MCP URL shown to agents. Default: the page's origin. */
+  appUrl?: string;
+  /** Custom fetch (tests, server-side rendering). */
+  fetch?: typeof fetch;
+  children?: React.ReactNode;
+}
+
+export interface CmsContextValue {
+  client: RestClient;
+  t: T;
+  locale: string;
+  baseUrl: string;
+  appUrl: string;
+  /** `GET /_me` (null while loading). */
+  me: Me | null;
+  meError: unknown;
+  reloadMe: () => void;
+}
+
+const CmsContext = React.createContext<CmsContextValue | null>(null);
+
+export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, children }: CmsProviderProps) {
+  const client = React.useMemo(() => createRestClient({ url: baseUrl, fetch: f }), [baseUrl, f]);
+  const t = React.useMemo(() => createT(messages), [messages]);
+  const locale = messages?._locale ?? en._locale;
+  const [me, setMe] = React.useState<Me | null>(null);
+  const [meError, setMeError] = React.useState<unknown>(null);
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    let live = true;
+    client.me().then(
+      (m) => live && (setMe(m), setMeError(null)),
+      (e) => live && setMeError(e)
+    );
+    return () => {
+      live = false;
+    };
+  }, [client, tick]);
+  const origin = appUrl ?? (typeof window !== "undefined" ? window.location.origin : "");
+  const value = React.useMemo<CmsContextValue>(
+    () => ({ client, t, locale, baseUrl, appUrl: origin.replace(/\/+$/, ""), me, meError, reloadMe: () => setTick((n) => n + 1) }),
+    [client, t, locale, baseUrl, origin, me, meError]
+  );
+  return React.createElement(CmsContext.Provider, { value }, children);
+}
+
+export function useCms(): CmsContextValue {
+  const v = React.useContext(CmsContext);
+  if (!v) throw new Error("agent-cms: wrap the admin screens in <CmsProvider>.");
+  return v;
+}
+
+/** Full URL of the CMS endpoint (e.g. https://app.example.com/api/cms). */
+export function cmsUrl(appUrl: string, baseUrl: string): string {
+  return /^https?:\/\//.test(baseUrl) ? baseUrl.replace(/\/+$/, "") : `${appUrl}${baseUrl.startsWith("/") ? "" : "/"}${baseUrl.replace(/\/+$/, "")}`;
+}
+
+// ── data hooks ────────────────────────────────────────────────────────────────
+
+export interface AsyncState<T> {
+  data: T | undefined;
+  error: unknown;
+  loading: boolean;
+  reload: () => void;
+  setData: React.Dispatch<React.SetStateAction<T | undefined>>;
+}
+
+/** Run `fn` when `deps` change; `reload()` runs it again. Stale results are dropped. */
+export function useAsync<T>(fn: () => Promise<T>, deps: React.DependencyList): AsyncState<T> {
+  const [data, setData] = React.useState<T | undefined>(undefined);
+  const [error, setError] = React.useState<unknown>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [tick, setTick] = React.useState(0);
+  const fnRef = React.useRef(fn);
+  fnRef.current = fn;
+  React.useEffect(() => {
+    let live = true;
+    setLoading(true);
+    fnRef.current().then(
+      (d) => {
+        if (!live) return;
+        setData(d);
+        setError(null);
+        setLoading(false);
+      },
+      (e) => {
+        if (!live) return;
+        setError(e);
+        setLoading(false);
+      }
+    );
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, tick]);
+  const reload = React.useCallback(() => setTick((n) => n + 1), []);
+  return { data, error, loading, reload, setData };
+}
+
+/** `window.matchMedia` as state (false where it does not exist). */
+export function useMediaQuery(query: string): boolean {
+  // Start false on the server and on the first client render (same HTML for
+  // hydration), then follow the real value.
+  const [match, setMatch] = React.useState(false);
+  React.useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(query);
+    const on = () => setMatch(mq.matches);
+    on();
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, [query]);
+  return match;
+}
+
+/** Narrower than 768px: sidebar in a sheet, cards instead of tables, tabs in the editor. */
+export function useIsMobile(): boolean {
+  return useMediaQuery("(max-width: 767px)");
+}
+
+/** State remembered in localStorage (JSON). */
+export function useLocalStorage<T>(key: string, initial: T): [T, (v: T) => void] {
+  const [value, setValue] = React.useState<T>(initial);
+  // Read after mount so server and first client render agree (hydration).
+  React.useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (raw !== null) setValue(JSON.parse(raw) as T);
+    } catch {
+      /* private mode or bad JSON */
+    }
+  }, [key]);
+  const set = React.useCallback(
+    (v: T) => {
+      setValue(v);
+      try {
+        window.localStorage.setItem(key, JSON.stringify(v));
+      } catch {
+        /* private mode */
+      }
+    },
+    [key]
+  );
+  return [value, set];
+}
+
+/** Call `fn` once `delay` ms after the last call. */
+export function useDebounced<A extends unknown[]>(fn: (...a: A) => void, delay: number) {
+  const fnRef = React.useRef(fn);
+  fnRef.current = fn;
+  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
+  return React.useMemo(() => {
+    const run = (...a: A) => {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        fnRef.current(...a);
+      }, delay);
+    };
+    run.cancel = () => {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = null;
+    };
+    return run;
+  }, [delay]);
+}
+
+// ── shell navigation (the mobile menu button inside each screen's header) ────
+
+export const ShellNavContext = React.createContext<{ openNav: () => void } | null>(null);
+export const useShellNav = () => React.useContext(ShellNavContext);
+
+// ── formatting ────────────────────────────────────────────────────────────────
+
+/** "8 min ago", "2 h ago", "yesterday", else a short date. */
+export function relativeTime(iso: string | null | undefined, t: T, locale: string, now: Date = new Date()): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const ms = now.getTime() - d.getTime();
+  if (ms < 60_000) return t("just_now");
+  if (ms < 3_600_000) return t("minutes_ago", { n: Math.floor(ms / 60_000) });
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (d.getTime() >= startOfToday) return t("hours_ago", { n: Math.floor(ms / 3_600_000) });
+  if (d.getTime() >= startOfToday - 86_400_000) return t("yesterday");
+  return formatDate(iso, locale, d.getFullYear() !== now.getFullYear());
+}
+
+export function formatDate(iso: string, locale: string, withYear = false): string {
+  return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", ...(withYear ? { year: "numeric" } : {}) }).format(new Date(iso));
+}
+
+export function formatDateTime(iso: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso));
+}
+
+export function formatTime(iso: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+}
+
+/** "Nov 20, 1:46 AM": the moment a link or key stops working. */
+export function formatUntil(iso: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+}
+
+// ── documents ─────────────────────────────────────────────────────────────────
+
+export type DocContent = DocLike;
+
+export function contentOf(d: DocLike): DocContent {
+  return { slug: d.slug, title: d.title, summary: d.summary, body: d.body, category: d.category, keywords: [...(d.keywords ?? [])], fields: structuredClone(d.fields ?? {}) };
+}
+
+/**
+ * The REST body for saving `next` over a document whose fields were `prev`.
+ * `fields` is a JSON Merge Patch on update, so keys that went away are sent
+ * as null.
+ */
+export function toInput(next: DocContent, prevFields?: Record<string, unknown>): DocInputWire {
+  const fields: Record<string, unknown> = { ...next.fields };
+  for (const k of Object.keys(prevFields ?? {})) if (!(k in fields) || fields[k] === undefined) fields[k] = null;
+  return { slug: next.slug, title: next.title, summary: next.summary, body: next.body, category: next.category, keywords: next.keywords, fields };
+}
+
+export const sameContent = (a: DocContent, b: DocContent) => JSON.stringify(contentOf(a)) === JSON.stringify(contentOf(b));

@@ -122,3 +122,17 @@ jobs:
           S3_ENDPOINT: http://127.0.0.1:9100
           S3_KEY: test
           S3_SECRET: testsecret1
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm --prefix apps/docs run typecheck
+      - run: npx playwright install --with-deps chromium
+      - run: npm --prefix apps/docs run test:e2e
