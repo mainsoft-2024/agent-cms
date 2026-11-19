@@ -1,12 +1,12 @@
 /** `CmsRepo` on Postgres via Drizzle (node-postgres, pglite and other `PgDatabase` drivers with transactions). */
 
-import { and, desc, eq, gte, inArray, isNotNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
-import type { AuditQuery, CmsRepo, DocPatch, KeyRow, NewDoc, NewVersion, StoredVersion } from "./repo";
+import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocPatch, KeyRow, NewAsset, NewAudit, NewDoc, NewVersion, StoredVersion } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
-import type { AuditEntry, CmsDoc, DocStatus, KeyScope, ReviewMark } from "./types";
+import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsDoc, DocStatus, KeyScope, ReviewMark } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PgDatabase<any, any, any>;
@@ -60,6 +60,7 @@ export class DrizzleRepo implements CmsRepo {
       updatedAt: iso(r.updatedAt)!,
       updatedBy: r.updatedBy,
       updatedByKind: (r.updatedByKind as CmsDoc["updatedByKind"]) ?? null,
+      updatedByAgent: r.updatedByAgent ?? null,
       autosave: r.autosave ? { content: r.autosave, at: iso(r.autosaveAt)!, by: r.autosaveBy, baseVersion: r.autosaveBaseVersion ?? r.version } : null,
     };
   }
@@ -89,10 +90,37 @@ export class DrizzleRepo implements CmsRepo {
       authorKind: r.authorKind as StoredVersion["authorKind"],
       authorId: r.authorId,
       authorLabel: r.authorLabel,
+      authorAgent: r.authorAgent ?? null,
       note: r.note,
       changed: r.changed ?? null,
       reviewed: r.reviewed ?? [],
       createdAt: iso(r.createdAt)!,
+    };
+  }
+
+  private toAsset(r: typeof this.t.assets.$inferSelect): CmsAsset {
+    return {
+      id: r.id,
+      store: r.store,
+      key: r.key,
+      folder: r.folder,
+      name: r.name,
+      kind: r.kind as AssetKind,
+      mime: r.mime,
+      size: Number(r.size),
+      width: r.width,
+      height: r.height,
+      duration: r.duration,
+      alt: r.alt,
+      tags: r.tags ?? [],
+      thumbKey: r.thumbKey,
+      status: r.status as CmsAsset["status"],
+      uploadId: r.uploadId,
+      createdBy: r.createdBy,
+      createdByKind: (r.createdByKind as CmsAsset["createdByKind"]) ?? null,
+      createdByAgent: r.createdByAgent ?? null,
+      createdAt: iso(r.createdAt)!,
+      updatedAt: iso(r.updatedAt)!,
     };
   }
 
@@ -178,6 +206,7 @@ export class DrizzleRepo implements CmsRepo {
         authorKind: v.authorKind,
         authorId: v.authorId,
         authorLabel: v.authorLabel,
+        authorAgent: v.authorAgent ?? null,
         note: v.note,
         changed: v.changed ?? null,
         createdAt: date(v.createdAt ?? null) ?? undefined,
@@ -257,7 +286,7 @@ export class DrizzleRepo implements CmsRepo {
           .groupBy(H.documentId);
     return new Map(rows.map((r) => [r.id, Number(r.n)]));
   }
-  async insertAudit(e: Omit<AuditEntry, "id">) {
+  async insertAudit(e: NewAudit) {
     await this.db.insert(this.t.audit).values({ ...e, at: new Date(e.at) });
   }
   async listAudit(q: AuditQuery) {
@@ -282,6 +311,7 @@ export class DrizzleRepo implements CmsRepo {
       actorKind: r.actorKind as AuditEntry["actorKind"],
       actorId: r.actorId,
       actorLabel: r.actorLabel,
+      actorAgent: r.actorAgent ?? null,
       action: r.action as AuditEntry["action"],
       collection: r.collection,
       slug: r.slug,
@@ -290,6 +320,92 @@ export class DrizzleRepo implements CmsRepo {
       via: (r.via as AuditEntry["via"]) ?? null,
       detail: r.detail ?? {},
     }));
+  }
+  async insertAsset(a: NewAsset) {
+    const { createdAt, updatedAt, ...rest } = a;
+    const [r] = await this.db
+      .insert(this.t.assets)
+      .values({ ...rest, ...(createdAt ? { createdAt: new Date(createdAt) } : {}), ...(updatedAt ? { updatedAt: new Date(updatedAt) } : {}) })
+      .returning();
+    return this.toAsset(r);
+  }
+  async findAsset(id: string) {
+    const A = this.t.assets;
+    const [r] = await this.db.select().from(A).where(eq(A.id, id)).limit(1);
+    return r ? this.toAsset(r) : null;
+  }
+  async findAssets(ids: readonly string[]) {
+    if (!ids.length) return [];
+    const A = this.t.assets;
+    return (await this.db.select().from(A).where(inArray(A.id, [...ids]))).map((r) => this.toAsset(r));
+  }
+  async findAssetByKey(store: string, key: string) {
+    const A = this.t.assets;
+    const [r] = await this.db.select().from(A).where(and(eq(A.store, store), eq(A.key, key))).limit(1);
+    return r ? this.toAsset(r) : null;
+  }
+  async listAssets(q: AssetQuery) {
+    const A = this.t.assets;
+    const conds = [];
+    if (q.store) conds.push(eq(A.store, q.store));
+    if (q.folder !== undefined) conds.push(eq(A.folder, q.folder));
+    if (q.under) conds.push(or(eq(A.folder, q.under), sql`starts_with(${A.folder}, ${`${q.under}/`})`));
+    if (q.kinds) conds.push(inArray(A.kind, [...q.kinds]));
+    if (q.notKinds) conds.push(notInArray(A.kind, [...q.notKinds]));
+    if (q.status) conds.push(eq(A.status, q.status));
+    if (q.tag) conds.push(sql`${A.tags} @> ${JSON.stringify([q.tag])}::jsonb`);
+    if (q.createdBefore) conds.push(lt(A.createdAt, new Date(q.createdBefore)));
+    const needle = q.q?.trim().toLowerCase();
+    if (needle) conds.push(sql`(strpos(lower(${A.name}), ${needle}) > 0 or strpos(lower(${A.alt}), ${needle}) > 0 or strpos(lower(${A.tags}::text), ${needle}) > 0)`);
+    if (q.before) {
+      const [at, id] = q.before.split("|");
+      conds.push(or(lt(A.createdAt, new Date(at)), and(eq(A.createdAt, new Date(at)), lt(A.id, id))));
+    }
+    const rows = await this.db
+      .select()
+      .from(A)
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(A.createdAt), desc(A.id))
+      .limit(q.limit ?? 1000);
+    return rows.map((r) => this.toAsset(r));
+  }
+  async countAssets(store?: string) {
+    const A = this.t.assets;
+    const rows = await this.db
+      .select({ store: A.store, folder: A.folder, kind: A.kind, n: sql<number>`count(*)::int` })
+      .from(A)
+      .where(store ? and(eq(A.status, "ready"), eq(A.store, store)) : eq(A.status, "ready"))
+      .groupBy(A.store, A.folder, A.kind);
+    return rows.map((r) => ({ store: r.store, folder: r.folder, kind: r.kind as AssetKind, n: Number(r.n) }));
+  }
+  async updateAsset(id: string, patch: AssetPatch) {
+    const A = this.t.assets;
+    const { updatedAt, ...rest } = patch;
+    const set = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+    const [r] = await this.db
+      .update(A)
+      .set({ ...set, updatedAt: updatedAt ? new Date(updatedAt) : new Date() })
+      .where(eq(A.id, id))
+      .returning();
+    return r ? this.toAsset(r) : null;
+  }
+  async deleteAsset(id: string) {
+    await this.db.delete(this.t.assets).where(eq(this.t.assets.id, id));
+  }
+  async setAssetRefs(documentId: string, refs: readonly Omit<AssetRef, "documentId">[]) {
+    const R = this.t.assetRefs;
+    await this.db.delete(R).where(eq(R.documentId, documentId));
+    const wanted = new Map(refs.filter((r) => r.inDraft || r.inPublished).map((r) => [r.assetId, r]));
+    if (!wanted.size) return;
+    // Only files that exist: a document may name a file that was deleted.
+    const A = this.t.assets;
+    const have = await this.db.select({ id: A.id }).from(A).where(inArray(A.id, [...wanted.keys()]));
+    const rows = have.map((h) => ({ assetId: h.id, documentId, inDraft: wanted.get(h.id)!.inDraft, inPublished: wanted.get(h.id)!.inPublished }));
+    if (rows.length) await this.db.insert(R).values(rows);
+  }
+  async listAssetRefs(assetId: string) {
+    const R = this.t.assetRefs;
+    return (await this.db.select().from(R).where(eq(R.assetId, assetId))).map((r) => ({ assetId: r.assetId, documentId: r.documentId, inDraft: r.inDraft, inPublished: r.inPublished }));
   }
   async changeStamp() {
     const D = this.t.documents;
@@ -336,7 +452,7 @@ export class DrizzleRepo implements CmsRepo {
       have.get(c.table_name)!.add(c.column_name);
     }
     const expected: Record<string, string[]> = {};
-    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit })) {
+    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs })) {
       expected[prefix + key] = Object.values(tbl).filter((c) => c && typeof c === "object" && "name" in c && "columnType" in c).map((c) => (c as { name: string }).name);
     }
     const missingTables = Object.keys(expected).filter((t) => !have.has(t));

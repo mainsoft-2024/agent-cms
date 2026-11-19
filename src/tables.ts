@@ -12,7 +12,7 @@
  * alone (never read, written or dropped): see UPGRADE-0.6.md.
  */
 
-import { date, index, integer, jsonb, pgSchema, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, date, index, integer, jsonb, pgSchema, pgTable, primaryKey, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { AuditEntry, AutosaveState, DocContent, KeyScope, ReviewMark, VersionChange } from "./types";
 
 import { SCHEMA_VERSION } from "./schema-version";
@@ -53,6 +53,8 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       published: jsonb("published").$type<DocContent | null>(),
       updatedBy: text("updated_by"),
       updatedByKind: text("updated_by_kind"),
+      /** Name of the agent that acted for `updatedBy` (a person), when one did. */
+      updatedByAgent: text("updated_by_agent"),
       publishedAt: timestamp("published_at", { withTimezone: true }),
       republishedAt: timestamp("republished_at", { withTimezone: true }),
       autosave: jsonb("autosave").$type<AutosaveState["content"] | null>(),
@@ -80,6 +82,7 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       authorKind: text("author_kind").notNull(),
       authorId: text("author_id"),
       authorLabel: text("author_label").notNull(),
+      authorAgent: text("author_agent"),
       note: text("note"),
       changed: jsonb("changed").$type<VersionChange | null>(),
       reviewed: jsonb("reviewed").$type<ReviewMark[]>().notNull().default([]),
@@ -134,6 +137,7 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       actorKind: text("actor_kind").notNull(),
       actorId: text("actor_id"),
       actorLabel: text("actor_label").notNull(),
+      actorAgent: text("actor_agent"),
       action: text("action").notNull(),
       collection: text("collection"),
       slug: text("slug"),
@@ -145,7 +149,61 @@ export function cmsTables(o: CmsTablesOptions = {}) {
     (t) => ({ atIdx: index(n("audit_at_idx")).on(t.at), actionIdx: index(n("audit_action_idx")).on(t.action, t.at) })
   );
 
-  return { documents, versions, apiKeys, hits, meta, audit, options: { prefix, schema: o.schema ?? null } };
+  /**
+   * Files in a storage (0.8.0). A document points at a file by `id`, never by
+   * its path, so moving or renaming a file breaks nothing. `key` is the path
+   * inside the store, readable as it is (`blog/launch-hero.jpg`): the folders
+   * of the media screen are the folders of the bucket.
+   */
+  const assets = table(
+    n("assets"),
+    {
+      id: text("id").primaryKey(),
+      store: text("store").notNull(),
+      key: text("key").notNull(),
+      folder: text("folder").notNull().default(""),
+      name: text("name").notNull(),
+      kind: text("kind").notNull(),
+      mime: text("mime").notNull().default("application/octet-stream"),
+      size: bigint("size", { mode: "number" }).notNull().default(0),
+      width: integer("width"),
+      height: integer("height"),
+      duration: real("duration"),
+      alt: text("alt").notNull().default(""),
+      tags: jsonb("tags").$type<string[]>().notNull().default([]),
+      thumbKey: text("thumb_key"),
+      status: text("status").notNull().default("pending"),
+      uploadId: text("upload_id"),
+      createdBy: text("created_by"),
+      createdByKind: text("created_by_kind"),
+      createdByAgent: text("created_by_agent"),
+      createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+      updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => ({
+      keyIdx: uniqueIndex(n("assets_store_key_idx")).on(t.store, t.key),
+      folderIdx: index(n("assets_store_folder_idx")).on(t.store, t.folder),
+      statusIdx: index(n("assets_status_idx")).on(t.status, t.createdAt),
+    })
+  );
+
+  /** Which documents use which files (recomputed on every save and publish). */
+  const assetRefs = table(
+    n("asset_refs"),
+    {
+      assetId: text("asset_id")
+        .notNull()
+        .references(() => assets.id, { onDelete: "cascade" }),
+      documentId: uuid("document_id")
+        .notNull()
+        .references(() => documents.id, { onDelete: "cascade" }),
+      inDraft: boolean("in_draft").notNull().default(false),
+      inPublished: boolean("in_published").notNull().default(false),
+    },
+    (t) => ({ pk: primaryKey({ columns: [t.assetId, t.documentId] }), docIdx: index(n("asset_refs_document_idx")).on(t.documentId) })
+  );
+
+  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, options: { prefix, schema: o.schema ?? null } };
 }
 
 export type CmsTables = ReturnType<typeof cmsTables>;
@@ -158,6 +216,8 @@ export const cmsApiKeys = defaultTables.apiKeys;
 export const cmsHits = defaultTables.hits;
 export const cmsMeta = defaultTables.meta;
 export const cmsAudit = defaultTables.audit;
+export const cmsAssets = defaultTables.assets;
+export const cmsAssetRefs = defaultTables.assetRefs;
 
 function names(t?: CmsTables | CmsTablesOptions) {
   const o = t && "options" in t ? t.options : ((t as CmsTablesOptions | undefined) ?? {});
@@ -212,6 +272,48 @@ CREATE TABLE IF NOT EXISTS ${tbl("audit")} (
 );
 CREATE INDEX IF NOT EXISTS ${idx("audit_at_idx")} ON ${tbl("audit")} ("at");
 CREATE INDEX IF NOT EXISTS ${idx("audit_action_idx")} ON ${tbl("audit")} ("action", "at");`.trim(),
+    },
+    {
+      version: 3,
+      name: "agent-cms 0.8.0: media files and their uses, agents acting for a person",
+      sql: `
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "updated_by_agent" text;
+ALTER TABLE ${tbl("versions")} ADD COLUMN IF NOT EXISTS "author_agent" text;
+ALTER TABLE ${tbl("audit")} ADD COLUMN IF NOT EXISTS "actor_agent" text;
+CREATE TABLE IF NOT EXISTS ${tbl("assets")} (
+  "id" text PRIMARY KEY,
+  "store" text NOT NULL,
+  "key" text NOT NULL,
+  "folder" text NOT NULL DEFAULT '',
+  "name" text NOT NULL,
+  "kind" text NOT NULL,
+  "mime" text NOT NULL DEFAULT 'application/octet-stream',
+  "size" bigint NOT NULL DEFAULT 0,
+  "width" integer,
+  "height" integer,
+  "duration" real,
+  "alt" text NOT NULL DEFAULT '',
+  "tags" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "thumb_key" text,
+  "status" text NOT NULL DEFAULT 'pending',
+  "upload_id" text,
+  "created_by" text,
+  "created_by_kind" text,
+  "created_by_agent" text,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ${idx("assets_store_key_idx")} ON ${tbl("assets")} ("store", "key");
+CREATE INDEX IF NOT EXISTS ${idx("assets_store_folder_idx")} ON ${tbl("assets")} ("store", "folder");
+CREATE INDEX IF NOT EXISTS ${idx("assets_status_idx")} ON ${tbl("assets")} ("status", "created_at");
+CREATE TABLE IF NOT EXISTS ${tbl("asset_refs")} (
+  "asset_id" text NOT NULL REFERENCES ${tbl("assets")}("id") ON DELETE CASCADE,
+  "document_id" uuid NOT NULL REFERENCES ${tbl("documents")}("id") ON DELETE CASCADE,
+  "in_draft" boolean NOT NULL DEFAULT false,
+  "in_published" boolean NOT NULL DEFAULT false,
+  PRIMARY KEY ("asset_id", "document_id")
+);
+CREATE INDEX IF NOT EXISTS ${idx("asset_refs_document_idx")} ON ${tbl("asset_refs")} ("document_id");`.trim(),
     },
   ];
 }

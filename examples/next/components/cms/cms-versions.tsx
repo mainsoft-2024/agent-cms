@@ -361,7 +361,7 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
           {toInfo ? (
             <div className="flex flex-col gap-0.5 px-4 py-2.5 text-xs">
               <div className="flex items-center gap-2">
-                <Who kind={toInfo.authorKind} label={toInfo.authorLabel} className="font-medium" />
+                <Who kind={toInfo.authorKind} label={toInfo.authorLabel} agent={toInfo.authorAgent} className="font-medium" />
                 <span className="text-muted-foreground">{relativeTime(toInfo.createdAt, t, locale)}</span>
               </div>
               {toInfo.note ? <div className="text-muted-foreground">{toInfo.note}</div> : null}
@@ -406,9 +406,9 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
                       <span className="text-xs text-muted-foreground">{relativeTime(v.createdAt, t, locale)}</span>
                     </span>
                     <span className="flex items-center gap-1.5 text-xs">
-                      <Who kind={v.authorKind} label={v.authorLabel} />
-                      <Badge variant="outline" className={cn("h-4 rounded-full px-1.5 text-[10.5px] font-normal", v.authorKind !== "user" && "border-blue-200 bg-blue-50 text-blue-700")}>
-                        {v.authorKind === "user" ? t("kind_user") : t("kind_agent")}
+                      <Who kind={v.authorKind} label={v.authorLabel} agent={v.authorAgent} />
+                      <Badge variant="outline" className={cn("h-4 rounded-full px-1.5 text-[10.5px] font-normal", (v.authorKind !== "user" || v.authorAgent) && "border-blue-200 bg-blue-50 text-blue-700")}>
+                        {v.authorKind === "user" && !v.authorAgent ? t("kind_user") : t("kind_agent")}
                       </Badge>
                     </span>
                     {v.note ? <span className="text-xs text-muted-foreground">{v.note}</span> : null}

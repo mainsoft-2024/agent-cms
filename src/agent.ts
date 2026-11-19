@@ -124,7 +124,7 @@ export async function lookupForAgent(cms: CmsLike, actor: Actor, collections: st
   for (const id of new Set(hits.map((h) => h.docId))) {
     const doc = await core.repo.findDocById(id);
     const v = doc?.publishedVersion ? await core.repo.getVersion(id, doc.publishedVersion) : null;
-    trustOf.set(id, v && v.authorKind !== "user" ? "agent" : "human");
+    trustOf.set(id, v && (v.authorKind !== "user" || v.authorAgent) ? "agent" : "human");
   }
 
   const links: AgentLink[] = [];

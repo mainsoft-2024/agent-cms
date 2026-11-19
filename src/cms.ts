@@ -1,7 +1,7 @@
 /**
  * The CMS itself: every rule about documents, versions, publishing, access,
  * search, keys, previews and the audit log. Transport-free: REST (`http.ts`),
- * MCP (`mcp.ts`), AI SDK tools (`ai.ts`) and the CLI are thin shells over this
+ * MCP (`mcp.ts`), the tool list (`tools.ts`) and the CLI are thin shells over this
  * object, so they can never disagree.
  *
  * User questions are app data: the CMS stores none of them. A search the
@@ -194,8 +194,11 @@ export interface AgentChange {
   /** Hunk id; pass it to `reviewChanges`. */
   id: string;
   version: number;
+  /** The agent's name (a key's name, the app's label, or the agent acting for a person). */
   author: string;
-  authorKind: "key" | "system";
+  /** `user` only when an agent acted for a person; `behalf` then names that person. */
+  authorKind: "key" | "system" | "user";
+  behalf: string | null;
   at: string;
   removed: string[];
   added: string[];
@@ -303,7 +306,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   function actorInfo(actor: Actor) {
     if (actor.kind === "anonymous") return { actorKind: "anonymous" as const, actorId: null, actorLabel: "anonymous" };
     if (actor.kind === "system") return { actorKind: "system" as const, actorId: null, actorLabel: actor.label };
-    return { actorKind: actor.kind, actorId: actor.id, actorLabel: actor.label };
+    return { actorKind: actor.kind, actorId: actor.id, actorLabel: actor.label, actorAgent: actor.kind === "user" ? (actor.agent?.label ?? null) : null };
   }
 
   function audit(actor: Actor, action: AuditAction, o: { collection?: string | null; slug?: string | null; version?: number | null; outcome?: AuditEntry["outcome"]; detail?: Record<string, unknown> } = {}) {
@@ -358,10 +361,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
     throw fail(what === "publish" ? "forbidden_publish" : what === "write" ? "forbidden_write" : "forbidden_read", { collection: col });
   }
 
-  function actorRef(actor: Actor): { kind: "user" | "key" | "system"; id: string | null; label: string } {
-    if (actor.kind === "user") return { kind: "user", id: actor.id, label: actor.label };
-    if (actor.kind === "key") return { kind: "key", id: actor.id, label: actor.label };
-    if (actor.kind === "system") return { kind: "system", id: null, label: actor.label };
+  /** Who to record as the author. `agent` is the agent acting for a person, when there is one. */
+  function actorRef(actor: Actor): { kind: "user" | "key" | "system"; id: string | null; label: string; agent: string | null } {
+    if (actor.kind === "user") return { kind: "user", id: actor.id, label: actor.label, agent: actor.agent?.label?.trim() || null };
+    if (actor.kind === "key") return { kind: "key", id: actor.id, label: actor.label, agent: null };
+    if (actor.kind === "system") return { kind: "system", id: null, label: actor.label, agent: null };
     throw fail("unauthorized");
   }
 
@@ -494,6 +498,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       updatedAt: d.updatedAt,
       updatedBy: d.updatedBy,
       updatedByKind: d.updatedByKind,
+      updatedByAgent: d.updatedByAgent ?? null,
     };
   }
 
@@ -647,10 +652,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
         publishedAt: publish ? at : null,
         updatedBy: who.label,
         updatedByKind: who.kind,
+        updatedByAgent: who.agent,
         createdAt: at,
         updatedAt: at,
       });
-      await r.insertVersion({ documentId: row.id, version: 1, snapshot: content, authorKind: who.kind, authorId: who.id, authorLabel: who.label, note: o.note ?? null, createdAt: at, changed: changeOf(1, null, content) });
+      await r.insertVersion({ documentId: row.id, version: 1, snapshot: content, authorKind: who.kind, authorId: who.id, authorLabel: who.label, authorAgent: who.agent, note: o.note ?? null, createdAt: at, changed: changeOf(1, null, content) });
       return row;
     });
     if (o.publish) audit(actor, "doc.publish", { collection: col, slug: doc.slug, version: 1 });
@@ -670,7 +676,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const inPlace = cfg.versions?.drafts === false && doc.publishedVersion !== null && doc.status !== "archived";
     const publish = !!o.publish || inPlace;
     const wasPublic = doc.publishedVersion !== null && doc.status !== "archived";
-    let patch: DocPatch = { ...next, version: v, updatedBy: who.label, updatedByKind: who.kind, updatedAt: at, autosave: null };
+    let patch: DocPatch = { ...next, version: v, updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent, updatedAt: at, autosave: null };
     if (publish) {
       patch = { ...patch, status: "published", publishedVersion: v, published: next, publishedAt: doc.publishedAt ?? at };
       if (!wasPublic && doc.publishedAt) patch.republishedAt = at;
@@ -686,6 +692,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       version: v,
       snapshot: next,
       authorKind: who.kind,
+      authorAgent: who.agent,
       authorId: who.id,
       authorLabel: who.label,
       note: o.note ?? (o.restoredFrom ? `restored v${o.restoredFrom}` : null),
@@ -792,6 +799,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       updatedAt: at,
       updatedBy: actorRef(actor).label,
       updatedByKind: actorRef(actor).kind,
+      updatedByAgent: actorRef(actor).agent,
     });
     if (!updated) throw fail("not_found", { collection: doc.collection, slug: doc.slug });
     return updated;
@@ -846,7 +854,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
       if (cur.publishedVersion === null && cur.status !== "archived") return cur;
       const who = actorRef(actor);
-      return (await r.updateDoc(cur.id, { status: "draft", publishedVersion: null, published: null, updatedAt: nowIso(), updatedBy: who.label, updatedByKind: who.kind }))!;
+      return (await r.updateDoc(cur.id, { status: "draft", publishedVersion: null, published: null, updatedAt: nowIso(), updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent }))!;
     });
     audit(actor, "doc.unpublish", { collection: col, slug, version: doc.version });
     return doc;
@@ -923,12 +931,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const doc = await editable(actor, col, slug);
     const out: AgentChange[] = [];
     for (const v of (await repo.listVersions(doc.id)).slice(0, 30)) {
-      if (v.authorKind === "user" || !v.changed) continue;
+      // A person's own edits are not agent changes; an agent acting for a person is.
+      if ((v.authorKind === "user" && !v.authorAgent) || !v.changed) continue;
       const done = new Set(v.reviewed.map((m) => m.hunk));
       for (const h of v.changed.hunks) {
         if (done.has(h.id)) continue;
         if (h.added.length ? !containsBlock(doc.body, h.added) : containsBlock(doc.body, h.removed)) continue;
-        out.push({ id: h.id, version: v.version, author: v.authorLabel, authorKind: v.authorKind, at: v.createdAt, removed: h.removed, added: h.added, before: h.before ?? null });
+        out.push({ id: h.id, version: v.version, author: v.authorAgent ?? v.authorLabel, authorKind: v.authorKind, behalf: v.authorAgent ? v.authorLabel : null, at: v.createdAt, removed: h.removed, added: h.added, before: h.before ?? null });
       }
     }
     return out;

@@ -3,9 +3,8 @@
  *   .            createCms, defineCollection, types, DrizzleRepo, MemoryRepo, tables
  *   ./http       createCmsHandler (REST + MCP on one route)
  *   ./mcp        createMcpServer, handleMcp (official MCP SDK)
- *   ./ai         cmsTools, remoteCmsTools (AI SDK / slash-agent-sdk tools)
  *   ./client     createCmsClient (MCP with a key), createRestClient (admin screens)
- *   ./tools      CMS_TOOLS (the one tool list behind MCP, ./ai and the CLI)
+ *   ./tools      CMS_TOOLS (the one tool list behind MCP and the CLI), toolsFor, callTool
  *   ./agent      lookupForAgent, envelope, verifyCitations
  *   ./diff       line diff, hunks, merge3, mergeDocs (safe in the browser)
  *   ./markdown   parseMarkdown, extractToc (safe in the browser)
@@ -54,9 +53,11 @@ export type {
 export { DrizzleRepo } from "./drizzle-repo";
 export type { DoctorReport, DrizzleRepoOptions } from "./drizzle-repo";
 export { MemoryRepo } from "./repo";
-export type { AuditQuery, CmsRepo, DocPatch, KeyRow, NewDoc, NewVersion, StoredVersion } from "./repo";
+export type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocPatch, KeyRow, NewAsset, NewAudit, NewDoc, NewVersion, StoredVersion } from "./repo";
 export {
   cmsApiKeys,
+  cmsAssetRefs,
+  cmsAssets,
   cmsAudit,
   cmsDdl,
   cmsDocuments,
@@ -76,8 +77,8 @@ export type { AgentLink, AgentLookup, AgentSection, Citation, LookupOptions } fr
 export { applyPatch, sectionRanges } from "./patch";
 export type { PatchOp, SectionRange } from "./patch";
 export { normalizeQuery } from "./search";
-export { CMS_TOOLS, CMS_TOOL_NAMES, toolsFor } from "./tools";
-export type { CmsToolDef } from "./tools";
+export { callTool, CMS_TOOLS, CMS_TOOL_NAMES, runTool, toolErrorResult, toolsFor } from "./tools";
+export type { CallToolOptions, CmsToolDef, ToolErrorResult, ToolOutcome } from "./tools";
 export { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
 export type { CmsClient, CmsClientOptions, RestClient, RestClientOptions } from "./client";
 export { docFromMarkdown, parseFrontmatter } from "./frontmatter";

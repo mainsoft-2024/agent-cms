@@ -1,7 +1,7 @@
 {
   "name": "@mainsoft/agent-cms",
   "version": "0.7.0",
-  "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (REST, MCP, AI SDK tools) together.",
+  "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (MCP, REST, CLI) together.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -18,6 +18,7 @@
     "dist",
     "README.md",
     "UPGRADE-0.6.md",
+    "UPGRADE-0.8.md",
     "CHANGELOG.md",
     "TODO.md",
     "LICENSE"
@@ -58,16 +59,6 @@
       "require": {
         "types": "./dist/mcp.d.cts",
         "default": "./dist/mcp.cjs"
-      }
-    },
-    "./ai": {
-      "import": {
-        "types": "./dist/ai.d.ts",
-        "default": "./dist/ai.js"
-      },
-      "require": {
-        "types": "./dist/ai.d.cts",
-        "default": "./dist/ai.cjs"
       }
     },
     "./client": {
@@ -216,7 +207,6 @@
     "test:shadcn": "bash scripts/shadcn-smoke.sh"
   },
   "peerDependencies": {
-    "ai": ">=5.0.0",
     "drizzle-orm": ">=0.36.0",
     "zod": "^3.25.0 || ^4.0.0"
   },
@@ -232,7 +222,6 @@
     "@types/pg": "8.23.1",
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
-    "ai": "^7.0.31",
     "axe-core": "4.14.1",
     "drizzle-orm": "0.45.2",
     "global-jsdom": "26.0.0",
@@ -257,18 +246,12 @@
     "headless-cms",
     "ai-agents",
     "mcp",
-    "ai-sdk",
     "nextjs",
     "drizzle",
     "postgres",
     "shadcn",
     "shadcn-registry"
   ],
-  "peerDependenciesMeta": {
-    "ai": {
-      "optional": true
-    }
-  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
     "jiti": "2.7.0"

@@ -12,15 +12,16 @@ notes, a help center, internal docs, a notice board.
   archive, restore. Two writers never overwrite each other: a stale save is a
   conflict (409) that carries the other person's copy, and the admin screen
   merges the two line by line.
-- **Agents are first-class editors.** One tool list, four ways in:
-  - **AI SDK tools** (`./ai`) for your own agent: `cmsTools(cms, actor)`
-    in-process, or `remoteCmsTools({ url, key })` against another app. They
-    are plain AI SDK `Tool`s, so they also work unchanged with anything built
-    on the AI SDK, such as slash-agent-sdk.
+- **Agents are first-class editors.** One tool list, three ways in:
   - **MCP** at `/api/cms/mcp` for coding agents (Claude Code, Cursor, …),
     served with the official MCP SDK.
   - **CLI** (`agent-cms put notes/launch.md --publish`) for agents with a shell.
   - **REST** for everything else.
+
+  The list itself is in `./tools` (`toolsFor`, `callTool`), so an agent
+  running inside your app gets the same tools whatever framework runs it.
+  This package never calls a model: the model, its key and the agent loop
+  stay with you.
   Agents change one section at a time (`patch_document`), check a draft
   before saving (`diagnose_document`), and people review what agents changed
   block by block.
@@ -40,6 +41,7 @@ notes, a help center, internal docs, a notice board.
 > Design follows [Payload](https://payloadcms.com)'s collection, version and
 > MCP shapes, written to run on Next.js 14+/React 18 and Postgres + Drizzle.
 
+Used `./ai`? It is gone: read [UPGRADE-0.8.md](./UPGRADE-0.8.md).
 Upgrading from 0.5? Read [UPGRADE-0.6.md](./UPGRADE-0.6.md) first (the
 `cms_gaps` table needs moving before anything drops it). Changes are in
 [CHANGELOG.md](./CHANGELOG.md).
@@ -51,9 +53,9 @@ npm i @mainsoft/agent-cms
 npx agent-cms init
 ```
 
-Peer dependencies: `drizzle-orm`, `zod` (`^3.25` or `^4`), and `ai` (only for
-`./ai`). `init` writes `agent-cms.config.ts`, `lib/cms.ts`, the API route,
-a schema re-export and `.env.example` lines, and never overwrites a file.
+Peer dependencies: `drizzle-orm` and `zod` (`^3.25` or `^4`). `init` writes
+`agent-cms.config.ts`, `lib/cms.ts`, the API route, a schema re-export and
+`.env.example` lines, and never overwrites a file.
 
 ## Set up
 
@@ -205,37 +207,44 @@ UI text is English by default; a Korean catalog ships with the screens.
 
 ## Agents
 
-### Your own agent (AI SDK, slash-agent-sdk)
+This package never calls a model. It has no model or key settings. It hands
+your agent a list of tools; the model and the loop that drives it are yours.
+
+### Your own agent
+
+`toolsFor(cms, actor)` lists the tools this actor may use (name, description,
+a zod schema for the input). `callTool` runs one. Wrap them in whatever your
+agent framework calls a tool:
 
 ```ts
-import { streamText } from "ai";
-import { cmsTools } from "@mainsoft/agent-cms/ai";
+import { toolsFor, callTool } from "@mainsoft/agent-cms/tools";
 
-const result = streamText({
-  model,
-  tools: {
-    ...myTools,
-    // Every tool this actor may use; `only` and `prefix` narrow and rename.
-    ...cmsTools(cms, { kind: "system", label: "assistant" }, { prefix: "cms_" }),
-  },
-  messages,
-});
+const actor = { kind: "system", label: "assistant" } as const;
+
+const tools = toolsFor(cms, actor).map((t) => ({
+  name: t.name,
+  description: t.description,
+  input: t.input, // a zod object; toJsonSchema(t.input) from ./mcp gives JSON Schema
+  run: (args: unknown) => callTool(cms, actor, t.name, args),
+}));
 ```
+
+`callTool(cms, actor, name, args, { only })` checks the input, runs the tool
+with the actor's permissions, and records the call as made by an agent.
+`toolsFor(cms, actor, only)` and the `only` option narrow the list.
 
 From another process (a script, a scheduled job, another service), use a key:
 
 ```ts
-import { remoteCmsTools } from "@mainsoft/agent-cms/ai";
+import { createCmsClient } from "@mainsoft/agent-cms/client";
+import { toolErrorResult } from "@mainsoft/agent-cms/tools";
 
-const tools = remoteCmsTools(
-  { url: "https://app.example.com/api/cms", key: process.env.AGENT_CMS_KEY! },
-  { only: ["search_documents", "get_document", "patch_document"] }
-);
+const api = createCmsClient({ url: "https://app.example.com/api/cms", key: process.env.AGENT_CMS_KEY! });
+
+const tools = await api.listTools(); // only what this key may use: { name, description, inputSchema }
+const run = (name: string, args: Record<string, unknown>) =>
+  api.call(name, args).catch((e) => toolErrorResult(e) ?? Promise.reject(e));
 ```
-
-`await remoteCmsToolsFor(client, opts)` does the same but first asks the
-server which tools the key may use (`tools/list`), so a read-only key is
-offered read tools only.
 
 Tool errors come back as results, not throws, so the model can re-read and
 retry: `{ error: "conflict_version", kind: "conflict", message, params: {

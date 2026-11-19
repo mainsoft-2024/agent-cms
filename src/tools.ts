@@ -1,13 +1,15 @@
 /**
- * The one list of operations an agent can perform. MCP (`mcp.ts`), the AI SDK
- * tools (`ai.ts`) and the CLI all expose exactly this list, so an agent sees
- * the same tools whichever way it connects.
+ * The one list of operations an agent can perform. MCP (`mcp.ts`) and the CLI
+ * expose exactly this list, and `toolsFor` + `callTool` hand it to an agent
+ * running in the app, so an agent sees the same tools whichever way it
+ * connects. This package never calls a model itself.
  */
 
 import { z } from "zod";
 import { lookupForAgent } from "./agent";
+import { isCmsRemoteError } from "./client";
 import { BULK_ACTIONS, coreOf, type CmsCore, type CmsLike } from "./cms";
-import { DOC_STATUSES, type Actor } from "./types";
+import { DOC_STATUSES, isCmsError, type Actor, type Diagnostic } from "./types";
 
 const docInput = {
   slug: z.string().optional().describe("URL slug, e.g. my-first-post (lowercase letters, digits, hyphens unless the collection allows more)"),
@@ -200,6 +202,7 @@ export const CMS_TOOLS: CmsToolDef[] = [
         title: v.title,
         author: v.authorLabel,
         authorKind: v.authorKind,
+        agent: v.authorAgent ?? null,
         note: v.note,
         published: v.published,
         changed: v.changed?.fields ?? [],
@@ -223,4 +226,79 @@ export function toolsFor(cms: CmsLike, actor: Actor, only?: readonly string[]): 
   const core = coreOf(cms);
   const cols = core.collections().map((c) => c.slug);
   return CMS_TOOLS.filter((t) => (!only || only.includes(t.name)) && (!t.needs || cols.some((c) => core.can(actor, c, t.needs!))));
+}
+
+/** What a failed tool call returns: the same shape as a REST error body. */
+export interface ToolErrorResult {
+  error: string;
+  kind: string;
+  message: string;
+  params: Record<string, unknown>;
+  diagnostics?: Diagnostic[];
+  current?: unknown;
+}
+
+export type ToolOutcome = { ok: true; value: unknown } | { ok: false; error: ToolErrorResult };
+
+export interface CallToolOptions {
+  /** Only these tools may be called (by name). Default: every tool the actor may use. */
+  only?: readonly string[];
+}
+
+/**
+ * A CMS error (thrown in this process, or by `createCmsClient().call`) as a
+ * tool result an agent can read. `null` for anything else: rethrow those.
+ */
+export function toolErrorResult(err: unknown): ToolErrorResult | null {
+  if (isCmsError(err)) return err.toJSON();
+  if (isCmsRemoteError(err)) {
+    return {
+      error: err.code,
+      kind: err.kind ?? "internal",
+      message: err.message,
+      params: err.params ?? {},
+      ...(err.diagnostics ? { diagnostics: err.diagnostics } : {}),
+      ...(err.current !== undefined ? { current: err.current } : {}),
+    };
+  }
+  return null;
+}
+
+/**
+ * Run one tool by name as `actor`: looks it up in the tools the actor may
+ * use, checks the input, runs it. CMS errors (a conflict, a missing
+ * document, no permission, bad input) come back as `{ ok: false, error }`
+ * with the message in the CMS's language; anything else throws.
+ */
+export async function runTool(cms: CmsLike, actor: Actor, name: string, args: unknown = {}, opts: CallToolOptions = {}): Promise<ToolOutcome> {
+  const core = coreOf(cms);
+  const def = toolsFor(core, actor, opts.only).find((t) => t.name === name);
+  // Same list as toolsFor: a hidden tool is not callable either.
+  if (!def) return { ok: false, error: { error: "unknown_tool", kind: "not_found", message: `Unknown tool: ${name}`, params: { name } } };
+  const parsed = def.input.safeParse(args ?? {});
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; ");
+    return { ok: false, error: { error: "invalid_request", kind: "invalid", message: core.message({ isCmsError: true, code: "invalid_request", params: { issues } }), params: { issues } } };
+  }
+  try {
+    return { ok: true, value: await def.run(core, actor, parsed.data as Record<string, unknown>) };
+  } catch (err) {
+    if (!isCmsError(err)) throw err;
+    return { ok: false, error: { ...err.toJSON(), message: core.message(err) } };
+  }
+}
+
+/**
+ * The way to hand the CMS to your own agent, whatever framework runs it:
+ * list the tools with `toolsFor(cms, actor)` (name, description, zod input)
+ * and run each call the model makes with `callTool`. A CMS error is returned
+ * as `{ error, kind, message, params, … }` rather than thrown, so the model
+ * can read a conflict and retry instead of failing the whole run.
+ *
+ * Calls made this way are recorded with `via: "ai"` unless the actor says
+ * otherwise.
+ */
+export async function callTool(cms: CmsLike, actor: Actor, name: string, args: unknown = {}, opts: CallToolOptions = {}): Promise<unknown> {
+  const r = await runTool(cms, { ...actor, via: actor.via ?? "ai" }, name, args, opts);
+  return r.ok ? r.value : r.error;
 }

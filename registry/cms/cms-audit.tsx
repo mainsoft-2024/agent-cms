@@ -149,7 +149,7 @@ export function CmsAudit({ pageSize = 50, className }: CmsAuditProps) {
                       {e.action === "auth.failed" ? t("unknown_key") : actorLabel("anonymous")}
                     </span>
                   ) : (
-                    <Who kind={e.actorKind} label={e.actorLabel} />
+                    <Who kind={e.actorKind} label={e.actorLabel} agent={e.actorAgent} />
                   )}
                 </TableCell>
                 <TableCell className="text-[13.5px]">{actionLabel(e.action)}</TableCell>

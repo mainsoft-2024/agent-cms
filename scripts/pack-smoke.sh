@@ -16,13 +16,12 @@ cd "$WORK"
 npm init -y >/dev/null
 npm i --no-audit --no-fund "$TARBALL" drizzle-orm@0.45 zod@3.25 >/dev/null
 
-ENTRIES="index http mcp ai client tools agent markdown frontmatter types tables cli diff errors config messages/en messages/ko"
+ENTRIES="index http mcp client tools agent markdown frontmatter types tables cli diff errors config messages/en messages/ko"
 
 cat > esm.mjs <<EOF
 const entries = "$ENTRIES".split(" ");
 for (const e of entries) {
   const spec = e === "index" ? "@mainsoft/agent-cms" : "@mainsoft/agent-cms/" + e;
-  if (e === "ai") continue; // needs the optional "ai" peer
   const m = await import(spec);
   if (!Object.keys(m).length) throw new Error("empty module: " + spec);
 }
@@ -36,7 +35,6 @@ node esm.mjs
 
 cat > cjs.cjs <<EOF
 for (const e of "$ENTRIES".split(" ")) {
-  if (e === "ai") continue;
   const spec = e === "index" ? "@mainsoft/agent-cms" : "@mainsoft/agent-cms/" + e;
   const m = require(spec);
   if (!Object.keys(m).length) throw new Error("empty module: " + spec);

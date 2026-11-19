@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { z } from "zod";
-import { remoteCmsToolsFor } from "./ai";
+import { createCmsClient } from "./client";
 import { createCms, dayIn, defineCollection, type ChangeInfo } from "./cms";
 import { createCmsHandler } from "./http";
 import { generateKey } from "./keys";
@@ -102,16 +102,19 @@ test("0.5.3 #5: key generation drops biased bytes instead of folding them", () =
   assert.match(generateKey(), /^sgk_[0-9A-Za-z]{40}$/);
 });
 
-test("0.5.3 #6: remoteCmsToolsFor offers only the tools the key can use", async () => {
+test("0.5.3 #6: a remote client is offered only the tools the key can use", async () => {
   const cms = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "g", label: "g", visibility: "public" })] });
   const { secret } = await cms.createKey(admin, { name: "reader", scopes: ["read"] });
   const h = createCmsHandler({ cms, resolveUser: async () => null });
   const f = ((input: RequestInfo | URL, init?: RequestInit) => h(new Request(String(input), init))) as typeof fetch;
-  const tools = await remoteCmsToolsFor({ url: "http://x/api/cms", key: secret, fetch: f });
-  assert.ok("get_document" in tools && "search_documents" in tools);
-  assert.ok(!("update_document" in tools) && !("publish_document" in tools));
-  const only = await remoteCmsToolsFor({ url: "http://x/api/cms", key: secret, fetch: f }, { only: ["get_document", "update_document"] });
-  assert.deepEqual(Object.keys(only), ["get_document"]);
+  const api = createCmsClient({ url: "http://x/api/cms", key: secret, fetch: f });
+  const tools = (await api.listTools()).map((t) => t.name);
+  assert.ok(tools.includes("get_document") && tools.includes("search_documents"));
+  assert.ok(!tools.includes("update_document") && !tools.includes("publish_document"));
+  // Each comes with a JSON Schema for its input, ready for any agent framework.
+  assert.equal((await api.listTools()).find((t) => t.name === "get_document")?.inputSchema.type, "object");
+  // A tool the key was not offered is not callable either.
+  await assert.rejects(api.call("update_document", { collection: "g", slug: "a", doc: {} }), (e: { code?: string }) => e.code === "unknown_tool");
 });
 
 test("toJsonSchema: zod 4 schemas use zod's own converter", async () => {

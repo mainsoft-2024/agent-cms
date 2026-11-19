@@ -122,7 +122,11 @@ export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsH
     const origin = req.headers.get("origin");
     if (site === "cross-site" || (origin && new URL(req.url).host !== safeHost(origin))) throw new CmsError("cross_site", {}, { messages: core.messages });
   }
-  return user ?? { kind: "anonymous" };
+  if (!user) return { kind: "anonymous" };
+  // "An agent acting for this person" can only be said by code in the app
+  // that calls the CMS directly; a request never carries it.
+  const { agent: _agent, ...person } = user;
+  return person;
 }
 
 function safeHost(origin: string): string | null {

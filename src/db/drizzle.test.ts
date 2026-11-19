@@ -202,7 +202,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_api_keys", "blog_audit", "blog_documents", "blog_hits", "blog_meta", "blog_versions"]
+      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_documents", "blog_hits", "blog_meta", "blog_versions"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -211,6 +211,96 @@ test("db: table prefix and Postgres schema options", async () => {
     await cms.create(admin, "guide", { slug: "p", title: "P" }, { publish: true });
     assert.equal((await cms.get(anon, "guide", "p")).title, "P");
     assert.throws(() => cmsTables({ prefix: "bad-prefix" }));
+  } finally {
+    await close();
+  }
+});
+
+test("db: schema 2 → 3 adds the agent columns and the asset tables; files and their uses round-trip", async () => {
+  const { db, close } = await freshDb();
+  try {
+    // A 0.7.0 database: everything but what version 3 adds.
+    await run(db, cmsDdl());
+    await run(
+      db,
+      `DROP TABLE cms_asset_refs; DROP TABLE cms_assets;
+       ALTER TABLE cms_documents DROP COLUMN updated_by_agent; ALTER TABLE cms_versions DROP COLUMN author_agent; ALTER TABLE cms_audit DROP COLUMN actor_agent;
+       UPDATE cms_meta SET value = '2'::jsonb WHERE key = 'schema_version';`
+    );
+    const repo = new DrizzleRepo(db);
+    const cms = createCms({ repo, collections: [guide] });
+    await assert.rejects(cms.get(anon, "guide", "x"), (e: unknown) => isCmsError(e) && e.code === "schema_outdated");
+    const before = await repo.inspect();
+    assert.equal(before.schemaVersion, 2);
+    assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets"]);
+    const pending = migrationSql(before, cmsTables())!;
+    // Not the whole DDL: the upgrade steps (all of them are safe to run again).
+    assert.match(pending.steps[pending.steps.length - 1], /0\.8\.0/);
+    assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
+    await run(db, pending.sql);
+    await run(db, pending.sql);
+    const after = await repo.inspect();
+    assert.deepEqual([after.missingTables, after.missingColumns, after.schemaVersion], [[], [], SCHEMA_VERSION]);
+    assert.equal(migrationSql(after, cmsTables()), null);
+
+    // An agent acting for a person is stored on the document, the version and the audit row.
+    const fresh = createCms({ repo, collections: [guide] });
+    const d = await fresh.create({ ...admin, agent: { label: "docs-bot" } } as Actor, "guide", { slug: "a", title: "A", body: "## S\n\ntext" }, { publish: true });
+    assert.equal(d.updatedByAgent, "docs-bot");
+    assert.equal((await fresh.versions(admin, "guide", "a"))[0].authorAgent, "docs-bot");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await repo.listAudit({ limit: 5, action: "doc.publish" }))[0].actorAgent, "docs-bot");
+
+    // Files: insert, find, list with every filter, counts, update, uses, delete.
+    const base = { store: "public", kind: "image" as const, mime: "image/png", size: 6 * 1024 ** 3, width: 10, height: 20, duration: null, alt: "", tags: [] as string[], thumbKey: null, status: "ready" as const, uploadId: null, createdBy: "Admin", createdByKind: "user" as const, createdByAgent: null };
+    const one = await repo.insertAsset({ ...base, id: "aaaaaaaaaaaa", key: "blog/Hero.png", folder: "blog", name: "Hero.png", tags: ["launch"], createdAt: "2026-11-01T00:00:00.000Z" });
+    assert.equal(one.size, 6 * 1024 ** 3, "sizes above 4GB survive (bigint)");
+    await repo.insertAsset({ ...base, id: "bbbbbbbbbbbb", key: "blog/2026/b.pdf", folder: "blog/2026", name: "b.pdf", kind: "document", mime: "application/pdf", alt: "Price list", createdAt: "2026-11-02T00:00:00.000Z" });
+    await repo.insertAsset({ ...base, id: "cccccccccccc", key: "c.png", folder: "", name: "c.png", status: "pending", uploadId: "u1", createdAt: "2026-11-03T00:00:00.000Z" });
+    await repo.insertAsset({ ...base, id: "dddddddddddd", store: "private", key: "blogs/d.png", folder: "blogs", name: "d.png", createdAt: "2026-11-04T00:00:00.000Z" });
+    await assert.rejects(repo.insertAsset({ ...base, id: "eeeeeeeeeeee", key: "blog/Hero.png", folder: "blog", name: "Hero.png" }), "one key per store");
+    const ids = async (q: Parameters<typeof repo.listAssets>[0]) => (await repo.listAssets(q)).map((a) => a.id[0]).join("");
+    assert.equal(await ids({}), "dcba", "newest first");
+    assert.equal(await ids({ store: "public", status: "ready" }), "ba");
+    assert.equal(await ids({ store: "public", folder: "blog" }), "a");
+    assert.equal(await ids({ store: "public", under: "blog" }), "ba", "under takes sub-folders, not look-alike names");
+    assert.equal(await ids({ under: "blog" }), "ba");
+    assert.equal(await ids({ kinds: ["document"] }), "b");
+    assert.equal(await ids({ store: "public", notKinds: ["image"] }), "b");
+    assert.equal(await ids({ q: "hero" }), "a");
+    assert.equal(await ids({ q: "PRICE" }), "b");
+    assert.equal(await ids({ q: "laun" }), "a");
+    assert.equal(await ids({ tag: "launch" }), "a");
+    assert.equal(await ids({ status: "pending", createdBefore: "2026-11-03T00:00:01.000Z" }), "c");
+    assert.equal(await ids({ limit: 2 }), "dc");
+    assert.equal(await ids({ before: "2026-11-03T00:00:00.000Z|cccccccccccc", limit: 2 }), "ba");
+    assert.deepEqual((await repo.findAssets(["bbbbbbbbbbbb", "nope", "aaaaaaaaaaaa"])).map((a) => a.id).sort(), ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]);
+    assert.equal((await repo.findAssetByKey("public", "blog/Hero.png"))?.id, "aaaaaaaaaaaa");
+    assert.deepEqual(
+      (await repo.countAssets("public")).sort((x, y) => x.folder.localeCompare(y.folder)),
+      [
+        { store: "public", folder: "blog", kind: "image", n: 1 },
+        { store: "public", folder: "blog/2026", kind: "document", n: 1 },
+      ]
+    );
+    const moved = await repo.updateAsset("aaaaaaaaaaaa", { key: "brand/Hero.png", folder: "brand", alt: "A hero", tags: ["a", "b"] });
+    assert.deepEqual([moved?.key, moved?.folder, moved?.alt, moved?.tags], ["brand/Hero.png", "brand", "A hero", ["a", "b"]]);
+
+    await repo.setAssetRefs(d.id, [
+      { assetId: "aaaaaaaaaaaa", inDraft: true, inPublished: true },
+      { assetId: "bbbbbbbbbbbb", inDraft: true, inPublished: false },
+      { assetId: "zzzzzzzzzzzz", inDraft: true, inPublished: false },
+    ]);
+    assert.deepEqual(await repo.listAssetRefs("aaaaaaaaaaaa"), [{ assetId: "aaaaaaaaaaaa", documentId: d.id, inDraft: true, inPublished: true }]);
+    await repo.setAssetRefs(d.id, [{ assetId: "bbbbbbbbbbbb", inDraft: true, inPublished: false }]);
+    assert.deepEqual(await repo.listAssetRefs("aaaaaaaaaaaa"), []);
+    // Deleting the file or the document clears its uses.
+    await repo.deleteAsset("bbbbbbbbbbbb");
+    assert.equal(await repo.findAsset("bbbbbbbbbbbb"), null);
+    await repo.setAssetRefs(d.id, [{ assetId: "aaaaaaaaaaaa", inDraft: true, inPublished: false }]);
+    await fresh.remove(admin, "guide", "a");
+    assert.deepEqual(await repo.listAssetRefs("aaaaaaaaaaaa"), []);
+    assert.ok(await repo.findAsset("aaaaaaaaaaaa"), "the file itself stays");
   } finally {
     await close();
   }

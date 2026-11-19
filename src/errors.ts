@@ -136,7 +136,7 @@ export class CmsError extends Error {
     this.current = o.current;
   }
 
-  /** The wire shape (REST body, MCP error text, AI tool result). */
+  /** The wire shape (REST body, MCP error text, `callTool` result). */
   toJSON() {
     return {
       error: this.code,

@@ -23,8 +23,8 @@ import {
 import type { z } from "zod";
 import { toJSONSchema as toJSONSchemaV4 } from "zod/v4";
 import { coreOf, type CmsCore, type CmsLike } from "./cms";
-import { CMS_TOOL_NAMES, toolsFor } from "./tools";
-import { isCmsError, type Actor } from "./types";
+import { CMS_TOOL_NAMES, runTool, toolsFor, type ToolOutcome } from "./tools";
+import type { Actor } from "./types";
 import { VERSION } from "./version";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -154,31 +154,27 @@ export function createMcpServer(cms: CmsLike, actor: Actor): Server {
   const core: CmsCore = coreOf(cms);
   const server = new Server({ name: "agent-cms", version: VERSION }, { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: MCP_INSTRUCTIONS });
   // A keyless caller only ever gets the read tools, whatever the collection rules say.
-  const visible = () => toolsFor(core, actor, actor.kind === "anonymous" ? ANONYMOUS_READ_TOOLS : undefined);
+  const anonymousOnly = actor.kind === "anonymous" ? ANONYMOUS_READ_TOOLS : undefined;
+  const visible = () => toolsFor(core, actor, anonymousOnly);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: visible().map((t) => ({ name: t.name, description: t.description, inputSchema: toJsonSchema(t.input) as { type: "object"; properties?: Record<string, object> } })),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const tool = visible().find((t) => t.name === req.params.name);
     // Same list as tools/list: a hidden tool is not callable either.
-    if (!tool) return { isError: true, content: [{ type: "text" as const, text: `unknown_tool: Unknown tool: ${req.params.name}` }] };
-    const parsed = tool.input.safeParse(req.params.arguments ?? {});
-    if (!parsed.success) {
-      const issues = parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; ");
-      return { isError: true, content: [{ type: "text" as const, text: `invalid_request: ${core.message({ isCmsError: true, code: "invalid_request", params: { issues } })}` }], structuredContent: { error: "invalid_request", kind: "invalid", params: { issues } } };
-    }
+    let r: ToolOutcome;
     try {
-      return textResult(await tool.run(core, actor, parsed.data as Record<string, unknown>));
+      r = await runTool(core, actor, req.params.name, req.params.arguments ?? {}, { only: anonymousOnly });
     } catch (err) {
-      if (!isCmsError(err)) {
-        console.error("[agent-cms] mcp tool failed:", err);
-        return { isError: true, content: [{ type: "text" as const, text: "internal: internal error" }] };
-      }
-      const body = { ...err.toJSON(), message: core.message(err) };
-      return { isError: true, content: [{ type: "text" as const, text: `${err.code}: ${body.message}` }], structuredContent: body };
+      console.error("[agent-cms] mcp tool failed:", err);
+      return { isError: true, content: [{ type: "text" as const, text: "internal: internal error" }] };
     }
+    if (r.ok) return textResult(r.value);
+    const text = `${r.error.error}: ${r.error.message}`;
+    // An unknown tool has no error code of its own: text only, as before.
+    if (r.error.error === "unknown_tool") return { isError: true, content: [{ type: "text" as const, text }] };
+    return { isError: true, content: [{ type: "text" as const, text }], structuredContent: { ...r.error } };
   });
 
   const readable = () => core.collections().filter((c) => core.can(actor, c.slug, "read"));

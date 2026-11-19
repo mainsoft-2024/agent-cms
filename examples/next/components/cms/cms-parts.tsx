@@ -48,11 +48,15 @@ export function Avatar({ kind, label, className }: { kind: string | null | undef
   );
 }
 
-export function Who({ kind, label, className }: { kind: string | null | undefined; label: string | null | undefined; className?: string }) {
+/**
+ * Who did it. With `agent` (an agent that acted for the person in `label`)
+ * it shows the agent's mark and both names: "docs-bot, Kim".
+ */
+export function Who({ kind, label, agent, className }: { kind: string | null | undefined; label: string | null | undefined; agent?: string | null; className?: string }) {
   return (
     <span className={cn("inline-flex items-center gap-1.5", className)}>
-      <Avatar kind={kind} label={label} />
-      <span>{label}</span>
+      <Avatar kind={agent ? "key" : kind} label={label} />
+      <span>{agent ? `${agent}, ${label ?? ""}` : label}</span>
     </span>
   );
 }
