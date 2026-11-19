@@ -7,7 +7,7 @@
 
 import * as React from "react";
 import { CircleCheck, Plus } from "lucide-react";
-import type { CmsKey, KeyScope } from "@mainsoft-2024/agent-cms/types";
+import type { CmsKey, KeyScope } from "@mainsoft/agent-cms/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";

@@ -8,7 +8,7 @@
 
 import * as React from "react";
 import { Lock, X } from "lucide-react";
-import type { CollectionSchema } from "@mainsoft-2024/agent-cms/client";
+import type { CollectionSchema } from "@mainsoft/agent-cms/client";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

@@ -7,8 +7,8 @@
 "use client";
 
 import * as React from "react";
-import { createRestClient, type Me, type RestClient } from "@mainsoft-2024/agent-cms/client";
-import type { DocLike } from "@mainsoft-2024/agent-cms/diff";
+import { createRestClient, type Me, type RestClient } from "@mainsoft/agent-cms/client";
+import type { DocLike } from "@mainsoft/agent-cms/diff";
 import { createT, en, type CmsMessages, type T } from "./cms-messages";
 
 /** What create / update / autosave take. */

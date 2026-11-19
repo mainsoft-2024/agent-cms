@@ -8,7 +8,7 @@
       "type": "registry:lib",
       "title": "agent-cms client and helpers",
       "description": "CmsProvider and useCms (REST client, UI strings in English and Korean), small hooks, shared parts (state badge, copy box, confirm dialog, page header, markdown preview).",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["badge", "button", "dialog"],
       "files": [
         { "path": "registry/cms/use-cms.ts", "type": "registry:lib" },
@@ -21,7 +21,7 @@
       "type": "registry:component",
       "title": "Admin layout",
       "description": "Sidebar with collections, API keys and audit log, plus extraNav for your app's own screens. A sheet menu under 768px.",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["sheet", "cms-lib"],
       "files": [{ "path": "registry/cms/cms-shell.tsx", "type": "registry:component" }]
     },
@@ -30,7 +30,7 @@
       "type": "registry:component",
       "title": "Empty collection",
       "description": "New document, and how to write with an agent instead (CLI one-liner, MCP URL, API key link).",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["button", "cms-lib"],
       "files": [{ "path": "registry/cms/cms-empty.tsx", "type": "registry:component" }]
     },
@@ -39,7 +39,7 @@
       "type": "registry:component",
       "title": "Document list",
       "description": "State tabs with counts, category and author filters, search, 7-day views, selection with bulk publish, unpublish, hide, unhide and delete. Cards with long-press selection on phones.",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["button", "checkbox", "dialog", "dropdown-menu", "input", "select", "table", "cms-lib", "cms-empty"],
       "files": [{ "path": "registry/cms/cms-doc-list.tsx", "type": "registry:component" }]
     },
@@ -48,7 +48,7 @@
       "type": "registry:component",
       "title": "Merge after a conflict",
       "description": "Three-way merge when someone saved first: what merged automatically, and theirs, mine or both for each conflict.",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["badge", "button", "label", "radio-group", "table", "cms-lib"],
       "files": [{ "path": "registry/cms/cms-merge.tsx", "type": "registry:component" }]
     },
@@ -57,7 +57,7 @@
       "type": "registry:component",
       "title": "Document editor",
       "description": "Info form generated from the collection schema, markdown with live preview, autosave and restore, problems on the fields, agent change review (accept, revert), save, publish, preview links.",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["button", "checkbox", "dialog", "dropdown-menu", "input", "label", "select", "tabs", "textarea", "cms-lib", "cms-merge"],
       "files": [
         { "path": "registry/cms/cms-doc-editor.tsx", "type": "registry:component" },
@@ -69,7 +69,7 @@
       "type": "registry:component",
       "title": "Version history",
       "description": "Versions with author, note and changed fields; compare any two side by side or unified with word highlights; restore or publish a version.",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["badge", "button", "dialog", "label", "select", "cms-lib"],
       "files": [{ "path": "registry/cms/cms-versions.tsx", "type": "registry:component" }]
     },
@@ -78,7 +78,7 @@
       "type": "registry:component",
       "title": "API keys",
       "description": "Keys with scopes, collections, last use and expiry; revoke; create with the secret shown once and MCP and CLI setup to copy.",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["badge", "button", "checkbox", "dialog", "input", "label", "table", "tabs", "cms-lib"],
       "files": [{ "path": "registry/cms/cms-keys.tsx", "type": "registry:component" }]
     },
@@ -87,7 +87,7 @@
       "type": "registry:component",
       "title": "Audit log",
       "description": "Who did what through which channel, filtered by action, who and result.",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["badge", "button", "select", "table", "cms-lib"],
       "files": [{ "path": "registry/cms/cms-audit.tsx", "type": "registry:component" }]
     },
@@ -96,7 +96,7 @@
       "type": "registry:component",
       "title": "Command menu",
       "description": "Cmd+K or Ctrl+K: find documents (drafts included) across collections and open, publish or start a new one.",
-      "dependencies": ["@mainsoft-2024/agent-cms", "lucide-react"],
+      "dependencies": ["@mainsoft/agent-cms", "lucide-react"],
       "registryDependencies": ["command", "dialog", "cms-lib"],
       "files": [{ "path": "registry/cms/cms-command.tsx", "type": "registry:component" }]
     }

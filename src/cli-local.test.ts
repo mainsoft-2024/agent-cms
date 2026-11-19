@@ -46,9 +46,9 @@ test("shadcn registry: one folder, internal deps as URLs, package pinned", () =>
   const reg = registry("1");
   const own = new Set(reg.items.map((i) => i.name));
   const list = reg.items[1]!;
-  const item = toShadcnItem({ ...list, dependencies: ["@mainsoft-2024/agent-cms", "lucide-react"] }, own, { baseUrl: "https://docs.example/r/" });
+  const item = toShadcnItem({ ...list, dependencies: ["@mainsoft/agent-cms", "lucide-react"] }, own, { baseUrl: "https://docs.example/r/" });
   assert.deepEqual(item.registryDependencies, ["https://docs.example/r/cms-lib.json", "button", "checkbox"]);
-  assert.deepEqual(item.dependencies, [`@mainsoft-2024/agent-cms@^${VERSION}`, "lucide-react"]);
+  assert.deepEqual(item.dependencies, [`@mainsoft/agent-cms@^${VERSION}`, "lucide-react"]);
   assert.equal(item.files[0]!.target, "@components/cms/cms-doc-list.tsx");
   assert.equal(toShadcnItem(reg.items[0]!, own, { baseUrl: "x", packageRange: "file:a.tgz" }).files[0]!.target, "@components/cms/use-cms.ts");
 

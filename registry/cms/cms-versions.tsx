@@ -7,8 +7,8 @@
 
 import * as React from "react";
 import { ArrowLeft, ArrowRight, ChevronLeft, RotateCcw } from "lucide-react";
-import { diffWords, type Hunk, type HunkLine } from "@mainsoft-2024/agent-cms/diff";
-import type { CmsDoc, VersionSummary } from "@mainsoft-2024/agent-cms/types";
+import { diffWords, type Hunk, type HunkLine } from "@mainsoft/agent-cms/diff";
+import type { CmsDoc, VersionSummary } from "@mainsoft/agent-cms/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -18,7 +18,7 @@ import { errorMessage, type MessageKey } from "./cms-messages";
 import { ConfirmDialog, PageHeader, Segmented, StateBadge, StatusText, Who } from "./cms-parts";
 import { relativeTime, useAsync, useCms, useIsMobile, useLocalStorage } from "./use-cms";
 
-type DocDiff = Awaited<ReturnType<import("@mainsoft-2024/agent-cms/client").RestClient["diff"]>>;
+type DocDiff = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["diff"]>>;
 
 export interface CmsVersionsProps {
   collection: string;

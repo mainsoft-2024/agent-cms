@@ -8,9 +8,9 @@
 
 import * as React from "react";
 import { Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, Link as LinkIcon, MoreHorizontal } from "lucide-react";
-import { isCmsRemoteError, type CollectionSchema } from "@mainsoft-2024/agent-cms/client";
-import { splitLines } from "@mainsoft-2024/agent-cms/diff";
-import { docState, type CmsDoc, type AutosaveState } from "@mainsoft-2024/agent-cms/types";
+import { isCmsRemoteError, type CollectionSchema } from "@mainsoft/agent-cms/client";
+import { splitLines } from "@mainsoft/agent-cms/diff";
+import { docState, type CmsDoc, type AutosaveState } from "@mainsoft/agent-cms/types";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -24,8 +24,8 @@ import { CmsMerge } from "./cms-merge";
 import { CodeBox, MarkdownPreview, ModifiedMark, PageHeader, Segmented, StateBadge, StatusText } from "./cms-parts";
 import { contentOf, formatTime, formatUntil, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, type DocContent } from "./use-cms";
 
-type AgentChange = Awaited<ReturnType<import("@mainsoft-2024/agent-cms/client").RestClient["changes"]>>[number];
-type PreviewTtl = NonNullable<Parameters<import("@mainsoft-2024/agent-cms/client").RestClient["previewLink"]>[2]>;
+type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
+type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
 type Diagnostic = FieldProblem & { code: string };
 
 export interface CmsDocEditorProps {

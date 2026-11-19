@@ -8,8 +8,8 @@
 
 import * as React from "react";
 import { ChevronRight, CircleAlert, CircleCheck, EyeOff, Eye, MoreHorizontal, Plus, Search, Trash2, Undo2, Upload, X, type LucideIcon } from "lucide-react";
-import type { RestClient } from "@mainsoft-2024/agent-cms/client";
-import type { DocSummary } from "@mainsoft-2024/agent-cms/types";
+import type { RestClient } from "@mainsoft/agent-cms/client";
+import type { DocSummary } from "@mainsoft/agent-cms/types";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";

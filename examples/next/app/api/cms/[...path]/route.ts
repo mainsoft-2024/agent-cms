@@ -1,4 +1,4 @@
-import { createCmsHandler } from "@mainsoft-2024/agent-cms/http";
+import { createCmsHandler } from "@mainsoft/agent-cms/http";
 import { cms, demoAdmin, seed } from "@/lib/cms";
 
 export const dynamic = "force-dynamic";

@@ -47,7 +47,7 @@ Upgrading from 0.5? Read [UPGRADE-0.6.md](./UPGRADE-0.6.md) first (the
 ## Install
 
 ```
-npm i @mainsoft-2024/agent-cms
+npm i @mainsoft/agent-cms
 npx agent-cms init
 ```
 
@@ -61,7 +61,7 @@ a schema re-export and `.env.example` lines, and never overwrites a file.
 them, or put the SQL in a migration:
 
 ```ts
-export { cmsDocuments, cmsVersions, cmsApiKeys, cmsHits, cmsMeta, cmsAudit } from "@mainsoft-2024/agent-cms/tables";
+export { cmsDocuments, cmsVersions, cmsApiKeys, cmsHits, cmsMeta, cmsAudit } from "@mainsoft/agent-cms/tables";
 ```
 
 ```
@@ -79,8 +79,8 @@ when the database is behind.
 **2. An instance.**
 
 ```ts
-import { createCms, defineCollection, DrizzleRepo } from "@mainsoft-2024/agent-cms";
-import { ko } from "@mainsoft-2024/agent-cms/messages/ko";
+import { createCms, defineCollection, DrizzleRepo } from "@mainsoft/agent-cms";
+import { ko } from "@mainsoft/agent-cms/messages/ko";
 import { z } from "zod";
 
 export const posts = defineCollection({
@@ -126,7 +126,7 @@ app wraps saves in rules of its own.
 **3. The route** (`app/api/cms/[...path]/route.ts`):
 
 ```ts
-import { createCmsHandler } from "@mainsoft-2024/agent-cms/http";
+import { createCmsHandler } from "@mainsoft/agent-cms/http";
 
 const handler = createCmsHandler({ cms, basePath: "/api/cms", resolveUser });
 export { handler as GET, handler as POST, handler as PUT, handler as PATCH, handler as DELETE };
@@ -209,7 +209,7 @@ UI text is English by default; a Korean catalog ships with the screens.
 
 ```ts
 import { streamText } from "ai";
-import { cmsTools } from "@mainsoft-2024/agent-cms/ai";
+import { cmsTools } from "@mainsoft/agent-cms/ai";
 
 const result = streamText({
   model,
@@ -225,7 +225,7 @@ const result = streamText({
 From another process (a script, a scheduled job, another service), use a key:
 
 ```ts
-import { remoteCmsTools } from "@mainsoft-2024/agent-cms/ai";
+import { remoteCmsTools } from "@mainsoft/agent-cms/ai";
 
 const tools = remoteCmsTools(
   { url: "https://app.example.com/api/cms", key: process.env.AGENT_CMS_KEY! },
@@ -314,7 +314,7 @@ Body in **markdown**.
 
 ## Rendering
 
-`@mainsoft-2024/agent-cms/markdown` is browser-safe: `parseMarkdown` gives a
+`@mainsoft/agent-cms/markdown` is browser-safe: `parseMarkdown` gives a
 small block tree (headings with stable anchors, lists, callouts `> [!tip]`,
 code, link rows) and `extractToc` a table of contents. Render it with your
 own components.

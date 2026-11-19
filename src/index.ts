@@ -1,5 +1,5 @@
 /**
- * Server entry of `@mainsoft-2024/agent-cms`.
+ * Server entry of `@mainsoft/agent-cms`.
  *   .            createCms, defineCollection, types, DrizzleRepo, MemoryRepo, tables
  *   ./http       createCmsHandler (REST + MCP on one route)
  *   ./mcp        createMcpServer, handleMcp (official MCP SDK)

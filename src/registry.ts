@@ -97,7 +97,7 @@ export function toShadcnItem(it: RegistryItem, own: Set<string>, o: PublicRegist
   const range = o.packageRange ?? `^${VERSION}`;
   return {
     ...it,
-    dependencies: it.dependencies?.map((d) => (d === "@mainsoft-2024/agent-cms" ? `${d}@${range}` : d)),
+    dependencies: it.dependencies?.map((d) => (d === "@mainsoft/agent-cms" ? `${d}@${range}` : d)),
     registryDependencies: it.registryDependencies?.map((d) => (own.has(d) ? `${base}/${d}.json` : d)),
     files: it.files.map((f) => ({ ...f, target: `@components/cms/${basename(f.path)}` })),
   };

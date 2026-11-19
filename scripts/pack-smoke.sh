@@ -21,12 +21,12 @@ ENTRIES="index http mcp ai client tools agent markdown frontmatter types tables 
 cat > esm.mjs <<EOF
 const entries = "$ENTRIES".split(" ");
 for (const e of entries) {
-  const spec = e === "index" ? "@mainsoft-2024/agent-cms" : "@mainsoft-2024/agent-cms/" + e;
+  const spec = e === "index" ? "@mainsoft/agent-cms" : "@mainsoft/agent-cms/" + e;
   if (e === "ai") continue; // needs the optional "ai" peer
   const m = await import(spec);
   if (!Object.keys(m).length) throw new Error("empty module: " + spec);
 }
-const { createCms, defineCollection, MemoryRepo } = await import("@mainsoft-2024/agent-cms");
+const { createCms, defineCollection, MemoryRepo } = await import("@mainsoft/agent-cms");
 const cms = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "posts", label: "Posts", visibility: "public" })] });
 const admin = { kind: "user", id: "u", label: "a", isAdmin: true };
 await cms.create(admin, "posts", { slug: "hello", title: "Hello" }, { publish: true });
@@ -37,7 +37,7 @@ node esm.mjs
 cat > cjs.cjs <<EOF
 for (const e of "$ENTRIES".split(" ")) {
   if (e === "ai") continue;
-  const spec = e === "index" ? "@mainsoft-2024/agent-cms" : "@mainsoft-2024/agent-cms/" + e;
+  const spec = e === "index" ? "@mainsoft/agent-cms" : "@mainsoft/agent-cms/" + e;
   const m = require(spec);
   if (!Object.keys(m).length) throw new Error("empty module: " + spec);
 }
@@ -47,7 +47,7 @@ node cjs.cjs
 
 npx agent-cms --version
 npx agent-cms add --list | grep -q cms-doc-list
-test -f node_modules/@mainsoft-2024/agent-cms/dist/registry/registry.json
+test -f node_modules/@mainsoft/agent-cms/dist/registry/registry.json
 
 # `init` + `add` into a bare shadcn-style app.
 mkdir -p app/components/ui app/lib && cd app

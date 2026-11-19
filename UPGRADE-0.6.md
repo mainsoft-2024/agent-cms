@@ -172,7 +172,7 @@ lines you may run.
    same. Wire shape: `{ error, kind, message, params, diagnostics?, current? }`.
 3. **Messages are English by default.** For Korean:
    `createCms({ messages: ko })` with
-   `import { ko } from "@mainsoft-2024/agent-cms/messages/ko"`.
+   `import { ko } from "@mainsoft/agent-cms/messages/ko"`.
 4. **`update` treats `fields` as a JSON Merge Patch.** Keys you send replace,
    `null` removes, keys you leave out stay. (Before, `fields` replaced the
    whole object.)
@@ -190,26 +190,43 @@ lines you may run.
    JSON.
 8. **Restore notes** read `restored v3` (were Korean).
 
-## From GitHub Packages to npmjs (0.6.1)
+## New name on npmjs: `@mainsoft/agent-cms` (0.6.1)
 
-From 0.6.1 the package is published to npmjs.com only; GitHub Packages keeps
-0.6.0 and older. Delete these lines from `.npmrc` (and the `GITHUB_TOKEN`
-you set for them in CI or Vercel, if nothing else uses it), then reinstall:
+From 0.6.1 the package is `@mainsoft/agent-cms` on npmjs.com, installable
+without a token. `@mainsoft-2024/agent-cms` on GitHub Packages stays at 0.6.0
+and gets no more releases.
 
-```
-@mainsoft-2024:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
+1. Delete these lines from `.npmrc` (and the `GITHUB_TOKEN` you set for them
+   in CI or Vercel, if nothing else uses it):
 
-```
-npm i @mainsoft-2024/agent-cms@^0.6.1
-```
+   ```
+   @mainsoft-2024:registry=https://npm.pkg.github.com
+   //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+   ```
 
-The lockfile then points at `registry.npmjs.org`. No code changes.
+2. Swap the package:
+
+   ```
+   npm uninstall @mainsoft-2024/agent-cms
+   npm i @mainsoft/agent-cms@^0.6.1
+   ```
+
+3. Replace the import paths. Every entry point keeps its name, only the scope
+   changes (`@mainsoft-2024/agent-cms/http` → `@mainsoft/agent-cms/http`):
+
+   ```
+   grep -rl "@mainsoft-2024/agent-cms" --include='*.ts' --include='*.tsx' --include='*.json' . \
+     | grep -v node_modules | xargs sed -i 's#@mainsoft-2024/agent-cms#@mainsoft/agent-cms#g'
+   ```
+
+   Screens copied with `agent-cms add` import the package too; the same
+   replacement covers them, or run `npx agent-cms add --update`.
+
+No other code changes.
 
 ## Checklist for servicer
 
-- [ ] `.npmrc`: remove the GitHub Packages lines, `npm i @mainsoft-2024/agent-cms@^0.6.1`
+- [ ] `.npmrc`: remove the GitHub Packages lines; `npm uninstall @mainsoft-2024/agent-cms`, `npm i @mainsoft/agent-cms@^0.6.1`; replace import paths (`@mainsoft-2024/agent-cms` → `@mainsoft/agent-cms`)
 - [ ] `visibility` on the guide and notice collections (`public`), `messages: ko`
 - [ ] Copy `cms_gaps` to `app_search_misses` (step 1), add the table (step 3)
 - [ ] `onSearchMiss` writing to it (step 4); `logGap` → `reportMiss`

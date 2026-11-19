@@ -3,7 +3,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { sql } from "drizzle-orm";
-import { cmsDdl, splitSql } from "@mainsoft-2024/agent-cms/tables";
+import { cmsDdl, splitSql } from "@mainsoft/agent-cms/tables";
 
 const g = globalThis as unknown as { __exampleDb?: ReturnType<typeof drizzle>; __exampleReady?: Promise<void> };
 

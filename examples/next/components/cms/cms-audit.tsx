@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import { UserX } from "lucide-react";
-import type { AuditEntry } from "@mainsoft-2024/agent-cms/types";
+import type { AuditEntry } from "@mainsoft/agent-cms/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";

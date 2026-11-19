@@ -52,7 +52,7 @@
 21. **[P2] 멀티 테넌트.** `tenant` 열을 두고, 한 앱 안의 워크스페이스마다 별도 문서 세트를 둔다.
 
 ### 패키징과 개발 경험
-22. **[P0] 다른 저장소로 분리.** `@mainsoft-2024/agent-cms`로 만들고 엔트리를 나눈다(server, http, mcp, ai, react, markdown, cli). peer deps는 drizzle-orm, zod, ai(선택), react(선택).
+22. **[P0] 다른 저장소로 분리.** `@mainsoft/agent-cms`로 만들고 엔트리를 나눈다(server, http, mcp, ai, react, markdown, cli). peer deps는 drizzle-orm, zod, ai(선택), react(선택).
 23. **[P0] 공식 MCP SDK로 교체.** 지금은 손으로 짠 JSON-RPC다. `@modelcontextprotocol/sdk`로 바꾸고 resources(문서를 리소스로)와 prompts도 노출한다. [완료 0.6.0]
 24. **[P1] `agent-cms add <component>` 레지스트리.** shadcn처럼 어드민 UI 컴포넌트를 앱으로 복사해 넣는다(문서 목록, 편집기, 버전 기록, 키 관리). [완료 0.6.0]
 25. **[P1] 마이그레이션 생성기.** `agent-cms ddl`이 버전별 증분 SQL을 내보내고, 앱의 마이그레이션 체계(drizzle-kit, 직접 작성한 guarded step)에 붙인다.

@@ -3,7 +3,7 @@
  * `migrate`, `add`) need to know about the app. Loaded with jiti, so it can
  * be TypeScript and import the app's own modules.
  *
- *   import { defineConfig } from "@mainsoft-2024/agent-cms/config";
+ *   import { defineConfig } from "@mainsoft/agent-cms/config";
  *   export default defineConfig({
  *     db: async () => (await import("./lib/db")).db,
  *   });

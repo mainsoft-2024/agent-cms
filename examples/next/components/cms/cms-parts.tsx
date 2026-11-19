@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import { Bot, Check, Copy, Lightbulb, Link as LinkIcon, Menu, Pencil, TriangleAlert, Info } from "lucide-react";
-import { parseMarkdown, type Block, type Inline } from "@mainsoft-2024/agent-cms/markdown";
+import { parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
