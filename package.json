@@ -1,6 +1,6 @@
 {
-  "name": "@mainsoft-2024/agent-cms",
-  "version": "0.6.0",
+  "name": "@mainsoft/agent-cms",
+  "version": "0.6.1",
   "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (REST, MCP, AI SDK tools) together.",
   "license": "MIT",
   "type": "module",
@@ -11,8 +11,8 @@
   "homepage": "https://github.com/mainsoft-2024/agent-cms#readme",
   "author": "Paul Park <2000mageia@gmail.com>",
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "files": [
     "dist",
@@ -211,7 +211,9 @@
     "test:ui": "tsx --tsconfig registry/tsconfig.json --test registry/__tests__/*.test.tsx",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
     "check:pack": "publint --strict && attw --pack . --profile node16",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "build:registry": "tsx scripts/build-registry.ts",
+    "test:shadcn": "bash scripts/shadcn-smoke.sh"
   },
   "peerDependencies": {
     "ai": ">=5.0.0",
@@ -258,7 +260,9 @@
     "ai-sdk",
     "nextjs",
     "drizzle",
-    "postgres"
+    "postgres",
+    "shadcn",
+    "shadcn-registry"
   ],
   "peerDependenciesMeta": {
     "ai": {
@@ -268,5 +272,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
     "jiti": "2.7.0"
+  },
+  "bugs": {
+    "url": "https://github.com/mainsoft-2024/agent-cms/issues"
   }
 }

@@ -46,16 +46,8 @@ Upgrading from 0.5? Read [UPGRADE-0.6.md](./UPGRADE-0.6.md) first (the
 
 ## Install
 
-Published to GitHub Packages:
-
 ```
-# .npmrc
-@mainsoft-2024:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
-
-```
-npm i @mainsoft-2024/agent-cms
+npm i @mainsoft/agent-cms
 npx agent-cms init
 ```
 
@@ -69,7 +61,7 @@ a schema re-export and `.env.example` lines, and never overwrites a file.
 them, or put the SQL in a migration:
 
 ```ts
-export { cmsDocuments, cmsVersions, cmsApiKeys, cmsHits, cmsMeta, cmsAudit } from "@mainsoft-2024/agent-cms/tables";
+export { cmsDocuments, cmsVersions, cmsApiKeys, cmsHits, cmsMeta, cmsAudit } from "@mainsoft/agent-cms/tables";
 ```
 
 ```
@@ -87,8 +79,8 @@ when the database is behind.
 **2. An instance.**
 
 ```ts
-import { createCms, defineCollection, DrizzleRepo } from "@mainsoft-2024/agent-cms";
-import { ko } from "@mainsoft-2024/agent-cms/messages/ko";
+import { createCms, defineCollection, DrizzleRepo } from "@mainsoft/agent-cms";
+import { ko } from "@mainsoft/agent-cms/messages/ko";
 import { z } from "zod";
 
 export const posts = defineCollection({
@@ -134,7 +126,7 @@ app wraps saves in rules of its own.
 **3. The route** (`app/api/cms/[...path]/route.ts`):
 
 ```ts
-import { createCmsHandler } from "@mainsoft-2024/agent-cms/http";
+import { createCmsHandler } from "@mainsoft/agent-cms/http";
 
 const handler = createCmsHandler({ cms, basePath: "/api/cms", resolveUser });
 export { handler as GET, handler as POST, handler as PUT, handler as PATCH, handler as DELETE };
@@ -161,6 +153,18 @@ npx agent-cms add --update    # update files you did not edit; yours get a .new 
 
 Missing shadcn parts are listed with the `npx shadcn add …` line to run
 (`--yes` runs it). `agent-cms.json` records what was copied.
+
+The same screens install with the shadcn CLI, from any host that serves the
+registry (`npm run build:registry -- --base-url <url> --out <dir>` writes it).
+Files go to `<components>/cms/`; the shadcn parts and the screens an item
+needs come along:
+
+```
+npx shadcn@latest add <registry-url>/cms-doc-editor.json
+```
+
+`agent-cms add --diff` and `--update` only know about copies made with
+`agent-cms add`.
 
 | Item | What it is |
 |---|---|
@@ -205,7 +209,7 @@ UI text is English by default; a Korean catalog ships with the screens.
 
 ```ts
 import { streamText } from "ai";
-import { cmsTools } from "@mainsoft-2024/agent-cms/ai";
+import { cmsTools } from "@mainsoft/agent-cms/ai";
 
 const result = streamText({
   model,
@@ -221,7 +225,7 @@ const result = streamText({
 From another process (a script, a scheduled job, another service), use a key:
 
 ```ts
-import { remoteCmsTools } from "@mainsoft-2024/agent-cms/ai";
+import { remoteCmsTools } from "@mainsoft/agent-cms/ai";
 
 const tools = remoteCmsTools(
   { url: "https://app.example.com/api/cms", key: process.env.AGENT_CMS_KEY! },
@@ -310,7 +314,7 @@ Body in **markdown**.
 
 ## Rendering
 
-`@mainsoft-2024/agent-cms/markdown` is browser-safe: `parseMarkdown` gives a
+`@mainsoft/agent-cms/markdown` is browser-safe: `parseMarkdown` gives a
 small block tree (headings with stable anchors, lists, callouts `> [!tip]`,
 code, link rows) and `extractToc` a table of contents. Render it with your
 own components.
@@ -331,7 +335,11 @@ npm run check:pack     # publint and arethetypeswrong
 the browser tests run against it.
 
 Release: bump `version` in `package.json`, push a `v<version>` tag; the
-Publish workflow pushes it to GitHub Packages.
+Publish workflow publishes it to npmjs.com with provenance.
+
+`bash scripts/shadcn-smoke.sh` (`npm run test:shadcn`) builds the shadcn
+registry, serves it locally and installs a screen into a fresh Next.js app
+with `npx shadcn add`, then type-checks and builds that app.
 
 The roadmap is in [TODO.md](./TODO.md).
 

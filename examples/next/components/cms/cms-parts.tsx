@@ -6,11 +6,10 @@
 
 import * as React from "react";
 import { Bot, Check, Copy, Lightbulb, Link as LinkIcon, Menu, Pencil, TriangleAlert, Info } from "lucide-react";
-import { parseMarkdown, type Block, type Inline } from "@mainsoft-2024/agent-cms/markdown";
+import { parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { useCms, useShellNav } from "./use-cms";
 
@@ -126,33 +125,60 @@ export interface SegmentedProps<V extends string> {
   itemClassName?: string;
 }
 
-/** One-of-many buttons (tabs that filter, ttl, view mode). Arrow keys move between them. */
+/**
+ * One-of-many buttons (tabs that filter, ttl, view mode): a radio group of
+ * plain buttons, so it works with either shadcn base (Radix or Base UI).
+ * Arrow keys move and select; only the selected button is in the tab order.
+ */
 export function Segmented<V extends string>({ value, onChange, options, label, labelledBy, className, itemClassName }: SegmentedProps<V>) {
+  const refs = React.useRef<(HTMLButtonElement | null)[]>([]);
+  const enabled = options.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0);
+  const current = options.findIndex((o) => o.value === value);
+  const focusable = current >= 0 && !options[current]?.disabled ? current : enabled[0];
+  const onKeyDown = (e: React.KeyboardEvent, i: number) => {
+    const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    const edge = e.key === "Home" ? enabled[0] : e.key === "End" ? enabled[enabled.length - 1] : undefined;
+    if (!step && edge === undefined) return;
+    e.preventDefault();
+    const pos = enabled.indexOf(i);
+    const next = edge ?? enabled[(pos + step + enabled.length) % enabled.length];
+    if (next === undefined) return;
+    refs.current[next]?.focus();
+    onChange(options[next]!.value);
+  };
   return (
-    <ToggleGroup
-      type="single"
-      value={value}
-      onValueChange={(v) => {
-        if (v) onChange(v as V);
-      }}
+    <div
+      role="radiogroup"
       aria-label={labelledBy ? undefined : label}
       aria-labelledby={labelledBy}
       className={cn("inline-flex w-fit flex-wrap justify-start gap-0.5 rounded-md bg-muted p-0.5", className)}
     >
-      {options.map((o) => (
-        <ToggleGroupItem
-          key={o.value}
-          value={o.value}
-          disabled={o.disabled}
-          className={cn(
-            "h-7 whitespace-nowrap rounded-sm px-2.5 text-[13px] font-normal text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:bg-background data-[state=on]:font-medium data-[state=on]:text-foreground data-[state=on]:shadow-sm",
-            itemClassName
-          )}
-        >
-          {o.label}
-        </ToggleGroupItem>
-      ))}
-    </ToggleGroup>
+      {options.map((o, i) => {
+        const on = o.value === value;
+        return (
+          <button
+            key={o.value}
+            ref={(el) => {
+              refs.current[i] = el;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            data-state={on ? "on" : "off"}
+            disabled={o.disabled}
+            tabIndex={i === focusable ? 0 : -1}
+            onClick={() => onChange(o.value)}
+            onKeyDown={(e) => onKeyDown(e, i)}
+            className={cn(
+              "inline-flex h-7 items-center justify-center whitespace-nowrap rounded-sm px-2.5 text-[13px] font-normal text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 data-[state=on]:bg-background data-[state=on]:font-medium data-[state=on]:text-foreground data-[state=on]:shadow-sm",
+              itemClassName
+            )}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

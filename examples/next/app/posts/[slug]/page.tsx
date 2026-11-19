@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { isCmsError } from "@mainsoft-2024/agent-cms";
+import { isCmsError } from "@mainsoft/agent-cms";
 import { cms, seed } from "@/lib/cms";
 
 export const dynamic = "force-dynamic";

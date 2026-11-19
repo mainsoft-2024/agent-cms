@@ -26,10 +26,10 @@
       "@/*": [
         "./*"
       ],
-      "@mainsoft-2024/agent-cms": [
+      "@mainsoft/agent-cms": [
         "../../dist/index"
       ],
-      "@mainsoft-2024/agent-cms/*": [
+      "@mainsoft/agent-cms/*": [
         "../../dist/*"
       ]
     }

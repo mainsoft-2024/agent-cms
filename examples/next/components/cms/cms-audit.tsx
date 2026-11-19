@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import { UserX } from "lucide-react";
-import type { AuditEntry } from "@mainsoft-2024/agent-cms/types";
+import type { AuditEntry } from "@mainsoft/agent-cms/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -81,7 +81,7 @@ export function CmsAudit({ pageSize = 50, className }: CmsAuditProps) {
   const outcomeLabel = (o: string) => t(`outcome_${o}` as MessageKey);
 
   const filter = (id: string, labelKey: MessageKey, fmtKey: MessageKey, value: string, set: (v: string) => void, options: { value: string; label: string }[]) => (
-    <Select value={value} onValueChange={set}>
+    <Select value={value} onValueChange={(v: string | null) => set(v ?? "__all")}>
       <SelectTrigger id={id} className="h-8 w-auto gap-1.5 text-[13px]" aria-label={t(labelKey)}>
         <SelectValue>{t(fmtKey, { value: value === "__all" ? t("all") : (options.find((o) => o.value === value)?.label ?? value) })}</SelectValue>
       </SelectTrigger>

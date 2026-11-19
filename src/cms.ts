@@ -118,7 +118,7 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
   now?: () => Date;
   /** IANA time zone that decides which calendar day a usage hit counts for. Default "UTC". */
   timeZone?: string;
-  /** Error messages (default English). `import { ko } from "@mainsoft-2024/agent-cms/messages/ko"`. */
+  /** Error messages (default English). `import { ko } from "@mainsoft/agent-cms/messages/ko"`. */
   messages?: Partial<Messages>;
   /**
    * Called (not awaited) when a search flagged with `reportMiss` found

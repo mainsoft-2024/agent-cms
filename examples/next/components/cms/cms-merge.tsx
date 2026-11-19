@@ -8,9 +8,9 @@
 
 import * as React from "react";
 import { GitMerge } from "lucide-react";
-import type { CmsDoc } from "@mainsoft-2024/agent-cms/types";
-import { diffWords, mergeDocs, resolveDocMerge, type DocLike, type MergeChoice } from "@mainsoft-2024/agent-cms/diff";
-import { isCmsRemoteError } from "@mainsoft-2024/agent-cms/client";
+import type { CmsDoc } from "@mainsoft/agent-cms/types";
+import { diffWords, mergeDocs, resolveDocMerge, type DocLike, type MergeChoice } from "@mainsoft/agent-cms/diff";
+import { isCmsRemoteError } from "@mainsoft/agent-cms/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";

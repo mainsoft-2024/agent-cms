@@ -1,7 +1,7 @@
 /**
  * Line and word diffs, hunks, unified diff text and a line-level 3-way merge
  * (diff3). No dependencies and no Node APIs, so the admin UI runs the same
- * code in the browser (`@mainsoft-2024/agent-cms/diff`).
+ * code in the browser (`@mainsoft/agent-cms/diff`).
  */
 
 export type DiffOp<T = string> = { t: "eq" | "del" | "ins"; a: number; b: number; v: T };

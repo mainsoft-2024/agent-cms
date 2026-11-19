@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import { FileText, History, Plus, Upload } from "lucide-react";
-import type { DocSummary } from "@mainsoft-2024/agent-cms/types";
+import type { DocSummary } from "@mainsoft/agent-cms/types";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";

@@ -5,7 +5,7 @@
 // Placeholders look like {name}. Server errors arrive already translated by
 // the CMS (`createCms({ messages })`), see `errorMessage`.
 
-import { isCmsRemoteError } from "@mainsoft-2024/agent-cms/client";
+import { isCmsRemoteError } from "@mainsoft/agent-cms/client";
 
 export const en = {
   _locale: "en",

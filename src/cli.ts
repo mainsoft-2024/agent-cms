@@ -313,7 +313,7 @@ function init(argv: string[], io: LocalIo): number {
   const files: [string, string][] = [
     [
       "agent-cms.config.ts",
-      `import { defineConfig } from "@mainsoft-2024/agent-cms/config";
+      `import { defineConfig } from "@mainsoft/agent-cms/config";
 
 export default defineConfig({
   // Your Drizzle database (used by \`agent-cms doctor\` and \`migrate\`).
@@ -324,12 +324,12 @@ export default defineConfig({
     [
       `${appDir}lib/cms-schema.ts`,
       `// Re-export the agent-cms tables from your Drizzle schema so drizzle-kit sees them.
-export { cmsApiKeys, cmsAudit, cmsDocuments, cmsHits, cmsMeta, cmsVersions } from "@mainsoft-2024/agent-cms/tables";
+export { cmsApiKeys, cmsAudit, cmsDocuments, cmsHits, cmsMeta, cmsVersions } from "@mainsoft/agent-cms/tables";
 `,
     ],
     [
       `${appDir}lib/cms.ts`,
-      `import { createCms, defineCollection, DrizzleRepo } from "@mainsoft-2024/agent-cms";
+      `import { createCms, defineCollection, DrizzleRepo } from "@mainsoft/agent-cms";
 import { db } from "./db";
 
 export const posts = defineCollection({
@@ -352,7 +352,7 @@ export const cms = createCms({
     ],
     [
       `${appDir}app/api/cms/[...path]/route.ts`,
-      `import { createCmsHandler } from "@mainsoft-2024/agent-cms/http";
+      `import { createCmsHandler } from "@mainsoft/agent-cms/http";
 import { cms } from "@/lib/cms";
 
 const handler = createCmsHandler({

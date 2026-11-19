@@ -1,5 +1,5 @@
 // What `npx agent-cms init` writes, filled in for the example.
-import { createCms, defineCollection, DrizzleRepo, type Actor } from "@mainsoft-2024/agent-cms";
+import { createCms, defineCollection, DrizzleRepo, type Actor } from "@mainsoft/agent-cms";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, ready } from "./db";

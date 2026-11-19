@@ -17,7 +17,7 @@
     "paths": {
       "@/components/ui/*": ["examples/next/components/ui/*"],
       "@/lib/utils": ["examples/next/lib/utils"],
-      "@mainsoft-2024/agent-cms/*": ["src/*"]
+      "@mainsoft/agent-cms/*": ["src/*"]
     }
   },
   "include": ["cms/**/*", "__tests__/**/*", "../examples/next/components/ui/**/*", "../examples/next/lib/utils.ts"]

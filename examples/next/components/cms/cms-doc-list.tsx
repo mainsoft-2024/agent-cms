@@ -8,9 +8,9 @@
 
 import * as React from "react";
 import { ChevronRight, CircleAlert, CircleCheck, EyeOff, Eye, MoreHorizontal, Plus, Search, Trash2, Undo2, Upload, X, type LucideIcon } from "lucide-react";
-import type { RestClient } from "@mainsoft-2024/agent-cms/client";
-import type { DocSummary } from "@mainsoft-2024/agent-cms/types";
-import { Button } from "@/components/ui/button";
+import type { RestClient } from "@mainsoft/agent-cms/client";
+import type { DocSummary } from "@mainsoft/agent-cms/types";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -202,7 +202,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   const filters = (
     <>
       {categories.length ? (
-        <Select value={category} onValueChange={setCategory}>
+        <Select value={category} onValueChange={(v: string | null) => setCategory(v ?? "__all")}>
           <SelectTrigger className="h-8 w-auto gap-1.5 text-[13px]" aria-label={t("filter_category_label")}>
             <SelectValue>{t("filter_category", { value: category === "__all" ? t("all") : category })}</SelectValue>
           </SelectTrigger>
@@ -216,7 +216,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
           </SelectContent>
         </Select>
       ) : null}
-      <Select value={by} onValueChange={(v) => setBy(v as typeof by)}>
+      <Select value={by} onValueChange={(v: string | null) => setBy((v ?? "__all") as typeof by)}>
         <SelectTrigger className="h-8 w-auto gap-1.5 text-[13px]" aria-label={t("filter_author_label")}>
           <SelectValue>{t("filter_author", { value: by === "__all" ? t("all") : t(by === "user" ? "author_user" : by === "key" ? "author_key" : "author_system") })}</SelectValue>
         </SelectTrigger>
@@ -294,16 +294,14 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
 
   const rowMenu = (d: DocSummary) => (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={t("row_actions", { title: d.title || d.slug })}>
-          <MoreHorizontal aria-hidden className="h-4 w-4" />
-        </Button>
+      <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon", className: "h-7 w-7" })} aria-label={t("row_actions", { title: d.title || d.slug })}>
+        <MoreHorizontal aria-hidden className="h-4 w-4" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={() => open(d.slug)}>{t("open")}</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => open(d.slug)}>{t("open")}</DropdownMenuItem>
         <DropdownMenuSeparator />
         {ACTIONS.filter((a) => actionAllowed(a.action)).map(({ action }) => (
-          <DropdownMenuItem key={action} className={action === "delete" ? "text-destructive" : undefined} onSelect={() => setConfirm({ action, slugs: [d.slug] })}>
+          <DropdownMenuItem key={action} className={action === "delete" ? "text-destructive" : undefined} onClick={() => setConfirm({ action, slugs: [d.slug] })}>
             {t(`action_${action}` as MessageKey)}
           </DropdownMenuItem>
         ))}
@@ -454,7 +452,8 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
                 <TableHead className="w-8">
                   <Checkbox
                     aria-label={t("select_all")}
-                    checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                    checked={allSelected}
+                    aria-checked={allSelected ? true : someSelected ? "mixed" : false}
                     onCheckedChange={(v) => selectAll(v === true)}
                     disabled={!docs.length}
                   />
