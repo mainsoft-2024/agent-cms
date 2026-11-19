@@ -10,12 +10,13 @@
  */
 
 import { createAssets, type MediaOptions } from "./assets";
+import { createFlow } from "./flow";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { z, ZodTypeAny } from "zod";
 import { fieldChanges, hunks, splitLines, unifiedDiff, type FieldChange, type Hunk } from "./diff";
 import { CmsError, formatMessage, isCmsError, type CmsErrorCode, type CmsErrorOptions, type Diagnostic, type ErrorParams, type Messages } from "./errors";
 import { displayPrefix, generateKey, hashKey } from "./keys";
-import { appLinkKeys } from "./markdown";
+import { appLinkKeys, extractToc, parseMarkdown } from "./markdown";
 import { applyPatch, sectionRanges, type PatchOp } from "./patch";
 import type { CmsRepo, DocPatch, StoredVersion } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
@@ -140,6 +141,16 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
    * storage.
    */
   media?: MediaOptions;
+  /**
+   * Days a deleted document or file stays in the trash before it is deleted
+   * for good. Default 30. `{ days: 0 }`: no trash, a delete is final.
+   */
+  trash?: { days?: number };
+  /**
+   * Secret for the `/_cron` route (`Authorization: Bearer <secret>`), which
+   * runs scheduled publishes and empties the trash. The route is off without it.
+   */
+  cronSecret?: string;
 }
 
 /** Second argument of `afterChange` hooks and `onChange` listeners. */
@@ -165,8 +176,8 @@ function addDays(day: string, days: number): string {
 export interface ListOptions {
   drafts?: boolean;
   status?: DocStatus;
-  /** Display state (editors): draft, published (incl. modified), modified, archived. */
-  state?: "draft" | "published" | "modified" | "archived";
+  /** Display state (editors): draft, published (incl. modified), modified, archived, scheduled, review (waiting for one). */
+  state?: "draft" | "published" | "modified" | "archived" | "scheduled" | "review";
   category?: string;
   /** Title, slug or summary contains (case-insensitive). */
   q?: string;
@@ -226,6 +237,8 @@ export interface PreviewRead {
   version: number;
   expiresAt: string;
   doc: DocContent;
+  /** The link lets its holder read and write comments. */
+  comments: boolean;
 }
 
 export interface DocDiff {
@@ -289,6 +302,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   const fail = (code: CmsErrorCode, params: ErrorParams = {}, o: CmsErrorOptions = {}) => new CmsError(code, params, { messages, ...o });
+  const trashDays = Math.max(0, Math.floor(opts.trash?.days ?? 30));
 
   // ── schema handshake ──────────────────────────────────────────────────────
 
@@ -390,6 +404,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     canReadDoc: (actor, doc) => collections.has(doc.collection) && can(actor, doc.collection, "read", doc),
     warn: warnOnce,
     ready: ensureSchema,
+    trashDays,
   });
 
   // ── validation ────────────────────────────────────────────────────────────
@@ -442,8 +457,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const content = merged(base, input);
     const { diagnostics } = check(col, content);
     if (cur && content.slug !== cur.slug && cur.publishedVersion !== null) diagnostics.push({ path: "slug", code: "slug_locked", params: {}, severity: "error", message: formatMessage(messages, "slug_locked") });
-    const other = content.slug ? await repo.findDoc(col, content.slug) : null;
-    if (other && other.id !== cur?.id) diagnostics.push({ path: "slug", code: "slug_taken", params: { slug: content.slug }, severity: "error", message: formatMessage(messages, "slug_taken", { slug: content.slug }) });
+    const other = content.slug ? await repo.findDoc(col, content.slug, { trashed: true }) : null;
+    const taken = other?.deletedAt ? "slug_in_trash" : "slug_taken";
+    if (other && other.id !== cur?.id) diagnostics.push({ path: "slug", code: taken, params: { slug: content.slug }, severity: "error", message: formatMessage(messages, taken, { slug: content.slug }) });
     diagnostics.push(...(await assets.checkDoc(cfg, content, cur ? assets.idsIn(cfg, cur) : undefined)));
     return diagnostics;
   }
@@ -499,6 +515,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
       .filter((d) => {
         if (!editor || !o.state) return true;
         const s = docState(d);
+        if (o.state === "scheduled") return !!d.schedule;
+        if (o.state === "review") return d.review?.state === "requested";
         return o.state === "modified" ? s.modifiedSincePublish : s.state === o.state;
       })
       .sort((a, b) => (editor ? b.updatedAt.localeCompare(a.updatedAt) : (b.publishedAt ?? b.updatedAt).localeCompare(a.publishedAt ?? a.updatedAt)));
@@ -523,6 +541,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
       updatedBy: d.updatedBy,
       updatedByKind: d.updatedByKind,
       updatedByAgent: d.updatedByAgent ?? null,
+      schedule: d.schedule ? { publishAt: d.schedule.publishAt, unpublishAt: d.schedule.unpublishAt, version: d.schedule.version, by: d.schedule.by } : null,
+      review: d.review ? { state: d.review.state, version: d.review.version, by: d.review.by, note: d.review.note } : null,
     };
   }
 
@@ -543,12 +563,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function counts(actor: Actor, col: string): Promise<DocCounts> {
     assert(actor, col, "write");
     await ensureSchema();
-    const out: DocCounts = { all: 0, draft: 0, published: 0, modified: 0, archived: 0 };
+    const out: DocCounts = { all: 0, draft: 0, published: 0, modified: 0, archived: 0, scheduled: 0, review: 0 };
     for (const d of await repo.listDocs({ collection: col })) {
       const s = docState(d);
       out.all++;
       out[s.state]++;
       if (s.modifiedSincePublish) out.modified++;
+      if (d.schedule) out.scheduled++;
+      if (d.review?.state === "requested") out.review++;
     }
     return out;
   }
@@ -647,10 +669,32 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const conflict = (cur: CmsDoc, expected: number, actor: Actor, col: string) =>
     fail("conflict_version", { expected, current: cur.version }, { current: can(actor, col, "write", cur) ? cur : undefined });
 
+  /** True when this actor's publishes in `col` need someone's approval first (`review` in the collection). */
+  function needsReview(actor: Actor, col: string): boolean {
+    const rule = collection(col).review;
+    if (!rule || actor.kind === "system") return false;
+    if (rule.everyone === "required") return true;
+    return rule.agents === "required" && (actor.kind === "key" || (actor.kind === "user" && !!actor.agent));
+  }
+
+  const reviewRequired = (actor: Actor, col: string, slug: string | null) => {
+    audit(actor, "access.denied", { collection: col, slug, outcome: "denied", detail: { need: "review" } });
+    return fail("review_required", { collection: col });
+  };
+
+  /** Refuse to publish version `n` when this actor needs a review and nobody approved that version. */
+  async function assertReviewed(r: CmsRepo, actor: Actor, doc: CmsDoc, n: number): Promise<void> {
+    if (!needsReview(actor, doc.collection)) return;
+    if (!(await r.getVersion(doc.id, n))?.approvedBy) throw reviewRequired(actor, doc.collection, doc.slug);
+  }
+
+  const slugTaken = (other: CmsDoc) => fail(other.deletedAt ? "slug_in_trash" : "slug_taken", { slug: other.slug });
+
   async function create(actor: Actor, col: string, input: DocInput, o: WriteOptions = {}): Promise<CmsDoc> {
     await ensureSchema();
     assert(actor, col, "write");
     if (o.publish) assert(actor, col, "publish");
+    if (o.publish && needsReview(actor, col)) throw reviewRequired(actor, col, input.slug ?? null);
     const who = actorRef(actor);
     const cfg = collection(col);
     const content = validate(col, {
@@ -665,7 +709,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await assets.assertDoc(cfg, content);
     const at = nowIso();
     const doc = await repo.tx(async (r) => {
-      if (await r.findDoc(col, content.slug)) throw fail("slug_taken", { slug: content.slug });
+      const other = await r.findDoc(col, content.slug, { trashed: true });
+      if (other) throw slugTaken(other);
       const publish = !!o.publish;
       const row = await r.insertDoc({
         collection: col,
@@ -697,16 +742,23 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const at = nowIso();
     const v = doc.version + 1;
     if (next.slug !== doc.slug && doc.publishedVersion !== null) throw fail("slug_locked");
-    if (next.slug !== doc.slug && (await r.findDoc(doc.collection, next.slug))) throw fail("slug_taken", { slug: next.slug });
+    const other = next.slug !== doc.slug ? await r.findDoc(doc.collection, next.slug, { trashed: true }) : null;
+    if (other) throw slugTaken(other);
 
     const inPlace = cfg.versions?.drafts === false && doc.publishedVersion !== null && doc.status !== "archived";
     const publish = !!o.publish || inPlace;
+    // A new version is one nobody approved yet.
+    if (publish && needsReview(actor, doc.collection)) throw reviewRequired(actor, doc.collection, doc.slug);
     const wasPublic = doc.publishedVersion !== null && doc.status !== "archived";
     let patch: DocPatch = { ...next, version: v, updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent, updatedAt: at, autosave: null };
     if (publish) {
-      patch = { ...patch, status: "published", publishedVersion: v, published: next, publishedAt: doc.publishedAt ?? at };
+      patch = { ...patch, status: "published", publishedVersion: v, published: next, publishedAt: doc.publishedAt ?? at, review: null, ...afterPublish(doc) };
       if (!wasPublic && doc.publishedAt) patch.republishedAt = at;
-    } else patch = { ...patch, status: doc.status === "archived" ? "archived" : "draft" };
+    } else {
+      patch = { ...patch, status: doc.status === "archived" ? "archived" : "draft" };
+      // An open review request follows the document, so nobody approves an outdated version.
+      if (doc.review?.state === "requested") patch.review = { ...doc.review, version: v };
+    }
 
     const updated = await r.updateDoc(doc.id, patch, o.expectedVersion ?? doc.version);
     if (!updated) {
@@ -744,13 +796,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
       await assets.assertDoc(collection(col), next, cur, r);
       if (same(next, cur)) {
         // Nothing changed. Still honour "publish".
-        if (o.publish && cur.publishedVersion !== cur.version) return publishIn(r, actor, cur, cur.version);
+        if (o.publish && cur.publishedVersion !== cur.version) {
+          await assertReviewed(r, actor, cur, cur.version);
+          return publishIn(r, actor, cur, cur.version);
+        }
         return cur.autosave ? ((await r.updateDoc(cur.id, { autosave: null, updatedAt: cur.updatedAt })) ?? cur) : cur;
       }
       return commit(r, actor, cur, next, o);
     });
     if (o.publish && doc.publishedVersion === doc.version && prev && (prev as CmsDoc).publishedVersion !== doc.version) audit(actor, "doc.publish", { collection: col, slug: doc.slug, version: doc.version });
     changed(prev, doc);
+    flow.markAgent(actor, doc);
     return { prev: prev as CmsDoc | null, doc };
   }
 
@@ -814,6 +870,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (cur.autosave) await repo.updateDoc(cur.id, { autosave: null, updatedAt: cur.updatedAt });
   }
 
+  /** A publish uses up the publish half of a schedule; a later unpublish stays. */
+  const afterPublish = (doc: CmsDoc): DocPatch => ({ schedule: doc.schedule?.unpublishAt ? { ...doc.schedule, publishAt: null } : null, dueAt: doc.schedule?.unpublishAt ?? null });
+
   async function publishIn(r: CmsRepo, actor: Actor, doc: CmsDoc, n: number): Promise<CmsDoc> {
     const v = n === doc.version ? { snapshot: contentOf(doc) } : await r.getVersion(doc.id, n);
     if (!v) throw fail("version_not_found", { version: n });
@@ -825,6 +884,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
       published: v.snapshot,
       publishedAt: doc.publishedAt ?? at,
       ...(!wasPublic && doc.publishedAt ? { republishedAt: at } : {}),
+      ...afterPublish(doc),
+      ...(doc.review && n >= doc.review.version ? { review: null } : {}),
       updatedAt: at,
       updatedBy: actorRef(actor).label,
       updatedByKind: actorRef(actor).kind,
@@ -851,7 +912,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   async function publish(actor: Actor, col: string, slug: string, o: { version?: number; expectedVersion?: number } = {}): Promise<CmsDoc> {
-    const doc = await stateChange(actor, col, slug, o.expectedVersion, (r, cur) => publishIn(r, actor, cur, o.version ?? cur.version));
+    const doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
+      await assertReviewed(r, actor, cur, o.version ?? cur.version);
+      return publishIn(r, actor, cur, o.version ?? cur.version);
+    });
     audit(actor, "doc.publish", { collection: col, slug, version: doc.publishedVersion });
     return doc;
   }
@@ -876,18 +940,20 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return doc;
   }
 
+  async function unpublishIn(r: CmsRepo, actor: Actor, cur: CmsDoc): Promise<CmsDoc> {
+    if (cur.publishedVersion === null && cur.status !== "archived") return cur.schedule ? (await r.updateDoc(cur.id, { schedule: null, dueAt: null, updatedAt: cur.updatedAt }))! : cur;
+    const who = actorRef(actor);
+    const out = (await r.updateDoc(cur.id, { status: "draft", publishedVersion: null, published: null, schedule: null, dueAt: null, updatedAt: nowIso(), updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent }))!;
+    await assets.syncRefs(r, out);
+    return out;
+  }
+
   /**
    * Take a document off the public site and back to draft. Its versions stay;
    * the first publish time is kept, so publishing again doesn't re-date it.
    */
   async function unpublish(actor: Actor, col: string, slug: string, o: { expectedVersion?: number } = {}): Promise<CmsDoc> {
-    const doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
-      if (cur.publishedVersion === null && cur.status !== "archived") return cur;
-      const who = actorRef(actor);
-      const out = (await r.updateDoc(cur.id, { status: "draft", publishedVersion: null, published: null, updatedAt: nowIso(), updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent }))!;
-      await assets.syncRefs(r, out);
-      return out;
-    });
+    const doc = await stateChange(actor, col, slug, o.expectedVersion, (r, cur) => unpublishIn(r, actor, cur));
     audit(actor, "doc.unpublish", { collection: col, slug, version: doc.version });
     return doc;
   }
@@ -916,9 +982,32 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!cur) throw fail("not_found", { collection: col, slug });
     assert(actor, col, "publish", cur);
     if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
-    await repo.deleteDoc(cur.id);
-    audit(actor, "doc.delete", { collection: col, slug, version: cur.version });
+    // With a trash the row stays (and keeps its address) until it is restored or purged.
+    if (trashDays > 0) await repo.updateDoc(cur.id, { deletedAt: nowIso(), deletedBy: actorRef(actor).label, schedule: null, dueAt: null, updatedAt: nowIso() });
+    else await repo.deleteDoc(cur.id);
+    audit(actor, "doc.delete", { collection: col, slug, version: cur.version, detail: { trash: trashDays > 0 } });
     changed(cur, null);
+  }
+
+  /**
+   * What a document would look like, without saving it: the parsed blocks,
+   * the table of contents, every problem, the diff against the saved body and
+   * the files it uses. The admin preview and an agent's pre-save check share it.
+   */
+  async function preview(actor: Actor, col: string, input: DocInput, o: { slug?: string } = {}) {
+    const diagnostics = await diagnose(actor, col, input, o);
+    const cfg = collection(col);
+    const cur = o.slug ? await repo.findDoc(col, o.slug) : null;
+    const content = merged(cur ?? { slug: "", title: "", summary: "", body: "", category: null, keywords: [], fields: {} }, input);
+    const blocks = parseMarkdown(content.body, { lines: true });
+    return {
+      blocks,
+      toc: extractToc(blocks),
+      diagnostics,
+      diff: cur ? unifiedDiff(cur.body, content.body, { from: `v${cur.version}`, to: "preview" }) : null,
+      publicUrl: cfg.url && content.slug ? cfg.url({ slug: content.slug }) : null,
+      assets: await assets.assetsFor({ collection: col, body: content.body, fields: content.fields }),
+    };
   }
 
   /** The same action on many documents; each in its own transaction, so one failure does not stop the rest. */
@@ -999,7 +1088,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   /** A signed URL that shows this exact version of the draft, no sign-in needed, until it expires. */
-  async function createPreviewLink(actor: Actor, col: string, slug: string, o: { ttl?: PreviewTtl } = {}): Promise<PreviewLink> {
+  async function createPreviewLink(actor: Actor, col: string, slug: string, o: { ttl?: PreviewTtl; comments?: boolean } = {}): Promise<PreviewLink> {
     if (!opts.previewSecret) throw fail("preview_disabled");
     const cfg = collection(col);
     if (!cfg.url) throw fail("no_public_url");
@@ -1007,33 +1096,38 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const ttl = PREVIEW_TTLS[o.ttl ?? "24h"];
     if (!ttl) throw fail("invalid_request", { issues: `ttl: ${o.ttl}` });
     const exp = now().getTime() + ttl;
-    const payload = b64url(JSON.stringify({ c: col, s: doc.slug, v: doc.version, exp }));
+    const payload = b64url(JSON.stringify({ c: col, s: doc.slug, v: doc.version, exp, ...(o.comments ? { cm: 1 } : {}) }));
     const token = `${payload}.${sign(payload)}`;
     const base = cfg.url({ slug: doc.slug });
-    audit(actor, "preview.create", { collection: col, slug: doc.slug, version: doc.version, detail: { ttl: o.ttl ?? "24h" } });
+    audit(actor, "preview.create", { collection: col, slug: doc.slug, version: doc.version, detail: { ttl: o.ttl ?? "24h", comments: !!o.comments } });
     return { url: `${base}${base.includes("?") ? "&" : "?"}cms_preview=${token}`, token, version: doc.version, expiresAt: new Date(exp).toISOString() };
   }
 
   /** Read the version a preview token points at (for the app's public page). */
-  async function readPreview(token: string): Promise<PreviewRead> {
+  function previewPayload(token: string): { c: string; s: string; v: number; exp: number; cm?: 1 } {
     if (!opts.previewSecret) throw fail("preview_disabled");
-    await ensureSchema();
     const [payload, sig] = String(token).split(".");
     const good = payload && sig ? Buffer.from(sign(payload)) : null;
     if (!good || good.length !== Buffer.from(sig).length || !timingSafeEqual(good, Buffer.from(sig))) throw fail("preview_invalid");
-    let p: { c: string; s: string; v: number; exp: number };
+    let p: { c: string; s: string; v: number; exp: number; cm?: 1 };
     try {
       p = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     } catch {
       throw fail("preview_invalid");
     }
     if (!(p.exp > now().getTime())) throw fail("preview_expired");
+    return p;
+  }
+
+  async function readPreview(token: string): Promise<PreviewRead> {
+    const p = previewPayload(token);
+    await ensureSchema();
     collection(p.c);
     const doc = await repo.findDoc(p.c, p.s);
     if (!doc) throw fail("not_found", { collection: p.c, slug: p.s });
     const v = await repo.getVersion(doc.id, p.v);
     if (!v) throw fail("version_not_found", { version: p.v });
-    return { collection: p.c, slug: p.s, version: p.v, expiresAt: new Date(p.exp).toISOString(), doc: contentOf(v.snapshot) };
+    return { collection: p.c, slug: p.s, version: p.v, expiresAt: new Date(p.exp).toISOString(), doc: contentOf(v.snapshot), comments: !!p.cm };
   }
 
   // ── search ────────────────────────────────────────────────────────────────
@@ -1231,6 +1325,40 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return formatMessage(messages, "internal");
   }
 
+  // ── schedules, trash, reviews, comments, releases (flow.ts) ───────────────
+
+  const flow = createFlow({
+    repo,
+    now,
+    nowIso,
+    fail,
+    audit,
+    actorRef,
+    collection,
+    collections: () => [...collections.values()],
+    can,
+    assert,
+    isAdmin,
+    ready: ensureSchema,
+    editable,
+    conflict,
+    publishIn,
+    unpublishIn,
+    changed,
+    problems: async (doc, c, r) => {
+      const cfg = collection(doc.collection);
+      return [...check(doc.collection, c).diagnostics, ...(await assets.checkDoc(cfg, c, assets.idsIn(cfg, doc), r))];
+    },
+    needsReview,
+    assertReviewed,
+    summaryOf,
+    message,
+    report,
+    trashDays,
+    assets,
+    previewPayload,
+  });
+
   return {
     collections: () => [...collections.values()],
     collection,
@@ -1271,6 +1399,32 @@ export function createCmsCore(opts: CreateCmsOptions) {
     revokeKey,
     authenticateKey,
     audit: auditLog,
+    preview,
+    needsReview,
+    /** Publish (and/or unpublish) at a time; what goes out is the version that is current now. */
+    schedule: flow.schedule,
+    unschedule: flow.unschedule,
+    /** Run everything whose time has come (the `/_cron` route calls this). */
+    runScheduled: flow.runScheduled,
+    cronSecret: opts.cronSecret ?? null,
+    /** Deleted documents and files: `list`, `restore`, `purge`. */
+    trash: { ...flow.trash, days: trashDays },
+    requestReview: flow.requestReview,
+    approveReview: flow.approveReview,
+    rejectReview: flow.rejectReview,
+    reviewRequests: flow.reviewRequests,
+    comments: flow.comments,
+    addComment: flow.addComment,
+    resolveComment: flow.resolveComment,
+    previewComments: flow.previewComments,
+    addPreviewComment: flow.addPreviewComment,
+    labelVersion: flow.labelVersion,
+    /** Documents that go public together: `list`, `get`, `create`, `add`, `publish`, `schedule`… */
+    releases: flow.releases,
+    /** Named list filters: `list`, `save`, `remove`. */
+    filters: flow.filters,
+    /** Who has a document open: `touch`, `leave`, `in`. */
+    presence: flow.presence,
     /** The media library (`createCms({ media })`). */
     assets,
     /** The files a document uses, by id: address, size, alt text. For rendering. */

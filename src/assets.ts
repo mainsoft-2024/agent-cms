@@ -169,6 +169,8 @@ export interface AssetsContext {
   canReadDoc: (actor: Actor, doc: CmsDoc) => boolean;
   warn: (key: string, message: string) => void;
   ready: () => Promise<void> | void;
+  /** Days a deleted file stays in the trash (0: deleted at once). */
+  trashDays?: number;
 }
 
 const SIGN_SECONDS = 3600;
@@ -625,8 +627,54 @@ export function createAssets(ctx: AssetsContext) {
     const u = await usage(actor, a);
     const count = u.documents.length + u.hidden;
     if (count && !o.confirm) throw fail("asset_in_use", { count, documents: u.documents.map((d) => `${d.collection}/${d.slug}`) }, { current: { documents: u.documents, hidden: u.hidden } });
+    // With a trash only the row is marked: the object stays in the store (a
+    // public address keeps answering) until the file is purged.
+    const trash = (ctx.trashDays ?? 0) > 0 && a.kind !== "folder";
+    if (trash) await repo.updateAsset(a.id, { deletedAt: ctx.nowIso(), deletedBy: ctx.actorRef(actor).label });
+    else await discard(a);
+    ctx.audit(actor, "asset.delete", { detail: { id: a.id, store: a.store, key: a.key, usedBy: count, trash } });
+  }
+
+  /** Files in the trash, in the stores this actor may read. */
+  async function trashed(actor: Actor): Promise<CmsAsset[]> {
+    await ctx.ready();
+    return (await repo.listAssets({ trashed: true, limit: 1000 })).filter((a) => !!media?.stores[a.store] && canAsset(actor, a.store, "read"));
+  }
+
+  async function inTrash(id: string): Promise<CmsAsset> {
+    const a = ASSET_ID_RE.test(id) ? await repo.findAsset(id, { trashed: true }) : null;
+    if (!a?.deletedAt || !media?.stores[a.store]) throw fail("trash_not_found", { id });
+    return a;
+  }
+
+  /** Take a file out of the trash. */
+  async function untrash(actor: Actor, id: string): Promise<AssetView> {
+    await ctx.ready();
+    const a = await inTrash(id);
+    need(actor, a.store, "delete");
+    const out = (await repo.updateAsset(a.id, { deletedAt: null, deletedBy: null }))!;
+    ctx.audit(actor, "asset.restore", { detail: { id: a.id, store: a.store, key: a.key } });
+    return view(out);
+  }
+
+  /** Delete a trashed file for good: the object, its thumbnail and the row. False when it was not in the trash. */
+  async function purge(actor: Actor, id: string): Promise<boolean> {
+    const a = ASSET_ID_RE.test(id) ? await repo.findAsset(id, { trashed: true }) : null;
+    if (!a?.deletedAt) return false;
     await discard(a);
-    ctx.audit(actor, "asset.delete", { detail: { id: a.id, store: a.store, key: a.key, usedBy: count } });
+    ctx.audit(actor, "asset.delete", { detail: { id: a.id, store: a.store, key: a.key, purge: true } });
+    return true;
+  }
+
+  /** Purge every file that went to the trash at or before `cutoff`. */
+  async function purgeOlder(cutoff: string): Promise<number> {
+    let n = 0;
+    for (const a of await repo.listAssets({ trashed: true, limit: 1000 })) {
+      if (!a.deletedAt || a.deletedAt > cutoff) continue;
+      await discard(a);
+      n++;
+    }
+    return n;
   }
 
   /** Where to send someone who asks for the file: checks permission, then a public or a short-lived address. */
@@ -1021,6 +1069,10 @@ export function createAssets(ctx: AssetsContext) {
     update,
     move,
     remove,
+    trashed,
+    untrash,
+    purge,
+    purgeOlder,
     open,
     cleanup,
     browse,

@@ -32,7 +32,7 @@ function setup() {
     fetch: (async () => new Response(png(800, 600, 400) as BodyInit, { headers: { "content-type": "image/png" } })) as typeof fetch,
   };
   const blog = defineCollection({ slug: "blog", label: "Blog", visibility: "public", fields: z.object({ cover: z.string().optional() }), admin: { fields: { cover: { widget: "image", maxFileSize: 5000 } } }, media: { requireAlt: true } });
-  const cms = createCms({ repo: new MemoryRepo(), collections: [blog], media });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [blog], media, trash: { days: 0 } });
   let user: Extract<Actor, { kind: "user" }> | null = admin;
   const handler = createCmsHandler({ cms, resolveUser: async () => user });
   /** `fetch` for the CMS route and for the in-memory storage's signed addresses. */
@@ -141,9 +141,9 @@ test("tools: six file tools, offered by what the key may do", async () => {
   assert.deepEqual(names(await key(["read", "write"])), ["list_assets", "get_asset", "import_asset", "update_asset"]);
   const publisher = await key(["read", "write", "publish"]);
   assert.deepEqual(names(publisher), ["list_assets", "get_asset", "import_asset", "update_asset", "move_asset", "delete_asset"]);
-  assert.equal(toolsFor(cms, publisher).length, 25, "16 document tools, 6 for the library, 3 for the bucket");
+  assert.equal(toolsFor(cms, publisher).length, 40, "31 document tools, 6 for the library, 3 for the bucket");
   const plain = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "g", label: "G", visibility: "public" })] });
-  assert.equal(toolsFor(plain, { kind: "system", label: "s" }).length, 16, "no file tools without a media library");
+  assert.equal(toolsFor(plain, { kind: "system", label: "s" }).length, 31, "no file tools without a media library");
 
   const writer = await key(["read", "write"]);
   const got = (await callTool(cms, writer, "import_asset", { url: "https://example.com/pics/team.png", folder: "blog", alt: "The team" })) as { id: string; markdown: string; width: number; url: string };

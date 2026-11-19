@@ -13,7 +13,7 @@
  */
 
 import { bigint, boolean, date, index, integer, jsonb, pgSchema, pgTable, primaryKey, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import type { AuditEntry, AutosaveState, DocContent, KeyScope, ReviewMark, VersionChange } from "./types";
+import type { AuditEntry, AutosaveState, DocContent, KeyScope, Presence, ReleaseItem, ReviewMark, ReviewRequest, Schedule, VersionChange } from "./types";
 
 import { SCHEMA_VERSION } from "./schema-version";
 
@@ -61,12 +61,18 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       autosaveAt: timestamp("autosave_at", { withTimezone: true }),
       autosaveBy: text("autosave_by"),
       autosaveBaseVersion: integer("autosave_base_version"),
+      deletedAt: timestamp("deleted_at", { withTimezone: true }),
+      deletedBy: text("deleted_by"),
+      schedule: jsonb("schedule").$type<Schedule | null>(),
+      dueAt: timestamp("due_at", { withTimezone: true }),
+      review: jsonb("review").$type<ReviewRequest | null>(),
       createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
       updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     },
     (t) => ({
       slugIdx: uniqueIndex(n("documents_collection_slug_idx")).on(t.collection, t.slug),
       statusIdx: index(n("documents_collection_status_idx")).on(t.collection, t.status),
+      dueIdx: index(n("documents_due_idx")).on(t.dueAt),
     })
   );
 
@@ -86,6 +92,10 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       note: text("note"),
       changed: jsonb("changed").$type<VersionChange | null>(),
       reviewed: jsonb("reviewed").$type<ReviewMark[]>().notNull().default([]),
+      label: text("label"),
+      pinned: boolean("pinned").notNull().default(false),
+      approvedBy: text("approved_by"),
+      approvedAt: timestamp("approved_at", { withTimezone: true }),
       createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     },
     (t) => ({
@@ -179,6 +189,8 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       createdByAgent: text("created_by_agent"),
       createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
       updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+      deletedAt: timestamp("deleted_at", { withTimezone: true }),
+      deletedBy: text("deleted_by"),
     },
     (t) => ({
       keyIdx: uniqueIndex(n("assets_store_key_idx")).on(t.store, t.key),
@@ -203,7 +215,80 @@ export function cmsTables(o: CmsTablesOptions = {}) {
     (t) => ({ pk: primaryKey({ columns: [t.assetId, t.documentId] }), docIdx: index(n("asset_refs_document_idx")).on(t.documentId) })
   );
 
-  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, options: { prefix, schema: o.schema ?? null } };
+  /** Comments on a document (0.10.0). They belong to the document, not to a version. */
+  const comments = table(
+    n("comments"),
+    {
+      id: uuid("id").primaryKey().defaultRandom(),
+      documentId: uuid("document_id")
+        .notNull()
+        .references(() => documents.id, { onDelete: "cascade" }),
+      threadId: uuid("thread_id"),
+      anchor: text("anchor").notNull().default(""),
+      quote: text("quote").notNull().default(""),
+      body: text("body").notNull(),
+      authorKind: text("author_kind").notNull(),
+      authorId: text("author_id"),
+      authorLabel: text("author_label").notNull(),
+      authorAgent: text("author_agent"),
+      createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+      resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+      resolvedBy: text("resolved_by"),
+    },
+    (t) => ({ docIdx: index(n("comments_document_idx")).on(t.documentId, t.createdAt) })
+  );
+
+  /** Documents that go public (or come down) together. The items live in the row: a release is small. */
+  const releases = table(n("releases"), {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    state: text("state").notNull().default("open"),
+    publishAt: timestamp("publish_at", { withTimezone: true }),
+    items: jsonb("items").$type<ReleaseItem[]>().notNull().default([]),
+    createdBy: text("created_by").notNull(),
+    createdById: text("created_by_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    publishedBy: text("published_by"),
+    lastError: text("last_error"),
+  });
+
+  /** Named list filters: a person's own, or shared with everyone. */
+  const savedFilters = table(
+    n("saved_filters"),
+    {
+      id: uuid("id").primaryKey().defaultRandom(),
+      collection: text("collection").notNull(),
+      name: text("name").notNull(),
+      query: jsonb("query").$type<Record<string, string>>().notNull().default({}),
+      ownerId: text("owner_id").notNull(),
+      ownerLabel: text("owner_label").notNull().default(""),
+      shared: boolean("shared").notNull().default(false),
+      createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => ({ colIdx: index(n("saved_filters_collection_idx")).on(t.collection) })
+  );
+
+  /** Who has a document open right now (a row lives for 45 seconds without a sign of life). */
+  const presence = table(
+    n("presence"),
+    {
+      documentId: uuid("document_id")
+        .notNull()
+        .references(() => documents.id, { onDelete: "cascade" }),
+      actorId: text("actor_id").notNull(),
+      label: text("label").notNull(),
+      kind: text("kind").notNull(),
+      agent: text("agent"),
+      cursor: jsonb("cursor").$type<Presence["cursor"]>(),
+      selection: jsonb("selection").$type<Presence["selection"]>(),
+      seenAt: timestamp("seen_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => ({ pk: primaryKey({ columns: [t.documentId, t.actorId] }), seenIdx: index(n("presence_seen_idx")).on(t.seenAt) })
+  );
+
+  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, options: { prefix, schema: o.schema ?? null } };
 }
 
 export type CmsTables = ReturnType<typeof cmsTables>;
@@ -218,6 +303,10 @@ export const cmsMeta = defaultTables.meta;
 export const cmsAudit = defaultTables.audit;
 export const cmsAssets = defaultTables.assets;
 export const cmsAssetRefs = defaultTables.assetRefs;
+export const cmsComments = defaultTables.comments;
+export const cmsReleases = defaultTables.releases;
+export const cmsSavedFilters = defaultTables.savedFilters;
+export const cmsPresence = defaultTables.presence;
 
 function names(t?: CmsTables | CmsTablesOptions) {
   const o = t && "options" in t ? t.options : ((t as CmsTablesOptions | undefined) ?? {});
@@ -314,6 +403,76 @@ CREATE TABLE IF NOT EXISTS ${tbl("asset_refs")} (
   PRIMARY KEY ("asset_id", "document_id")
 );
 CREATE INDEX IF NOT EXISTS ${idx("asset_refs_document_idx")} ON ${tbl("asset_refs")} ("document_id");`.trim(),
+    },
+    {
+      version: 4,
+      name: "agent-cms 0.10.0: schedules, trash, reviews, version labels, comments, releases, saved filters, presence",
+      sql: `
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "deleted_at" timestamptz;
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "deleted_by" text;
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "schedule" jsonb;
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "due_at" timestamptz;
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "review" jsonb;
+CREATE INDEX IF NOT EXISTS ${idx("documents_due_idx")} ON ${tbl("documents")} ("due_at");
+ALTER TABLE ${tbl("versions")} ADD COLUMN IF NOT EXISTS "label" text;
+ALTER TABLE ${tbl("versions")} ADD COLUMN IF NOT EXISTS "pinned" boolean NOT NULL DEFAULT false;
+ALTER TABLE ${tbl("versions")} ADD COLUMN IF NOT EXISTS "approved_by" text;
+ALTER TABLE ${tbl("versions")} ADD COLUMN IF NOT EXISTS "approved_at" timestamptz;
+ALTER TABLE ${tbl("assets")} ADD COLUMN IF NOT EXISTS "deleted_at" timestamptz;
+ALTER TABLE ${tbl("assets")} ADD COLUMN IF NOT EXISTS "deleted_by" text;
+CREATE TABLE IF NOT EXISTS ${tbl("comments")} (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "document_id" uuid NOT NULL REFERENCES ${tbl("documents")}("id") ON DELETE CASCADE,
+  "thread_id" uuid,
+  "anchor" text NOT NULL DEFAULT '',
+  "quote" text NOT NULL DEFAULT '',
+  "body" text NOT NULL,
+  "author_kind" text NOT NULL,
+  "author_id" text,
+  "author_label" text NOT NULL,
+  "author_agent" text,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "resolved_at" timestamptz,
+  "resolved_by" text
+);
+CREATE INDEX IF NOT EXISTS ${idx("comments_document_idx")} ON ${tbl("comments")} ("document_id", "created_at");
+CREATE TABLE IF NOT EXISTS ${tbl("releases")} (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "name" text NOT NULL,
+  "state" text NOT NULL DEFAULT 'open',
+  "publish_at" timestamptz,
+  "items" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "created_by" text NOT NULL,
+  "created_by_id" text,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  "published_at" timestamptz,
+  "published_by" text,
+  "last_error" text
+);
+CREATE TABLE IF NOT EXISTS ${tbl("saved_filters")} (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "collection" text NOT NULL,
+  "name" text NOT NULL,
+  "query" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "owner_id" text NOT NULL,
+  "owner_label" text NOT NULL DEFAULT '',
+  "shared" boolean NOT NULL DEFAULT false,
+  "created_at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ${idx("saved_filters_collection_idx")} ON ${tbl("saved_filters")} ("collection");
+CREATE TABLE IF NOT EXISTS ${tbl("presence")} (
+  "document_id" uuid NOT NULL REFERENCES ${tbl("documents")}("id") ON DELETE CASCADE,
+  "actor_id" text NOT NULL,
+  "label" text NOT NULL,
+  "kind" text NOT NULL,
+  "agent" text,
+  "cursor" jsonb,
+  "selection" jsonb,
+  "seen_at" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("document_id", "actor_id")
+);
+CREATE INDEX IF NOT EXISTS ${idx("presence_seen_idx")} ON ${tbl("presence")} ("seen_at");`.trim(),
     },
   ];
 }

@@ -97,9 +97,116 @@ export interface CmsDoc extends DocContent {
   updatedByAgent: string | null;
   /** Unsaved editor content (only for editors; never on a public read). */
   autosave: AutosaveState | null;
+  /** In the trash since (null: not deleted). A trashed document is invisible everywhere but the trash. */
+  deletedAt: string | null;
+  deletedBy: string | null;
+  /** A publish or unpublish waiting for its time. */
+  schedule: Schedule | null;
+  /** The next time the schedule has something to do (for the runner). */
+  dueAt: string | null;
+  /** An open review request, or the reviewer's answer to it. */
+  review: ReviewRequest | null;
 }
 
 /** What `commit()` records about a version: changed fields and body hunks. */
+export type ActorKind = "user" | "key" | "system";
+
+export interface Schedule {
+  publishAt: string | null;
+  unpublishAt: string | null;
+  /** The version that will go public: the one that was current when it was scheduled. */
+  version: number;
+  by: string;
+  byKind: ActorKind;
+  byId: string | null;
+  byAgent: string | null;
+  at: string;
+}
+
+export interface ReviewRequest {
+  state: "requested" | "changes_requested";
+  /** The version under review (moves along while the request is open). */
+  version: number;
+  by: string;
+  byKind: ActorKind;
+  byId: string | null;
+  byAgent: string | null;
+  at: string;
+  note: string | null;
+  /** Who sent it back, with `changes_requested`. */
+  answeredBy?: string | null;
+  answeredAt?: string | null;
+}
+
+export interface CmsComment {
+  id: string;
+  documentId: string;
+  /** The comment this one answers (one level only), or null. */
+  threadId: string | null;
+  /** Section anchor (`sectionRanges`), "" for the top of the document. */
+  anchor: string;
+  /** The text it was written about. */
+  quote: string;
+  body: string;
+  authorKind: ActorKind | "guest";
+  authorId: string | null;
+  authorLabel: string;
+  authorAgent: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+}
+
+export interface ReleaseItem {
+  documentId: string;
+  collection: string;
+  slug: string;
+  title: string;
+  action: "publish" | "unpublish";
+  /** The version pinned when it was added. */
+  version: number;
+}
+
+export interface CmsRelease {
+  id: string;
+  name: string;
+  state: "open" | "scheduled" | "published";
+  publishAt: string | null;
+  items: ReleaseItem[];
+  createdBy: string;
+  createdById: string | null;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+  publishedBy: string | null;
+  /** Why the last scheduled run did nothing. */
+  lastError: string | null;
+}
+
+export interface SavedFilter {
+  id: string;
+  collection: string;
+  name: string;
+  query: Record<string, string>;
+  ownerId: string;
+  ownerLabel: string;
+  /** Visible to everyone who can edit the collection. */
+  shared: boolean;
+  createdAt: string;
+}
+
+export interface Presence {
+  documentId: string;
+  actorId: string;
+  label: string;
+  kind: ActorKind;
+  agent: string | null;
+  /** Editor position: line and column of the cursor, and of the other end of a selection. */
+  cursor: { line: number; ch: number } | null;
+  selection: { line: number; ch: number } | null;
+  seenAt: string;
+}
+
 export interface VersionChange {
   fields: string[];
   /** Body hunks (added and removed lines) against the previous version. */
@@ -129,6 +236,13 @@ export interface CmsVersion {
   createdAt: string;
   changed: VersionChange | null;
   reviewed: ReviewMark[];
+  /** A name someone gave this version ("launch copy"). */
+  label: string | null;
+  /** Pinned versions are never pruned. */
+  pinned: boolean;
+  /** Who approved this version in a review. */
+  approvedBy: string | null;
+  approvedAt: string | null;
 }
 
 /** A version without its snapshot (version lists). */
@@ -156,6 +270,15 @@ export const AUDIT_ACTIONS = [
   "doc.unarchive",
   "doc.delete",
   "doc.restore",
+  "doc.undelete",
+  "doc.purge",
+  "doc.schedule",
+  "doc.unschedule",
+  "review.request",
+  "review.approve",
+  "review.reject",
+  "release.publish",
+  "asset.restore",
   "preview.create",
   "asset.upload",
   "asset.move",
@@ -254,6 +377,9 @@ export interface CmsAsset {
   createdByAgent: string | null;
   createdAt: string;
   updatedAt: string;
+  /** In the trash since (null: not deleted). The object stays in the store until it is purged. */
+  deletedAt: string | null;
+  deletedBy: string | null;
 }
 
 /** One document's use of a file (`cms_asset_refs`). */
@@ -320,6 +446,12 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
     /** true: an image without alt text is an error, not a warning. */
     requireAlt?: boolean;
   };
+  /**
+   * Who needs another person's approval before publishing. `agents`: API
+   * keys and agents acting for a person. `everyone`: people too (nobody
+   * approves their own request). Default: nobody.
+   */
+  review?: { agents?: "required"; everyone?: "required" };
   hooks?: {
     /**
      * After every write. `info.contentChanged` is false when only the draft
@@ -365,6 +497,8 @@ export interface DocSummary {
   updatedByKind: CmsDoc["updatedByKind"];
   updatedByAgent: string | null;
   hits7d?: number;
+  schedule: Pick<Schedule, "publishAt" | "unpublishAt" | "version" | "by"> | null;
+  review: Pick<ReviewRequest, "state" | "version" | "by" | "note"> | null;
 }
 
 export interface DocCounts {
@@ -373,4 +507,6 @@ export interface DocCounts {
   published: number;
   modified: number;
   archived: number;
+  scheduled: number;
+  review: number;
 }
