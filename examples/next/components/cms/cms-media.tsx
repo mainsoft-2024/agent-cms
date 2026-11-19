@@ -9,7 +9,7 @@
 import * as React from "react";
 import { Copy, Download, Folder, FolderPlus, LayoutGrid, Link as LinkIcon, List, Pencil, Search, Trash2, X } from "lucide-react";
 import type { AssetDetail, AssetView, FolderTree } from "@mainsoft/agent-cms/client";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -447,12 +447,11 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
           <Copy aria-hidden className="h-3.5 w-3.5" />
           {t("media_copy_url")}
         </Button>
-        <Button asChild variant="outline" size="sm" className="h-8 px-2.5">
-          <a href={client.fileUrl(asset, { download: true })}>
-            <Download aria-hidden className="h-3.5 w-3.5" />
-            {t("media_download")}
-          </a>
-        </Button>
+        {/* A plain link with the button's look: `asChild` exists only in the Radix flavour of shadcn/ui. */}
+        <a href={client.fileUrl(asset, { download: true })} className={buttonVariants({ variant: "outline", size: "sm", className: "h-8 px-2.5" })}>
+          <Download aria-hidden className="h-3.5 w-3.5" />
+          {t("media_download")}
+        </a>
         <span className="flex-1" />
         {can?.delete ? (
           <Button type="button" variant="ghost" size="sm" className="h-8 px-2.5 text-destructive hover:text-destructive" onClick={() => setAsking(true)}>
