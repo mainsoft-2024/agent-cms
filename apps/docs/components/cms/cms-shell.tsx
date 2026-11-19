@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { BookOpen, KeyRound, ScrollText, Search, FileText } from "lucide-react";
+import { BookOpen, HardDrive, Image as ImageIcon, KeyRound, ScrollText, Search, FileText } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { ShellNavContext, useCms } from "./use-cms";
@@ -31,7 +31,7 @@ export interface CmsLinkProps {
   onClick?: () => void;
 }
 
-export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "keys" } | { kind: "audit" };
+export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "keys" } | { kind: "audit" };
 
 export interface CmsShellProps {
   children?: React.ReactNode;
@@ -148,6 +148,40 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
           );
         })}
       </ul>
+      {me?.media ? (
+        <ul className="mt-3 flex flex-col gap-0.5">
+          <li>
+            {link({
+              href: href({ kind: "media" }),
+              className: navClass(activeHref === href({ kind: "media" })),
+              "aria-current": activeHref === href({ kind: "media" }) ? "page" : undefined,
+              onClick: close,
+              children: (
+                <>
+                  <ImageIcon aria-hidden className="h-4 w-4 shrink-0" />
+                  <span className="flex-1 truncate">{t("nav_media")}</span>
+                </>
+              ),
+            })}
+          </li>
+          {me.media.stores.some((s) => s.can.browse) ? (
+            <li>
+              {link({
+                href: href({ kind: "files" }),
+                className: navClass(activeHref === href({ kind: "files" })),
+                "aria-current": activeHref === href({ kind: "files" }) ? "page" : undefined,
+                onClick: close,
+                children: (
+                  <>
+                    <HardDrive aria-hidden className="h-4 w-4 shrink-0" />
+                    <span className="flex-1 truncate">{t("nav_files")}</span>
+                  </>
+                ),
+              })}
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
       {me?.isAdmin ? (
         <>
           <h2 className="px-2 pb-1 pt-4 text-xs font-medium text-muted-foreground">{t("nav_ops")}</h2>

@@ -7,3 +7,17 @@ playwright-report/
 examples/next/.next/
 *.tgz
 *.tsbuildinfo
+
+# Coding-agent session files stay local. Only the screen mockups the roadmap
+# links to (docs/roadmap) are kept in the repository.
+.slash/*
+!.slash/workspace/
+.slash/workspace/*
+!.slash/workspace/mockups/
+.slash/workspace/mockups/*
+!.slash/workspace/mockups/media-library/
+!.slash/workspace/mockups/publish-flow/
+!.slash/workspace/mockups/ops-integrations/
+!.slash/workspace/mockups/content-model/
+!.slash/workspace/mockups/search-ai/
+.slash/workspace/mockups/*/check-*.png

@@ -1,0 +1,78 @@
+{
+  "canvas": "content-model",
+  "title": "콘텐츠 모델",
+  "description": "문서 트리, 관계와 갤러리 필드, 다국어, 단일 문서, 템플릿, 블록 본문, 폼, SEO, 리다이렉트의 화면 구성과 문구를 정한다",
+  "sections": [
+    {
+      "title": "문서 구조",
+      "artboards": [
+        {
+          "id": "tree",
+          "path": ".slash/workspace/mockups/content-model/tree.html",
+          "label": "1. 문서 트리와 순서",
+          "device": "browser"
+        },
+        {
+          "id": "fields",
+          "path": ".slash/workspace/mockups/content-model/fields.html",
+          "label": "2. 관계 필드와 갤러리 필드",
+          "device": "browser"
+        },
+        {
+          "id": "locale",
+          "path": ".slash/workspace/mockups/content-model/locale.html",
+          "label": "3. 다국어",
+          "device": "browser"
+        },
+        {
+          "id": "single",
+          "path": ".slash/workspace/mockups/content-model/single.html",
+          "label": "4. 단일 문서",
+          "device": "browser"
+        },
+        {
+          "id": "template",
+          "path": ".slash/workspace/mockups/content-model/template.html",
+          "label": "5. 템플릿으로 새 문서",
+          "device": "browser"
+        },
+        {
+          "id": "blocks",
+          "path": ".slash/workspace/mockups/content-model/blocks.html",
+          "label": "6. 블록 본문",
+          "device": "browser"
+        }
+      ]
+    },
+    {
+      "title": "사이트 도구",
+      "artboards": [
+        {
+          "id": "forms",
+          "path": ".slash/workspace/mockups/content-model/forms.html",
+          "label": "7. 폼",
+          "device": "browser"
+        },
+        {
+          "id": "seo",
+          "path": ".slash/workspace/mockups/content-model/seo.html",
+          "label": "8. SEO",
+          "device": "browser"
+        },
+        {
+          "id": "redirects",
+          "path": ".slash/workspace/mockups/content-model/redirects.html",
+          "label": "9. 리다이렉트",
+          "device": "browser"
+        }
+      ]
+    }
+  ],
+  "versions": [
+    {
+      "version": 1,
+      "mockupId": "bHmCJmAe6zLEEpCBPEn9e",
+      "createdAt": "2026-11-19T14:16:23.071Z"
+    }
+  ]
+}

@@ -9,15 +9,16 @@ import { CmsShell } from "@/components/cms/cms-shell";
 import { CmsProvider } from "@/components/cms/use-cms";
 
 /**
- * The admin: the nine copied screens as they are, themed only by the site's CSS
- * variables (app/globals.css). The site adds two links of its own.
+ * The admin: the copied screens as they are, themed only by the site's CSS
+ * variables (app/globals.css). The site adds its own links. "Media" and "Files"
+ * appear in the sidebar when the deployment has a bucket (lib/cms.ts).
  */
 export function AdminFrame({ children, user }: { children: ReactNode; user: string }) {
   const path = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const collection = /^\/admin\/([^/]+)/.exec(path)?.[1];
-  const known = collection && !["keys", "audit", "misses", "login"].includes(collection) ? collection : undefined;
+  const known = collection && !["keys", "audit", "misses", "login", "media", "files"].includes(collection) ? collection : undefined;
   const lang = useSearchParams().get("lang") === "ko" ? ko : undefined;
   return (
     <CmsProvider baseUrl="/api/cms" messages={lang}>

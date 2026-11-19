@@ -5,10 +5,11 @@
  */
 
 import { SCHEMA_VERSION } from "./schema-version";
-import type { AuditEntry, CmsDoc, CmsKey, CmsVersion, DocStatus, KeyScope, ReviewMark } from "./types";
+import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsDoc, CmsKey, CmsVersion, DocStatus, KeyScope, ReviewMark } from "./types";
 
 export type DocPatch = Partial<Omit<CmsDoc, "id" | "collection" | "createdAt">>;
-export type NewDoc = Omit<CmsDoc, "id" | "createdAt" | "updatedAt" | "republishedAt" | "autosave"> & {
+export type NewDoc = Omit<CmsDoc, "id" | "createdAt" | "updatedAt" | "republishedAt" | "autosave" | "updatedByAgent"> & {
+  updatedByAgent?: string | null;
   id?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -16,7 +17,8 @@ export type NewDoc = Omit<CmsDoc, "id" | "createdAt" | "updatedAt" | "republishe
   autosave?: CmsDoc["autosave"];
 };
 export type StoredVersion = Omit<CmsVersion, "published">;
-export type NewVersion = Omit<CmsVersion, "id" | "createdAt" | "published" | "reviewed" | "changed"> & {
+export type NewVersion = Omit<CmsVersion, "id" | "createdAt" | "published" | "reviewed" | "changed" | "authorAgent"> & {
+  authorAgent?: string | null;
   createdAt?: string;
   changed?: CmsVersion["changed"];
 };
@@ -26,6 +28,8 @@ export interface KeyRow extends CmsKey {
   createdBy: string | null;
 }
 
+export type NewAudit = Omit<AuditEntry, "id" | "actorAgent"> & { actorAgent?: string | null };
+
 export interface AuditQuery {
   /** Entries strictly older than this cursor (from the previous page). */
   before?: string | null;
@@ -34,6 +38,31 @@ export interface AuditQuery {
   outcome?: AuditEntry["outcome"];
   actorKind?: AuditEntry["actorKind"];
 }
+
+export type NewAsset = Omit<CmsAsset, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string };
+export type AssetPatch = Partial<Omit<CmsAsset, "id" | "store" | "createdAt">>;
+
+export interface AssetQuery {
+  store?: string;
+  /** Exactly this folder ("" = top level). */
+  folder?: string;
+  /** This folder and everything under it. */
+  under?: string;
+  kinds?: readonly AssetKind[];
+  notKinds?: readonly AssetKind[];
+  /** Part of the name, the alt text or a tag (case-insensitive). */
+  q?: string;
+  tag?: string;
+  status?: CmsAsset["status"];
+  /** Created strictly before this time. */
+  createdBefore?: string;
+  /** Entries strictly older than this cursor (`createdAt|id` of the last one). */
+  before?: string | null;
+  limit?: number;
+}
+
+/** True when `folder` is `under` or inside it. */
+export const inFolder = (folder: string, under: string) => under === "" || folder === under || folder.startsWith(`${under}/`);
 
 export interface CmsRepo {
   /** Run `fn` atomically (one DB transaction). */
@@ -64,9 +93,25 @@ export interface CmsRepo {
   /** Hits per document since `sinceDay` (inclusive); only documents of `collection` when given. */
   hitCounts(sinceDay: string, collection?: string): Promise<Map<string, number>>;
 
-  insertAudit(e: Omit<AuditEntry, "id">): Promise<void>;
+  insertAudit(e: NewAudit): Promise<void>;
   /** Newest first. */
   listAudit(q: AuditQuery): Promise<AuditEntry[]>;
+
+  /** Throws when `(store, key)` is taken. */
+  insertAsset(a: NewAsset): Promise<CmsAsset>;
+  findAsset(id: string): Promise<CmsAsset | null>;
+  findAssets(ids: readonly string[]): Promise<CmsAsset[]>;
+  findAssetByKey(store: string, key: string): Promise<CmsAsset | null>;
+  findAssetsByKeys(store: string, keys: readonly string[]): Promise<CmsAsset[]>;
+  /** Newest first. */
+  listAssets(q: AssetQuery): Promise<CmsAsset[]>;
+  /** Ready files per folder and kind (folder rows included). */
+  countAssets(store?: string): Promise<{ store: string; folder: string; kind: AssetKind; n: number }[]>;
+  updateAsset(id: string, patch: AssetPatch): Promise<CmsAsset | null>;
+  deleteAsset(id: string): Promise<void>;
+  /** Replace what `documentId` uses. Files that do not exist are skipped. */
+  setAssetRefs(documentId: string, refs: readonly Omit<AssetRef, "documentId">[]): Promise<void>;
+  listAssetRefs(assetId: string): Promise<AssetRef[]>;
 
   /** Changes whenever any document changes (for cross-process index refresh). */
   changeStamp(): Promise<string>;
@@ -82,18 +127,27 @@ export class MemoryRepo implements CmsRepo {
   keys: KeyRow[] = [];
   hits = new Map<string, number>();
   audit: AuditEntry[] = [];
+  assets = new Map<string, CmsAsset>();
+  assetRefs: AssetRef[] = [];
   meta = new Map<string, unknown>([["schema_version", SCHEMA_VERSION]]);
   private seq = 0;
   private id = () => `00000000-0000-4000-8000-${String(++this.seq).padStart(12, "0")}`;
 
   async tx<T>(fn: (repo: CmsRepo) => Promise<T>): Promise<T> {
     // Snapshot + restore on failure keeps the "atomic" contract in tests.
-    const snap = { docs: new Map([...this.docs].map(([k, v]) => [k, structuredClone(v)])), versions: this.versions.map((v) => structuredClone(v)) };
+    const snap = {
+      docs: new Map([...this.docs].map(([k, v]) => [k, structuredClone(v)])),
+      versions: this.versions.map((v) => structuredClone(v)),
+      assets: new Map([...this.assets].map(([k, v]) => [k, structuredClone(v)])),
+      assetRefs: this.assetRefs.map((r) => ({ ...r })),
+    };
     try {
       return await fn(this);
     } catch (e) {
       this.docs = snap.docs;
       this.versions = snap.versions;
+      this.assets = snap.assets;
+      this.assetRefs = snap.assetRefs;
       throw e;
     }
   }
@@ -118,7 +172,7 @@ export class MemoryRepo implements CmsRepo {
   async insertDoc(doc: NewDoc) {
     for (const d of this.docs.values()) if (d.collection === doc.collection && d.slug === doc.slug) throw new Error("duplicate slug");
     const now = new Date().toISOString();
-    const row: CmsDoc = { republishedAt: null, autosave: null, ...doc, id: doc.id ?? this.id(), createdAt: doc.createdAt ?? now, updatedAt: doc.updatedAt ?? now };
+    const row: CmsDoc = { republishedAt: null, autosave: null, updatedByAgent: null, ...doc, id: doc.id ?? this.id(), createdAt: doc.createdAt ?? now, updatedAt: doc.updatedAt ?? now };
     this.docs.set(row.id, structuredClone(row));
     return structuredClone(row);
   }
@@ -137,10 +191,11 @@ export class MemoryRepo implements CmsRepo {
     this.docs.delete(id);
     this.versions = this.versions.filter((v) => v.documentId !== id);
     for (const k of [...this.hits.keys()]) if (k.startsWith(`${id}|`)) this.hits.delete(k);
+    this.assetRefs = this.assetRefs.filter((r) => r.documentId !== id);
   }
   async insertVersion(v: NewVersion) {
     if (this.versions.some((x) => x.documentId === v.documentId && x.version === v.version)) throw new Error("duplicate version");
-    this.versions.push({ changed: null, ...structuredClone(v), reviewed: [], id: this.id(), createdAt: v.createdAt ?? new Date().toISOString() });
+    this.versions.push({ changed: null, authorAgent: null, ...structuredClone(v), reviewed: [], id: this.id(), createdAt: v.createdAt ?? new Date().toISOString() });
   }
   async listVersions(documentId: string) {
     return this.versions.filter((v) => v.documentId === documentId).sort((a, b) => b.version - a.version).map((v) => structuredClone(v));
@@ -195,8 +250,8 @@ export class MemoryRepo implements CmsRepo {
     }
     return out;
   }
-  async insertAudit(e: Omit<AuditEntry, "id">) {
-    this.audit.push({ ...structuredClone(e), id: this.id() });
+  async insertAudit(e: NewAudit) {
+    this.audit.push({ actorAgent: null, ...structuredClone(e), id: this.id() });
   }
   async listAudit(q: AuditQuery) {
     return this.audit
@@ -204,6 +259,86 @@ export class MemoryRepo implements CmsRepo {
       .sort((a, b) => `${b.at}|${b.id}`.localeCompare(`${a.at}|${a.id}`))
       .slice(0, q.limit)
       .map((e) => structuredClone(e));
+  }
+  async insertAsset(a: NewAsset) {
+    if (this.assets.has(a.id)) throw new Error("duplicate asset id");
+    for (const o of this.assets.values()) if (o.store === a.store && o.key === a.key) throw new Error("duplicate asset key");
+    const now = new Date().toISOString();
+    const row: CmsAsset = { ...structuredClone(a), createdAt: a.createdAt ?? now, updatedAt: a.updatedAt ?? now };
+    this.assets.set(row.id, row);
+    return structuredClone(row);
+  }
+  async findAsset(id: string) {
+    const a = this.assets.get(id);
+    return a ? structuredClone(a) : null;
+  }
+  async findAssets(ids: readonly string[]) {
+    return ids.map((id) => this.assets.get(id)).filter((a): a is CmsAsset => !!a).map((a) => structuredClone(a));
+  }
+  async findAssetByKey(store: string, key: string) {
+    for (const a of this.assets.values()) if (a.store === store && a.key === key) return structuredClone(a);
+    return null;
+  }
+  async findAssetsByKeys(store: string, keys: readonly string[]) {
+    const want = new Set(keys);
+    return [...this.assets.values()].filter((a) => a.store === store && want.has(a.key)).map((a) => structuredClone(a));
+  }
+  async listAssets(q: AssetQuery) {
+    const needle = q.q?.trim().toLowerCase();
+    return [...this.assets.values()]
+      .filter(
+        (a) =>
+          (!q.store || a.store === q.store) &&
+          (q.folder === undefined || a.folder === q.folder) &&
+          (q.under === undefined || inFolder(a.folder, q.under)) &&
+          (!q.kinds || q.kinds.includes(a.kind)) &&
+          (!q.notKinds || !q.notKinds.includes(a.kind)) &&
+          (!q.status || a.status === q.status) &&
+          (!q.tag || a.tags.includes(q.tag)) &&
+          (!q.createdBefore || a.createdAt < q.createdBefore) &&
+          (!needle || a.name.toLowerCase().includes(needle) || a.alt.toLowerCase().includes(needle) || a.tags.some((t) => t.toLowerCase().includes(needle))) &&
+          (!q.before || `${a.createdAt}|${a.id}` < q.before)
+      )
+      .sort((x, y) => `${y.createdAt}|${y.id}`.localeCompare(`${x.createdAt}|${x.id}`))
+      .slice(0, q.limit ?? 1000)
+      .map((a) => structuredClone(a));
+  }
+  async countAssets(store?: string) {
+    const out = new Map<string, { store: string; folder: string; kind: AssetKind; n: number }>();
+    for (const a of this.assets.values()) {
+      if (a.status !== "ready" || (store && a.store !== store)) continue;
+      const k = `${a.store}|${a.folder}|${a.kind}`;
+      const cur = out.get(k) ?? { store: a.store, folder: a.folder, kind: a.kind, n: 0 };
+      cur.n++;
+      out.set(k, cur);
+    }
+    return [...out.values()];
+  }
+  async updateAsset(id: string, patch: AssetPatch) {
+    const a = this.assets.get(id);
+    if (!a) return null;
+    if (patch.key !== undefined && patch.key !== a.key) {
+      for (const o of this.assets.values()) if (o.id !== id && o.store === a.store && o.key === patch.key) throw new Error("duplicate asset key");
+    }
+    const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    Object.assign(a, structuredClone(clean), { updatedAt: patch.updatedAt ?? new Date().toISOString() });
+    return structuredClone(a);
+  }
+  async deleteAsset(id: string) {
+    this.assets.delete(id);
+    this.assetRefs = this.assetRefs.filter((r) => r.assetId !== id);
+  }
+  async setAssetRefs(documentId: string, refs: readonly Omit<AssetRef, "documentId">[]) {
+    this.assetRefs = this.assetRefs.filter((r) => r.documentId !== documentId);
+    const seen = new Set<string>();
+    for (const r of refs) {
+      if (seen.has(r.assetId) || !this.assets.has(r.assetId) || (!r.inDraft && !r.inPublished)) continue;
+      seen.add(r.assetId);
+      this.assetRefs.push({ assetId: r.assetId, documentId, inDraft: r.inDraft, inPublished: r.inPublished });
+    }
+  }
+  async listAssetRefs(assetId: string) {
+    return this.assetRefs.filter((r) => r.assetId === assetId).map((r) => ({ ...r }));
   }
   async changeStamp() {
     let max = "";

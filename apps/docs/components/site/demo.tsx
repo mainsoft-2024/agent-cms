@@ -6,12 +6,14 @@ import { CmsCommand } from "@/components/cms/cms-command";
 import { CmsDocEditor } from "@/components/cms/cms-doc-editor";
 import { CmsDocList } from "@/components/cms/cms-doc-list";
 import { CmsEmpty } from "@/components/cms/cms-empty";
+import { CmsFiles } from "@/components/cms/cms-files";
 import { CmsKeys } from "@/components/cms/cms-keys";
+import { CmsMedia } from "@/components/cms/cms-media";
 import { CmsShell } from "@/components/cms/cms-shell";
 import { CmsVersions } from "@/components/cms/cms-versions";
 import { CmsProvider } from "@/components/cms/use-cms";
 
-type View = { v: "list" } | { v: "edit"; slug?: string } | { v: "versions"; slug: string } | { v: "keys" } | { v: "audit" };
+type View = { v: "list" } | { v: "edit"; slug?: string } | { v: "versions"; slug: string } | { v: "keys" } | { v: "audit" } | { v: "media" } | { v: "files" };
 
 /** The screens wired to the demo CMS (/api/demo), with a small in-frame router. */
 function Screens({ item, view, go }: { item: string; view: View; go: (v: View) => void }) {
@@ -22,6 +24,8 @@ function Screens({ item, view, go }: { item: string; view: View; go: (v: View) =
     if (view.v === "versions") return <CmsVersions collection="posts" slug={view.slug} onBack={() => go({ v: "edit", slug: view.slug })} />;
     if (view.v === "keys") return <CmsKeys mcpServerName="agent-cms-demo" />;
     if (view.v === "audit") return <CmsAudit />;
+    if (view.v === "media") return <CmsMedia basePath="" docHref={() => "#"} />;
+    if (view.v === "files") return <CmsFiles />;
     return list;
   };
   switch (item) {
@@ -29,15 +33,15 @@ function Screens({ item, view, go }: { item: string; view: View; go: (v: View) =
       return (
         <CmsShell
           title="Demo admin"
-          activeCollection={view.v === "keys" || view.v === "audit" ? undefined : "posts"}
-          activeHref={view.v === "keys" ? "/keys" : view.v === "audit" ? "/audit" : "/posts"}
+          activeCollection={view.v === "list" || view.v === "edit" || view.v === "versions" ? "posts" : undefined}
+          activeHref={view.v === "keys" || view.v === "audit" || view.v === "media" || view.v === "files" ? `/${view.v}` : "/posts"}
           LinkComponent={({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
             <a
               {...rest}
               href={href}
               onClick={(e) => {
                 e.preventDefault();
-                go(href.endsWith("keys") ? { v: "keys" } : href.endsWith("audit") ? { v: "audit" } : { v: "list" });
+                go(href.endsWith("keys") ? { v: "keys" } : href.endsWith("audit") ? { v: "audit" } : href.endsWith("media") ? { v: "media" } : href.endsWith("files") ? { v: "files" } : { v: "list" });
               }}
             >
               {children}
@@ -60,6 +64,10 @@ function Screens({ item, view, go }: { item: string; view: View; go: (v: View) =
       return <CmsKeys mcpServerName="agent-cms-demo" />;
     case "cms-audit":
       return <CmsAudit />;
+    case "cms-media":
+      return <CmsMedia basePath="" docHref={() => "#"} />;
+    case "cms-files":
+      return <CmsFiles />;
     default:
       return null;
   }

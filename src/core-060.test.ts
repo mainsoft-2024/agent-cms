@@ -4,14 +4,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { z } from "zod";
 import { envelope, lookupForAgent, verifyCitations } from "./agent";
-import { cmsTools } from "./ai";
 import { createCms, defineCollection, type CreateCmsOptions } from "./cms";
 import { createCmsHandler } from "./http";
 import * as root from "./index";
 import { ko } from "./messages/ko";
 import { MemoryRepo } from "./repo";
+import { SCHEMA_VERSION } from "./schema-version";
 import { normalizeQuery } from "./search";
-import { CMS_TOOL_NAMES } from "./tools";
+import { callTool, CMS_TOOL_NAMES } from "./tools";
 import { CmsError, docState, isCmsError, type Actor, type SearchMissEvent } from "./types";
 
 const admin: Actor = { kind: "user", id: "u1", label: "Admin", isAdmin: true };
@@ -377,8 +377,7 @@ test("onSearchMiss: only when asked, anonymous included, not awaited, errors to 
 test("onSearchMiss: read_for_answer reports, search_documents (duplicate check) does not", async () => {
   const seen: SearchMissEvent[] = [];
   const { cms } = setup({ onSearchMiss: (e) => void seen.push(e) });
-  const tools = cmsTools(cms, { kind: "system", label: "assistant" });
-  const run = (name: string, args: unknown) => (tools[name] as unknown as { execute: (a: unknown, o: unknown) => Promise<unknown> }).execute(args, {});
+  const run = (name: string, args: unknown) => callTool(cms, { kind: "system", label: "assistant" }, name, args);
   await run("search_documents", { query: "refund" });
   await tick();
   assert.equal(seen.length, 0);
@@ -423,7 +422,7 @@ test("schema check: an old database is refused with the command to run", async (
     assert.equal(e.status, 503);
     assert.equal(e.params.command, "npx agent-cms migrate check");
   });
-  repo.meta.set("schema_version", 2);
+  repo.meta.set("schema_version", SCHEMA_VERSION);
   await cms.create(admin, "guide", slack);
   const off = createCms({ repo: Object.assign(new MemoryRepo(), { meta: new Map() }), collections: [guide], schemaCheck: false });
   await off.create(admin, "guide", slack);

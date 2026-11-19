@@ -9,7 +9,7 @@ export async function llmsIndex(): Promise<string> {
   const lines = [
     "# agent-cms",
     "",
-    "> Serverless CMS for agents and humans: an add-on for Next.js apps with Postgres. People edit in admin screens; agents edit the same documents through MCP, AI SDK tools, a CLI and REST.",
+    "> Serverless CMS for agents and humans: an add-on for Next.js apps with Postgres. People edit in admin screens; agents edit the same documents through MCP, a CLI and REST, or the same tools inside your own agent.",
     "",
     `Read these docs over MCP without a key: ${base}/api/cms/mcp (tools: search_documents, read_for_answer, get_document, list_documents, list_collections).`,
     `Full text in one file: ${base}/llms-full.txt`,

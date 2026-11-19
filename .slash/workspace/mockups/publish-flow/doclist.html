@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문서 목록의 새 상태</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="../media-library/app.css">
+<link rel="stylesheet" href="x.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <div class="nav"><span data-icon="layout-dashboard"></span><span>대시보드</span></div>
+    <h2>컬렉션</h2>
+    <div class="nav on"><span data-icon="book-open"></span><span>Blog</span><span class="n">5</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span>Guide</span><span class="n">6</span></div>
+    <div class="nav"><span data-icon="settings"></span><span>사이트 설정</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav"><span data-icon="image"></span><span>미디어</span></div>
+    <div class="nav"><span data-icon="hard-drive"></span><span>파일</span></div>
+    <div class="nav"><span data-icon="clipboard-list"></span><span>폼</span></div>
+    <div class="nav"><span data-icon="package"></span><span>릴리스</span></div>
+    <div class="nav"><span data-icon="trash-2"></span><span>휴지통</span></div>
+    <h2>운영</h2>
+    <div class="nav"><span data-icon="key-round"></span><span>API 키</span></div>
+    <div class="nav"><span data-icon="scroll-text"></span><span>감사 로그</span></div>
+    <div class="nav"><span data-icon="webhook"></span><span>웹훅</span></div>
+    <div class="nav"><span data-icon="workflow"></span><span>자동화</span></div>
+    <div class="nav"><span data-icon="shield"></span><span>역할</span></div>
+    <div class="nav"><span data-icon="corner-down-right"></span><span>리다이렉트</span></div>
+    <div class="nav"><span data-icon="replace"></span><span>동의어</span></div>
+    <div class="nav"><span data-icon="arrow-left-right"></span><span>가져오기와 내보내기</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="phd">
+      <h1>Blog</h1>
+      <span class="grow"></span>
+      <div class="acts"><span class="b"><span data-icon="plus"></span>새 문서</span></div>
+    </header>
+    <div class="pad">
+      <div class="row">
+        <div class="inp ph-text" style="width:220px"><span data-icon="search"></span>제목, 주소로 찾기</div>
+        <div class="seg" data-label="상태 탭">
+          <span class="on">전체 5</span><span>초안 1</span><span>게시됨 2</span><span>게시 후 수정됨 0</span><span data-label="예약됨 탭">예약됨 1</span><span data-label="검토 대기 탭">검토 대기 1</span><span>숨김 0</span>
+        </div>
+      </div>
+      <table data-label="문서 표">
+        <thead><tr><th style="width:36px"><span class="check"></span></th><th>제목</th><th style="width:90px">분류</th><th style="width:230px">상태</th><th style="width:170px">마지막 수정</th><th class="r" style="width:80px">7일 조회</th><th style="width:40px"></th></tr></thead>
+        <tbody>
+          <tr><td><span class="check"></span></td><td style="font-weight:500">Hello, world</td><td>News</td><td><span class="badge"><i class="dot"></i>게시됨</span></td><td class="muted">김지수, 2시간 전</td><td class="r num">128</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          <tr data-label="예약된 문서"><td><span class="check"></span></td><td style="font-weight:500">0.7 출시 안내</td><td>News</td><td><span class="row"><span class="badge"><i class="dot sched"></i>예약됨</span><span class="muted xs num">11. 24. 오전 9:00</span></span></td><td class="muted">김지수, 어제</td><td class="r num muted">0</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          <tr data-label="검토 대기 문서"><td><span class="check"></span></td><td style="font-weight:500">미디어 올리는 법</td><td>Tips</td><td><span class="badge"><i class="dot review"></i>검토 대기</span></td><td class="muted"><span class="row"><span data-icon="bot" class="i14"></span>docs-bot, 10분 전</span></td><td class="r num muted">0</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          <tr data-label="편집 중인 문서"><td><span class="check"></span></td><td><span class="row"><span style="font-weight:500">Draft ideas</span><span class="avs"><span class="av u2">박</span></span></span></td><td>Tips</td><td><span class="badge"><i class="dot draft"></i>초안</span></td><td class="muted">박민호, 방금</td><td class="r num muted">0</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          <tr><td><span class="check"></span></td><td style="font-weight:500">Year in review</td><td>News</td><td><span class="badge"><i class="dot"></i>게시됨</span></td><td class="muted">김지수, 2026. 11. 02.</td><td class="r num">41</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+        </tbody>
+      </table>
+      <div class="foot"><span class="num">5개 중 5개</span></div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

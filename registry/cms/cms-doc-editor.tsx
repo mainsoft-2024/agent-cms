@@ -7,7 +7,7 @@
 "use client";
 
 import * as React from "react";
-import { Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, Link as LinkIcon, MoreHorizontal } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Link as LinkIcon, MoreHorizontal } from "lucide-react";
 import { isCmsRemoteError, type CollectionSchema } from "@mainsoft/agent-cms/client";
 import { splitLines } from "@mainsoft/agent-cms/diff";
 import { docState, type CmsDoc, type AutosaveState } from "@mainsoft/agent-cms/types";
@@ -20,6 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
 import { CmsFieldForm, problemKey, type FieldProblem } from "./cms-field-form";
+import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, MarkdownPreview, ModifiedMark, PageHeader, Segmented, StateBadge, StatusText } from "./cms-parts";
 import { contentOf, formatTime, formatUntil, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, type DocContent } from "./use-cms";
@@ -93,6 +94,10 @@ type Mode = { kind: "edit" } | { kind: "merge"; base: DocContent; baseVersion: n
 
 export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, className }: CmsDocEditorProps) {
   const { client, t, locale, me } = useCms();
+  const bodyRef = React.useRef<HTMLTextAreaElement>(null);
+  /** Where the cursor last was in the body (null: the person never put it there). */
+  const caretRef = React.useRef<[number, number] | null>(null);
+  const [picking, setPicking] = React.useState(false);
   const mobile = useIsMobile();
   const schemaQ = useAsync(() => client.schema(collection), [client, collection]);
   const schema = schemaQ.data;
@@ -445,6 +450,24 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   ) : null;
 
   const bodyId = "cms-editor-body";
+  /** Put a file at the cursor: media on a line of its own, other files as a link. */
+  const insertAsset = (a: Parameters<typeof assetMarkdown>[0]) => {
+    const el = bodyRef.current;
+    const [at, end] = caretRef.current ?? [content.body.length, content.body.length];
+    const before = content.body.slice(0, at);
+    const after = content.body.slice(end);
+    const md = assetMarkdown(a);
+    const block = md.startsWith("!");
+    const lead = !block || !before || before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
+    const tail = !block || after.startsWith("\n\n") ? "" : after.startsWith("\n") || !after ? "\n" : "\n\n";
+    setContent({ ...content, body: `${before}${lead}${md}${tail}${after}` });
+    const caret = before.length + lead.length + (block ? 2 : md.length);
+    requestAnimationFrame(() => {
+      el?.focus();
+      // An image without alt text: leave the cursor between the brackets.
+      el?.setSelectionRange(block && !a.alt ? caret : before.length + lead.length + md.length, block && !a.alt ? caret : before.length + lead.length + md.length);
+    });
+  };
   const bodyErr = byField.body;
   const bodyInvalid = bodyErr?.some((e) => e.severity === "error");
   const bodyPane = (
@@ -455,11 +478,20 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           {t("field_body")}
         </Label>
         <span className="flex-1" />
+        {me?.media && canWrite ? (
+          <Button type="button" variant="ghost" size="sm" className="-my-1 h-7 gap-1.5 px-2 text-xs text-foreground" onClick={() => setPicking(true)}>
+            <ImagePlus aria-hidden className="h-3.5 w-3.5" />
+            {t("media_insert_button")}
+          </Button>
+        ) : null}
         <span>{t("chars", { n: content.body.length.toLocaleString(locale) })}</span>
       </div>
+      <CmsMediaPicker open={picking} onOpenChange={setPicking} onPick={insertAsset} />
       {blocks}
       <Textarea
+        ref={bodyRef}
         id={bodyId}
+        onSelect={(e) => (caretRef.current = [e.currentTarget.selectionStart, e.currentTarget.selectionEnd])}
         value={content.body}
         readOnly={!canWrite}
         spellCheck={false}

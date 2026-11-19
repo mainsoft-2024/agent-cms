@@ -5,13 +5,13 @@
 "use client";
 
 import * as React from "react";
-import { Bot, Check, Copy, Lightbulb, Link as LinkIcon, Menu, Pencil, TriangleAlert, Info } from "lucide-react";
+import { Bot, Check, Copy, Download, FileText, ImageOff, Lightbulb, Link as LinkIcon, Menu, Paperclip, Pencil, TriangleAlert, Info } from "lucide-react";
 import { parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { useCms, useShellNav } from "./use-cms";
+import { useAsset, useCms, useShellNav } from "./use-cms";
 
 // ── state ────────────────────────────────────────────────────────────────────
 
@@ -48,11 +48,15 @@ export function Avatar({ kind, label, className }: { kind: string | null | undef
   );
 }
 
-export function Who({ kind, label, className }: { kind: string | null | undefined; label: string | null | undefined; className?: string }) {
+/**
+ * Who did it. With `agent` (an agent that acted for the person in `label`)
+ * it shows the agent's mark and both names: "docs-bot, Kim".
+ */
+export function Who({ kind, label, agent, className }: { kind: string | null | undefined; label: string | null | undefined; agent?: string | null; className?: string }) {
   return (
     <span className={cn("inline-flex items-center gap-1.5", className)}>
-      <Avatar kind={kind} label={label} />
-      <span>{label}</span>
+      <Avatar kind={agent ? "key" : kind} label={label} />
+      <span>{agent ? `${agent}, ${label ?? ""}` : label}</span>
     </span>
   );
 }
@@ -279,6 +283,8 @@ function Inlines({ items }: { items: Inline[] }) {
             </a>
           );
         if (i.t === "applink") return <AppLinkChip key={n} label={i.v} linkKey={i.key} />;
+        if (i.t === "image") return <MediaImage key={n} asset={i.asset} name={i.name} src={i.src} alt={i.alt} className="mx-0.5 inline-block max-h-40 align-middle" />;
+        if (i.t === "file") return <FileLink key={n} asset={i.asset} name={i.name} label={i.v} />;
         return <React.Fragment key={n}>{i.v}</React.Fragment>;
       })}
     </>
@@ -291,6 +297,65 @@ function AppLinkChip({ label, linkKey }: { label: string; linkKey: string }) {
       <LinkIcon aria-hidden className="h-3 w-3" />
       {label}
     </span>
+  );
+}
+
+const sizeText = (n: number) => (n >= 1024 ** 3 ? `${Math.round((n / 1024 ** 3) * 10) / 10}GB` : n >= 1024 ** 2 ? `${Math.round((n / 1024 ** 2) * 10) / 10}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
+
+function FileLink({ asset, name, label }: { asset: string; name: string; label: string }) {
+  const { client } = useCms();
+  return (
+    <a href={client.fileUrl({ id: asset, name })} className="inline-flex items-center gap-1 underline underline-offset-2" target="_blank" rel="noreferrer">
+      <Paperclip aria-hidden className="h-3.5 w-3.5" />
+      {label}
+    </a>
+  );
+}
+
+function Missing({ name, className }: { name: string; className?: string }) {
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 rounded-md border border-dashed px-2 py-1 text-sm text-muted-foreground", className)}>
+      <ImageOff aria-hidden className="h-4 w-4" />
+      {name}
+    </span>
+  );
+}
+
+/** An image from the media library (by id) or from elsewhere (`src`). The file's own alt text fills in for an empty one. */
+function MediaImage({ asset, name, src, alt, className }: { asset?: string | null; name?: string; src?: string | null; alt: string; className?: string }) {
+  const { client } = useCms();
+  const info = useAsset(asset);
+  if (asset && info === null) return <Missing name={name ?? asset} />;
+  if (asset && info === undefined) return <span className={cn("inline-block h-24 w-40 animate-pulse rounded-md bg-muted", className)} />;
+  return <img src={info ? client.fileUrl(info) : (src ?? "")} alt={alt || info?.alt || ""} width={info?.width ?? undefined} height={info?.height ?? undefined} className={cn("h-auto max-w-full rounded-md", className)} />;
+}
+
+/** A media line of a document: a picture, a player or a download card, by the file's type. */
+function MediaBlock({ asset, name, src, alt, caption }: { asset?: string | null; name?: string; src?: string | null; alt: string; caption?: string | null }) {
+  const { client } = useCms();
+  const info = useAsset(asset);
+  const inner =
+    asset && info === null ? (
+      <Missing name={name ?? asset} className="flex" />
+    ) : info?.kind === "video" ? (
+      <video controls preload="metadata" src={client.fileUrl(info)} poster={info.thumbKey ? client.fileUrl(info, { thumb: true }) : undefined} aria-label={alt || info.alt || info.name} className="w-full rounded-md bg-black" />
+    ) : info?.kind === "audio" ? (
+      <audio controls preload="metadata" src={client.fileUrl(info)} aria-label={alt || info.alt || info.name} className="w-full" />
+    ) : info && info.kind !== "image" ? (
+      <a href={client.fileUrl(info, { download: true })} className="flex items-center gap-3 rounded-md border px-3 py-2.5 text-sm no-underline hover:bg-accent">
+        <FileText aria-hidden className="h-5 w-5 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate font-medium">{alt || info.name}</span>
+        <span className="text-xs tabular-nums text-muted-foreground">{sizeText(info.size)}</span>
+        <Download aria-hidden className="h-4 w-4 text-muted-foreground" />
+      </a>
+    ) : (
+      <MediaImage asset={asset} name={name} src={src} alt={alt} className="block w-full" />
+    );
+  return (
+    <figure className="my-4">
+      {inner}
+      {caption ? <figcaption className="mt-1.5 text-center text-xs text-muted-foreground">{caption}</figcaption> : null}
+    </figure>
   );
 }
 
@@ -355,6 +420,8 @@ function Blocks({ blocks }: { blocks: Block[] }) {
             );
           case "hr":
             return <hr key={n} className="my-5" />;
+          case "media":
+            return <MediaBlock key={n} asset={b.asset} name={b.name} src={b.src} alt={b.alt} caption={b.caption} />;
           case "links":
             return (
               <div key={n} className="my-3 flex flex-wrap gap-2">

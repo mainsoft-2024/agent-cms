@@ -6,6 +6,12 @@
  * Supported: `## / ###` headings, paragraphs, `-`/`*` and `1.` lists, `>`
  * quotes and `> [!note]` callouts, fenced code, `---`, and inline **bold**,
  * `code`, [text](url) and the CMS link `[[link:key|label]]`.
+ *
+ * Files from the media library are named by id: `![alt](asset:ID/name.jpg
+ * "caption")` on a line of its own is a media block (an image, a video
+ * player or a download card, by the file's type), and `[label](asset:ID/
+ * name.pdf)` links to a file. Only the id matters; the name after the slash
+ * is there for people. `![alt](https://…)` shows an image from elsewhere.
  */
 
 export type Inline =
@@ -13,6 +19,10 @@ export type Inline =
   | { t: "strong"; v: string }
   | { t: "code"; v: string }
   | { t: "link"; href: string; v: string }
+  /** `[label](asset:ID/name)`: a link to a file in the media library. */
+  | { t: "file"; asset: string; name: string; v: string }
+  /** An image inside a line of text. `asset` (a media library id) or `src` (https). */
+  | { t: "image"; asset: string | null; name: string; src: string | null; alt: string; v: string }
   /** `[[link:key|label]]` — an app screen, resolved by the collection. */
   | { t: "applink"; key: string; v: string };
 
@@ -23,6 +33,8 @@ export type Block =
   | { t: "quote"; callout: "note" | "tip" | "warning" | null; blocks: Block[] }
   | { t: "code"; lang: string; v: string }
   | { t: "hr" }
+  /** A line that is only `![alt](asset:ID/name "caption")` or `![alt](https://…)`. */
+  | { t: "media"; asset: string | null; name: string; src: string | null; alt: string; caption: string }
   /** A paragraph that is only app links: drawn as link cards. */
   | { t: "links"; items: { key: string; v: string }[] };
 
@@ -46,21 +58,50 @@ export function anchorOf(text: string): string {
   return base || "section";
 }
 
+const ASSET_TARGET = /^asset:([a-z0-9]{12})(?:\/([^\s)]*))?$/;
+const IMAGE = String.raw`!\[([^\]]*)\]\(\s*((?:[^()\s]|\([^()\s]*\))+)(?:\s+"([^"]*)")?\s*\)`;
+const IMAGE_LINE = new RegExp(`^\\s*${IMAGE}\\s*$`);
+const IMAGE_ANY = new RegExp(IMAGE, "g");
+const ASSET_LINK_ANY = /(^|[^!])\[([^\]]+)\]\(asset:([a-z0-9]{12})(?:\/[^\s)]*)?\)/g;
+
+const safeDecode = (s: string) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+
+/** `asset:ID/name` → the file's id and name; an https URL → `src`. Anything else: null. */
+function mediaTarget(target: string): { asset: string | null; name: string; src: string | null } | null {
+  const a = ASSET_TARGET.exec(target);
+  if (a) return { asset: a[1], name: safeDecode(a[2] ?? ""), src: null };
+  if (/^https:\/\//i.test(target)) return { asset: null, name: "", src: target };
+  return null;
+}
+
 export function parseInline(src: string): Inline[] {
   const out: Inline[] = [];
-  const re = /(\[\[link:([a-z0-9][a-z0-9._-]*)\|([^\]]+)\]\]|\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\))/gi;
+  const re = new RegExp(String.raw`(\[\[link:(?<key>[a-z0-9][a-z0-9._-]*)\|(?<keyLabel>[^\]]+)\]\]|\*\*(?<strong>[^*]+)\*\*|` + "`(?<code>[^`]+)`" + String.raw`|!\[(?<alt>[^\]]*)\]\(\s*(?<img>(?:[^()\s]|\([^()\s]*\))+)(?:\s+"(?<cap>[^"]*)")?\s*\)|\[(?<label>[^\]]+)\]\((?<href>(?:[^()\s]|\([^()\s]*\))+)\))`, "gi");
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src))) {
+    const g = m.groups!;
     if (m.index > last) out.push({ t: "text", v: src.slice(last, m.index) });
-    if (m[2]) out.push({ t: "applink", key: m[2], v: m[3] });
-    else if (m[4] !== undefined) out.push({ t: "strong", v: m[4] });
-    else if (m[5] !== undefined) out.push({ t: "code", v: m[5] });
-    else if (m[6] !== undefined) {
-      const href = m[7];
+    if (g.key) out.push({ t: "applink", key: g.key, v: g.keyLabel });
+    else if (g.strong !== undefined) out.push({ t: "strong", v: g.strong });
+    else if (g.code !== undefined) out.push({ t: "code", v: g.code });
+    else if (g.img !== undefined) {
+      const target = mediaTarget(g.img);
+      if (target) out.push({ t: "image", ...target, alt: g.alt, v: g.alt });
+      else out.push({ t: "text", v: g.alt });
+    } else if (g.label !== undefined) {
+      const href = g.href;
+      const file = ASSET_TARGET.exec(href);
+      if (file) out.push({ t: "file", asset: file[1], name: safeDecode(file[2] ?? ""), v: g.label });
       // Only http(s), mailto and same-site paths: no javascript: or data: URLs.
-      if (/^(https?:\/\/|mailto:|\/(?!\/)|#)/i.test(href)) out.push({ t: "link", href, v: m[6] });
-      else out.push({ t: "text", v: m[6] });
+      else if (/^(https?:\/\/|mailto:|\/(?!\/)|#)/i.test(href)) out.push({ t: "link", href, v: g.label });
+      else out.push({ t: "text", v: g.label });
     }
     last = m.index + m[0].length;
   }
@@ -155,6 +196,13 @@ export function parseMarkdown(source: string): Block[] {
       blocks.push({ t: "quote", callout, blocks: inner });
       continue;
     }
+    const img = IMAGE_LINE.exec(line);
+    const target = img ? mediaTarget(img[2]) : null;
+    if (img && target) {
+      flush();
+      blocks.push({ t: "media", ...target, alt: img[1].trim(), caption: (img[3] ?? "").trim() });
+      continue;
+    }
     const ul = /^\s*[-*]\s+(.*)$/.exec(line);
     const ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
     if (ul || ol) {
@@ -192,11 +240,50 @@ export function appLinkKeys(body: string): string[] {
   return [...keys];
 }
 
+export interface AssetUse {
+  id: string;
+  /** `media`: a block of its own. `image`: inside a line. `file`: a link. */
+  as: "media" | "image" | "file";
+  alt: string;
+  /** 1-based line in the body. */
+  line: number;
+}
+
+/** Every use of a media library file in a body, in order (code blocks skipped). */
+export function assetUses(body: string): AssetUse[] {
+  const out: AssetUse[] = [];
+  let inFence = false;
+  body.replace(/\r/g, "").split("\n").forEach((line, i) => {
+    if (/^```/.test(line)) inFence = !inFence;
+    if (inFence) return;
+    const whole = IMAGE_LINE.exec(line);
+    for (const m of line.matchAll(IMAGE_ANY)) {
+      const a = ASSET_TARGET.exec(m[2]);
+      if (a) out.push({ id: a[1], as: whole ? "media" : "image", alt: m[1].trim(), line: i + 1 });
+    }
+    for (const m of line.matchAll(ASSET_LINK_ANY)) out.push({ id: m[3], as: "file", alt: "", line: i + 1 });
+  });
+  return out;
+}
+
+/** External images (`![alt](https://…)`) in a body: line and alt. */
+export function externalImages(body: string): { src: string; alt: string; line: number }[] {
+  const out: { src: string; alt: string; line: number }[] = [];
+  let inFence = false;
+  body.replace(/\r/g, "").split("\n").forEach((line, i) => {
+    if (/^```/.test(line)) inFence = !inFence;
+    if (inFence) return;
+    for (const m of line.matchAll(IMAGE_ANY)) if (/^https:\/\//i.test(m[2])) out.push({ src: m[2], alt: m[1].trim(), line: i + 1 });
+  });
+  return out;
+}
+
 /** Plain text of a body (for search and summaries): no markup, links as labels. */
 export function plainText(body: string): string {
   return body
     .replace(/```[\s\S]*?```/g, " ")
     .replace(APP_LINK_RE, "$2")
+    .replace(IMAGE_ANY, (_m, alt: string, _t: string, cap?: string) => ` ${alt} ${cap ?? ""} `)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/^>\s?\[![a-z]+\]\s*$/gim, "")
     .replace(/[*`>#]/g, "")

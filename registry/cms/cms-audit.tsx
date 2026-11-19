@@ -16,7 +16,7 @@ import { errorMessage, type MessageKey } from "./cms-messages";
 import { PageHeader, StatusText, Who } from "./cms-parts";
 import { formatDateTime, useCms } from "./use-cms";
 
-const ACTIONS = ["doc.publish", "doc.unpublish", "doc.archive", "doc.unarchive", "doc.delete", "doc.restore", "preview.create", "key.create", "key.revoke", "access.denied", "auth.failed"] as const;
+const ACTIONS = ["doc.publish", "doc.unpublish", "doc.archive", "doc.unarchive", "doc.delete", "doc.restore", "preview.create", "key.create", "key.revoke", "asset.upload", "asset.move", "asset.delete", "asset.register", "asset.share", "access.denied", "auth.failed"] as const;
 type ActorFilter = "__all" | "user" | "key" | "system" | "anonymous";
 
 export interface CmsAuditProps {
@@ -149,7 +149,7 @@ export function CmsAudit({ pageSize = 50, className }: CmsAuditProps) {
                       {e.action === "auth.failed" ? t("unknown_key") : actorLabel("anonymous")}
                     </span>
                   ) : (
-                    <Who kind={e.actorKind} label={e.actorLabel} />
+                    <Who kind={e.actorKind} label={e.actorLabel} agent={e.actorAgent} />
                   )}
                 </TableCell>
                 <TableCell className="text-[13.5px]">{actionLabel(e.action)}</TableCell>

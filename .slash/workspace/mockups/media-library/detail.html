@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>파일 정보</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="app.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <h2 class="first">컬렉션</h2>
+    <div class="nav"><span data-icon="book-open"></span><span class="grow trunc">Blog</span><span class="n">2</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span class="grow trunc">Guide</span><span class="n">1</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav on"><span data-icon="image"></span><span class="grow">미디어</span></div>
+    <h2>운영</h2>
+    <div class="nav"><span data-icon="key-round"></span><span class="grow">API 키</span></div>
+    <div class="nav"><span data-icon="scroll-text"></span><span class="grow">감사 로그</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="phd">
+      <h1>미디어</h1>
+      <span class="grow"></span>
+      <div class="acts">
+        <span class="b out"><span data-icon="folder-plus"></span>새 폴더</span>
+        <span class="b"><span data-icon="upload"></span>올리기</span>
+      </div>
+    </header>
+
+    <div class="content">
+      <section class="pane">
+        <div class="tools">
+          <div class="inp ph-text" style="width:200px"><span data-icon="search"></span>이름, 태그로 찾기</div>
+          <div class="seg">
+            <span class="on">전체 <b class="num" style="font-weight:500">31</b></span>
+            <span>이미지 <b class="num" style="font-weight:400">24</b></span>
+            <span>영상 <b class="num" style="font-weight:400">3</b></span>
+            <span>문서 <b class="num" style="font-weight:400">4</b></span>
+          </div>
+          <span class="grow"></span>
+          <div class="seg">
+            <span class="on"><span data-icon="layout-grid"></span></span>
+            <span><span data-icon="list"></span></span>
+          </div>
+        </div>
+
+        <div class="grid c3">
+          <div class="tile on" data-label="선택한 타일"><div class="thumb p1"></div><div class="name trunc">launch-hero.jpg</div><div class="meta num">1920×1080, 412KB</div></div>
+          <div class="tile"><div class="thumb p2"></div><div class="name trunc">team-photo.jpg</div><div class="meta num">2400×1600, 1.8MB</div></div>
+          <div class="tile"><div class="thumb p3"><div class="shot"><i class="s"></i><i></i><i></i><i class="a"></i></div></div><div class="name trunc">slack-connect-step1.png</div><div class="meta num">1280×720, 96KB</div></div>
+
+          <div class="tile"><div class="thumb p3"><div class="shot"><i class="s"></i><i></i><i class="a"></i><i></i></div></div><div class="name trunc">slack-connect-step2.png</div><div class="meta num">1280×720, 104KB</div></div>
+          <div class="tile"><div class="thumb p5"><span data-icon="play" class="i28"></span><span class="tag">2:14</span></div><div class="name trunc">product-demo.mp4</div><div class="meta num">1920×1080, 184MB</div></div>
+          <div class="tile"><div class="thumb"><div class="doc-ic"><span data-icon="file-text" class="i28"></span>PDF</div></div><div class="name trunc">pricing-2026.pdf</div><div class="meta num">1.2MB</div></div>
+
+          <div class="tile"><div class="thumb p7"></div><div class="name trunc">og-default.png</div><div class="meta num">1200×630, 58KB</div></div>
+          <div class="tile"><div class="thumb p4"></div><div class="name trunc">office-seoul.jpg</div><div class="meta num">3024×2016, 2.4MB</div></div>
+          <div class="tile"><div class="thumb p8"><div class="shot"><i class="s"></i><i></i><i></i><i></i></div></div><div class="name trunc">release-0.6-diagram.png</div><div class="meta num">1600×900, 132KB</div></div>
+        </div>
+      </section>
+
+      <aside class="detail" data-label="파일 정보 패널">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="grow">
+            <div class="trunc" style="font-weight:600">launch-hero.jpg</div>
+            <div class="xs muted">공개 / blog</div>
+          </div>
+          <span class="b ghost ico" aria-label="닫기"><span data-icon="x"></span></span>
+        </div>
+
+        <div class="big p1" data-label="큰 미리보기"></div>
+
+        <div style="display:flex;gap:6px" data-label="파일 동작">
+          <span class="b out xsb"><span data-icon="copy" class="i14"></span>주소 복사</span>
+          <span class="b out xsb"><span data-icon="download" class="i14"></span>내려받기</span>
+          <span class="grow"></span>
+          <span class="b ghost xsb danger-text"><span data-icon="trash-2" class="i14"></span>삭제</span>
+        </div>
+
+        <div class="field" data-label="대체 텍스트">
+          <div style="display:flex;align-items:center">
+            <label class="grow" style="font-size:14px;font-weight:500">대체 텍스트</label>
+            <span class="b ghost xsb" style="height:24px;padding:0 6px" data-label="AI로 만들기 버튼"><span data-icon="sparkles" class="i14"></span>AI로 만들기</span>
+          </div>
+          <div class="area" style="min-height:52px">편집 화면에서 사람과 에이전트가 같은 문서를 함께 고치는 모습</div>
+        </div>
+
+        <div class="field" data-label="태그">
+          <label>태그</label>
+          <div class="inp" style="gap:4px;padding:0 8px"><span class="chip">launch<span data-icon="x" class="i12 muted"></span></span><span class="chip">hero<span data-icon="x" class="i12 muted"></span></span></div>
+        </div>
+
+        <dl class="kv" data-label="파일 속성">
+          <dt>종류</dt><dd>JPEG 이미지</dd>
+          <dt>크기</dt><dd class="num">412KB, 1920×1080</dd>
+          <dt>올린 사람</dt><dd style="display:flex;align-items:center;gap:6px"><span data-icon="user" class="i14 muted"></span>Demo admin</dd>
+          <dt>올린 날</dt><dd class="num">2026. 11. 12.</dd>
+        </dl>
+
+        <div class="field" data-label="사용처">
+          <label>사용처 <span class="num muted" style="font-weight:400">2</span></label>
+          <div class="rows">
+            <div><span class="grow trunc" style="font-weight:500">Hello, world</span><span class="xs muted">Blog</span><span class="badge"><i class="dot"></i>게시됨</span></div>
+            <div><span class="grow trunc" style="font-weight:500">Draft ideas</span><span class="xs muted">Blog</span><span class="badge"><i class="dot draft"></i>초안</span></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </main>
+</div>
+</body>
+</html>

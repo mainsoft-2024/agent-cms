@@ -1,6 +1,7 @@
 /**
  * agent-cms — an add-on CMS that people (an admin screen) and agents (REST,
- * MCP, AI SDK tools) edit together. Lives inside the app: no separate server.
+ * MCP, CLI) edit together. Lives inside the app: no separate server. It hands
+ * agents tools and never calls a model itself.
  *
  * EXTRACTION RULE: nothing under `src/` may import from a host app (`@/`) or
  * any app module (`src/parts.test.ts` enforces it).
@@ -31,11 +32,25 @@ export type Via = (typeof VIAS)[number];
 /** Who is acting. Either an app session (user), an API key, the app itself or nobody. */
 export type Actor = (
   | { kind: "anonymous" }
-  | { kind: "user"; id: string; label: string; email?: string | null; isAdmin: boolean }
+  | {
+      kind: "user";
+      id: string;
+      label: string;
+      email?: string | null;
+      isAdmin: boolean;
+      /**
+       * Set when an agent acts for this person (an assistant inside the admin,
+       * say). Permissions are exactly the person's; versions, the document and
+       * the audit log also record the agent's name, and its edits show up as
+       * agent changes to review. Only code in the app can set this: REST and
+       * MCP never accept it.
+       */
+      agent?: { label: string };
+    }
   | { kind: "key"; id: string; label: string; scopes: KeyScope[]; collections: string[] | null }
   | { kind: "system"; label: string }
 ) & {
-  /** Set by the transports (REST, MCP, AI tools); app code may leave it out. */
+  /** Set by the transports (REST, MCP, `callTool`); app code may leave it out. */
   via?: Via;
 };
 
@@ -78,6 +93,8 @@ export interface CmsDoc extends DocContent {
   /** Label of whoever wrote the latest version. */
   updatedBy: string | null;
   updatedByKind: "user" | "key" | "system" | null;
+  /** Name of the agent that acted for `updatedBy` (a person), or null. */
+  updatedByAgent: string | null;
   /** Unsaved editor content (only for editors; never on a public read). */
   autosave: AutosaveState | null;
 }
@@ -105,6 +122,8 @@ export interface CmsVersion {
   authorKind: "user" | "key" | "system";
   authorId: string | null;
   authorLabel: string;
+  /** Name of the agent that acted for the author (a person), or null. */
+  authorAgent: string | null;
   note: string | null;
   published: boolean;
   createdAt: string;
@@ -138,6 +157,11 @@ export const AUDIT_ACTIONS = [
   "doc.delete",
   "doc.restore",
   "preview.create",
+  "asset.upload",
+  "asset.move",
+  "asset.delete",
+  "asset.register",
+  "asset.share",
   "access.denied",
   "auth.failed",
 ] as const;
@@ -149,6 +173,8 @@ export interface AuditEntry {
   actorKind: Actor["kind"];
   actorId: string | null;
   actorLabel: string;
+  /** Name of the agent that acted for the actor (a person), or null. */
+  actorAgent: string | null;
   action: AuditAction;
   collection: string | null;
   slug: string | null;
@@ -182,7 +208,60 @@ export interface AccessArgs {
 export interface FieldAdmin {
   label?: string;
   help?: string;
-  widget?: "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json";
+  widget?: "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json" | "image" | "file";
+  /**
+   * For `image` and `file` (the value is a media library file id): which
+   * files the field takes, as MIME types (`image/png`), groups (`image/*`)
+   * or extensions (`.pdf`). Applied on top of the store's own rule. Default
+   * for `image`: `["image/*"]`.
+   */
+  accept?: readonly string[];
+  /** For `image` and `file`: largest file (bytes) the field takes. */
+  maxFileSize?: number;
+  /** For `image` and `file`: the only store the field picks from and uploads to. */
+  store?: string;
+}
+
+export const ASSET_KINDS = ["image", "video", "audio", "document", "other", "folder"] as const;
+export type AssetKind = (typeof ASSET_KINDS)[number];
+
+/** A file in a store (`cms_assets`). Documents point at it by `id`. */
+export interface CmsAsset {
+  /** 12 lowercase letters and digits. */
+  id: string;
+  store: string;
+  /** Path inside the store, e.g. `blog/launch-hero.jpg`. */
+  key: string;
+  /** Folder part of `key` ("" = top level), without slashes at either end. */
+  folder: string;
+  name: string;
+  kind: AssetKind;
+  mime: string;
+  /** Bytes. */
+  size: number;
+  width: number | null;
+  height: number | null;
+  /** Seconds (video, audio). */
+  duration: number | null;
+  alt: string;
+  tags: string[];
+  thumbKey: string | null;
+  /** `pending` while it is being uploaded. */
+  status: "pending" | "ready";
+  uploadId: string | null;
+  createdBy: string | null;
+  createdByKind: "user" | "key" | "system" | null;
+  createdByAgent: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** One document's use of a file (`cms_asset_refs`). */
+export interface AssetRef {
+  assetId: string;
+  documentId: string;
+  inDraft: boolean;
+  inPublished: boolean;
 }
 
 export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny | undefined, S extends string = string> {
@@ -237,6 +316,10 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
     /** Per field path (`tags`, `seo.title`): label, help text, widget. */
     fields?: Record<string, FieldAdmin>;
   };
+  media?: {
+    /** true: an image without alt text is an error, not a warning. */
+    requireAlt?: boolean;
+  };
   hooks?: {
     /**
      * After every write. `info.contentChanged` is false when only the draft
@@ -280,6 +363,7 @@ export interface DocSummary {
   updatedAt: string;
   updatedBy: string | null;
   updatedByKind: CmsDoc["updatedByKind"];
+  updatedByAgent: string | null;
   hits7d?: number;
 }
 

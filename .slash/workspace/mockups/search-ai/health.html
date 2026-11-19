@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문서 목록의 점검 표시</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="../media-library/app.css">
+<link rel="stylesheet" href="../publish-flow/x.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <div class="nav"><span data-icon="layout-dashboard"></span><span>대시보드</span></div>
+    <h2>컬렉션</h2>
+    <div class="nav"><span data-icon="book-open"></span><span>Blog</span><span class="n">5</span></div>
+    <div class="nav on"><span data-icon="book-open"></span><span>Guide</span><span class="n">6</span></div>
+    <div class="nav"><span data-icon="settings"></span><span>사이트 설정</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav"><span data-icon="image"></span><span>미디어</span></div>
+    <div class="nav"><span data-icon="hard-drive"></span><span>파일</span></div>
+    <div class="nav"><span data-icon="clipboard-list"></span><span>폼</span></div>
+    <div class="nav"><span data-icon="package"></span><span>릴리스</span></div>
+    <div class="nav"><span data-icon="trash-2"></span><span>휴지통</span></div>
+    <h2>운영</h2>
+    <div class="nav"><span data-icon="key-round"></span><span>API 키</span></div>
+    <div class="nav"><span data-icon="scroll-text"></span><span>감사 로그</span></div>
+    <div class="nav"><span data-icon="webhook"></span><span>웹훅</span></div>
+    <div class="nav"><span data-icon="workflow"></span><span>자동화</span></div>
+    <div class="nav"><span data-icon="shield"></span><span>역할</span></div>
+    <div class="nav"><span data-icon="corner-down-right"></span><span>리다이렉트</span></div>
+    <div class="nav"><span data-icon="replace"></span><span>동의어</span></div>
+    <div class="nav"><span data-icon="arrow-left-right"></span><span>가져오기와 내보내기</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="phd">
+      <h1>Guide</h1>
+      <span class="grow"></span>
+      <div class="acts"><span class="b"><span data-icon="plus"></span>새 문서</span></div>
+    </header>
+    <div class="pad">
+      <div class="row">
+        <div class="inp ph-text" style="width:220px"><span data-icon="search"></span>제목, 주소로 찾기</div>
+        <div class="seg"><span class="on">전체 6</span><span>초안 1</span><span>게시됨 5</span><span>게시 후 수정됨 0</span><span>숨김 0</span></div>
+        <span class="grow"></span>
+        <div class="inp" style="width:170px" data-label="점검 필터"><span class="muted">점검</span><span class="grow">전체</span><span data-icon="chevron-down" class="i14 muted"></span></div>
+      </div>
+      <table data-label="문서 표">
+        <thead><tr><th style="width:36px"><span class="check"></span></th><th>제목</th><th style="width:120px">분류</th><th style="width:100px">상태</th><th style="width:200px" data-label="점검 열">점검</th><th style="width:160px">마지막 수정</th><th class="r" style="width:80px">7일 조회</th><th style="width:40px"></th></tr></thead>
+        <tbody>
+          <tr><td><span class="check"></span></td><td style="font-weight:500">Getting started</td><td>Basics</td><td><span class="badge"><i class="dot"></i>게시됨</span></td><td class="muted">문제 없음</td><td class="muted">김지수, 2시간 전</td><td class="r num">96</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          <tr data-label="깨진 링크가 있는 문서"><td><span class="check"></span></td><td style="font-weight:500">Install</td><td>Basics</td><td><span class="badge"><i class="dot"></i>게시됨</span></td><td><span class="badge"><i class="dot bad"></i>깨진 링크 1</span></td><td class="muted">김지수, 어제</td><td class="r num">54</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          <tr data-label="검토 기한이 지난 문서"><td><span class="check"></span></td><td style="font-weight:500">Connect Slack</td><td>Integrations</td><td><span class="badge"><i class="dot"></i>게시됨</span></td><td><span class="badge"><i class="dot review"></i>검토 기한 지남</span></td><td class="muted">박민호, 2026. 08. 12.</td><td class="r num">37</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          <tr data-label="들어오는 링크가 없는 문서"><td><span class="check"></span></td><td style="font-weight:500">Pricing FAQ</td><td>Basics</td><td><span class="badge"><i class="dot"></i>게시됨</span></td><td><span class="badge"><i class="dot review"></i>들어오는 링크 없음</span></td><td class="muted">김지수, 2026. 11. 02.</td><td class="r num">22</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          <tr><td><span class="check"></span></td><td style="font-weight:500">First document</td><td>Basics</td><td><span class="badge"><i class="dot"></i>게시됨</span></td><td class="muted">문제 없음</td><td class="muted">김지수, 2026. 11. 02.</td><td class="r num">18</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+          <tr><td><span class="check"></span></td><td style="font-weight:500">미디어 올리는 법</td><td>Tips</td><td><span class="badge"><i class="dot draft"></i>초안</span></td><td><span class="row"><span class="badge"><i class="dot bad"></i>깨진 링크 1</span><span class="badge"><i class="dot review"></i>경고 2</span></span></td><td class="muted"><span class="row"><span data-icon="bot" class="i14"></span>docs-bot, 10분 전</span></td><td class="r num muted">0</td><td><span data-icon="more-horizontal" class="muted"></span></td></tr>
+        </tbody>
+      </table>
+      <div class="foot"><span class="num">6개 중 6개</span></div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

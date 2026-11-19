@@ -18,6 +18,8 @@ export const ERROR_CODES = {
   version_not_found: "not_found",
   key_not_found: "not_found",
   route_not_found: "not_found",
+  asset_not_found: "not_found",
+  unknown_store: "not_found",
   unknown_collection: "unknown_collection",
   // access
   unauthorized: "unauthorized",
@@ -31,6 +33,7 @@ export const ERROR_CODES = {
   forbidden_publish: "forbidden",
   forbidden_keys: "forbidden",
   forbidden_audit: "forbidden",
+  forbidden_media: "forbidden",
   key_too_wide: "forbidden",
   cross_site: "forbidden",
   // validation
@@ -55,11 +58,29 @@ export const ERROR_CODES = {
   invalid_json: "invalid",
   body_too_large: "invalid",
   preview_disabled: "invalid",
+  // media
+  media_disabled: "invalid",
+  asset_type_not_allowed: "invalid",
+  asset_type_mismatch: "invalid",
+  asset_too_large: "invalid",
+  invalid_folder: "invalid",
+  upload_incomplete: "invalid",
+  import_blocked: "invalid",
+  import_failed: "invalid",
+  asset_rejected: "invalid",
+  asset_missing: "invalid",
+  asset_wrong_kind: "invalid",
+  asset_alt_missing: "invalid",
+  asset_alt_empty: "invalid",
+  asset_private_in_public: "invalid",
   no_public_url: "invalid",
   schema_outdated: "invalid",
   // concurrency
   conflict_version: "conflict",
   slug_taken: "conflict",
+  asset_in_use: "conflict",
+  folder_not_empty: "conflict",
+  too_many_files: "invalid",
   precondition_required: "precondition",
   // anything else
   internal: "internal",
@@ -136,7 +157,7 @@ export class CmsError extends Error {
     this.current = o.current;
   }
 
-  /** The wire shape (REST body, MCP error text, AI tool result). */
+  /** The wire shape (REST body, MCP error text, `callTool` result). */
   toJSON() {
     return {
       error: this.code,

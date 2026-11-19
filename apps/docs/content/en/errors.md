@@ -4,7 +4,7 @@ summary: One error shape on every transport, with fine codes and coarse kinds.
 category: Reference
 order: 2
 ---
-REST, MCP, the AI SDK tools and the CLI return the same shape:
+REST, MCP, the tools (`callTool`) and the CLI return the same shape:
 
 ```json
 { "error": "conflict_version", "kind": "conflict", "message": "…", "params": { "expected": 3, "current": 4 } }

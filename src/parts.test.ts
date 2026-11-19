@@ -4,13 +4,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { lookupForAgent } from "./agent";
 import { runCli } from "./cli";
-import { cmsTools, remoteCmsTools } from "./ai";
+import { createCmsClient } from "./client";
 import { docFromMarkdown } from "./frontmatter";
 import { createCms, defineCollection } from "./cms";
 import { createCmsHandler } from "./http";
 import { keyFromHeader } from "./keys";
 import { anchorOf, extractToc, parseInline, parseMarkdown, plainText, splitSections } from "./markdown";
 import { MemoryRepo } from "./repo";
+import { callTool, toolErrorResult, toolsFor } from "./tools";
 import type { Actor } from "./types";
 
 const DIR = join(process.cwd(), "src");
@@ -130,33 +131,76 @@ function inProcessFetch(cms: Awaited<ReturnType<typeof seeded>>) {
   return ((input: RequestInfo | URL, init?: RequestInit) => h(new Request(String(input), init))) as typeof fetch;
 }
 
-type Exec = (args: unknown, o: unknown) => Promise<unknown>;
-const exec = (t: unknown) => (t as { execute: Exec }).execute;
-
-test("ai: local tools follow the actor's permissions and return errors as results", async () => {
+test("tools: toolsFor + callTool follow the actor's permissions and return errors as results", async () => {
   const cms = await seeded();
-  const reader = cmsTools(cms, { kind: "anonymous" });
-  assert.ok("get_document" in reader && "search_documents" in reader);
-  assert.ok(!("update_document" in reader), "readers get read tools only");
-  const editor = cmsTools(cms, { kind: "system", label: "agent" }, { prefix: "cms_" });
-  const doc = (await exec(editor.cms_get_document)({ collection: "guide", slug: "slack", draft: true }, {})) as { version: number };
-  const ok = (await exec(editor.cms_update_document)({ collection: "guide", slug: "slack", doc: { summary: "새 요약" }, expectedVersion: doc.version }, {})) as { version: number };
+  const anon: Actor = { kind: "anonymous" };
+  const reader = toolsFor(cms, anon).map((t) => t.name);
+  assert.ok(reader.includes("get_document") && reader.includes("search_documents"));
+  assert.ok(!reader.includes("update_document"), "readers get read tools only");
+  // A tool the actor does not have is not callable either.
+  const hidden = (await callTool(cms, anon, "update_document", { collection: "guide", slug: "slack", doc: { summary: "x" } })) as { error: string; kind: string };
+  assert.equal(hidden.error, "unknown_tool");
+  assert.equal(hidden.kind, "not_found");
+
+  const editor: Actor = { kind: "system", label: "agent" };
+  const doc = (await callTool(cms, editor, "get_document", { collection: "guide", slug: "slack", draft: true })) as { version: number };
+  const ok = (await callTool(cms, editor, "update_document", { collection: "guide", slug: "slack", doc: { summary: "새 요약" }, expectedVersion: doc.version })) as { version: number };
   assert.equal(ok.version, doc.version + 1);
-  const stale = (await exec(editor.cms_update_document)({ collection: "guide", slug: "slack", doc: { summary: "또" }, expectedVersion: doc.version }, {})) as { error: string };
+  const stale = (await callTool(cms, editor, "update_document", { collection: "guide", slug: "slack", doc: { summary: "또" }, expectedVersion: doc.version })) as { error: string; kind: string; message: string };
   assert.equal(stale.error, "conflict_version");
-  assert.equal((stale as unknown as { kind: string }).kind, "conflict");
+  assert.equal(stale.kind, "conflict");
+  assert.ok(stale.message.length > 0);
+  // Bad input is a result too, and `only` narrows what may be called.
+  const bad = (await callTool(cms, editor, "get_document", { collection: 3 })) as { error: string; params: { issues: string } };
+  assert.equal(bad.error, "invalid_request");
+  assert.match(bad.params.issues, /collection/);
+  const narrowed = (await callTool(cms, editor, "delete_document", { collection: "guide", slug: "slack" }, { only: ["get_document"] })) as { error: string };
+  assert.equal(narrowed.error, "unknown_tool");
+  // Anything that is not a CMS error still throws.
+  assert.equal(toolErrorResult(new Error("boom")), null);
 });
 
-test("ai: remote tools call the app over MCP with a key", async () => {
+test("tools: a remote client calls the app over MCP with a key, and its errors become results", async () => {
   const cms = await seeded();
   const { secret } = await cms.createKey(admin, { name: "agent", scopes: ["read", "write", "publish"] });
-  const tools = remoteCmsTools({ url: "http://x/api/cms", key: secret, fetch: inProcessFetch(cms) });
-  const created = (await exec(tools.create_document)({ collection: "guide", doc: { slug: "notion", title: "Notion 연결", body: "## 연결\n\n노션" }, publish: true }, {})) as { status: string };
+  const api = createCmsClient({ url: "http://x/api/cms", key: secret, fetch: inProcessFetch(cms) });
+  const created = await api.call<{ status: string }>("create_document", { collection: "guide", doc: { slug: "notion", title: "Notion 연결", body: "## 연결\n\n노션" }, publish: true });
   assert.equal(created.status, "published");
-  const hits = (await exec(tools.search_documents)({ query: "노션" }, {})) as { slug: string }[];
+  const hits = await api.call<{ slug: string }[]>("search_documents", { query: "노션" });
   assert.equal(hits[0].slug, "notion");
-  const missing = (await exec(tools.get_document)({ collection: "guide", slug: "nope" }, {})) as { error: string };
-  assert.equal(missing.error, "not_found");
+  const missing = await api.call("get_document", { collection: "guide", slug: "nope" }).catch((e) => toolErrorResult(e));
+  assert.equal((missing as { error: string }).error, "not_found");
+  assert.equal((missing as { kind: string }).kind, "not_found");
+});
+
+test("no model calls: nothing imports a model library, and none is a dependency", () => {
+  const banned = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)["'](ai|ai\/[^"']*|@ai-sdk\/[^"']*|openai|@anthropic-ai\/[^"']*|@google\/generative-ai|ollama)["']/g;
+  const root = process.cwd();
+  const skip = new Set(["node_modules", "dist", ".next", ".slash", "test-results", "playwright-report", "public"]);
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (skip.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|sh)$/.test(e.name)) files.push(p);
+    }
+  };
+  for (const d of ["src", "registry", "examples", "e2e", "scripts"]) walk(join(root, d));
+  assert.ok(files.length > 50, "the walk found the sources");
+  for (const f of files) {
+    const bad = [...readFileSync(f, "utf8").matchAll(banned)].map((m) => m[1]);
+    assert.deepEqual(bad, [], `${f.slice(root.length + 1)} imports ${bad.join(", ")}`);
+  }
+  const isModelLib = (n: string) => n === "ai" || n.startsWith("@ai-sdk/") || n === "openai" || n.startsWith("@anthropic-ai/") || n === "@google/generative-ai" || n === "ollama";
+  for (const p of ["package.json", "examples/next/package.json"]) {
+    const pkg = JSON.parse(readFileSync(join(root, p), "utf8")) as Record<string, Record<string, string> | undefined>;
+    for (const k of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+      const bad = Object.keys(pkg[k] ?? {}).filter(isModelLib);
+      assert.deepEqual(bad, [], `${p} ${k} lists ${bad.join(", ")}`);
+    }
+  }
+  assert.ok(!("./ai" in (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { exports: Record<string, unknown> }).exports), "no ./ai entry");
 });
 
 test("frontmatter: doc keys, fields and arrays", () => {

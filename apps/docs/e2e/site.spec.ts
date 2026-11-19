@@ -48,7 +48,7 @@ test("search finds a section and records a miss", async ({ page }) => {
   await box.press("Enter");
   await expect(page).toHaveURL(/\/docs\/editing-together#/);
   await page.keyboard.press("Control+k");
-  await page.getByRole("combobox", { name: "Search the docs" }).fill("zzqx nothing here");
+  await page.getByRole("combobox", { name: "Search the docs" }).fill("zzqx vvkw"); // no real words: two of three matching words would count as a hit
   await expect(page.getByText(/Nothing found/)).toBeVisible();
 });
 
@@ -112,6 +112,42 @@ test("phone: menu and hero fit @mobile", async ({ page }) => {
   const lines = await h1.locator(".ln").count();
   expect(lines).toBe(3);
   await page.getByRole("button", { name: "Open menu" }).click();
+  // The menu fills the screen under the header (it used to be as short as the header).
+  const menu = await page.locator("#site-menu").boundingBox();
+  const screen = page.viewportSize()!;
+  expect(menu && menu.height).toBeGreaterThan(screen.height - 80);
+  for (const name of ["Docs", "Components", "Changelog"]) await expect(page.getByRole("navigation", { name: "Menu" }).getByRole("link", { name })).toBeInViewport();
+  await expect(page.locator("#site-menu").getByRole("link", { name: "GitHub" })).toBeInViewport();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#site-menu")).toHaveCount(0);
+  await page.getByRole("button", { name: "Open menu" }).click();
   await page.getByRole("navigation", { name: "Menu" }).getByRole("link", { name: "Docs" }).click();
   await expect(page).toHaveURL(/\/docs\//);
+});
+
+test("media library: docs pages, the agent page without ./ai, and the read-only demo", async ({ page, request }) => {
+  await page.goto("/docs/media-library");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Media library");
+  await expect(page.getByRole("heading", { name: "CORS" })).toBeVisible();
+  await page.goto("/ko/docs/file-manager");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("파일 관리자");
+  await page.goto("/docs/ai-sdk");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Your own agent");
+  expect(await page.locator("main").innerText()).not.toContain('from "@mainsoft/agent-cms/ai"');
+  await page.goto("/changelog");
+  await expect(page.getByText("0.8.0: media library", { exact: false }).first()).toBeVisible();
+
+  // The gallery's library: pictures drawn by the site, shown through the demo's own file route.
+  await page.goto("/components/cms-media");
+  const demo = page.getByRole("region", { name: "Live demo" });
+  await expect(demo.getByText("dashboard.svg").first()).toBeVisible();
+  await expect(demo.getByRole("button", { name: /^Upload/ })).toHaveCount(0);
+  const list = (await (await request.get("/api/demo/assets")).json()) as { assets: { name: string; publicUrl: string }[] };
+  expect(list.assets.length).toBe(5);
+  const file = await request.get(list.assets[0].publicUrl);
+  expect(file.status()).toBe(200);
+  expect(file.headers()["content-type"]).toContain("image/svg+xml");
+  expect(file.headers()["content-security-policy"]).toContain("sandbox");
+  expect((await request.post("/api/demo/assets/uploads", { data: { name: "x.png", mime: "image/png", size: 10 } })).status()).toBe(403);
+  expect((await (await request.get("/r/cms-media.json")).json()).name).toBe("cms-media");
 });

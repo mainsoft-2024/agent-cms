@@ -1,0 +1,60 @@
+{
+  "canvas": "ops-integrations",
+  "title": "연동과 운영",
+  "description": "웹훅, 가져오기와 내보내기, 역할, 자동화, 대시보드, 단독 서버 로그인의 화면 구성과 문구를 정한다",
+  "sections": [
+    {
+      "title": "운영 화면",
+      "artboards": [
+        {
+          "id": "dashboard",
+          "path": ".slash/workspace/mockups/ops-integrations/dashboard.html",
+          "label": "1. 대시보드",
+          "device": "browser"
+        },
+        {
+          "id": "webhooks",
+          "path": ".slash/workspace/mockups/ops-integrations/webhooks.html",
+          "label": "2. 웹훅",
+          "device": "browser"
+        },
+        {
+          "id": "automation",
+          "path": ".slash/workspace/mockups/ops-integrations/automation.html",
+          "label": "3. 자동화",
+          "device": "browser"
+        },
+        {
+          "id": "roles",
+          "path": ".slash/workspace/mockups/ops-integrations/roles.html",
+          "label": "4. 역할",
+          "device": "browser"
+        },
+        {
+          "id": "transfer",
+          "path": ".slash/workspace/mockups/ops-integrations/transfer.html",
+          "label": "5. 가져오기와 내보내기",
+          "device": "browser"
+        }
+      ]
+    },
+    {
+      "title": "단독 서버",
+      "artboards": [
+        {
+          "id": "login",
+          "path": ".slash/workspace/mockups/ops-integrations/login.html",
+          "label": "6. 로그인",
+          "device": "browser"
+        }
+      ]
+    }
+  ],
+  "versions": [
+    {
+      "version": 1,
+      "mockupId": "nHDd93AwrnZZIPc08dcXQ",
+      "createdAt": "2026-11-19T14:10:56.642Z"
+    }
+  ]
+}

@@ -37,6 +37,33 @@
  *   GET    /keys | POST /keys {name, scopes, collections?, expiresAt?} | DELETE /keys/:id
  *   GET    /audit?cursor=&action=&outcome=&actorKind= (also /_audit)
  *   POST   /mcp                                       MCP (official SDK, streamable HTTP, stateless)
+ *
+ * Media library (only with `createCms({ media })`):
+ *
+ *   GET    /assets?store=&folder=&kind=image,video&q=&tag=&cursor=&limit=
+ *   GET    /assets/_folders                           stores with their folders and file counts
+ *   POST   /assets/_folders {store?, path}            DELETE /assets/_folders?store=&path= (empty folders only)
+ *   POST   /assets/uploads {name, mime?, size, folder?, store?, alt?, tags?, field?}
+ *                                                     → {asset, upload: {kind: "single", url, headers} | {kind: "multipart", partSize, partCount}}
+ *   GET    /assets/uploads/:id                        which parts have arrived     DELETE: give up
+ *   POST   /assets/uploads/:id/parts {parts: [1, 2]}  signed addresses for parts
+ *   POST   /assets/uploads/:id/complete {width?, height?, duration?}
+ *   POST   /assets/_import {url, name?, folder?, store?, alt?, tags?}
+ *   GET    /assets/:id                                the file and the documents that use it
+ *   PATCH  /assets/:id {alt?, tags?}
+ *   POST   /assets/:id/move {folder?, name?}
+ *   POST   /assets/:id/thumb                          body: a WebP, JPEG or PNG up to 512KB
+ *   DELETE /assets/:id                                409 asset_in_use with the documents; ?confirm=1 deletes anyway
+ *   GET    /files/:id/:name                           redirect to the file (?thumb=1, ?download=1); private files need a session or key
+ *
+ * File manager (the bucket as it is, also files the CMS did not upload):
+ *
+ *   GET    /stores/:store/files?prefix=&q=&cursor=&limit=   one folder: sub-folders and files, each with its asset when known
+ *   GET    /stores/:store/files/_open?key=&download=1       redirect to a file by key
+ *   POST   /stores/:store/files/_register {key, alt?, tags?}
+ *   POST   /stores/:store/files/_move {keys?, folders?, to}  → {moved, failed: [{key, message}]}
+ *   POST   /stores/:store/files/_delete {keys?, folders?, confirm?}   409 asset_in_use with the documents unless confirm
+ *   POST   /assets/:id/share {ttl: "1h" | "24h" | "7d"}      → {url, expiresAt}
  */
 
 import { z } from "zod";
@@ -44,7 +71,7 @@ import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "
 import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
-import { DOC_STATUSES, KEY_SCOPES, type Actor, type CmsDoc } from "./types";
+import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, type Actor, type AssetKind, type CmsDoc } from "./types";
 
 export interface CmsHandlerOptions {
   cms: CmsLike;
@@ -122,7 +149,11 @@ export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsH
     const origin = req.headers.get("origin");
     if (site === "cross-site" || (origin && new URL(req.url).host !== safeHost(origin))) throw new CmsError("cross_site", {}, { messages: core.messages });
   }
-  return user ?? { kind: "anonymous" };
+  if (!user) return { kind: "anonymous" };
+  // "An agent acting for this person" can only be said by code in the app
+  // that calls the CMS directly; a request never carries it.
+  const { agent: _agent, ...person } = user;
+  return person;
 }
 
 function safeHost(origin: string): string | null {
@@ -198,6 +229,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           actor: actor.kind === "anonymous" ? { kind: "anonymous" } : { kind: actor.kind, label: actor.label, id: "id" in actor ? actor.id : null },
           isAdmin: core.isAdmin(actor),
           previewLinks: core.previewEnabled(),
+          media: core.assets.describe(actor),
           collections: core
             .collections()
             .filter((c) => core.can(actor, c.slug, "read"))
@@ -246,6 +278,100 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         }
       }
 
+      if (seg[0] === "files" && seg[1] && seg.length <= 3 && (m === "GET" || m === "HEAD")) {
+        const to = await core.assets.open(actor, seg[1], { thumb: q.get("thumb") === "1", download: q.get("download") === "1" });
+        // A public address may be cached briefly; a signed one is for this request only.
+        return new Response(null, { status: 302, headers: { location: to.url, "cache-control": to.visibility === "public" && q.get("download") !== "1" ? "public, max-age=300" : "private, no-store" } });
+      }
+
+      if (seg[0] === "stores" && seg[1] && seg[2] === "files") {
+        const assets = core.assets;
+        const store = seg[1];
+        const pick = z.object({ keys: z.array(z.string().max(1024)).max(1000).optional(), folders: z.array(z.string().max(1024)).max(1000).optional() });
+        if (seg.length === 3 && m === "GET") return json(await assets.browse(actor, { store, prefix: q.get("prefix"), q: q.get("q"), cursor: q.get("cursor"), limit: Number(q.get("limit") ?? 200) || 200 }));
+        if (seg[3] === "_open" && seg.length === 4 && (m === "GET" || m === "HEAD")) {
+          const to = await assets.openKey(actor, { store, key: q.get("key") ?? "", download: q.get("download") === "1" });
+          return new Response(null, { status: 302, headers: { location: to.url, "cache-control": "private, no-store" } });
+        }
+        if (seg[3] === "_register" && seg.length === 4 && m === "POST") {
+          const b = await body(req, z.object({ key: z.string().min(1).max(1024), alt: z.string().max(500).optional(), tags: z.array(z.string().max(40)).max(30).optional() }));
+          return json({ asset: await assets.register(actor, { store, ...b }) }, 201);
+        }
+        if (seg[3] === "_move" && seg.length === 4 && m === "POST") return json(await assets.moveMany(actor, { store, ...(await body(req, pick.extend({ to: z.string().max(1024).nullable() }))) }));
+        if (seg[3] === "_delete" && seg.length === 4 && m === "POST") return json(await assets.removeMany(actor, { store, ...(await body(req, pick.extend({ confirm: z.boolean().optional(), check: z.boolean().optional() }))) }));
+      }
+
+      if (seg[0] === "assets") {
+        const assets = core.assets;
+        const tags = z.array(z.string().max(40)).max(30).optional();
+        if (seg.length === 1 && m === "GET") {
+          const kinds = (q.get("kind") ?? "").split(",").filter((k): k is AssetKind => (ASSET_KINDS as readonly string[]).includes(k) && k !== "folder");
+          return json(await assets.list(actor, { store: q.get("store"), folder: q.get("folder"), kinds, q: q.get("q") ?? undefined, tag: q.get("tag") ?? undefined, cursor: q.get("cursor"), limit: Number(q.get("limit") ?? 48) || 48 }));
+        }
+        if (seg[1] === "_folders" && seg.length === 2) {
+          if (m === "GET") return json({ stores: await assets.folders(actor) });
+          if (m === "POST") return json(await assets.createFolder(actor, await body(req, z.object({ store: z.string().nullable().optional(), path: z.string().min(1).max(400) }))), 201);
+          if (m === "DELETE") {
+            await assets.deleteFolder(actor, { store: q.get("store"), path: q.get("path") ?? "" });
+            return json({ ok: true });
+          }
+        }
+        if (seg[1] === "_import" && seg.length === 2 && m === "POST") {
+          const b = await body(req, z.object({ url: z.string().max(2000), name: z.string().max(300).nullable().optional(), folder: z.string().max(400).nullable().optional(), store: z.string().nullable().optional(), alt: z.string().max(500).optional(), tags }));
+          return json({ asset: await assets.import(actor, b) }, 201);
+        }
+        if (seg[1] === "uploads") {
+          if (seg.length === 2 && m === "POST") {
+            const b = await body(
+              req,
+              z.object({
+                name: z.string().min(1).max(300),
+                mime: z.string().max(200).nullable().optional(),
+                size: z.number().int().positive(),
+                folder: z.string().max(400).nullable().optional(),
+                store: z.string().nullable().optional(),
+                alt: z.string().max(500).optional(),
+                tags,
+                field: z.object({ collection: z.string(), path: z.string() }).nullable().optional(),
+              })
+            );
+            return json(await assets.requestUpload(actor, b), 201);
+          }
+          const id = seg[2];
+          if (id && seg.length === 3 && m === "GET") return json(await assets.uploadStatus(actor, id));
+          if (id && seg.length === 3 && m === "DELETE") {
+            await assets.abortUpload(actor, id);
+            return json({ ok: true });
+          }
+          if (id && seg[3] === "parts" && seg.length === 4 && m === "POST") {
+            const b = await body(req, z.object({ parts: z.array(z.number().int().positive()).min(1).max(200) }));
+            return json({ parts: await assets.partUrls(actor, id, b.parts) });
+          }
+          if (id && seg[3] === "complete" && seg.length === 4 && m === "POST") {
+            const n = z.number().nonnegative().nullable().optional();
+            return json({ asset: await assets.completeUpload(actor, id, await body(req, z.object({ width: n, height: n, duration: n }), true)) });
+          }
+        }
+        const id = seg[1];
+        if (id && !id.startsWith("_") && id !== "uploads") {
+          if (seg.length === 2 && m === "GET") return json({ asset: await assets.get(actor, id) });
+          if (seg.length === 2 && m === "PATCH") return json({ asset: await assets.update(actor, id, await body(req, z.object({ alt: z.string().max(500).optional(), tags }))) });
+          if (seg.length === 2 && m === "DELETE") {
+            await assets.remove(actor, id, { confirm: q.get("confirm") === "1" });
+            return json({ ok: true });
+          }
+          if (seg[2] === "move" && seg.length === 3 && m === "POST") {
+            return json({ asset: await assets.move(actor, id, await body(req, z.object({ folder: z.string().max(400).nullable().optional(), name: z.string().max(300).nullable().optional() }))) });
+          }
+          if (seg[2] === "share" && seg.length === 3 && m === "POST") return json(await assets.share(actor, id, await body(req, z.object({ ttl: z.enum(["1h", "24h", "7d"]).optional() }), true)));
+          if (seg[2] === "thumb" && seg.length === 3 && m === "POST") {
+            const bytes = new Uint8Array(await req.arrayBuffer());
+            if (bytes.length > MAX_BODY_BYTES) throw new CmsError("body_too_large", {}, { status: 413 });
+            return json({ asset: await assets.setThumb(actor, id, bytes) });
+          }
+        }
+      }
+
       if (seg[0] === "collections" && seg[1]) {
         const col = seg[1];
         const cfg = core.collection(col);
@@ -261,6 +387,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             hasUrl: !!cfg.url,
             fields: cfg.fields ? toJsonSchema(cfg.fields) : null,
             admin: cfg.admin?.fields ?? {},
+            requireAlt: !!cfg.media?.requireAlt,
             forbiddenChars: cfg.forbiddenChars ?? [],
             canWrite: core.can(actor, col, "write"),
             canPublish: core.can(actor, col, "publish"),

@@ -10,9 +10,9 @@ agent-cms runs **inside your existing web app**: no separate server, no new data
 
 - **Collections over one table set.** Every collection lives in the same `cms_*` tables, so adding one needs no migration. Each has typed `fields` (zod), categories, slugs and house-style checks.
 - **Versions.** Every save is a full snapshot. Drafts, publish, unpublish, archive, restore. A stale save is a conflict that carries the other person's copy, and the editor merges the two line by line.
-- **Agents as editors.** One tool list, four ways in: AI SDK tools, MCP, a CLI and REST. Agents change one section at a time, check a draft before saving, and people review what they changed block by block.
+- **Agents as editors.** One tool list, three ways in: MCP, a CLI and REST, plus the same tools as functions for the agent in your own app. Agents change one section at a time, check a draft before saving, and people review what they changed block by block.
 - **Search built for answering.** Korean-aware, returns sections with citation ids such as `cms://docs/install#tables`.
-- **Admin screens you own.** Nine screens copied into your app with shadcn, built on your own parts.
+- **Admin screens you own.** Screens copied into your app with shadcn, built on your own parts.
 - **Safe defaults.** Every collection is `public` or `internal`; API keys are hashed, scoped and can expire; publishing, deletes and refusals go to an audit log.
 
 ## This site

@@ -12,15 +12,16 @@ notes, a help center, internal docs, a notice board.
   archive, restore. Two writers never overwrite each other: a stale save is a
   conflict (409) that carries the other person's copy, and the admin screen
   merges the two line by line.
-- **Agents are first-class editors.** One tool list, four ways in:
-  - **AI SDK tools** (`./ai`) for your own agent: `cmsTools(cms, actor)`
-    in-process, or `remoteCmsTools({ url, key })` against another app. They
-    are plain AI SDK `Tool`s, so they also work unchanged with anything built
-    on the AI SDK, such as slash-agent-sdk.
+- **Agents are first-class editors.** One tool list, three ways in:
   - **MCP** at `/api/cms/mcp` for coding agents (Claude Code, Cursor, …),
     served with the official MCP SDK.
   - **CLI** (`agent-cms put notes/launch.md --publish`) for agents with a shell.
   - **REST** for everything else.
+
+  The list itself is in `./tools` (`toolsFor`, `callTool`), so an agent
+  running inside your app gets the same tools whatever framework runs it.
+  This package never calls a model: the model, its key and the agent loop
+  stay with you.
   Agents change one section at a time (`patch_document`), check a draft
   before saving (`diagnose_document`), and people review what agents changed
   block by block.
@@ -40,6 +41,7 @@ notes, a help center, internal docs, a notice board.
 > Design follows [Payload](https://payloadcms.com)'s collection, version and
 > MCP shapes, written to run on Next.js 14+/React 18 and Postgres + Drizzle.
 
+Used `./ai`? It is gone: read [UPGRADE-0.8.md](./UPGRADE-0.8.md).
 Upgrading from 0.5? Read [UPGRADE-0.6.md](./UPGRADE-0.6.md) first (the
 `cms_gaps` table needs moving before anything drops it). Changes are in
 [CHANGELOG.md](./CHANGELOG.md).
@@ -51,9 +53,9 @@ npm i @mainsoft/agent-cms
 npx agent-cms init
 ```
 
-Peer dependencies: `drizzle-orm`, `zod` (`^3.25` or `^4`), and `ai` (only for
-`./ai`). `init` writes `agent-cms.config.ts`, `lib/cms.ts`, the API route,
-a schema re-export and `.env.example` lines, and never overwrites a file.
+Peer dependencies: `drizzle-orm` and `zod` (`^3.25` or `^4`). `init` writes
+`agent-cms.config.ts`, `lib/cms.ts`, the API route, a schema re-export and
+`.env.example` lines, and never overwrites a file.
 
 ## Set up
 
@@ -61,7 +63,7 @@ a schema re-export and `.env.example` lines, and never overwrites a file.
 them, or put the SQL in a migration:
 
 ```ts
-export { cmsDocuments, cmsVersions, cmsApiKeys, cmsHits, cmsMeta, cmsAudit } from "@mainsoft/agent-cms/tables";
+export { cmsDocuments, cmsVersions, cmsApiKeys, cmsHits, cmsMeta, cmsAudit, cmsAssets, cmsAssetRefs } from "@mainsoft/agent-cms/tables";
 ```
 
 ```
@@ -146,7 +148,7 @@ they go and how imports are written) and talk to the CMS through
 
 ```
 npx agent-cms add --list
-npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
+npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media cms-files
 npx agent-cms add --diff      # what a new release would change in your copies
 npx agent-cms add --update    # update files you did not edit; yours get a .new copy
 ```
@@ -176,6 +178,9 @@ npx shadcn@latest add <registry-url>/cms-doc-editor.json
 | `cms-keys` | Keys with expiry; the secret is shown once with MCP and CLI set-up |
 | `cms-audit` | Who did what, filterable |
 | `cms-command` | ⌘K to find any document, drafts included |
+| `cms-media` | The media library: stores and folders, grid or list, a file's alt text, tags and the documents that use it, uploads with progress, delete with a look at where the file is used |
+| `cms-media-picker` | The "choose media" dialog behind image and file fields and the editor's "Insert media" (comes with `cms-doc-editor`) |
+| `cms-files` | The file manager: a bucket folder by folder, also files nobody uploaded through the CMS; move, download, share links and delete for several at once |
 | `cms-empty` | Empty collection: new document, or how to write with an agent |
 
 UI text is English by default; a Korean catalog ships with the screens.
@@ -203,39 +208,237 @@ UI text is English by default; a Korean catalog ships with the screens.
   "unarchive" | "delete", items)` runs each document on its own and returns
   `{ slug, ok, error? }` for each.
 
-## Agents
+## Media library
 
-### Your own agent (AI SDK, slash-agent-sdk)
+Documents can hold images, video and files. The files live in your own
+storage bucket; the CMS keeps a row per file and hands the browser a signed
+address, so uploads go straight to the storage and never through your app
+server (which is why a 5GB video works on a serverless host). Without `media`
+the feature is off and nothing changes.
 
 ```ts
-import { streamText } from "ai";
-import { cmsTools } from "@mainsoft/agent-cms/ai";
+import { s3Storage } from "@mainsoft/agent-cms/storage-s3";
 
-const result = streamText({
-  model,
-  tools: {
-    ...myTools,
-    // Every tool this actor may use; `only` and `prefix` narrow and rename.
-    ...cmsTools(cms, { kind: "system", label: "assistant" }, { prefix: "cms_" }),
+const s3 = (bucket: string, publicUrl?: string) =>
+  s3Storage({ bucket, region: "auto", endpoint: process.env.S3_ENDPOINT, accessKeyId: process.env.S3_KEY!, secretAccessKey: process.env.S3_SECRET!, publicUrl });
+
+export const cms = createCms({
+  // …
+  media: {
+    stores: {
+      // The first store is the default. `public`: anyone with the address can read.
+      public: { label: "Public", visibility: "public", adapter: s3("site-media", "https://media.example.com") },
+      // `private`: opened through the CMS after a permission check, with a link that works for 5 minutes.
+      private: { label: "Private", visibility: "private", adapter: s3("site-private"), accept: ["application/pdf"], maxFileSize: 100 * 1024 ** 2 },
+    },
+    // accept: ["image/*", "video/*", ".pdf"],   // what every store takes; default below
+    // maxFileSize: 5 * 1024 ** 3,               // default 5GB
+    imageUrl: ({ url, width }) => `/_next/image?url=${encodeURIComponent(url)}&w=${width}&q=75`,
   },
-  messages,
 });
 ```
+
+`s3Storage` works with AWS S3 (leave `endpoint` out, set `region`),
+Cloudflare R2 (`region: "auto"`, the account's S3 endpoint) and MinIO or any
+other S3-compatible server. It signs requests itself (`aws4fetch`), so there
+is no AWS SDK to install. Another kind of storage is a `StorageAdapter`
+(`./storage`).
+
+**The bucket needs a CORS rule** that lets your site `PUT` to it. Add `media`
+(the same object) to `agent-cms.config.ts` and run:
+
+```
+npx agent-cms storage check --origin https://your-site.example
+```
+
+It uploads, reads, moves and deletes a test file in every store for real
+(also in parts, also with a browser-style signed address), tests the CORS
+rule, prints the rule to paste into the bucket, and lists what each store
+accepts. `npx agent-cms storage cleanup` removes uploads that were started
+and never finished (`doctor` tells you when there are any).
+
+**What may be uploaded** is yours to decide, at three levels: `media.accept`
+for the app, `stores.<name>.accept` for one store (replaces the app-wide
+list), and `admin.fields.<field>.accept` for one field (narrows its store's
+list). Entries are MIME types (`image/png`), groups (`image/*`) or
+extensions (`.pdf`); `["*/*"]` takes anything. Unset, the default
+(`DEFAULT_ACCEPT`) takes images, video, sound, PDF, office documents, plain
+text and ZIP; web pages and programs only when you list them. `maxFileSize`
+has the same three levels. The server checks the name and declared type when
+an upload starts, and the first bytes of what actually arrived when it ends:
+a web page named `photo.png` is deleted again (`asset_type_mismatch`).
+
+**Your own check.** `media.scan` is called once for every file that arrives:
+when a browser upload completes, when a file is imported or stored by the
+server, and when a file that was already in the bucket gets registered. It
+is where a virus scanner or a content policy goes:
+
+```ts
+media: {
+  stores: { /* … */ },
+  scan: async ({ url, bytes, name, mime, size }) => {
+    // `url`: a signed address that works for 10 minutes. `bytes` instead when the CMS holds the file in memory.
+    const verdict = await myScanner.check(url ?? bytes);
+    return verdict.clean ? true : { ok: false, reason: verdict.name };
+  },
+},
+```
+
+A refused file is deleted from the storage and never becomes usable (a
+registered one is left where it was); the caller gets `asset_rejected` and
+the audit log has the reason. A check that throws refuses the file too.
+
+**In a document** a file is named by its id, so moving or renaming it never
+breaks a page:
+
+```md
+![The new dashboard](asset:8k2m4x9pq1zt/dashboard.png "Caption under the picture")
+
+Read [the full report](asset:r7w2k9m4x1pa/report-2026.pdf).
+```
+
+An image line of its own is a media block (a picture, a video player or a
+download card, by the file's type). `![alt](https://…)` shows an image from
+elsewhere. For a field, use the `image` or `file` widget; the value is the
+file's id:
+
+```ts
+import { assetId } from "@mainsoft/agent-cms";
+
+fields: z.object({ cover: assetId().optional(), brochure: assetId().optional() }),
+admin: { fields: { cover: { widget: "image" }, brochure: { widget: "file", accept: [".pdf"], maxFileSize: 20 * 1024 ** 2 } } },
+media: { requireAlt: true },   // an image without alt text stops a save (default: a warning)
+```
+
+Saving checks the files a document names: one that does not exist or is the
+wrong kind for its field is an error; a missing alt text or a private file
+in a public document is a warning.
+
+**On your page**, ask for the files a document uses and render the block
+tree as before:
+
+```ts
+const doc = await cms.get(anon, "posts", slug);
+const files = await cms.assetsFor(doc);        // { [id]: { url, width, height, alt, kind, mime, … } }
+const cover = files[doc.fields.cover];
+<img src={cms.imageUrl(cover, { width: 1200 })} width={cover.width} height={cover.height} alt={cover.alt} />
+```
+
+`parseMarkdown` gives `{ t: "media", asset, alt, caption }` blocks; look the
+`asset` up in `files`. The CMS stores originals only. Resizing is your
+framework's or CDN's job, through `media.imageUrl`.
+
+**Who may do what.** Listing files and opening private ones: signed-in
+people and keys. Uploading, importing, alt text, tags, new folders: admins
+and keys with `write`. Moving, renaming and deleting: admins and keys with
+`publish`. A store's `access: { read, write, delete }` replaces any of the
+three. Deleting a file that documents use fails with `asset_in_use` and the
+list of documents until the caller confirms. Uploads, moves and deletes are
+in the audit log.
+
+The file route is `GET /api/cms/files/<id>/<name>`: it checks permission and
+redirects to the public address or to a short-lived signed one
+(`media.linkTtlSeconds`, default 300). Set `media.filesUrl` when your handler
+is not mounted at `/api/cms`.
+
+**In the admin**, add the screen (`npx agent-cms add cms-media`) and a page
+for it; the sidebar shows "Media" by itself when the app has a library:
+
+```tsx
+// app/admin/media/page.tsx
+"use client";
+import { CmsMedia } from "@/components/cms/cms-media";
+export default function MediaPage() {
+  return <CmsMedia />;
+}
+```
+
+The browser sends files straight to the storage, four parts at a time for
+large ones, tries a failed part again three times, and "Try again" sends only
+what is still missing. It also makes a small picture of each image and video
+(480px, WebP) for the library, and reads width, height and length.
+"Import from URL" fetches a public https address into the open folder
+(addresses inside your network are refused, as for agents), and the pencil
+in a file's panel renames it; the extension stays, so the type cannot change.
+`<CmsProvider slots={{ assetAlt }}>` lets an extension package put its own
+control next to a file's alt text field.
+
+Agents get six more tools when the app has a media library: `list_assets`,
+`get_asset` (read), `import_asset` (fetch an https address into the library;
+addresses inside your network are refused), `update_asset` (write),
+`move_asset` and `delete_asset` (publish). From a terminal:
+
+```
+npx agent-cms upload ./hero.png ./talk.mp4 --folder launch --alt "The launch screen" --tag launch
+```
+
+### File manager
+
+The media library shows the files the CMS knows. The file manager
+(`npx agent-cms add cms-files`, a page with `<CmsFiles />`) shows a bucket as
+it is, folder by folder: files another program put there appear too. The
+sidebar shows "Files" to whoever may look around a store (by default whoever
+may read it; a store's `access.browse` narrows that).
+
+- A file the CMS did not know gets a row when someone opens it, tags it,
+  shares it or an agent registers it. From then on it works in documents like
+  any other file. `npx agent-cms storage sync [--store name] [--folder path]`
+  registers everything at once and lists files the CMS knows that are gone
+  from the bucket (it deletes nothing).
+- Several files and whole folders can be moved or deleted at once (up to
+  1000 objects per request). A move copies and deletes, one file after the
+  other: files that fail are reported, and moving again takes the rest. A name
+  that is taken at the destination gets a number; nothing is overwritten.
+  Deleting shows the documents that use any of the files first.
+- "Make a link" gives an address for someone outside. For a private store it
+  works for 1 hour, 24 hours or 7 days and **cannot be taken back** (it is a
+  signed address); for a public store it is the file's public address. Making
+  one needs the permission to delete in that store, and is in the audit log.
+- The CMS's own folder (`_cms/`, thumbnails) is hidden and cannot be touched.
+
+Agents get three more tools: `list_store_files` (read), `register_asset`
+(write) and `create_share_link` (publish).
+
+## Agents
+
+This package never calls a model. It has no model or key settings. It hands
+your agent a list of tools; the model and the loop that drives it are yours.
+
+### Your own agent
+
+`toolsFor(cms, actor)` lists the tools this actor may use (name, description,
+a zod schema for the input). `callTool` runs one. Wrap them in whatever your
+agent framework calls a tool:
+
+```ts
+import { toolsFor, callTool } from "@mainsoft/agent-cms/tools";
+
+const actor = { kind: "system", label: "assistant" } as const;
+
+const tools = toolsFor(cms, actor).map((t) => ({
+  name: t.name,
+  description: t.description,
+  input: t.input, // a zod object; toJsonSchema(t.input) from ./mcp gives JSON Schema
+  run: (args: unknown) => callTool(cms, actor, t.name, args),
+}));
+```
+
+`callTool(cms, actor, name, args, { only })` checks the input, runs the tool
+with the actor's permissions, and records the call as made by an agent.
+`toolsFor(cms, actor, only)` and the `only` option narrow the list.
 
 From another process (a script, a scheduled job, another service), use a key:
 
 ```ts
-import { remoteCmsTools } from "@mainsoft/agent-cms/ai";
+import { createCmsClient } from "@mainsoft/agent-cms/client";
+import { toolErrorResult } from "@mainsoft/agent-cms/tools";
 
-const tools = remoteCmsTools(
-  { url: "https://app.example.com/api/cms", key: process.env.AGENT_CMS_KEY! },
-  { only: ["search_documents", "get_document", "patch_document"] }
-);
+const api = createCmsClient({ url: "https://app.example.com/api/cms", key: process.env.AGENT_CMS_KEY! });
+
+const tools = await api.listTools(); // only what this key may use: { name, description, inputSchema }
+const run = (name: string, args: Record<string, unknown>) =>
+  api.call(name, args).catch((e) => toolErrorResult(e) ?? Promise.reject(e));
 ```
-
-`await remoteCmsToolsFor(client, opts)` does the same but first asks the
-server which tools the key may use (`tools/list`), so a read-only key is
-offered read tools only.
 
 Tool errors come back as results, not throws, so the model can re-read and
 retry: `{ error: "conflict_version", kind: "conflict", message, params: {
@@ -246,6 +449,12 @@ expected, current } }`. Every code is in `./errors` (`ERROR_CODES`).
 | `list_collections`, `search_documents`, `read_for_answer`, `list_documents`, `get_document` | read |
 | `create_document`, `update_document`, `patch_document`, `diagnose_document`, `list_versions`, `restore_version` | write |
 | `publish_document`, `unpublish_document`, `archive_document`, `delete_document`, `bulk_documents` | publish |
+| `list_assets`, `get_asset` (with a media library) | read |
+| `import_asset`, `update_asset` | write |
+| `move_asset`, `delete_asset` | publish |
+| `list_store_files` (the bucket as it is) | read |
+| `register_asset` | write |
+| `create_share_link` | publish |
 
 `lookupForAgent(cms, actor, collections, question, { budget, countTokens })`
 (`./agent`) is the answer-a-user helper behind `read_for_answer`: matching
@@ -328,7 +537,7 @@ Body in **markdown**.
 
 `@mainsoft/agent-cms/markdown` is browser-safe: `parseMarkdown` gives a
 small block tree (headings with stable anchors, lists, callouts `> [!tip]`,
-code, link rows) and `extractToc` a table of contents. Render it with your
+code, link rows, media) and `extractToc` a table of contents. Render it with your
 own components.
 
 ## Develop

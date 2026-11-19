@@ -414,7 +414,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
                       </span>
                       {!selectMode ? (
                         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Who kind={d.updatedByKind} label={`${d.updatedBy ?? ""}, ${relativeTime(d.updatedAt, t, locale)}`} />
+                          <Who kind={d.updatedByKind} agent={d.updatedByAgent} label={`${d.updatedBy ?? ""}, ${relativeTime(d.updatedAt, t, locale)}`} />
                         </span>
                       ) : null}
                     </span>
@@ -483,7 +483,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
                     <TableCell className="text-[13.5px]">{d.category ?? ""}</TableCell>
                     <TableCell>{stateCell(d)}</TableCell>
                     <TableCell className="text-[13.5px]">
-                      <Who kind={d.updatedByKind} label={d.updatedBy} />
+                      <Who kind={d.updatedByKind} label={d.updatedBy} agent={d.updatedByAgent} />
                       <div className="text-xs text-muted-foreground">{relativeTime(d.updatedAt, t, locale)}</div>
                     </TableCell>
                     <TableCell className={cn("text-right tabular-nums", !d.hits7d && "text-muted-foreground")}>{d.hits7d ?? 0}</TableCell>

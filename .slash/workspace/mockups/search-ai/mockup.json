@@ -1,0 +1,43 @@
+{
+  "canvas": "search-ai",
+  "title": "검색과 AI",
+  "description": "동의어 관리, 편집기의 AI 보조, 게시 전 점검, 문서 목록의 점검 표시의 화면 구성과 문구를 정한다",
+  "sections": [
+    {
+      "title": "검색과 AI",
+      "artboards": [
+        {
+          "id": "synonyms",
+          "path": ".slash/workspace/mockups/search-ai/synonyms.html",
+          "label": "1. 동의어",
+          "device": "browser"
+        },
+        {
+          "id": "assist",
+          "path": ".slash/workspace/mockups/search-ai/assist.html",
+          "label": "2. AI 보조",
+          "device": "browser"
+        },
+        {
+          "id": "precheck",
+          "path": ".slash/workspace/mockups/search-ai/precheck.html",
+          "label": "3. 게시 전 점검",
+          "device": "browser"
+        },
+        {
+          "id": "health",
+          "path": ".slash/workspace/mockups/search-ai/health.html",
+          "label": "4. 문서 목록의 점검 표시",
+          "device": "browser"
+        }
+      ]
+    }
+  ],
+  "versions": [
+    {
+      "version": 1,
+      "mockupId": "d3kEDe4OGtvYUyPZo_IiR",
+      "createdAt": "2026-11-19T14:21:05.914Z"
+    }
+  ]
+}

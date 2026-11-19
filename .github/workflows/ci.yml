@@ -46,6 +46,21 @@ jobs:
         env:
           DATABASE_URL: ${{ matrix.target == 'postgres' && 'postgres://postgres:postgres@localhost:5432/cms' || '' }}
 
+  storage:
+    # The S3 adapter against a real S3-compatible server.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: bash scripts/s3-dev.sh
+      - run: npm run test:s3
+        env:
+          S3_TEST_ENDPOINT: http://127.0.0.1:9100
+
   pack-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -100,7 +115,14 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx playwright install --with-deps chromium
+      # The media library tests need a storage; without S3_ENDPOINT they are skipped.
+      - run: bash scripts/s3-dev.sh
       - run: npm run test:e2e
+        env:
+          S3_ENDPOINT: http://127.0.0.1:9100
+          S3_KEY: test
+          S3_SECRET: testsecret1
+
   docs:
     runs-on: ubuntu-latest
     steps:

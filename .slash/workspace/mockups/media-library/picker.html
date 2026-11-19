@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>미디어 선택</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="editor.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <h2 class="first">컬렉션</h2>
+    <div class="nav on"><span data-icon="book-open"></span><span class="grow trunc">Blog</span><span class="n">2</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span class="grow trunc">Guide</span><span class="n">1</span></div>
+  </aside>
+  <main class="main">
+    <header class="phd">
+      <span class="crumbs">Blog <span>/</span></span>
+      <h1>Hello, world</h1>
+      <span class="badge"><i class="dot"></i>게시됨</span>
+    </header>
+  </main>
+
+  <div class="veil">
+    <div class="pick-dlg" role="dialog" data-label="미디어 선택 창">
+      <div class="hd"><h2 class="grow">미디어 선택</h2><span class="b ghost ico" aria-label="닫기"><span data-icon="x"></span></span></div>
+      <div class="bd">
+        <div class="tools">
+          <div class="inp ph-text" style="width:220px"><span data-icon="search"></span>이름, 태그로 찾기</div>
+          <div class="seg">
+            <span class="on">전체 <b class="num" style="font-weight:500">31</b></span>
+            <span>이미지 <b class="num" style="font-weight:400">24</b></span>
+            <span>영상 <b class="num" style="font-weight:400">3</b></span>
+            <span>문서 <b class="num" style="font-weight:400">4</b></span>
+          </div>
+          <span class="grow"></span>
+          <div class="sel" data-label="폴더 고르기"><span data-icon="folder" class="muted"></span>공개 / 전체<span data-icon="chevron-down" class="i14 muted"></span></div>
+        </div>
+        <div class="grid c4">
+          <div class="tile on" data-label="고른 타일"><div class="thumb p1"><span class="tick"><span data-icon="check" class="i14"></span></span></div><div class="name trunc">launch-hero.jpg</div><div class="meta num">1920×1080, 412KB</div></div>
+          <div class="tile"><div class="thumb p2"></div><div class="name trunc">team-photo.jpg</div><div class="meta num">2400×1600, 1.8MB</div></div>
+          <div class="tile"><div class="thumb p3"><div class="shot"><i class="s"></i><i></i><i></i><i class="a"></i></div></div><div class="name trunc">slack-connect-step1.png</div><div class="meta num">1280×720, 96KB</div></div>
+          <div class="tile"><div class="thumb p3"><div class="shot"><i class="s"></i><i></i><i class="a"></i><i></i></div></div><div class="name trunc">slack-connect-step2.png</div><div class="meta num">1280×720, 104KB</div></div>
+
+          <div class="tile"><div class="thumb p5"><span data-icon="play" class="i28"></span><span class="tag">2:14</span></div><div class="name trunc">product-demo.mp4</div><div class="meta num">1920×1080, 184MB</div></div>
+          <div class="tile"><div class="thumb"><div class="doc-ic"><span data-icon="file-text" class="i28"></span>PDF</div></div><div class="name trunc">pricing-2026.pdf</div><div class="meta num">1.2MB</div></div>
+          <div class="tile"><div class="thumb p7"></div><div class="name trunc">og-default.png</div><div class="meta num">1200×630, 58KB</div></div>
+          <div class="tile"><div class="thumb p4"></div><div class="name trunc">office-seoul.jpg</div><div class="meta num">3024×2016, 2.4MB</div></div>
+        </div>
+      </div>
+      <div class="ft">
+        <span class="b out" data-label="창 안의 올리기 버튼"><span data-icon="upload"></span>올리기</span>
+        <span class="grow"></span>
+        <span class="b out">취소</span>
+        <span class="b" data-label="넣기 버튼">넣기</span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

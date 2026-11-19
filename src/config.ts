@@ -1,6 +1,6 @@
 /**
  * `agent-cms.config.ts`: what the local CLI commands (`init`, `doctor`,
- * `migrate`, `add`) need to know about the app. Loaded with jiti, so it can
+ * `migrate`, `add`, `storage`) need to know about the app. Loaded with jiti, so it can
  * be TypeScript and import the app's own modules.
  *
  *   import { defineConfig } from "@mainsoft/agent-cms/config";
@@ -10,6 +10,7 @@
  */
 
 import type { PgDatabase } from "drizzle-orm/pg-core";
+import type { MediaOptions } from "./assets";
 import type { CmsTablesOptions } from "./tables";
 
 export interface AgentCmsConfig {
@@ -18,6 +19,8 @@ export interface AgentCmsConfig {
   db?: () => PgDatabase<any, any, any> | Promise<PgDatabase<any, any, any>>;
   /** Same options as `cmsTables()` when the app uses a prefix or schema. */
   tables?: CmsTablesOptions;
+  /** The same `media` the app passes to `createCms` (for `agent-cms storage check | cleanup`). */
+  media?: MediaOptions | (() => MediaOptions | Promise<MediaOptions>);
   /** Where `agent-cms add` copies the admin screens. Default: `<components alias>/cms` from components.json. */
   ui?: { dir?: string };
 }

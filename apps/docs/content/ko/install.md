@@ -12,7 +12,7 @@ npm i @mainsoft/agent-cms drizzle-orm zod
 npx agent-cms init
 ```
 
-함께 필요한 패키지는 `drizzle-orm`, `zod`(`^3.25` 또는 `^4`)예요. AI SDK 도구(`@mainsoft/agent-cms/ai`)를 쓸 때만 `ai`도 필요해요.
+함께 필요한 패키지는 `drizzle-orm`, `zod`(`^3.25` 또는 `^4`)예요. 그 밖에는 없어요. 패키지가 모델을 부르지 않으므로 모델 라이브러리를 설치할 일이 없어요.
 
 `init`은 `agent-cms.config.ts`, `lib/cms.ts`, API 라우트, 스키마 다시 내보내기, `.env.example` 줄을 만들어요. 이미 있는 파일은 덮어쓰지 않아요.
 

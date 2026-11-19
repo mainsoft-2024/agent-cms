@@ -1,19 +1,22 @@
 /**
- * The one list of operations an agent can perform. MCP (`mcp.ts`), the AI SDK
- * tools (`ai.ts`) and the CLI all expose exactly this list, so an agent sees
- * the same tools whichever way it connects.
+ * The one list of operations an agent can perform. MCP (`mcp.ts`) and the CLI
+ * expose exactly this list, and `toolsFor` + `callTool` hand it to an agent
+ * running in the app, so an agent sees the same tools whichever way it
+ * connects. This package never calls a model itself.
  */
 
 import { z } from "zod";
 import { lookupForAgent } from "./agent";
+import { isCmsRemoteError } from "./client";
+import type { AssetView } from "./assets";
 import { BULK_ACTIONS, coreOf, type CmsCore, type CmsLike } from "./cms";
-import { DOC_STATUSES, type Actor } from "./types";
+import { ASSET_KINDS, DOC_STATUSES, isCmsError, type Actor, type AssetKind, type Diagnostic } from "./types";
 
 const docInput = {
   slug: z.string().optional().describe("URL slug, e.g. my-first-post (lowercase letters, digits, hyphens unless the collection allows more)"),
   title: z.string().optional(),
   summary: z.string().optional().describe("One-line summary shown in lists and search results"),
-  body: z.string().optional().describe("Markdown body. `## ` headings split it into sections for search and patch_document"),
+  body: z.string().optional().describe("Markdown body. `## ` headings split it into sections for search and patch_document. A file from the media library: `![alt text](asset:ID/name.jpg \"caption\")` on its own line (image, video or download card), `[label](asset:ID/name.pdf)` for a link (ids from list_assets)"),
   category: z.string().nullable().optional(),
   keywords: z.array(z.string()).optional().describe("Other words people search with, e.g. synonyms or English names"),
   fields: z.record(z.unknown()).optional().describe("Collection-specific fields (see list_collections). On update a JSON Merge Patch: null removes a key"),
@@ -26,6 +29,8 @@ export interface CmsToolDef {
   run: (cms: CmsCore, actor: Actor, args: Record<string, unknown>) => Promise<unknown>;
   /** Hidden when the actor could never call it. */
   needs?: "write" | "publish";
+  /** A media library tool: hidden when there is no library or the actor may not do this in any store. */
+  media?: "read" | "write" | "delete";
 }
 
 const col = z.string().describe("Collection slug (see list_collections)");
@@ -43,6 +48,31 @@ const summaryOf = (d: Awaited<ReturnType<CmsCore["get"]>>) => ({
   publishedAt: d.publishedAt,
   updatedAt: d.updatedAt,
   updatedBy: d.updatedBy,
+});
+
+const assetId = z.string().describe("File id (12 letters and digits, from list_assets)");
+const store = z.string().optional().describe("Store name (see list_assets). Default: the first store");
+const fileKinds = ASSET_KINDS.filter((k): k is Exclude<AssetKind, "folder"> => k !== "folder") as [Exclude<AssetKind, "folder">, ...Exclude<AssetKind, "folder">[]];
+
+/** A file as agents see it, with the markdown that puts it in a document. */
+const assetOut = (a: AssetView) => ({
+  id: a.id,
+  name: a.name,
+  store: a.store,
+  folder: a.folder,
+  kind: a.kind,
+  mime: a.mime,
+  size: a.size,
+  width: a.width,
+  height: a.height,
+  duration: a.duration,
+  alt: a.alt,
+  tags: a.tags,
+  visibility: a.visibility,
+  url: a.publicUrl ?? a.href,
+  markdown: a.kind === "image" || a.kind === "video" || a.kind === "audio" ? `![${a.alt}](asset:${a.id}/${encodeURIComponent(a.name)})` : `[${a.name}](asset:${a.id}/${encodeURIComponent(a.name)})`,
+  createdBy: a.createdBy,
+  createdAt: a.createdAt,
 });
 
 const patchOp = z.discriminatedUnion("op", [
@@ -200,6 +230,7 @@ export const CMS_TOOLS: CmsToolDef[] = [
         title: v.title,
         author: v.authorLabel,
         authorKind: v.authorKind,
+        agent: v.authorAgent ?? null,
         note: v.note,
         published: v.published,
         changed: v.changed?.fields ?? [],
@@ -214,6 +245,81 @@ export const CMS_TOOLS: CmsToolDef[] = [
     run: async (cms, actor, a) =>
       cms.restore(actor, a.collection as string, a.slug as string, a.version as number, { publish: a.publish as boolean | undefined, expectedVersion: a.expectedVersion as number | undefined }),
   },
+  {
+    name: "list_assets",
+    media: "read",
+    description: "List files in the media library (images, video, documents), newest first, with the stores and their folders. Each file has the markdown that puts it in a document body.",
+    input: z.object({ store, folder: z.string().optional().describe("This folder and everything under it"), kind: z.enum(fileKinds).optional(), q: z.string().optional().describe("Part of the file name or a tag"), tag: z.string().optional(), cursor: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
+    run: async (cms, actor, a) => {
+      const r = await cms.assets.list(actor, { store: a.store as string | undefined, folder: a.folder as string | undefined, kinds: a.kind ? [a.kind as AssetKind] : undefined, q: a.q as string | undefined, tag: a.tag as string | undefined, cursor: a.cursor as string | undefined, limit: (a.limit as number | undefined) ?? 30 });
+      return { assets: r.assets.map(assetOut), cursor: r.cursor, counts: r.counts, stores: (await cms.assets.folders(actor)).map((s) => ({ store: s.store, visibility: s.visibility, files: s.total, folders: s.folders.map((f) => f.path) })) };
+    },
+  },
+  {
+    name: "get_asset",
+    media: "read",
+    description: "One file of the media library: size, alt text, tags, and the documents that use it.",
+    input: z.object({ id: assetId }),
+    run: async (cms, actor, a) => {
+      const r = await cms.assets.get(actor, a.id as string);
+      return { ...assetOut(r), usedBy: r.usage.map((u) => ({ collection: u.collection, slug: u.slug, title: u.title, status: u.status, inPublished: u.inPublished })), usedByHidden: r.usageHidden };
+    },
+  },
+  {
+    name: "import_asset",
+    media: "write",
+    description: "Fetch a file from a public https address and store it in the media library. Give images an alt text. Returns the markdown to put it in a document.",
+    input: z.object({ url: z.string().describe("https address of the file"), name: z.string().optional().describe("File name with extension. Default: taken from the address"), folder: z.string().optional().describe("e.g. blog/2026"), store, alt: z.string().optional().describe("What the image shows, for people who cannot see it"), tags: z.array(z.string()).optional() }),
+    run: async (cms, actor, a) => assetOut(await cms.assets.import(actor, a as { url: string })),
+  },
+  {
+    name: "update_asset",
+    media: "write",
+    description: "Change a file's alt text or tags. Documents that use the file without their own alt text show the new one.",
+    input: z.object({ id: assetId, alt: z.string().optional(), tags: z.array(z.string()).optional() }),
+    run: async (cms, actor, a) => assetOut(await cms.assets.update(actor, a.id as string, { alt: a.alt as string | undefined, tags: a.tags as string[] | undefined })),
+  },
+  {
+    name: "move_asset",
+    media: "delete",
+    description: "Move a file to another folder and/or rename it. Documents keep working: they point at the id, not the path.",
+    input: z.object({ id: assetId, folder: z.string().optional().describe('Target folder ("" = top level)'), name: z.string().optional().describe("New file name; the extension is kept") }),
+    run: async (cms, actor, a) => assetOut(await cms.assets.move(actor, a.id as string, { folder: a.folder as string | undefined, name: a.name as string | undefined })),
+  },
+  {
+    name: "delete_asset",
+    media: "delete",
+    description: "Delete a file permanently. When documents use it, this fails with asset_in_use and lists them: tell the person, and only pass confirm=true when they said to delete it anyway.",
+    input: z.object({ id: assetId, confirm: z.boolean().optional() }),
+    run: async (cms, actor, a) => {
+      await cms.assets.remove(actor, a.id as string, { confirm: !!a.confirm });
+      return { deleted: true };
+    },
+  },
+  {
+    name: "list_store_files",
+    media: "read",
+    description: "Look into a storage bucket folder by folder: also files nobody uploaded through the CMS. Each file says whether the CMS knows it (`id`). To use an unknown file in a document, call register_asset with its key first.",
+    input: z.object({ store, prefix: z.string().optional().describe('Folder to list, e.g. "contracts/2026". Default: the top'), q: z.string().optional().describe("Only names in this folder that start with this"), cursor: z.string().optional(), limit: z.number().int().min(1).max(500).optional() }),
+    run: async (cms, actor, a) => {
+      const r = await cms.assets.browse(actor, { store: a.store as string | undefined, prefix: a.prefix as string | undefined, q: a.q as string | undefined, cursor: a.cursor as string | undefined, limit: (a.limit as number | undefined) ?? 100 });
+      return { store: r.store, prefix: r.prefix, folders: r.folders.map((f) => f.path), files: r.files.map((f) => ({ key: f.key, size: f.size, kind: f.kind, updatedAt: f.updatedAt, id: f.asset?.id ?? null })), cursor: r.cursor };
+    },
+  },
+  {
+    name: "register_asset",
+    media: "write",
+    description: "Make a file that is already in the bucket (see list_store_files) known to the CMS, so it can be described and used in documents. Returns the markdown to put it in a document.",
+    input: z.object({ key: z.string().describe("The file's key in the bucket, e.g. contracts/2026/msa.pdf"), store, alt: z.string().optional(), tags: z.array(z.string()).optional() }),
+    run: async (cms, actor, a) => assetOut(await cms.assets.register(actor, a as { key: string })),
+  },
+  {
+    name: "create_share_link",
+    media: "delete",
+    description: "Make an address for a file that someone outside can open. For a private file it works for the chosen time and cannot be taken back; only do this when the person asked for it.",
+    input: z.object({ id: assetId, ttl: z.enum(["1h", "24h", "7d"]).optional().describe("How long a private file's link works. Default 24h") }),
+    run: async (cms, actor, a) => cms.assets.share(actor, a.id as string, { ttl: a.ttl as "1h" | "24h" | "7d" | undefined }),
+  },
 ];
 
 export const CMS_TOOL_NAMES = CMS_TOOLS.map((t) => t.name);
@@ -222,5 +328,81 @@ export const CMS_TOOL_NAMES = CMS_TOOLS.map((t) => t.name);
 export function toolsFor(cms: CmsLike, actor: Actor, only?: readonly string[]): CmsToolDef[] {
   const core = coreOf(cms);
   const cols = core.collections().map((c) => c.slug);
-  return CMS_TOOLS.filter((t) => (!only || only.includes(t.name)) && (!t.needs || cols.some((c) => core.can(actor, c, t.needs!))));
+  const stores = core.assets.enabled ? core.assets.stores().map((s) => s.name) : [];
+  return CMS_TOOLS.filter((t) => (!only || only.includes(t.name)) && (!t.needs || cols.some((c) => core.can(actor, c, t.needs!))) && (!t.media || stores.some((s) => core.assets.can(actor, s, t.media!))));
+}
+
+/** What a failed tool call returns: the same shape as a REST error body. */
+export interface ToolErrorResult {
+  error: string;
+  kind: string;
+  message: string;
+  params: Record<string, unknown>;
+  diagnostics?: Diagnostic[];
+  current?: unknown;
+}
+
+export type ToolOutcome = { ok: true; value: unknown } | { ok: false; error: ToolErrorResult };
+
+export interface CallToolOptions {
+  /** Only these tools may be called (by name). Default: every tool the actor may use. */
+  only?: readonly string[];
+}
+
+/**
+ * A CMS error (thrown in this process, or by `createCmsClient().call`) as a
+ * tool result an agent can read. `null` for anything else: rethrow those.
+ */
+export function toolErrorResult(err: unknown): ToolErrorResult | null {
+  if (isCmsError(err)) return err.toJSON();
+  if (isCmsRemoteError(err)) {
+    return {
+      error: err.code,
+      kind: err.kind ?? "internal",
+      message: err.message,
+      params: err.params ?? {},
+      ...(err.diagnostics ? { diagnostics: err.diagnostics } : {}),
+      ...(err.current !== undefined ? { current: err.current } : {}),
+    };
+  }
+  return null;
+}
+
+/**
+ * Run one tool by name as `actor`: looks it up in the tools the actor may
+ * use, checks the input, runs it. CMS errors (a conflict, a missing
+ * document, no permission, bad input) come back as `{ ok: false, error }`
+ * with the message in the CMS's language; anything else throws.
+ */
+export async function runTool(cms: CmsLike, actor: Actor, name: string, args: unknown = {}, opts: CallToolOptions = {}): Promise<ToolOutcome> {
+  const core = coreOf(cms);
+  const def = toolsFor(core, actor, opts.only).find((t) => t.name === name);
+  // Same list as toolsFor: a hidden tool is not callable either.
+  if (!def) return { ok: false, error: { error: "unknown_tool", kind: "not_found", message: `Unknown tool: ${name}`, params: { name } } };
+  const parsed = def.input.safeParse(args ?? {});
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; ");
+    return { ok: false, error: { error: "invalid_request", kind: "invalid", message: core.message({ isCmsError: true, code: "invalid_request", params: { issues } }), params: { issues } } };
+  }
+  try {
+    return { ok: true, value: await def.run(core, actor, parsed.data as Record<string, unknown>) };
+  } catch (err) {
+    if (!isCmsError(err)) throw err;
+    return { ok: false, error: { ...err.toJSON(), message: core.message(err) } };
+  }
+}
+
+/**
+ * The way to hand the CMS to your own agent, whatever framework runs it:
+ * list the tools with `toolsFor(cms, actor)` (name, description, zod input)
+ * and run each call the model makes with `callTool`. A CMS error is returned
+ * as `{ error, kind, message, params, … }` rather than thrown, so the model
+ * can read a conflict and retry instead of failing the whole run.
+ *
+ * Calls made this way are recorded with `via: "ai"` unless the actor says
+ * otherwise.
+ */
+export async function callTool(cms: CmsLike, actor: Actor, name: string, args: unknown = {}, opts: CallToolOptions = {}): Promise<unknown> {
+  const r = await runTool(cms, { ...actor, via: actor.via ?? "ai" }, name, args, opts);
+  return r.ok ? r.value : r.error;
 }

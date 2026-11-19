@@ -1,0 +1,77 @@
+{
+  "canvas": "publish-flow",
+  "title": "편집과 게시 흐름",
+  "description": "예약 게시, 검토, 댓글, 함께 편집, 휴지통, 릴리스의 화면 구성과 문구, 그리고 전체 메뉴 구성을 정한다",
+  "sections": [
+    {
+      "title": "편집 화면",
+      "artboards": [
+        {
+          "id": "schedule",
+          "path": ".slash/workspace/mockups/publish-flow/schedule.html",
+          "label": "1. 예약 게시",
+          "device": "browser"
+        },
+        {
+          "id": "review",
+          "path": ".slash/workspace/mockups/publish-flow/review.html",
+          "label": "2. 검토 요청",
+          "device": "browser"
+        },
+        {
+          "id": "comments",
+          "path": ".slash/workspace/mockups/publish-flow/comments.html",
+          "label": "3. 댓글",
+          "device": "browser"
+        },
+        {
+          "id": "collab",
+          "path": ".slash/workspace/mockups/publish-flow/collab.html",
+          "label": "4. 함께 편집",
+          "device": "browser"
+        }
+      ]
+    },
+    {
+      "title": "목록",
+      "artboards": [
+        {
+          "id": "doclist",
+          "path": ".slash/workspace/mockups/publish-flow/doclist.html",
+          "label": "5. 문서 목록의 새 상태",
+          "device": "browser"
+        },
+        {
+          "id": "trash",
+          "path": ".slash/workspace/mockups/publish-flow/trash.html",
+          "label": "6. 휴지통",
+          "device": "browser"
+        },
+        {
+          "id": "releases",
+          "path": ".slash/workspace/mockups/publish-flow/releases.html",
+          "label": "7. 릴리스 목록",
+          "device": "browser"
+        },
+        {
+          "id": "release",
+          "path": ".slash/workspace/mockups/publish-flow/release.html",
+          "label": "8. 릴리스 하나",
+          "device": "browser"
+        }
+      ]
+    }
+  ],
+  "versions": [
+    {
+      "version": 1,
+      "mockupId": "sgffPiVipKnRwfklX9eNU",
+      "createdAt": "2026-11-19T14:06:33.672Z"
+    },
+    {
+      "version": 2,
+      "mockupId": "Qf5qFHGTjf853_0g5G1u4",
+      "createdAt": "2026-11-19T14:10:01.463Z"
+    }
+  ]
+}
