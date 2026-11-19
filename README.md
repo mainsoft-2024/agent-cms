@@ -148,7 +148,7 @@ they go and how imports are written) and talk to the CMS through
 
 ```
 npx agent-cms add --list
-npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media cms-files
+npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media cms-files cms-trash cms-releases
 npx agent-cms add --diff      # what a new release would change in your copies
 npx agent-cms add --update    # update files you did not edit; yours get a .new copy
 ```
@@ -181,6 +181,8 @@ npx shadcn@latest add <registry-url>/cms-doc-editor.json
 | `cms-media` | The media library: stores and folders, grid or list, a file's alt text, tags and the documents that use it, uploads with progress, delete with a look at where the file is used |
 | `cms-media-picker` | The "choose media" dialog behind image and file fields and the editor's "Insert media" (comes with `cms-doc-editor`) |
 | `cms-files` | The file manager: a bucket folder by folder, also files nobody uploaded through the CMS; move, download, share links and delete for several at once |
+| `cms-trash` | Deleted documents and files: restore, or delete forever (admins) |
+| `cms-releases` | Releases: documents that go out together, the version of each, what blocks them, publish now or at a set time |
 | `cms-empty` | Empty collection: new document, or how to write with an agent |
 
 UI text is English by default; a Korean catalog ships with the screens.
@@ -207,6 +209,47 @@ UI text is English by default; a Korean catalog ships with the screens.
 - **Bulk.** `cms.bulk(actor, col, "publish" | "unpublish" | "archive" |
   "unarchive" | "delete", items)` runs each document on its own and returns
   `{ slug, ok, error? }` for each.
+
+### Scheduling, review, comments, releases, trash
+
+The editor, the list and two more screens (`cms-trash`, `cms-releases`) cover
+the publishing flow. Nothing here needs set-up except the cron call.
+
+- **Schedule.** The arrow beside "Publish" sets a time to publish and a time
+  to unpublish, entered on the clock of `createCms({ timeZone })`. What goes
+  out is the version that was current when it was scheduled; an edit after
+  that shows a warning with "Schedule the latest version". Schedules run when
+  something calls the cron route, so their precision is your cron's interval:
+
+  ```ts
+  createCms({ cronSecret: process.env.CMS_CRON_SECRET /* ... */ });
+  // every minute or so: POST /api/cms/_cron   Authorization: Bearer <secret>
+  ```
+
+  The same call publishes scheduled releases and empties the trash of what is
+  older than `trash.days`.
+- **Review.** `defineCollection({ review: { agents: "required" } })` keeps what
+  an API key or an agent wrote from going public until a person approves it;
+  `everyone: "required"` asks the same of people, and the one who asked cannot
+  approve. The editor shows the request with "Send back" and "Approve and
+  publish"; the list has an "In review" tab.
+- **Comments.** On a section or on selected text, with replies and resolve.
+  They follow the text while it is edited, and move to "Lost their place" when
+  the text is gone. A preview link made with "Allow comments" lets someone
+  without an account comment.
+- **Editing together.** Who else has the document open is shown in the editor
+  and in the list, with their cursors in the body. When someone else saves,
+  the editor takes the new version, merging it with unsaved edits when the
+  two do not overlap. It asks every 15 seconds (every 3 while someone else is
+  there); `presenceMs={0}` turns it off.
+- **Releases.** Put documents in a release from the editor's menu or from the
+  release screen; publishing is all or nothing and lists what blocked it.
+- **Trash.** Deleted documents and files stay for 30 days
+  (`createCms({ trash: { days } })`, `0` deletes at once). A restored document
+  that was published is public again.
+- **Versions** take a name and a pin (pinned versions are never cleaned up).
+  **Saved filters** keep a tab, a search, a category and an author under a
+  name, for yourself or (admins) for everyone.
 
 ## Media library
 

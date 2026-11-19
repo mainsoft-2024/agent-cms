@@ -1,32 +1,36 @@
-// agent-cms registry: cms-doc-list (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-doc-list (0.10.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
-// Documents of one collection: state tabs with counts, category and author
-// filters, search, 7-day views, selection with bulk actions (confirm, then a
+// Documents of one collection: state tabs with counts (also scheduled and
+// waiting for review), category and author filters, saved filters, search,
+// who has a document open, 7-day views, selection with bulk actions (confirm, then a
 // result per document). A table on desktop, cards on phones (press and hold
 // a card to start selecting).
 "use client";
 
 import * as React from "react";
-import { ChevronRight, CircleAlert, CircleCheck, EyeOff, Eye, MoreHorizontal, Plus, Search, Trash2, Undo2, Upload, X, type LucideIcon } from "lucide-react";
+import { Bookmark, ChevronRight, CircleAlert, CircleCheck, EyeOff, Eye, MoreHorizontal, Plus, Search, Trash2, Undo2, Upload, Users, X, type LucideIcon } from "lucide-react";
 import type { RestClient } from "@mainsoft/agent-cms/client";
-import type { DocSummary } from "@mainsoft/agent-cms/types";
+import type { DocSummary, Presence } from "@mainsoft/agent-cms/types";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import type { MessageKey } from "./cms-messages";
 import { errorMessage } from "./cms-messages";
 import { CmsEmpty } from "./cms-empty";
-import { ConfirmDialog, ModifiedMark, PageHeader, Segmented, StateBadge, StatusText, Who } from "./cms-parts";
-import { relativeTime, useAsync, useCms, useDebounced, useIsMobile } from "./use-cms";
+import { ConfirmDialog, flowState, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, Who } from "./cms-parts";
+import { formatZoned, relativeTime, useAsync, useCms, useDebounced, useIsMobile } from "./use-cms";
 
 type BulkAction = Parameters<RestClient["bulk"]>[1];
 type BulkResult = Awaited<ReturnType<RestClient["bulk"]>>[number];
-type Tab = "all" | "draft" | "published" | "modified" | "archived";
+type Tab = "all" | "draft" | "published" | "modified" | "scheduled" | "review" | "archived";
+type SavedFilters = Awaited<ReturnType<RestClient["filters"]>>;
+const TABS: readonly Tab[] = ["all", "draft", "published", "modified", "scheduled", "review", "archived"];
 
 const ACTIONS: { action: BulkAction; Icon: LucideIcon }[] = [
   { action: "publish", Icon: Upload },
@@ -48,11 +52,13 @@ export interface CmsDocListProps {
   keysHref?: string;
   /** Page size for "Load more". Default 50. */
   pageSize?: number;
+  /** How often to ask who has a document open, in ms. Default 20000; 0 turns it off. */
+  presenceMs?: number;
   className?: string;
 }
 
-export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument, keysHref, pageSize = 50, className }: CmsDocListProps) {
-  const { client, t, locale } = useCms();
+export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument, keysHref, pageSize = 50, presenceMs = 20000, className }: CmsDocListProps) {
+  const { client, t, locale, me } = useCms();
   const mobile = useIsMobile();
   const schema = useAsync(() => client.schema(collection), [client, collection]);
   const counts = useAsync(() => client.counts(collection), [client, collection]);
@@ -78,6 +84,42 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   const [running, setRunning] = React.useState(false);
   const [runError, setRunError] = React.useState<string | null>(null);
   const [results, setResults] = React.useState<{ action: BulkAction; results: BulkResult[]; titles: Record<string, string> } | null>(null);
+
+  // ── saved filters ──
+  const [savedFilters, setSavedFilters] = React.useState<SavedFilters>([]);
+  const [saving, setSaving] = React.useState(false);
+  const loadFilters = React.useCallback(() => {
+    client.filters(collection).then(setSavedFilters, () => setSavedFilters([]));
+  }, [client, collection]);
+  React.useEffect(loadFilters, [loadFilters]);
+  const applyFilter = (f: Record<string, string>) => {
+    setTab(TABS.includes(f.state as Tab) ? (f.state as Tab) : "all");
+    setCategory(f.category || "__all");
+    setBy(f.by === "user" || f.by === "key" || f.by === "system" ? f.by : "__all");
+    setQInput(f.q ?? "");
+    setQ(f.q ?? "");
+    if (f.q) setSearchOpen(true);
+  };
+
+  // ── who has what open ──
+  const [here, setHere] = React.useState<Record<string, Presence[]>>({});
+  React.useEffect(() => {
+    if (!presenceMs) return;
+    let live = true;
+    const ask = () => {
+      if (document.visibilityState === "hidden") return;
+      client.presenceIn(collection).then(
+        (rows) => live && setHere(Object.fromEntries(rows.map((r) => [r.slug, r.people]))),
+        () => undefined
+      );
+    };
+    ask();
+    const timer = setInterval(ask, presenceMs);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [client, collection, presenceMs]);
 
   const query = React.useMemo(
     () => ({
@@ -186,6 +228,8 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
     { value: "draft", key: "tab_draft", n: c?.draft },
     { value: "published", key: "tab_published", n: c?.published },
     { value: "modified", key: "tab_modified", n: c?.modified },
+    { value: "scheduled", key: "tab_scheduled", n: c?.scheduled },
+    { value: "review", key: "tab_review", n: c?.review },
     { value: "archived", key: "tab_archived", n: c?.archived },
   ];
   const tabControl = (
@@ -227,6 +271,37 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
           <SelectItem value="system">{t("author_system")}</SelectItem>
         </SelectContent>
       </Select>
+      <DropdownMenu>
+        <DropdownMenuTrigger className={buttonVariants({ variant: "outline", size: "sm", className: "h-8 gap-1.5 text-[13px]" })}>
+          <Bookmark aria-hidden className="h-3.5 w-3.5" />
+          {t("filter_saved")}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-[220px]">
+          {savedFilters.map((f) => (
+            <DropdownMenuItem key={f.id} onClick={() => applyFilter(f.query)}>
+              <span className="flex-1 truncate">{f.name}</span>
+              {f.shared ? <Users aria-label={t("filter_everyone")} className="h-3.5 w-3.5 text-muted-foreground" /> : null}
+              {f.mine || me?.isAdmin ? (
+                <button
+                  type="button"
+                  aria-label={t("filter_delete", { name: f.name })}
+                  className="-mr-1 grid h-5 w-5 place-items-center rounded text-muted-foreground outline-none hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    client.removeFilter(collection, f.id).then(loadFilters, () => undefined);
+                  }}
+                >
+                  <X aria-hidden className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </DropdownMenuItem>
+          ))}
+          {savedFilters.length ? <DropdownMenuSeparator /> : null}
+          <DropdownMenuItem disabled={!filtered} onClick={() => setSaving(true)}>
+            {t("filter_save")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </>
   );
 
@@ -285,12 +360,18 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       </button>
     );
 
-  const stateCell = (d: DocSummary) => (
-    <div className="flex flex-col items-start gap-0.5">
-      <StateBadge state={d.state} />
-      {d.modifiedSincePublish ? <ModifiedMark /> : null}
-    </div>
-  );
+  const stateCell = (d: DocSummary) => {
+    const fs = flowState(d);
+    return (
+      <div className="flex flex-col items-start gap-0.5">
+        <span className="flex flex-wrap items-center gap-1.5">
+          <StateBadge state={fs} />
+          {fs === "scheduled" && d.schedule?.publishAt ? <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">{formatZoned(d.schedule.publishAt, locale, me?.timeZone)}</span> : null}
+        </span>
+        {d.modifiedSincePublish ? <ModifiedMark /> : null}
+      </div>
+    );
+  };
 
   const rowMenu = (d: DocSummary) => (
     <DropdownMenu>
@@ -406,10 +487,11 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
                     <span className="flex min-w-0 flex-1 flex-col gap-1.5">
                       <span className="flex items-center gap-2">
                         <span className="flex-1 truncate font-medium">{d.title || d.slug}</span>
+                        <People people={here[d.slug] ?? []} max={2} />
                         {!selectMode ? <ChevronRight aria-hidden className="h-4 w-4 text-muted-foreground" /> : null}
                       </span>
                       <span className="flex flex-wrap items-center gap-1.5">
-                        <StateBadge state={d.state} />
+                        <StateBadge state={flowState(d)} />
                         {d.modifiedSincePublish ? <ModifiedMark /> : d.category ? <span className="text-xs text-muted-foreground">{d.category}</span> : null}
                       </span>
                       {!selectMode ? (
@@ -477,7 +559,10 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
                       <Checkbox aria-label={t("select_row", { title: d.title || d.slug })} checked={on} onCheckedChange={(v) => toggle(d.slug, v === true)} />
                     </TableCell>
                     <TableCell>
-                      {titleLink(d)}
+                      <span className="flex items-center gap-2">
+                        {titleLink(d)}
+                        <People people={here[d.slug] ?? []} max={3} />
+                      </span>
                       <div className="font-mono text-xs text-muted-foreground">{d.slug}</div>
                     </TableCell>
                     <TableCell className="text-[13.5px]">{d.category ?? ""}</TableCell>
@@ -517,7 +602,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
           }
         }}
         title={confirm ? t(`confirm_${confirm.action}` as MessageKey, { n: confirm.slugs.length }) : ""}
-        description={confirm?.action === "delete" ? t("confirm_delete_note") : undefined}
+        description={confirm?.action === "delete" ? (me?.trashDays ? t("confirm_delete_trash", { days: me.trashDays }) : t("confirm_delete_note")) : undefined}
         confirmLabel={confirm ? t(`action_${confirm.action}` as MessageKey) : ""}
         destructive={confirm?.action === "delete"}
         busy={running}
@@ -539,12 +624,71 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
         ) : null}
       </ConfirmDialog>
 
+      {saving ? (
+        <SaveFilterDialog
+          collection={collection}
+          query={{ ...(tab !== "all" ? { state: tab } : {}), ...(q ? { q } : {}), ...(category !== "__all" ? { category } : {}), ...(by !== "__all" ? { by } : {}) }}
+          onClose={() => setSaving(false)}
+          onSaved={loadFilters}
+        />
+      ) : null}
+
       <Dialog open={!!results} onOpenChange={(o) => !o && setResults(null)}>
         <DialogContent className="max-w-[500px]">
           {results ? <BulkResults {...results} onOpen={(slug) => (setResults(null), open(slug))} canOpen={!!onOpenDocument} onClose={() => setResults(null)} /> : null}
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/** Name the search, tab, category and author that are set now, to come back to them with one press. */
+function SaveFilterDialog({ collection, query, onClose, onSaved }: { collection: string; query: Record<string, string>; onClose: () => void; onSaved: () => void }) {
+  const { client, t, me } = useCms();
+  const [name, setName] = React.useState("");
+  const [shared, setShared] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-[400px]">
+        <form
+          className="grid gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setBusy(true);
+            client.saveFilter(collection, { name: name.trim(), query, shared }).then(
+              () => (onSaved(), onClose()),
+              (err) => (setBusy(false), setError(errorMessage(err, t)))
+            );
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{t("filter_save")}</DialogTitle>
+            <DialogDescription className="sr-only">{t("filter_saved")}</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label htmlFor="cms-filter-name">{t("name")}</Label>
+            <Input id="cms-filter-name" autoFocus maxLength={80} value={name} onChange={(e) => setName(e.target.value)} aria-invalid={error ? true : undefined} />
+            {error ? <StatusText tone="error">{error}</StatusText> : null}
+          </div>
+          {me?.isAdmin ? (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" className="h-4 w-4 accent-primary" checked={shared} onChange={(e) => setShared(e.target.checked)} />
+              {t("filter_shared")}
+            </label>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("cancel")}
+            </Button>
+            <Button type="submit" disabled={busy || !name.trim()}>
+              {t("filter_save")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

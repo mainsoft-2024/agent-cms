@@ -1391,6 +1391,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     createPreviewLink,
     readPreview,
     previewEnabled: () => !!opts.previewSecret,
+    /** The zone days and schedules are shown in (`createCms({ timeZone })`, default UTC). */
+    timeZone,
     search,
     recordHits,
     hitCounts,

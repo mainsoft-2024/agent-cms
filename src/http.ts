@@ -260,6 +260,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           isAdmin: core.isAdmin(actor),
           previewLinks: core.previewEnabled(),
           trashDays: core.trash.days,
+          timeZone: core.timeZone,
           media: core.assets.describe(actor),
           collections: core
             .collections()

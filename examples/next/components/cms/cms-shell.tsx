@@ -1,4 +1,4 @@
-// agent-cms registry: cms-shell (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-shell (0.10.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // The admin layout: a sidebar with the collections you may read, the
 // operations screens (API keys, audit log, admins only) and `extraNav`, the
@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { BookOpen, HardDrive, Image as ImageIcon, KeyRound, ScrollText, Search, FileText } from "lucide-react";
+import { BookOpen, HardDrive, Image as ImageIcon, KeyRound, Layers, ScrollText, Search, FileText, Trash2 } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { ShellNavContext, useCms } from "./use-cms";
@@ -31,7 +31,7 @@ export interface CmsLinkProps {
   onClick?: () => void;
 }
 
-export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "keys" } | { kind: "audit" };
+export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" };
 
 export interface CmsShellProps {
   children?: React.ReactNode;
@@ -86,6 +86,22 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
     };
   }, [client, me, counts]);
   const shown = counts ?? loaded;
+
+  // Releases and the trash are for people who can change something.
+  const editor = !!me?.collections.some((c) => c.canWrite);
+  const hasTrash = editor && (me?.trashDays ?? 0) > 0;
+  const [inTrash, setInTrash] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    if (!hasTrash) return;
+    let live = true;
+    client.trash().then(
+      (r) => live && setInTrash(r.items.length),
+      () => undefined
+    );
+    return () => {
+      live = false;
+    };
+  }, [client, hasTrash, activeHref]);
 
   const href = (target: CmsShellTarget) =>
     hrefFor?.(target) ?? (target.kind === "collection" ? `${basePath}/${encodeURIComponent(target.slug)}` : `${basePath}/${target.kind}`);
@@ -180,6 +196,38 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
               })}
             </li>
           ) : null}
+        </ul>
+      ) : null}
+      {editor ? (
+        <ul className={cn("flex flex-col gap-0.5", me?.media ? "mt-0.5" : "mt-3")}>
+          {(
+            [
+              { kind: "releases", label: t("nav_releases"), Icon: Layers, n: null, show: true },
+              { kind: "trash", label: t("nav_trash"), Icon: Trash2, n: inTrash, show: hasTrash },
+            ] as const
+          )
+            .filter((x) => x.show)
+            .map(({ kind, label, Icon, n }) => {
+              const h = href({ kind });
+              const active = activeHref === h || (kind === "releases" && !!activeHref?.startsWith(`${h}/`));
+              return (
+                <li key={kind}>
+                  {link({
+                    href: h,
+                    className: navClass(active),
+                    "aria-current": active ? "page" : undefined,
+                    onClick: close,
+                    children: (
+                      <>
+                        <Icon aria-hidden className="h-4 w-4 shrink-0" />
+                        <span className="flex-1 truncate">{label}</span>
+                        {n ? <span className="text-xs tabular-nums text-muted-foreground">{n}</span> : null}
+                      </>
+                    ),
+                  })}
+                </li>
+              );
+            })}
         </ul>
       ) : null}
       {me?.isAdmin ? (

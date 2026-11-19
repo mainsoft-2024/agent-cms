@@ -165,6 +165,8 @@ export interface Me {
   previewLinks: boolean;
   /** Days something stays in the trash (0: there is no trash). */
   trashDays?: number;
+  /** The zone schedules are shown and entered in. */
+  timeZone?: string;
   /** The media library, when the app has one and this actor may see it. */
   media?: MediaInfo | null;
   collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean }[];
