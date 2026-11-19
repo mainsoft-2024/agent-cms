@@ -178,3 +178,40 @@ test("editor: an image field and 'Insert media' use the picker; the preview show
   await user.click(within(cover).getByRole("button", { name: "Remove" }));
   assert.ok(await within(cover).findByRole("button", { name: "Choose media" }));
 });
+
+test("media: import from a URL into the open folder, and rename a file in its panel", async () => {
+  const s = makeServer({ media: true });
+  await s.addFile("logo.png", { folder: "brand" });
+  const user = userEvent.setup();
+  renderWith(s, <CmsMedia />, { messages: ko });
+  const folders = await screen.findByRole("navigation", { name: "폴더" });
+  await user.click(await within(folders).findByRole("button", { name: /brand/ }));
+  await user.click(screen.getByRole("button", { name: "URL에서 가져오기" }));
+  let dialog = await screen.findByRole("dialog", { name: "URL에서 가져오기" });
+  // An address inside the network is refused by the server, and the dialog says so.
+  await user.type(within(dialog).getByLabelText("주소"), "https://intranet.example/a.png");
+  await user.click(within(dialog).getByRole("button", { name: "가져오기" }));
+  assert.ok(await within(dialog).findByText("That address cannot be fetched"));
+  await user.clear(within(dialog).getByLabelText("주소"));
+  await user.type(within(dialog).getByLabelText("주소"), "https://example.com/pics/team-photo.png");
+  assert.deepEqual(await axeViolations(), []);
+  await user.click(within(dialog).getByRole("button", { name: "가져오기" }));
+  // The new file opens in the panel, in the folder that was open.
+  const panel = await screen.findByRole("complementary", { name: "team-photo.png" });
+  assert.ok(within(panel).getByText("공개 / brand"));
+  assert.ok(within(panel).getByText("200B, 800×600"));
+  assert.ok(s.stores.public.objects.has("brand/team-photo.png"));
+
+  await user.click(within(panel).getByRole("button", { name: "이름 바꾸기" }));
+  const name = screen.getByRole("textbox", { name: "이름 바꾸기" }) as HTMLInputElement;
+  assert.equal(name.value, "team-photo.png");
+  await user.clear(name);
+  await user.type(name, "team-2026{Enter}");
+  await screen.findByRole("complementary", { name: "team-2026.png" });
+  assert.ok(s.stores.public.objects.has("brand/team-2026.png") && !s.stores.public.objects.has("brand/team-photo.png"), "the extension is kept and the file really moved");
+  await screen.findByRole("button", { name: "team-2026.png" });
+  // Escape leaves the name as it was.
+  await user.click(screen.getByRole("button", { name: "이름 바꾸기" }));
+  await user.type(screen.getByRole("textbox", { name: "이름 바꾸기" }), "x{Escape}");
+  assert.ok(await screen.findByRole("heading", { name: "team-2026.png" }));
+});

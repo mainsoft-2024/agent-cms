@@ -7,7 +7,7 @@
 "use client";
 
 import * as React from "react";
-import { Copy, Download, Folder, FolderPlus, LayoutGrid, List, Search, Trash2, X } from "lucide-react";
+import { Copy, Download, Folder, FolderPlus, LayoutGrid, Link as LinkIcon, List, Pencil, Search, Trash2, X } from "lucide-react";
 import type { AssetDetail, AssetView, FolderTree } from "@mainsoft/agent-cms/client";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -41,6 +41,7 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
   const [view, setView] = useLocalStorage<"grid" | "list">("cms-media-view", "grid");
   const [openId, setOpenId] = React.useState<string | null>(null);
   const [newFolder, setNewFolder] = React.useState(false);
+  const [importing, setImporting] = React.useState(false);
   const [dragging, setDragging] = React.useState(false);
   const applyQ = useDebounced(setQ, 250);
   const store = where.store ?? stores[0]?.name ?? null;
@@ -67,6 +68,10 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
       <PageHeader title={t("nav_media")}>
         {info?.can.write ? (
           <>
+            <Button type="button" variant="outline" size="sm" aria-label={t("media_import")} onClick={() => setImporting(true)}>
+              <LinkIcon aria-hidden className="h-4 w-4" />
+              <span className="hidden lg:inline">{t("media_import")}</span>
+            </Button>
             <Button type="button" variant="outline" size="sm" onClick={() => setNewFolder(true)}>
               <FolderPlus aria-hidden className="h-4 w-4" />
               {t("media_new_folder")}
@@ -234,6 +239,15 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
           />
         ) : null}
       </div>
+      <ImportDialog
+        open={importing}
+        onOpenChange={setImporting}
+        onImport={async (url) => {
+          const a = await client.importAsset({ url, store, folder: where.folder });
+          refresh();
+          setOpenId(a.id);
+        }}
+      />
       <NewFolderDialog
         open={newFolder}
         onOpenChange={setNewFolder}
@@ -294,6 +308,52 @@ export function NewFolderDialog({ open, onOpenChange, onCreate }: { open: boolea
   );
 }
 
+/** Fetch a file from a public https address into the folder that is open. The server refuses addresses inside the network. */
+function ImportDialog({ open, onOpenChange, onImport }: { open: boolean; onOpenChange: (o: boolean) => void; onImport: (url: string) => Promise<void> }) {
+  const { t } = useCms();
+  const [url, setUrl] = React.useState("");
+  const [error, setError] = React.useState<unknown>(null);
+  const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => {
+    if (open) (setUrl(""), setError(null));
+  }, [open]);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[440px]">
+        <form
+          className="grid gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!url.trim()) return;
+            setBusy(true);
+            onImport(url.trim()).then(
+              () => (setBusy(false), onOpenChange(false)),
+              (err) => (setBusy(false), setError(err))
+            );
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{t("media_import")}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label htmlFor="cms-import-url">{t("media_import_url")}</Label>
+            <Input id="cms-import-url" type="url" inputMode="url" placeholder="https://" autoFocus value={url} onChange={(e) => setUrl(e.target.value)} aria-invalid={error ? true : undefined} />
+            {error ? <StatusText tone="error">{errorMessage(error, t)}</StatusText> : null}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              {t("cancel")}
+            </Button>
+            <Button type="submit" disabled={busy || !url.trim()}>
+              {t("media_import_go")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── one file ─────────────────────────────────────────────────────────────────
 
 export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDeleted }: { id: string; basePath: string; docHref?: CmsMediaProps["docHref"]; onClose: () => void; onChanged: (a: AssetView) => void; onDeleted: () => void }) {
@@ -305,6 +365,23 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
   const [saveError, setSaveError] = React.useState<unknown>(null);
   const [asking, setAsking] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  /** The name being typed while renaming (null: not renaming). */
+  const [naming, setNaming] = React.useState<string | null>(null);
+  const rename = async () => {
+    const name = naming?.trim();
+    setNaming(null);
+    if (!name || !asset || name === asset.name) return;
+    try {
+      // The server keeps the extension, so the file's type cannot change by renaming.
+      const next = await client.moveAsset(id, { name });
+      forgetAsset(client, id);
+      setData((d) => (d ? { ...d, ...next } : d));
+      onChanged(next);
+      setSaveError(null);
+    } catch (e) {
+      setSaveError(e);
+    }
+  };
   const store = me?.media?.stores.find((s) => s.name === asset?.store);
   const can = store?.can;
   const save = async (patch: { alt?: string; tags?: string[] }) => {
@@ -324,12 +401,32 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
     <>
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1">
-          <h2 className="truncate font-semibold">{asset.name}</h2>
+          {naming !== null ? (
+            <Input
+              aria-label={t("media_rename")}
+              autoFocus
+              className="h-8"
+              value={naming}
+              onChange={(e) => setNaming(e.target.value)}
+              onBlur={() => void rename()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void rename();
+                if (e.key === "Escape") (e.stopPropagation(), setNaming(null));
+              }}
+            />
+          ) : (
+            <h2 className="truncate font-semibold">{asset.name}</h2>
+          )}
           <p className="truncate text-xs text-muted-foreground">
             {store ? storeLabel(store, t) : asset.store}
             {asset.folder ? ` / ${asset.folder}` : ""}
           </p>
         </div>
+        {can?.delete && naming === null ? (
+          <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label={t("media_rename")} onClick={() => setNaming(asset.name)}>
+            <Pencil aria-hidden className="h-4 w-4" />
+          </Button>
+        ) : null}
         {mobile ? null : (
           <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label={t("close")} onClick={onClose}>
             <X aria-hidden className="h-4 w-4" />

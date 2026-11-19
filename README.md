@@ -337,6 +337,9 @@ The browser sends files straight to the storage, four parts at a time for
 large ones, tries a failed part again three times, and "Try again" sends only
 what is still missing. It also makes a small picture of each image and video
 (480px, WebP) for the library, and reads width, height and length.
+"Import from URL" fetches a public https address into the open folder
+(addresses inside your network are refused, as for agents), and the pencil
+in a file's panel renames it; the extension stays, so the type cannot change.
 `<CmsProvider slots={{ assetAlt }}>` lets an extension package put its own
 control next to a file's alt text field.
 

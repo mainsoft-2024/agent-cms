@@ -16,6 +16,12 @@ export const BASE = "http://localhost/api/cms";
 export const admin: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u1", label: "Admin", isAdmin: true };
 export const agent: Actor = { kind: "key", id: "k-agent", label: "docs-agent", scopes: ["read", "write"], collections: null };
 
+function tinyPng(): Uint8Array {
+  const bytes = new Uint8Array(200);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 3, 32, 0, 0, 2, 88]);
+  return bytes;
+}
+
 export function makeServer(o: { previewSecret?: string | null; media?: boolean } = {}) {
   const stores = { public: new MemoryStorage({ name: "public", publicUrl: "https://cdn.example.com" }), private: new MemoryStorage({ name: "private" }) };
   const guide = defineCollection({
@@ -41,7 +47,14 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean }
     previewSecret: o.previewSecret === null ? undefined : (o.previewSecret ?? "x".repeat(40)),
     warn: () => {},
     schemaCheck: false,
-    media: o.media ? { stores: { public: { visibility: "public", adapter: stores.public }, private: { visibility: "private", adapter: stores.private } } } : undefined,
+    media: o.media
+      ? {
+          stores: { public: { visibility: "public", adapter: stores.public }, private: { visibility: "private", adapter: stores.private } },
+          // Imports from a URL: every host is "public" and answers with a small PNG.
+          resolveHost: async (host: string) => (host === "intranet.example" ? ["10.0.0.5"] : ["93.184.216.34"]),
+          fetch: (async () => new Response(tinyPng() as BodyInit, { headers: { "content-type": "image/png" } })) as typeof fetch,
+        }
+      : undefined,
   });
   /** Put a small PNG into the library the way a browser would. */
   const addFile = async (name: string, more: { folder?: string; store?: string; alt?: string; tags?: string[] } = {}) => {
