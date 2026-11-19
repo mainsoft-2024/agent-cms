@@ -1,0 +1,70 @@
+{
+  "version": "0.7.0",
+  "files": {
+    "components/cms/use-cms.ts": {
+      "item": "cms-lib",
+      "version": "0.7.0",
+      "hash": "1fed3b29cd41dd4232a62980bad8517fd814d49008ddecd0aa3771dd491d5983"
+    },
+    "components/cms/cms-messages.ts": {
+      "item": "cms-lib",
+      "version": "0.7.0",
+      "hash": "585003466c45c614997579f3e28fd4e528ae36547a14af5da85db40d31966f36"
+    },
+    "components/cms/cms-parts.tsx": {
+      "item": "cms-lib",
+      "version": "0.7.0",
+      "hash": "aeab43380c4af8cf27c971933bc647b736110328c1f57cecad9c54a5c60c6ba4"
+    },
+    "components/cms/cms-shell.tsx": {
+      "item": "cms-shell",
+      "version": "0.7.0",
+      "hash": "7e1c1441c1de79e08f1c1515f6472db7f9b033911b3694aac3d4cf801875a2d8"
+    },
+    "components/cms/cms-empty.tsx": {
+      "item": "cms-empty",
+      "version": "0.7.0",
+      "hash": "571d6711ff7807a3c4a72bae54cd78c9525d7dbecf33a6265e7b0522789ec5b1"
+    },
+    "components/cms/cms-doc-list.tsx": {
+      "item": "cms-doc-list",
+      "version": "0.7.0",
+      "hash": "9c8fd46f2b76a2ed9a463ea2a86e7f9bc31155d756cc45f3f2b400f9cd5c384c"
+    },
+    "components/cms/cms-merge.tsx": {
+      "item": "cms-merge",
+      "version": "0.7.0",
+      "hash": "b580964d77b29dc89bea76b4bcf28da0b2ab75a9488bbf2a27df2e310d472742"
+    },
+    "components/cms/cms-doc-editor.tsx": {
+      "item": "cms-doc-editor",
+      "version": "0.7.0",
+      "hash": "7294f7a648c7fd653e126101a0a3d134404d65b7361ee8191fa83dbe8b26fa2c"
+    },
+    "components/cms/cms-field-form.tsx": {
+      "item": "cms-doc-editor",
+      "version": "0.7.0",
+      "hash": "2ba4bed9ee9adc9ec16f6cf4f3d4dc703ca0f63b83f657d6c8b39ea18fad9d7f"
+    },
+    "components/cms/cms-versions.tsx": {
+      "item": "cms-versions",
+      "version": "0.7.0",
+      "hash": "f9cf5711d47c3a04c56e4f4ea8b401e4bf58856dfa3940bcc5323a9e593f3172"
+    },
+    "components/cms/cms-keys.tsx": {
+      "item": "cms-keys",
+      "version": "0.7.0",
+      "hash": "1a5c1e8a0f6a200aa01309e2f6419db1687d41361b76abab53846ba331c2912e"
+    },
+    "components/cms/cms-audit.tsx": {
+      "item": "cms-audit",
+      "version": "0.7.0",
+      "hash": "f26e27105c1ce2e273a445e6089974c7e610709e795b6fd14c922b6f3dca69d4"
+    },
+    "components/cms/cms-command.tsx": {
+      "item": "cms-command",
+      "version": "0.7.0",
+      "hash": "a5f798051a9d99b86b54ebdcf652b0b655a88fd921ae8be56c3d1fe29ef53dc9"
+    }
+  }
+}
