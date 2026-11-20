@@ -18,4 +18,4 @@ export default function FilesPage() {
 The sidebar shows "Files" to whoever may look around a store. What it does and who may do it is on the [file manager](/docs/file-manager) page.
 
 > [!note]
-> Coming in 0.9.0. In the demo, moving and deleting are off.
+> On npm from 0.10.0. In the demo, moving and deleting are off.

@@ -5,7 +5,7 @@ category: Guides
 order: 7
 ---
 > [!note]
-> Coming in 0.9.0. It is on the main branch and not on npm yet.
+> On npm from 0.10.0.
 
 The [media library](/docs/media-library) shows the files the CMS knows. The file manager
 (`npx agent-cms add cms-files`, a page with `<CmsFiles />`) shows a bucket as

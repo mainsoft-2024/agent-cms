@@ -107,6 +107,16 @@ test("phone: list as cards and the menu in a sheet @mobile", async ({ page, isMo
   test.skip(!isMobile, "phone layout");
   await page.goto("/admin/posts");
   await expect(page.getByText("Hello, world").first()).toBeVisible();
+  // The state tabs are wider than a phone: they scroll inside their own row and the page does not move sideways.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const tabs = page.getByRole("radiogroup", { name: "State" });
+  const fits = await tabs.evaluate((el) => ({ right: el.getBoundingClientRect().right, view: window.innerWidth, scrolls: el.scrollWidth > el.clientWidth }));
+  expect(fits.right).toBeLessThanOrEqual(fits.view);
+  if (fits.scrolls) {
+    await page.getByRole("radio", { name: /Hidden/ }).click();
+    await expect(page.getByRole("radio", { name: /Hidden/ })).toBeInViewport({ ratio: 1 });
+    await page.getByRole("radio", { name: /All/ }).click();
+  }
   await page.getByRole("button", { name: "Menu" }).click();
   await expect(page.getByRole("dialog").getByRole("link", { name: "API keys" })).toBeVisible();
 });

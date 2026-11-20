@@ -186,7 +186,8 @@ export function Segmented<V extends string>({ value, onChange, options, label, l
       role="radiogroup"
       aria-label={labelledBy ? undefined : label}
       aria-labelledby={labelledBy}
-      className={cn("inline-flex w-fit flex-wrap justify-start gap-0.5 rounded-md bg-muted p-0.5", className)}
+      // max-w-full: never wider than what holds it. Without it `w-fit` lets a long row push the page sideways on a phone.
+      className={cn("inline-flex w-fit max-w-full flex-wrap justify-start gap-0.5 rounded-md bg-muted p-0.5", className)}
     >
       {options.map((o, i) => {
         const on = o.value === value;
@@ -202,7 +203,11 @@ export function Segmented<V extends string>({ value, onChange, options, label, l
             data-state={on ? "on" : "off"}
             disabled={o.disabled}
             tabIndex={i === focusable ? 0 : -1}
-            onClick={() => onChange(o.value)}
+            onClick={(e) => {
+              // In a row that scrolls sideways, bring a half-hidden choice fully into view.
+              e.currentTarget.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+              onChange(o.value);
+            }}
             onKeyDown={(e) => onKeyDown(e, i)}
             className={cn(
               "inline-flex h-7 items-center justify-center whitespace-nowrap rounded-sm px-2.5 text-[13px] font-normal text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 data-[state=on]:bg-background data-[state=on]:font-medium data-[state=on]:text-foreground data-[state=on]:shadow-sm",

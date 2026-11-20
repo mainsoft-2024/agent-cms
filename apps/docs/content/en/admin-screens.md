@@ -18,7 +18,7 @@ Or with the agent-cms CLI:
 
 ```sh
 npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
-npx agent-cms add cms-media cms-files   # with a media library (0.8.0 and later)
+npx agent-cms add cms-media cms-files   # with a media library (0.10.0 and later)
 ```
 
 Files go to `<components>/cms/`. The shadcn parts and the screens an item needs come along. Browse every screen with a live demo in [Components](/components).
