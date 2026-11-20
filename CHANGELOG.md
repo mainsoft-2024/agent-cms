@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1
+
+- **Fix (cms-doc-editor):** saving or publishing a new document lost its confirmation line ("Saved v1", "Published v1") when the app answered `onCreated` by moving to the document's own address, which is what the examples do. The line now waits for the editor that opens next and shows there once. Update the copy with `npx agent-cms add cms-doc-editor --update`.
+
 ## 0.10.0
 
 The first npm release since 0.7.0. It contains 0.8.0 and 0.9.0 below, which were not published on their own: coming from 0.7.0, read [UPGRADE-0.8.md](./UPGRADE-0.8.md) first, then [UPGRADE-0.10.md](./UPGRADE-0.10.md).
