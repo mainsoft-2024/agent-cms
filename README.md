@@ -30,7 +30,7 @@ notes, a help center, internal docs, a notice board.
   (`cms://guide/slack#connect`) rather than whole documents. Searches that
   found nothing are passed to your app through `onSearchMiss`; storing them is
   up to the app.
-- **Admin screens you own.** `npx agent-cms add cms-doc-list` copies the
+- **Admin screens you own.** `npx @mainsoft/agent-cms add cms-doc-list` copies the
   screens (list, editor with split preview, merge, versions, API keys, audit
   log, ⌘K) into your app, built on your own shadcn/ui parts.
 - **Safe defaults.** Every collection says whether it is `public` or
@@ -49,13 +49,29 @@ Upgrading from 0.5? Read [UPGRADE-0.6.md](./UPGRADE-0.6.md) first (the
 ## Install
 
 ```
-npm i @mainsoft/agent-cms
-npx agent-cms init
+npm i @mainsoft/agent-cms drizzle-orm zod
+npx @mainsoft/agent-cms init
 ```
 
 Peer dependencies: `drizzle-orm` and `zod` (`^3.25` or `^4`). `init` writes
 `agent-cms.config.ts`, `lib/cms.ts`, the API route, a schema re-export and
 `.env.example` lines, and never overwrites a file.
+
+**Write the full name after `npx`.** The scope is part of the command:
+`agent-cms` without `@mainsoft/` is another project's package on npm, so
+leaving it out stops with `could not determine executable to run` in any
+folder where this package is not installed (a monorepo root, an agent's
+shell, a new project). With other package managers:
+
+```
+bunx @mainsoft/agent-cms init
+pnpm dlx @mainsoft/agent-cms init     # or `pnpm exec agent-cms init` once it is installed
+yarn agent-cms init                   # yarn 1 does not install peer dependencies: add drizzle-orm and zod yourself
+```
+
+pnpm 11 and later skip versions published in the last day by default
+(`minimumReleaseAge`), so on the day of a release `pnpm add` gives you the
+one before it.
 
 ## Set up
 
@@ -67,9 +83,9 @@ export { cmsDocuments, cmsVersions, cmsApiKeys, cmsHits, cmsMeta, cmsAudit, cmsA
 ```
 
 ```
-npx agent-cms migrate check   # what is missing, as SQL (exit 1 when behind)
-npx agent-cms migrate apply   # or run the idempotent DDL directly
-npx agent-cms doctor          # tables, columns, schema version, broken rows
+npx @mainsoft/agent-cms migrate check   # what is missing, as SQL (exit 1 when behind)
+npx @mainsoft/agent-cms migrate apply   # or run the idempotent DDL directly
+npx @mainsoft/agent-cms doctor          # tables, columns, schema version, broken rows
 ```
 
 `cmsTables({ prefix: "blog_", schema: "content" })` gives a set with another
@@ -154,10 +170,10 @@ they go and how imports are written) and talk to the CMS through
 `createRestClient` from `./client`.
 
 ```
-npx agent-cms add --list
-npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media cms-files cms-trash cms-releases
-npx agent-cms add --diff      # what a new release would change in your copies
-npx agent-cms add --update    # update files you did not edit; yours get a .new copy
+npx @mainsoft/agent-cms add --list
+npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media cms-files cms-trash cms-releases
+npx @mainsoft/agent-cms add --diff      # what a new release would change in your copies
+npx @mainsoft/agent-cms add --update    # update files you did not edit; yours get a .new copy
 ```
 
 Missing shadcn parts are listed with the `npx shadcn add …` line to run
@@ -356,13 +372,13 @@ and private Blob stores with `@vercel/blob` 2.9.0.
 (the same object) to `agent-cms.config.ts` and run:
 
 ```
-npx agent-cms storage check --origin https://your-site.example
+npx @mainsoft/agent-cms storage check --origin https://your-site.example
 ```
 
 It uploads, reads, moves and deletes a test file in every store for real
 (also in parts, also with a browser-style signed address), tests the CORS
 rule, prints the rule to paste into the bucket, and lists what each store
-accepts. `npx agent-cms storage cleanup` removes uploads that were started
+accepts. `npx @mainsoft/agent-cms storage cleanup` removes uploads that were started
 and never finished (`doctor` tells you when there are any).
 
 **What may be uploaded** is yours to decide, at three levels: `media.accept`
@@ -484,7 +500,7 @@ redirects to the public address or to a short-lived signed one
 (`media.linkTtlSeconds`, default 300). Set `media.filesUrl` when your handler
 is not mounted at `/api/cms`.
 
-**In the admin**, add the screen (`npx agent-cms add cms-media`) and a page
+**In the admin**, add the screen (`npx @mainsoft/agent-cms add cms-media`) and a page
 for it; the sidebar shows "Media" by itself when the app has a library:
 
 ```tsx
@@ -526,20 +542,20 @@ addresses inside your network are refused), `update_asset` (write),
 `move_asset` and `delete_asset` (publish). From a terminal:
 
 ```
-npx agent-cms upload ./hero.png ./talk.mp4 --folder launch --alt "The launch screen" --tag launch
+npx @mainsoft/agent-cms upload ./hero.png ./talk.mp4 --folder launch --alt "The launch screen" --tag launch
 ```
 
 ### File manager
 
 The media library shows the files the CMS knows. The file manager
-(`npx agent-cms add cms-files`, a page with `<CmsFiles />`) shows a bucket as
+(`npx @mainsoft/agent-cms add cms-files`, a page with `<CmsFiles />`) shows a bucket as
 it is, folder by folder: files another program put there appear too. The
 sidebar shows "Files" to whoever may look around a store (by default whoever
 may read it; a store's `access.browse` narrows that).
 
 - A file the CMS did not know gets a row when someone opens it, tags it,
   shares it or an agent registers it. From then on it works in documents like
-  any other file. `npx agent-cms storage sync [--store name] [--folder path]`
+  any other file. `npx @mainsoft/agent-cms storage sync [--store name] [--folder path]`
   registers everything at once and lists files the CMS knows that are gone
   from the bucket (it deletes nothing).
 - Several files and whole folders can be moved or deleted at once (up to
@@ -663,12 +679,12 @@ before. The default stays off (401 without a key).
 
 ```
 export AGENT_CMS_URL=https://app.example.com/api/cms AGENT_CMS_KEY=sgk_…
-npx agent-cms collections
-npx agent-cms search "slack 연결" --collections guide
-npx agent-cms get posts hello-world --draft
-npx agent-cms put posts ./hello-world.md --publish --note "launch post"
-npx agent-cms patch posts hello-world ./ops.json --expected-version 3 --dry-run
-npx agent-cms call archive_document '{"collection":"posts","slug":"old","archived":true}'
+npx @mainsoft/agent-cms collections
+npx @mainsoft/agent-cms search "slack 연결" --collections guide
+npx @mainsoft/agent-cms get posts hello-world --draft
+npx @mainsoft/agent-cms put posts ./hello-world.md --publish --note "launch post"
+npx @mainsoft/agent-cms patch posts hello-world ./ops.json --expected-version 3 --dry-run
+npx @mainsoft/agent-cms call archive_document '{"collection":"posts","slug":"old","archived":true}'
 ```
 
 `put` creates the document. To update one that exists, pass the version you

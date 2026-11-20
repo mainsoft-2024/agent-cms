@@ -9,19 +9,21 @@ sourceVersion: 1
 
 ```sh
 export AGENT_CMS_URL=https://app.example.com/api/cms AGENT_CMS_KEY=sgk_…
-npx agent-cms collections
+npx @mainsoft/agent-cms collections
 ```
 
 `--env <파일>`을 주면 `AGENT_CMS_URL`과 `AGENT_CMS_KEY`를 파일에서 읽어요.
 
+이 명령들은 HTTP로 앱에 접속하므로 어느 폴더에서나 돌아가요. 패키지가 설치되지 않은 곳에서는 `npx`가 받아 와요. 명령에 스코프를 꼭 넣으세요(`bunx @mainsoft/agent-cms …`, `pnpm dlx @mainsoft/agent-cms …`도 똑같아요). `@mainsoft/`를 뺀 `agent-cms`는 npm에 있는 다른 프로젝트의 패키지라서 `could not determine executable to run` 오류로 멈춰요.
+
 ## 명령
 
 ```sh
-npx agent-cms search "설치 테이블" --collections docs
-npx agent-cms get posts hello-world --draft
-npx agent-cms put posts ./hello-world.md --publish --note "launch post"
-npx agent-cms patch posts hello-world ./ops.json --expected-version 3 --dry-run
-npx agent-cms call archive_document '{"collection":"posts","slug":"old","archived":true}'
+npx @mainsoft/agent-cms search "설치 테이블" --collections docs
+npx @mainsoft/agent-cms get posts hello-world --draft
+npx @mainsoft/agent-cms put posts ./hello-world.md --publish --note "launch post"
+npx @mainsoft/agent-cms patch posts hello-world ./ops.json --expected-version 3 --dry-run
+npx @mainsoft/agent-cms call archive_document '{"collection":"posts","slug":"old","archived":true}'
 ```
 
 `put`은 문서를 만들어요. 이미 있는 문서를 고치려면 읽은 버전을 `--expected-version N`으로 넘기세요. 그사이 누가 저장했으면 덮어쓰지 않고 충돌로 실패해요. `--force`는 이 검사를 건너뛰어요.

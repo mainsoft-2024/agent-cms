@@ -14,7 +14,7 @@ The secret is shown once, with ready-to-copy MCP and `.env` setup. Keys can expi
 ## Install
 
 ```sh
-npx agent-cms add cms-keys
+npx @mainsoft/agent-cms add cms-keys
 ```
 
 It also needs `CmsProvider` from `cms-lib` around your admin:

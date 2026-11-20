@@ -8,19 +8,21 @@ order: 3
 
 ```sh
 export AGENT_CMS_URL=https://app.example.com/api/cms AGENT_CMS_KEY=sgk_…
-npx agent-cms collections
+npx @mainsoft/agent-cms collections
 ```
 
 `--env <file>` reads `AGENT_CMS_URL` and `AGENT_CMS_KEY` from a file instead.
 
+These commands talk to the app over HTTP, so they run from any folder: `npx` fetches the package when it is not installed there. Keep the scope in the command (`bunx @mainsoft/agent-cms …` and `pnpm dlx @mainsoft/agent-cms …` work the same way). `agent-cms` without `@mainsoft/` is another project's package on npm and stops with `could not determine executable to run`.
+
 ## Commands
 
 ```sh
-npx agent-cms search "install tables" --collections docs
-npx agent-cms get posts hello-world --draft
-npx agent-cms put posts ./hello-world.md --publish --note "launch post"
-npx agent-cms patch posts hello-world ./ops.json --expected-version 3 --dry-run
-npx agent-cms call archive_document '{"collection":"posts","slug":"old","archived":true}'
+npx @mainsoft/agent-cms search "install tables" --collections docs
+npx @mainsoft/agent-cms get posts hello-world --draft
+npx @mainsoft/agent-cms put posts ./hello-world.md --publish --note "launch post"
+npx @mainsoft/agent-cms patch posts hello-world ./ops.json --expected-version 3 --dry-run
+npx @mainsoft/agent-cms call archive_document '{"collection":"posts","slug":"old","archived":true}'
 ```
 
 `put` creates the document. To update one that exists, pass the version you read as `--expected-version N`; if someone saved since, `put` fails with a conflict instead of overwriting. `--force` skips that check.

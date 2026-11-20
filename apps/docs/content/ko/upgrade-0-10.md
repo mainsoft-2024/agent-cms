@@ -10,8 +10,8 @@ sourceVersion: 1
 ## 1. 스키마 버전 4
 
 ```sh
-npx agent-cms migrate check
-npx agent-cms migrate apply    # 또는 `migrate print`로 SQL을 받아 직접 실행
+npx @mainsoft/agent-cms migrate check
+npx @mainsoft/agent-cms migrate apply    # 또는 `migrate print`로 SQL을 받아 직접 실행
 ```
 
 추가만 하는 단계라 두 번 실행해도 괜찮아요.
@@ -47,8 +47,8 @@ Authorization: Bearer <cronSecret>
 ## 4. 어드민 화면
 
 ```sh
-npx agent-cms add --update
-npx agent-cms add cms-trash cms-releases
+npx @mainsoft/agent-cms add --update
+npx @mainsoft/agent-cms add cms-trash cms-releases
 ```
 
 - `cms-doc-editor`에 파일이 두 개 늘었어요: `cms-flow.tsx`, `cms-paste.ts`.

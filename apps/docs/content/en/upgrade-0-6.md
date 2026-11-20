@@ -16,13 +16,13 @@ npm uninstall @mainsoft-2024/agent-cms
 npm i @mainsoft/agent-cms
 ```
 
-Import paths change their scope only: `@mainsoft-2024/agent-cms/http` becomes `@mainsoft/agent-cms/http`. Copied screens: run `npx agent-cms add --update`.
+Import paths change their scope only: `@mainsoft-2024/agent-cms/http` becomes `@mainsoft/agent-cms/http`. Copied screens: run `npx @mainsoft/agent-cms add --update`.
 
 ## Database
 
 ```sh
-npx agent-cms migrate check
-npx agent-cms migrate apply
+npx @mainsoft/agent-cms migrate check
+npx @mainsoft/agent-cms migrate apply
 ```
 
 0.6 adds columns and the `cms_audit` table. Until you run it, the CMS answers `schema_outdated` (503).

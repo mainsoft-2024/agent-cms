@@ -38,7 +38,7 @@ export { handler as GET, handler as POST, handler as PUT, handler as PATCH, hand
 ## 3. Add the admin
 
 ```sh
-npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
+npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
 ```
 
 Wrap the screens in `CmsProvider` and give each one a page. See [Admin screens](/docs/admin-screens).

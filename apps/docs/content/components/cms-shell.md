@@ -16,7 +16,7 @@ Pass `LinkComponent={Link}` so links use your router, and `extraNav` for your ow
 ## Install
 
 ```sh
-npx agent-cms add cms-shell
+npx @mainsoft/agent-cms add cms-shell
 ```
 
 It also needs `CmsProvider` from `cms-lib` around your admin:

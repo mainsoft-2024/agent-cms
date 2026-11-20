@@ -129,6 +129,15 @@ test("phone: menu and hero fit @mobile", async ({ page }) => {
   await expect(page).toHaveURL(/\/docs\//);
 });
 
+test("phone: the pages that show a command do not scroll sideways @mobile", async ({ page }) => {
+  // The command is one long line with the full package name. It scrolls inside its own box.
+  for (const path of ["/", "/docs/install", "/ko/docs/install", "/docs/cli", "/components/cms-doc-list", "/components/cms-preview-comments"]) {
+    await page.goto(path);
+    await expect(page.getByText("npx @mainsoft/agent-cms").first()).toBeAttached();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), path).toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
+});
+
 test("media library: docs pages, the agent page without ./ai, and the read-only demo", async ({ page, request }) => {
   await page.goto("/docs/media-library");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Media library");

@@ -173,6 +173,40 @@ test("tools: a remote client calls the app over MCP with a key, and its errors b
   assert.equal((missing as { kind: string }).kind, "not_found");
 });
 
+test("commands are written with the full package name", () => {
+  // `agent-cms` without the scope is another project's package on npm: outside a folder where this
+  // package is installed, `npx agent-cms` downloads that one and stops with "could not determine
+  // executable to run". Docs, messages and screens must say `npx @mainsoft/agent-cms`.
+  const short = /\b(?:npx|bunx|pnpm dlx|yarn dlx)\s+(?:(?:--yes|-y)\s+)?agent-cms\b/;
+  const root = process.cwd();
+  const skip = new Set(["node_modules", "dist", ".next", ".slash", ".git", "test-results", "playwright-report", "public"]);
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (skip.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|sh|md|mdx|json|yml|yaml|css)$/.test(e.name) && e.name !== "package-lock.json") files.push(p);
+    }
+  };
+  walk(root);
+  assert.ok(files.length > 200, "the walk found the sources and the docs");
+  // A copied screen's first line is a comment that names the short form. It works there (the app has
+  // the package), and changing the line would leave a `.new` copy beside every screen someone edited.
+  const copies = /^(registry\/cms|examples\/next\/components\/cms|apps\/docs\/components\/cms)\//;
+  const bad: string[] = [];
+  for (const f of files) {
+    const rel = f.slice(root.length + 1).split("\\").join("/");
+    if (rel === "src/parts.test.ts" || rel === "scripts/pack-smoke.sh") continue; // this test, and the smoke test that runs the bin by its own name on purpose
+    readFileSync(f, "utf8").split("\n").forEach((line, i) => {
+      if (!short.test(line)) return;
+      if (i === 0 && copies.test(rel) && line.startsWith("// agent-cms registry:")) return;
+      bad.push(`${rel}:${i + 1}`);
+    });
+  }
+  assert.deepEqual(bad, []);
+});
+
 test("no model calls: nothing imports a model library, and none is a dependency", () => {
   const banned = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)["'](ai|ai\/[^"']*|@ai-sdk\/[^"']*|openai|@anthropic-ai\/[^"']*|@google\/generative-ai|ollama)["']/g;
   const root = process.cwd();

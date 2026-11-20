@@ -9,8 +9,8 @@ Coming from 0.10.x. Nothing is removed and no call changes its meaning. There is
 ## 1. Schema version 5
 
 ```sh
-npx agent-cms migrate check
-npx agent-cms migrate apply    # or `migrate print` and run the SQL yourself
+npx @mainsoft/agent-cms migrate check
+npx @mainsoft/agent-cms migrate apply    # or `migrate print` and run the SQL yourself
 ```
 
 The step adds three columns to `cms_assets` and is safe to run twice: `focal_x`, `focal_y` (a picture's focal point, empty by default) and `rev` (how many times the file was replaced, 0 by default). Apps that create their tables at start get them by themselves.
@@ -20,7 +20,7 @@ The step adds three columns to `cms_assets` and is safe to run twice: `focal_x`,
 ## 2. Update the copied screens
 
 ```sh
-npx agent-cms add --update
+npx @mainsoft/agent-cms add --update
 ```
 
 `cms-doc-editor` got a new file (`cms-body-tools.tsx`). `cms-upload.ts`, `cms-media.tsx`, `cms-media-picker.tsx`, `cms-parts.tsx` and `cms-messages.ts` changed.

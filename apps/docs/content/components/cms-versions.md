@@ -14,7 +14,7 @@ Pick any two versions to compare. Restoring creates a new version; publishing an
 ## Install
 
 ```sh
-npx agent-cms add cms-versions
+npx @mainsoft/agent-cms add cms-versions
 ```
 
 It also needs `CmsProvider` from `cms-lib` around your admin:

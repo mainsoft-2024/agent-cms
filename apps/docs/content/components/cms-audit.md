@@ -14,7 +14,7 @@ Needs an admin. Filter by action, by who (people, keys, the system) and by resul
 ## Install
 
 ```sh
-npx agent-cms add cms-audit
+npx @mainsoft/agent-cms add cms-audit
 ```
 
 It also needs `CmsProvider` from `cms-lib` around your admin:

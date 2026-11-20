@@ -49,7 +49,7 @@ test("keys: list with expired badge; create shows the secret once with MCP and C
   const cliTab = within(done).getByRole("tab", { name: "CLI (.env)" });
   assert.equal(cliTab.getAttribute("aria-selected"), "true");
   assert.ok(within(done).getByText((t) => t.includes(`AGENT_CMS_KEY=${secret}`)));
-  assert.ok(within(done).getByText("npx agent-cms collections"));
+  assert.ok(within(done).getByText("npx @mainsoft/agent-cms collections"));
   await user.click(within(done).getByRole("tab", { name: "MCP" }));
   assert.ok(within(done).getByText((t) => t.includes('"mcpServers"') && t.includes("http://localhost/api/cms/mcp") && t.includes(`Bearer ${secret}`)));
   // user-event swaps in its own clipboard; put a spy back.

@@ -29,8 +29,8 @@ const tools = toolsFor(cms, actor).map((t) => ({
 ## 2. 스키마 버전 3
 
 ```sh
-npx agent-cms migrate check    # 무엇이 빠졌는지
-npx agent-cms migrate apply    # 또는 `migrate print`로 SQL을 받아 직접 실행
+npx @mainsoft/agent-cms migrate check    # 무엇이 빠졌는지
+npx @mainsoft/agent-cms migrate apply    # 또는 `migrate print`로 SQL을 받아 직접 실행
 ```
 
 더하기만 하는 단계라서 두 번 실행해도 안전해요.
@@ -59,11 +59,11 @@ await callTool(cms, { ...user, agent: { label: "assistant" } }, "patch_document"
 - `parseMarkdown`에 블록 하나(`media`)와 인라인 둘(`image`, `file`)이 새로 생겼어요. `switch`로 모든 블록을 다루는 렌더러에는 case를 추가해야 해요. 모르는 블록을 무시하는 렌더러는 미디어 줄에 아무것도 그리지 않아요.
 - `![alt](https://…)`만 있는 줄은 전에는 글자로 보였고 이제 이미지 블록이에요. 본문의 `![alt](asset:…)`는 저장할 때 확인해요. 미디어 라이브러리가 없으면 `asset_missing`으로 실패해요.
 
-켤 때는 Drizzle 스키마에서 `cmsAssets`와 `cmsAssetRefs`를 다른 표와 함께 다시 내보내고, `agent-cms.config.ts`에 같은 `media` 객체를 넣고, 환경마다 `npx agent-cms storage check --origin https://your-site`를 한 번 실행하세요.
+켤 때는 Drizzle 스키마에서 `cmsAssets`와 `cmsAssetRefs`를 다른 표와 함께 다시 내보내고, `agent-cms.config.ts`에 같은 `media` 객체를 넣고, 환경마다 `npx @mainsoft/agent-cms storage check --origin https://your-site`를 한 번 실행하세요.
 
 ## 5. 어드민 화면
 
-`npx agent-cms add --update`(먼저 `--diff`로 볼 수 있어요)로 복사한 화면을 이 버전으로 올려요.
+`npx @mainsoft/agent-cms add --update`(먼저 `--diff`로 볼 수 있어요)로 복사한 화면을 이 버전으로 올려요.
 
 - `cms-doc-editor`가 `./cms-media-picker`(와 `cms-upload.ts`)를 불러와요. 미디어 라이브러리가 없는 앱도 마찬가지고, `add`가 둘 다 가져와요.
 - `cms-shell`의 `hrefFor`가 `{ kind: "media" }`를 물어볼 수 있어요. 기본은 `<basePath>/media`예요. 라이브러리를 켤 때 `cms-media`로 그 페이지를 만드세요.

@@ -15,7 +15,7 @@ You rarely mount it yourself: the editor opens it when someone else saved first.
 ## Install
 
 ```sh
-npx agent-cms add cms-merge
+npx @mainsoft/agent-cms add cms-merge
 ```
 
 It also needs `CmsProvider` from `cms-lib` around your admin:

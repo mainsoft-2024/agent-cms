@@ -1,4 +1,4 @@
-// agent-cms registry: cms-keys (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-keys (0.11.1). Copied into your app by `npx @mainsoft/agent-cms add`; edit freely.
 //
 // API keys for agents and scripts: list (scopes, collections, last used,
 // expiry), revoke, and create. A new key's secret is shown once, with the
@@ -325,7 +325,7 @@ export function KeyCreated({ name, secret, mcpServerName = "agent-cms", onClose 
         </TabsContent>
         <TabsContent value="cli" className="flex flex-col gap-2">
           <CodeBox value={env} label=".env" multiline />
-          <CodeBox value="npx agent-cms collections" label="CLI" />
+          <CodeBox value="npx @mainsoft/agent-cms collections" label="CLI" className="[&>code]:whitespace-normal [&>code]:[overflow-wrap:anywhere]" />
         </TabsContent>
       </Tabs>
       <DialogFooter>

@@ -150,7 +150,7 @@ test("empty: new document plus the agent guide (CLI, MCP URL, key link)", async 
   const s = makeServer();
   renderWith(s, <CmsDocList collection="notices" onNewDocument={() => {}} keysHref="/admin/keys" />);
   await screen.findByRole("heading", { name: "No documents yet" });
-  assert.ok(screen.getByText("npx agent-cms put notices ./post.md"));
+  assert.ok(screen.getByText("npx @mainsoft/agent-cms put notices ./post.md"));
   // An absolute baseUrl wins over appUrl.
   assert.ok(screen.getByText("http://localhost/api/cms/mcp"));
   assert.equal(screen.getByRole("link", { name: "Create an API key" }).getAttribute("href"), "/admin/keys");

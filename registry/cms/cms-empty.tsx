@@ -1,4 +1,4 @@
-// agent-cms registry: cms-empty (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-empty (0.11.1). Copied into your app by `npx @mainsoft/agent-cms add`; edit freely.
 //
 // What an empty collection shows: "New document" and how to write with an
 // agent instead (the CLI one-liner, the MCP URL, a link to make an API key).
@@ -29,7 +29,7 @@ export function CmsEmpty({ collection, onNewDocument, keysHref, onCreateKey, ico
   const col = me?.collections.find((c) => c.slug === collection);
   const canWrite = col ? col.canWrite : true;
   const mcp = `${cmsUrl(appUrl, baseUrl)}/mcp`;
-  const cli = `npx agent-cms put ${collection} ./post.md`;
+  const cli = `npx @mainsoft/agent-cms put ${collection} ./post.md`;
   return (
     <div className={cn("grid flex-1 place-items-center px-4 py-10", className)}>
       <div className="flex w-full max-w-[560px] flex-col items-center gap-2.5 text-center">
@@ -51,7 +51,7 @@ export function CmsEmpty({ collection, onNewDocument, keysHref, onCreateKey, ico
           <div className="flex flex-col gap-2.5">
             <div className="flex flex-col gap-1">
               <span className="text-xs font-medium text-muted-foreground">CLI</span>
-              <CodeBox value={cli} label="CLI" />
+              <CodeBox value={cli} label="CLI" className="text-left [&>code]:whitespace-normal [&>code]:[overflow-wrap:anywhere]" />
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-xs font-medium text-muted-foreground">MCP</span>

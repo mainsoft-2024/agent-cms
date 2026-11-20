@@ -52,8 +52,8 @@ const run = (name: string, args: Record<string, unknown>) =>
 ## 2. Schema version 3
 
 ```sh
-npx agent-cms migrate check    # what is missing
-npx agent-cms migrate apply    # or `migrate print` and run the SQL yourself
+npx @mainsoft/agent-cms migrate check    # what is missing
+npx @mainsoft/agent-cms migrate apply    # or `migrate print` and run the SQL yourself
 ```
 
 The step only adds things, and is safe to run twice:
@@ -102,12 +102,12 @@ library"). Two things to know even if you never do:
 
 When you turn it on: re-export `cmsAssets` and `cmsAssetRefs` from your
 Drizzle schema next to the other tables, add the same `media` object to
-`agent-cms.config.ts`, and run `npx agent-cms storage check --origin
+`agent-cms.config.ts`, and run `npx @mainsoft/agent-cms storage check --origin
 https://your-site` once per environment.
 
 ## 5. Admin screens
 
-Run `npx agent-cms add --update` (or `--diff` first) to get this version of
+Run `npx @mainsoft/agent-cms add --update` (or `--diff` first) to get this version of
 the screens you copied. What changed in them:
 
 - `cms-doc-editor` now imports `./cms-media-picker` (and `cms-upload.ts`

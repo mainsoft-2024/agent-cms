@@ -19,7 +19,7 @@ Tabs come from the CMS counts. Select rows to publish, unpublish, hide, unhide o
 ## Install
 
 ```sh
-npx agent-cms add cms-doc-list
+npx @mainsoft/agent-cms add cms-doc-list
 ```
 
 It also needs `CmsProvider` from `cms-lib` around your admin:

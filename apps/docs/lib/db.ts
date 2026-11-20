@@ -51,7 +51,7 @@ export const STARTER_PAGES_DDL = `CREATE TABLE IF NOT EXISTS site_starter_pages 
  * Create the tables once per process. `cmsDdl()` also adds what a newer
  * agent-cms release needs (new columns and tables) and records the schema
  * version, so a deploy with a newer package upgrades the database by itself. Every statement is `IF NOT EXISTS`, so
- * this is safe on Neon too (what `npx agent-cms migrate apply` would run).
+ * this is safe on Neon too (what `npx @mainsoft/agent-cms migrate apply` would run).
  */
 export function ready(): Promise<void> {
   g.__docsReady ??= (async () => {

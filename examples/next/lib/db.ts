@@ -9,7 +9,7 @@ const g = globalThis as unknown as { __exampleDb?: ReturnType<typeof drizzle>; _
 
 export const db = (g.__exampleDb ??= drizzle(new PGlite()));
 
-/** Create the tables once per process (what `npx agent-cms migrate apply` does). */
+/** Create the tables once per process (what `npx @mainsoft/agent-cms migrate apply` does). */
 export function ready(): Promise<void> {
   g.__exampleReady ??= (async () => {
     for (const s of splitSql(cmsDdl())) await db.execute(sql.raw(s));

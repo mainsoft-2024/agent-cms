@@ -17,9 +17,9 @@ npx shadcn add https://agent-cms-docs.vercel.app/r/cms-doc-editor.json
 Or with the agent-cms CLI:
 
 ```sh
-npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
-npx agent-cms add cms-media cms-files   # with a media library (0.10.0 and later)
-npx agent-cms add cms-trash cms-releases cms-preview-comments   # trash, releases, comments on preview links (0.10.0 and later)
+npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
+npx @mainsoft/agent-cms add cms-media cms-files   # with a media library (0.10.0 and later)
+npx @mainsoft/agent-cms add cms-trash cms-releases cms-preview-comments   # trash, releases, comments on preview links (0.10.0 and later)
 ```
 
 Files go to `<components>/cms/`. The shadcn parts and the screens an item needs come along. Browse every screen with a live demo in [Components](/components).
@@ -43,8 +43,8 @@ The screens use the shadcn variables (`--background`, `--primary`, `--radius`, f
 ## Update them
 
 ```sh
-npx agent-cms add --diff      # what a new release would change in your copies
-npx agent-cms add --update    # update files you did not edit; yours get a .new copy
+npx @mainsoft/agent-cms add --diff      # what a new release would change in your copies
+npx @mainsoft/agent-cms add --update    # update files you did not edit; yours get a .new copy
 ```
 
 `agent-cms.json` records what was copied. `--diff` and `--update` only know about copies made with `agent-cms add`.

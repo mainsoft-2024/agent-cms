@@ -31,13 +31,14 @@ export default async function ComponentPage({ params }: PageProps<"/components/[
       <p className="mb-6 max-w-[720px] text-[16px] text-[var(--color-warm-gray)]">{it.description}</p>
 
       <div className="mb-8 grid gap-3 md:grid-cols-2">
-        <div>
+        {/* min-w-0: a grid cell is as wide as its longest line unless told otherwise, and the command is one long line. */}
+        <div className="min-w-0">
           <p className="label-mono mb-2">With the shadcn CLI</p>
           <CodeBlock lang="sh" code={`npx shadcn add ${url}`} />
         </div>
-        <div>
+        <div className="min-w-0">
           <p className="label-mono mb-2">With the agent-cms CLI</p>
-          <CodeBlock lang="sh" code={`npx agent-cms add ${item}`} />
+          <CodeBlock lang="sh" code={`npx @mainsoft/agent-cms add ${item}`} />
         </div>
       </div>
 

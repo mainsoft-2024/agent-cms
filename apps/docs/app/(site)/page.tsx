@@ -89,7 +89,7 @@ function EditorShot({ compact = false }: { compact?: boolean }) {
               <br />
               npm i @mainsoft/agent-cms
               <br />
-              npx agent-cms init
+              npx @mainsoft/agent-cms init
               <div className="agent-block -mx-2 my-1.5 px-2 py-1.5">
                 Peer dependencies: drizzle-orm, zod
                 <br />
@@ -107,7 +107,7 @@ function EditorShot({ compact = false }: { compact?: boolean }) {
                 <>
                   ## Tables
                   <br />
-                  npx agent-cms migrate check
+                  npx @mainsoft/agent-cms migrate check
                 </>
               )}
             </div>
@@ -115,7 +115,7 @@ function EditorShot({ compact = false }: { compact?: boolean }) {
               <div className="px-5 py-4">
                 <p className="display mb-2 text-[28px] leading-none">Install</p>
                 <p className="text-[var(--color-ink)]">
-                  Run <code className="inline-code">npx agent-cms init</code>. It writes the config, the route and a schema re-export.
+                  Run <code className="inline-code">npx @mainsoft/agent-cms init</code>. It writes the config, the route and a schema re-export.
                 </p>
                 <p className="mt-3.5 mb-1 font-semibold">Peer dependencies</p>
                 <p className="text-[var(--color-ink)]">

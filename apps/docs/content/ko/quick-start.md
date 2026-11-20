@@ -39,7 +39,7 @@ export { handler as GET, handler as POST, handler as PUT, handler as PATCH, hand
 ## 3. 어드민 넣기
 
 ```sh
-npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
+npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
 ```
 
 화면들을 `CmsProvider`로 감싸고 화면마다 페이지를 만드세요. [어드민 화면](/docs/admin-screens)을 보세요.
