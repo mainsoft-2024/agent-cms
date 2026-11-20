@@ -36,6 +36,8 @@ export const cms = createCms({
 
 `s3Storage`는 AWS S3(`endpoint`는 빼고 `region`을 넣어요), Cloudflare R2(`region: "auto"`와 계정의 S3 endpoint), MinIO를 비롯한 S3 호환 서버에서 동작해요. 요청 서명을 직접 하므로(`aws4fetch`) AWS SDK를 설치하지 않아요. 다른 종류의 저장소는 `StorageAdapter`(`./storage`)를 구현해 연결해요.
 
+**Cloudflare R2**는 2026-11-20에 실제 버킷으로 확인했어요(CI가 S3 호환 서버에 돌리는 것과 같은 테스트예요). 브라우저에서 한 번에 올리기와 조각으로 올리기, 서명된 링크, 복사, 목록, CORS 규칙이 모두 동작해요. 알아 둘 것은 세 가지예요. R2 키는 그 버킷으로 한정한 **Object Read & Write** 토큰으로 만드세요. 공개 저장소에는 버킷의 공개 주소(`pub-….r2.dev` 주소나 커스텀 도메인)를 `publicUrl`로 넣어야 해요. S3 endpoint는 서명 없이는 파일을 내주지 않아요. 그리고 CORS 규칙은 대시보드(R2, 버킷, Settings, CORS policy)나 Cloudflare API로 넣어요. 사이트 주소와 `GET`, `HEAD`, `PUT`을 허용하세요. 빠져 있으면 `storage check`가 알려 줘요.
+
 ## Vercel Blob
 
 0.11.0부터 쓸 수 있어요. `@vercel/blob`을 설치하고 저장소에 Blob 어댑터를 주세요.
