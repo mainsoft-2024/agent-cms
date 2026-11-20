@@ -6,7 +6,7 @@ order: 7
 sourceVersion: 1
 ---
 > [!note]
-> 0.9.0에 들어가요. main 브랜치에는 있고 npm에는 아직 없어요.
+> npm에서는 0.10.0부터 쓸 수 있어요.
 
 [미디어 라이브러리](/docs/media-library)는 CMS가 아는 파일을 보여줘요. 파일 관리자(`npx agent-cms add cms-files`, `<CmsFiles />`를 둔 페이지)는 버킷을 폴더별로 있는 그대로 보여줘요. 다른 프로그램이 넣은 파일도 보여요. 사이드바의 "파일"은 저장소를 둘러볼 수 있는 사람에게만 보여요. 기본은 그 저장소를 읽을 수 있는 사람이고, 저장소의 `access.browse`로 좁힐 수 있어요.
 

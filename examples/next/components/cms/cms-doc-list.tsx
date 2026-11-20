@@ -238,7 +238,8 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       value={tab}
       onChange={setTab}
       options={tabs.map((x) => ({ value: x.value, label: t(x.key, { n: x.n ?? "" }).trim() }))}
-      className={mobile ? "flex-nowrap overflow-x-auto" : undefined}
+      // On a phone the tabs stay on one row and scroll sideways inside their own box.
+      className={mobile ? "flex-nowrap overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>button]:shrink-0" : undefined}
     />
   );
 

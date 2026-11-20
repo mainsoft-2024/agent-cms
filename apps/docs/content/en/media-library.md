@@ -5,7 +5,7 @@ category: Guides
 order: 6
 ---
 > [!note]
-> Needs 0.8.0 or later. Without `media` in `createCms` the feature is off and nothing changes.
+> On npm from 0.10.0 (0.8.0 and 0.9.0 were not published on their own). Without `media` in `createCms` the feature is off and nothing changes.
 
 Documents can hold images, video and files. The files live in your own
 storage bucket; the CMS keeps a row per file and hands the browser a signed
