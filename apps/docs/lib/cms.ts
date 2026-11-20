@@ -40,6 +40,10 @@ function make(d: Awaited<ReturnType<typeof db>>) {
     collections,
     timeZone: "Asia/Seoul",
     media: mediaFromEnv(),
+    // Scheduled publishing and emptying the trash run when something calls /api/cms/_cron with
+    // `Authorization: Bearer $CRON_SECRET`: Vercel's cron once a day (vercel.json; the Hobby plan allows no more)
+    // and a GitHub schedule every ten minutes (.github/workflows/docs-cron.yml). Without the variable the route answers 404.
+    cronSecret: process.env.CRON_SECRET || undefined,
     previewSecret: process.env.CMS_PREVIEW_SECRET || (process.env.NODE_ENV === "production" ? undefined : "local-preview-secret-for-development-only"),
     // The site keeps searches that found nothing in its own table.
     onSearchMiss: async (e) => {

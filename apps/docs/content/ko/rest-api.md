@@ -14,7 +14,7 @@ GET    /collections/:c                    목록 (?fields=summary&state=&q=&cate
 POST   /collections/:c                    만들기 {doc, publish?, note?}
 GET    /collections/:c/:slug              읽기 (?draft=1이면 작업본)
 PATCH  /collections/:c/:slug              고치기 {doc, expectedVersion?, publish?, note?}
-DELETE /collections/:c/:slug
+DELETE /collections/:c/:slug              휴지통으로 (기본 30일 보관)
 POST   /collections/:c/:slug/patch        {ops, expectedVersion?, dryRun?}
 POST   /collections/:c/:slug/publish | archive | unarchive | unpublish
 ```
@@ -29,7 +29,7 @@ POST   /collections/:c/_bulk              {action, items:[{slug, expectedVersion
 PUT    /collections/:c/:slug/autosave     {doc, baseVersion}   DELETE: 버리기
 GET    /collections/:c/:slug/changes      검토를 기다리는 에이전트 변경
 POST   /collections/:c/:slug/review       {hunks: [...] | "all", action?}
-POST   /collections/:c/:slug/preview      {ttl: "1h" | "24h" | "7d"}
+POST   /collections/:c/:slug/preview      {ttl: "1h" | "24h" | "7d", comments?}
 ```
 
 ## 버전
@@ -39,6 +39,30 @@ GET    /collections/:c/:slug/versions[/:n]
 GET    /collections/:c/:slug/diff?a=&b=
 POST   /collections/:c/:slug/versions/:n/restore  {publish?}
 ```
+
+## 게시 흐름
+
+```text
+POST   /collections/:c/:slug/schedule     {publishAt?, unpublishAt?, expectedVersion?}   DELETE: 취소
+POST   /collections/:c/:slug/review/request {note?} | review/approve {publish?} | review/reject {note?}
+GET    /reviews?collection=               검토를 기다리는 문서
+GET    /collections/:c/:slug/comments | POST {body, anchor?, quote?, threadId?}
+POST   /collections/:c/:slug/comments/:id/resolve {resolved?}
+GET    /preview/comments?token= | POST    댓글을 허용한 미리보기 링크로 다는 댓글
+POST   /collections/:c/:slug/presence     {cursor?, selection?}   DELETE: 나가기
+GET    /collections/:c/_presence          누가 어떤 문서를 열었나
+PATCH  /collections/:c/:slug/versions/:n  {label?, pinned?}
+POST   /collections/:c/_preview           {doc, slug?} → 블록, 진단, 차이. 저장하지 않아요
+GET    /collections/:c/_filters | POST {name, query, shared?} | DELETE /collections/:c/_filters/:id
+GET    /releases | POST {name}
+GET    /releases/:id | PATCH {name} | DELETE
+POST   /releases/:id/items {items} | DELETE /releases/:id/items/:documentId
+POST   /releases/:id/publish | POST /releases/:id/schedule {publishAt | null}
+GET    /trash?kind=document|asset | POST /trash/_restore {items} | POST /trash/_purge {items | all: true}
+GET    /_cron                             때가 된 것을 실행 (Authorization: Bearer <cronSecret>)
+```
+
+[게시 흐름](/ko/docs/publishing-flow)을 보세요.
 
 ## 그 밖
 

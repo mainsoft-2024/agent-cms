@@ -1,0 +1,32 @@
+name: docs-cron
+
+# The docs site (apps/docs) runs on agent-cms. Its scheduled publishing, scheduled
+# releases and trash clean-up run when something calls /api/cms/_cron. Vercel's own
+# cron (apps/docs/vercel.json) runs once a day on the Hobby plan, so this calls the
+# route every ten minutes. GitHub may start a scheduled run a few minutes late.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: docs-cron
+  cancel-in-progress: false
+
+jobs:
+  run:
+    if: github.repository == 'mainsoft-2024/agent-cms'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run what is due
+        env:
+          CRON_SECRET: ${{ secrets.DOCS_CRON_SECRET }}
+          SITE: ${{ vars.DOCS_SITE_URL || 'https://agent-cms-docs.vercel.app' }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then echo "DOCS_CRON_SECRET is not set"; exit 1; fi
+          curl --fail-with-body --silent --show-error --max-time 60 --retry 2 \
+            -H "Authorization: Bearer $CRON_SECRET" "$SITE/api/cms/_cron"
+          echo

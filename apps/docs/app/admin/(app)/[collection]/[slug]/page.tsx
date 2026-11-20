@@ -13,6 +13,7 @@ export default function EditPage() {
       slug={decodeURIComponent(slug)}
       onBack={() => router.push(`/admin/${collection}`)}
       onOpenVersions={(c, s) => router.push(`/admin/${c}/${s}/versions`)}
+      onOpenRelease={(id) => router.push(`/admin/releases/${id}`)}
       publicUrlFor={publicPath}
     />
   );

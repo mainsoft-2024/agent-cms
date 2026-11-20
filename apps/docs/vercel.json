@@ -3,6 +3,7 @@
   "framework": "nextjs",
   "installCommand": "cd ../.. && npm ci",
   "buildCommand": "cd ../.. && npm run build && cd apps/docs && npm run build:registry && npx next build",
+  "crons": [{ "path": "/api/cms/_cron", "schedule": "0 18 * * *" }],
   "headers": [
     {
       "source": "/r/(.*)",

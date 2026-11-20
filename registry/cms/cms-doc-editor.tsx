@@ -1,4 +1,4 @@
-// agent-cms registry: cms-doc-editor (0.10.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-doc-editor (0.10.1). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // One document: the info form (from `_schema`), the markdown body with a
 // live preview, autosave, problems from `diagnose()`, agents' changes to
@@ -99,6 +99,35 @@ function lineOf(body: string, ch: AgentChange): number | null {
 
 type Mode = { kind: "edit" } | { kind: "merge"; base: DocContent; baseVersion: number; mine: DocContent; theirs: CmsDoc };
 
+/**
+ * "Saved v1" for a new document has to outlive the editor that made it: most apps
+ * answer `onCreated` by moving to the document's own address, which mounts a new
+ * editor. The line waits in sessionStorage for that editor, for a few seconds.
+ */
+const KEPT_STATUS_MS = 15000;
+const keptStatusKey = (collection: string, slug: string) => `agent-cms:saved:${collection}/${slug}`;
+
+function keepStatus(collection: string, slug: string, text: string) {
+  try {
+    window.sessionStorage.setItem(keptStatusKey(collection, slug), JSON.stringify({ text, at: Date.now() }));
+  } catch {
+    /* no storage: the line is simply not carried over */
+  }
+}
+
+function takeStatus(collection: string, slug: string): string | null {
+  try {
+    const key = keptStatusKey(collection, slug);
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return null;
+    window.sessionStorage.removeItem(key);
+    const v = JSON.parse(raw) as { text?: unknown; at?: unknown };
+    return typeof v.text === "string" && typeof v.at === "number" && Date.now() - v.at < KEPT_STATUS_MS ? v.text : null;
+  } catch {
+    return null;
+  }
+}
+
 export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className }: CmsDocEditorProps) {
   const { client, t, locale, me } = useCms();
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
@@ -192,6 +221,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         setRestoreOffer(d.autosave && !sameContent(d.autosave.content, d) ? d.autosave : null);
         setLoadError(null);
         setLoading(false);
+        const kept = takeStatus(collection, slug);
+        if (kept) setStatus({ text: kept, tone: "ok" });
       },
       (e) => {
         if (!live) return;
@@ -280,8 +311,10 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       if (isNew && !doc) {
         d = await client.create(collection, toInput(content), { publish });
         applyDoc(d);
-        setStatus({ text: publish ? t("published_v", { version: d.version }) : t("saved", { version: d.version }), tone: "ok" });
+        const text = publish ? t("published_v", { version: d.version }) : t("saved", { version: d.version });
+        setStatus({ text, tone: "ok" });
         onSaved?.(d);
+        if (onCreated) keepStatus(collection, d.slug, text);
         onCreated?.(collection, d.slug);
         return d;
       }

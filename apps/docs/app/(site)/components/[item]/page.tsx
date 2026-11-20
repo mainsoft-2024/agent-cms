@@ -5,7 +5,7 @@ import { CodeBlock } from "@/components/site/code-block";
 import { LiveDemo } from "@/components/site/demo";
 import { Markdown } from "@/components/site/markdown";
 import { publishedDoc } from "@/lib/content";
-import { itemByName, LIVE, SCREENS } from "@/lib/registry-items";
+import { itemByName, LIVE, NOT_LIVE, SCREENS } from "@/lib/registry-items";
 import { siteUrl } from "@/lib/site";
 
 export async function generateMetadata({ params }: PageProps<"/components/[item]">): Promise<Metadata> {
@@ -43,12 +43,17 @@ export default async function ComponentPage({ params }: PageProps<"/components/[
 
       {LIVE.has(item) ? (
         <LiveDemo item={item} />
-      ) : (
+      ) : NOT_LIVE[item] ? (
         <div className="callout">
           <span className="callout-bar" aria-hidden />
-          <p className="!mb-0">This screen appears inside the editor when someone else saved first. Open the same document in two tabs of the editor demo, save in one, then save in the other.</p>
+          <p className="!mb-0">
+            {NOT_LIVE[item]}{" "}
+            <Link href="/components/cms-doc-editor" className="link">
+              Open the editor demo
+            </Link>
+          </p>
         </div>
-      )}
+      ) : null}
 
       <div className="mt-10 grid gap-10 lg:grid-cols-[minmax(0,1fr)_260px]">
         <div className="min-w-0 max-w-[760px]">{doc ? <Markdown source={doc.body} /> : null}</div>

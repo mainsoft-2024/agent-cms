@@ -3,14 +3,20 @@ import type { CmsDoc } from "@mainsoft/agent-cms";
 import { FileCode2, History } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { CmsPreviewComments } from "@/components/cms/cms-preview-comments";
+import { ko as cmsKo } from "@/components/cms/cms-messages";
 import { CopyButton } from "./code-block";
 import { Markdown } from "./markdown";
-import { collectionFor, docHref, docsNav, publicVersions, publishedDoc, type Lang, type NavGroup, filesOf } from "@/lib/content";
+import { collectionFor, docHref, docsNav, previewDoc, publicVersions, publishedDoc, type Lang, type NavGroup, filesOf } from "@/lib/content";
 
 const T = {
-  en: { onThisPage: "On this page", copyMd: "Copy as markdown", viewMd: "View as markdown", history: "Version history", updated: "Updated", by: "by", version: "Version", docs: "Docs", agent: "agent" },
-  ko: { onThisPage: "이 페이지", copyMd: "마크다운 복사", viewMd: "마크다운으로 보기", history: "버전 기록", updated: "수정", by: "편집", version: "버전", docs: "문서", agent: "에이전트" },
+  en: { onThisPage: "On this page", copyMd: "Copy as markdown", viewMd: "View as markdown", history: "Version history", updated: "Updated", by: "by", version: "Version", docs: "Docs", agent: "agent", draft: "Draft preview", draftNote: "Not published. This link shows version {v} and works until {until}.", comments: "Comments on this draft" },
+  ko: { onThisPage: "이 페이지", copyMd: "마크다운 복사", viewMd: "마크다운으로 보기", history: "버전 기록", updated: "수정", by: "편집", version: "버전", docs: "문서", agent: "에이전트", draft: "초안 미리보기", draftNote: "아직 게시하지 않은 글이에요. 이 링크는 버전 {v}을 보여 주고 {until}까지 열려요.", comments: "이 초안에 남긴 댓글" },
 };
+
+function fmtDateTime(iso: string, lang: Lang) {
+  return new Intl.DateTimeFormat(lang === "ko" ? "ko-KR" : "en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "Asia/Seoul", timeZoneName: "short" }).format(new Date(iso));
+}
 
 function fmtDate(iso: string, lang: Lang) {
   return new Intl.DateTimeFormat(lang === "ko" ? "ko-KR" : "en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "Asia/Seoul" }).format(new Date(iso));
@@ -58,10 +64,15 @@ function Editor({ doc, lang }: { doc: CmsDoc; lang: Lang }) {
   );
 }
 
-export async function DocPage({ lang, slug }: { lang: Lang; slug: string }) {
+/**
+ * One docs page. With `preview` (the token of a signed preview link from the editor) it shows that
+ * draft version instead of the published page, and the comment box when the link allows comments.
+ */
+export async function DocPage({ lang, slug, preview }: { lang: Lang; slug: string; preview?: string }) {
   const t = T[lang];
   const collection = collectionFor(lang);
-  const [doc, nav] = await Promise.all([publishedDoc(collection, slug), docsNav(lang)]);
+  const [published, nav, draft] = await Promise.all([publishedDoc(collection, slug), docsNav(lang), previewDoc(preview, collection, slug)]);
+  const doc = draft?.doc ?? published;
   if (!doc) notFound();
   const english = lang === "ko" ? await publishedDoc("docs", slug) : null;
   const sourceVersion = Number((doc.fields as { sourceVersion?: number }).sourceVersion ?? 0);
@@ -95,6 +106,15 @@ export async function DocPage({ lang, slug }: { lang: Lang; slug: string }) {
         <h1 className="display d32 mb-2">{doc.title}</h1>
         {doc.summary ? <p className="mb-5 max-w-[620px] text-[16px] text-[var(--pencil-gray)]">{doc.summary}</p> : null}
 
+        {draft ? (
+          <div className="callout max-w-[640px]" role="status">
+            <span className="callout-bar" aria-hidden />
+            <p className="!mb-0">
+              <strong>{t.draft}.</strong> {t.draftNote.replace("{v}", String(doc.version)).replace("{until}", fmtDateTime(draft.expiresAt, lang))}
+            </p>
+          </div>
+        ) : null}
+
         {stale ? (
           <div className="callout max-w-[640px]" role="note">
             <span className="callout-bar" aria-hidden />
@@ -115,7 +135,7 @@ export async function DocPage({ lang, slug }: { lang: Lang; slug: string }) {
           <Editor doc={doc} lang={lang} />
           <span className="h-3 w-px bg-[var(--line)]" aria-hidden />
           <span className="mono">
-            {t.version} {doc.publishedVersion}
+            {t.version} {draft ? doc.version : doc.publishedVersion}
           </span>
         </div>
 
@@ -137,6 +157,12 @@ export async function DocPage({ lang, slug }: { lang: Lang; slug: string }) {
         <div className="max-w-[720px]">
           <Markdown source={doc.body} lang={lang} files={files} />
         </div>
+
+        {draft?.comments && preview ? (
+          <section aria-label={t.comments} className="mt-12 max-w-[720px] border-t border-[var(--line)] pt-6">
+            <CmsPreviewComments token={preview} messages={lang === "ko" ? cmsKo : undefined} />
+          </section>
+        ) : null}
       </article>
 
       <aside aria-label={t.onThisPage} className="hidden pt-4 pr-10 xl:block">

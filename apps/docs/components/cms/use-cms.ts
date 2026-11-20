@@ -282,3 +282,48 @@ export function toInput(next: DocContent, prevFields?: Record<string, unknown>):
 }
 
 export const sameContent = (a: DocContent, b: DocContent) => JSON.stringify(contentOf(a)) === JSON.stringify(contentOf(b));
+
+// ── time zones (schedules are entered in the CMS's zone, stored in UTC) ───────
+
+function wallMs(ms: number, timeZone: string): number {
+  const p: Record<string, number> = {};
+  for (const x of new Intl.DateTimeFormat("en-CA", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(ms)))
+    if (x.type !== "literal") p[x.type] = Number(x.value);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute);
+}
+
+/** "2026-11-24" and "09:00" on the clock of `timeZone`, as an ISO instant. Null when either is not filled in. */
+export function zonedToIso(date: string, time: string, timeZone: string): string | null {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const h = /^(\d{2}):(\d{2})/.exec(time);
+  if (!d || !h) return null;
+  const want = Date.UTC(+d[1], +d[2] - 1, +d[3], +h[1], +h[2]);
+  let guess = want;
+  // Twice: the first step can land on the other side of a clock change.
+  for (let i = 0; i < 2; i++) guess -= wallMs(guess, timeZone) - want;
+  return new Date(guess).toISOString();
+}
+
+/** The date and time inputs' values for an instant, on the clock of `timeZone`. */
+export function zonedParts(iso: string, timeZone: string): { date: string; time: string } {
+  const s = new Date(wallMs(new Date(iso).getTime(), timeZone)).toISOString();
+  return { date: s.slice(0, 10), time: s.slice(11, 16) };
+}
+
+/** "Nov 24, 9:00 AM" on the clock of `timeZone` (with the year when it is not this year). */
+export function formatZoned(iso: string, locale: string, timeZone?: string): string {
+  const d = new Date(iso);
+  return new Intl.DateTimeFormat(locale, { timeZone, month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) }).format(d);
+}
+
+// ── people ────────────────────────────────────────────────────────────────────
+
+const HUES = ["#2563eb", "#db2777", "#059669", "#d97706", "#7c3aed", "#0891b2", "#dc2626", "#4d7c0f"];
+
+/** A person's colour (one of eight, picked by id so it stays the same everywhere). Agents are grey. */
+export function personColor(id: string, agent?: boolean): string {
+  if (agent) return "#525252";
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return HUES[h % HUES.length];
+}

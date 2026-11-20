@@ -1,6 +1,6 @@
 {
   "name": "@mainsoft/agent-cms",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (MCP, REST, CLI) together.",
   "license": "MIT",
   "type": "module",
