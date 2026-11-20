@@ -317,7 +317,7 @@ export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTable
   const current = r.schemaVersion ?? 0;
   if (!r.missingTables.length && !r.missingColumns.length && current >= SCHEMA_VERSION) return null;
   // Missing tables: the whole idempotent DDL (creates only what is missing).
-  if (r.missingTables.some((t) => !t.endsWith("audit") && !t.endsWith("meta") && !t.endsWith("assets") && !t.endsWith("asset_refs"))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
+  if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
   // Steps are idempotent: re-run them all when columns are missing, else only the newer ones.
   const steps = upgradeSteps(tables).filter((s) => s.version > current || r.missingColumns.length > 0 || r.missingTables.length > 0);
   const meta = r.missingTables.some((t) => t.endsWith("meta"))
@@ -522,7 +522,7 @@ export default defineConfig({
     [
       `${appDir}lib/cms-schema.ts`,
       `// Re-export the agent-cms tables from your Drizzle schema so drizzle-kit sees them.
-export { cmsApiKeys, cmsAssetRefs, cmsAssets, cmsAudit, cmsDocuments, cmsHits, cmsMeta, cmsVersions } from "@mainsoft/agent-cms/tables";
+export { cmsApiKeys, cmsAssetRefs, cmsAssets, cmsAudit, cmsComments, cmsDocuments, cmsHits, cmsMeta, cmsPresence, cmsReleases, cmsSavedFilters, cmsVersions } from "@mainsoft/agent-cms/tables";
 `,
     ],
     [

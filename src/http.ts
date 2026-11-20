@@ -64,8 +64,30 @@
  *   POST   /stores/:store/files/_move {keys?, folders?, to}  → {moved, failed: [{key, message}]}
  *   POST   /stores/:store/files/_delete {keys?, folders?, confirm?}   409 asset_in_use with the documents unless confirm
  *   POST   /assets/:id/share {ttl: "1h" | "24h" | "7d"}      → {url, expiresAt}
+ *
+ * Editing and publishing flow (0.10.0):
+ *
+ *   GET|POST /_cron                                    run what is due; `Authorization: Bearer <cronSecret>` (404 without `cronSecret`)
+ *   POST   /collections/:c/_preview {doc, slug?}       blocks, toc, diagnostics, diff; nothing saved
+ *   GET    /collections/:c/_presence                   who has which document open
+ *   GET    /collections/:c/_filters | POST {name, query, shared?} | DELETE /collections/:c/_filters/:id
+ *   POST   /collections/:c/:slug/schedule {publishAt?, unpublishAt?, expectedVersion?}   DELETE: cancel
+ *   POST   /collections/:c/:slug/review/request {note?} | review/approve {publish?} | review/reject {note?}
+ *   GET    /collections/:c/:slug/comments | POST {body, anchor?, quote?, threadId?}
+ *   POST   /collections/:c/:slug/comments/:id/resolve {resolved?}
+ *   POST   /collections/:c/:slug/presence {cursor?, selection?}   DELETE: leave
+ *   PATCH  /collections/:c/:slug/versions/:n {label?, pinned?}
+ *   GET    /reviews?collection=                        documents waiting for a review
+ *   GET    /trash?kind=document|asset | POST /trash/_restore {items} | POST /trash/_purge {items | all: true}
+ *   GET    /releases | POST {name}
+ *   GET    /releases/:id | PATCH {name} | DELETE
+ *   POST   /releases/:id/items {items: [{collection, slug, action?}]} | DELETE /releases/:id/items/:documentId
+ *   POST   /releases/:id/publish                       all or nothing: 428 release_blocked lists what blocked
+ *   POST   /releases/:id/schedule {publishAt | null}
+ *   GET    /preview/comments?token= | POST {name?, body, anchor?, quote?, threadId?}   links made with comments: true
  */
 
+import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "./cms";
 import { CmsError, formatMessage, isCmsError } from "./errors";
@@ -211,6 +233,14 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         throw new CmsError("invalid_request", { issues: "path encoding" }, { status: 400 });
       }
       const m = req.method.toUpperCase();
+      if (seg[0] === "_cron" && seg.length === 1 && (m === "GET" || m === "POST")) {
+        // Its own secret, not a session or a key: a cron service calls this.
+        if (!core.cronSecret) throw new CmsError("route_not_found");
+        const given = Buffer.from((req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+        const want = Buffer.from(core.cronSecret);
+        if (given.length !== want.length || !timingSafeEqual(given, want)) throw new CmsError("unauthorized", {}, { messages: core.messages });
+        return json(await core.runScheduled());
+      }
       const client = req.headers.get("x-agent-cms-client");
       const who = await resolveActor(core, req, opts.resolveUser);
       const actor: Actor = { ...who, via: seg[0] === "mcp" ? (client === "cli" ? "cli" : "mcp") : client === "cli" ? "cli" : "rest" };
@@ -229,6 +259,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           actor: actor.kind === "anonymous" ? { kind: "anonymous" } : { kind: actor.kind, label: actor.label, id: "id" in actor ? actor.id : null },
           isAdmin: core.isAdmin(actor),
           previewLinks: core.previewEnabled(),
+          trashDays: core.trash.days,
+          timeZone: core.timeZone,
           media: core.assets.describe(actor),
           collections: core
             .collections()
@@ -252,6 +284,49 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       }
 
       if (seg[0] === "preview" && seg.length === 1 && m === "GET") return json(await core.readPreview(q.get("token") ?? ""));
+      const CommentBody = z.object({ body: z.string().max(8000), anchor: z.string().max(300).nullable().optional(), quote: z.string().max(2000).nullable().optional(), threadId: z.string().max(60).nullable().optional() });
+      if (seg[0] === "preview" && seg[1] === "comments" && seg.length === 2) {
+        const token = q.get("token") ?? "";
+        if (m === "GET") return json({ comments: await core.previewComments(token) });
+        if (m === "POST") return json({ comment: await core.addPreviewComment(token, await body(req, CommentBody.extend({ name: z.string().max(120).nullable().optional() }))) }, 201);
+      }
+
+      if (seg[0] === "reviews" && seg.length === 1 && m === "GET") return json({ requests: await core.reviewRequests(actor, { collection: q.get("collection") ?? undefined }) });
+
+      if (seg[0] === "trash") {
+        const Items = z.array(z.object({ kind: z.enum(["document", "asset"]), id: z.string().max(60) })).min(1).max(200);
+        const kind = q.get("kind");
+        if (seg.length === 1 && m === "GET") return json(await core.trash.list(actor, { kind: kind === "document" || kind === "asset" ? kind : undefined }));
+        if (seg[1] === "_restore" && seg.length === 2 && m === "POST") return json(await core.trash.restore(actor, (await body(req, z.object({ items: Items }))).items));
+        if (seg[1] === "_purge" && seg.length === 2 && m === "POST") {
+          const b = await body(req, z.object({ items: Items.optional(), all: z.boolean().optional() }));
+          if (!b.all && !b.items) throw new CmsError("invalid_request", { issues: "items or all" }, { messages: core.messages });
+          return json(await core.trash.purge(actor, b.all ? "all" : b.items!));
+        }
+      }
+
+      if (seg[0] === "releases") {
+        const rel = core.releases;
+        const Name = z.object({ name: z.string().max(200) });
+        if (seg.length === 1 && m === "GET") return json({ releases: await rel.list(actor) });
+        if (seg.length === 1 && m === "POST") return json({ release: await rel.create(actor, await body(req, Name)) }, 201);
+        const id = seg[1];
+        if (id && seg.length === 2) {
+          if (m === "GET") return json({ release: await rel.get(actor, id) });
+          if (m === "PATCH") return json({ release: await rel.rename(actor, id, await body(req, Name)) });
+          if (m === "DELETE") {
+            await rel.remove(actor, id);
+            return json({ ok: true });
+          }
+        }
+        if (id && seg[2] === "items" && seg.length === 3 && m === "POST") {
+          const b = await body(req, z.object({ items: z.array(z.object({ collection: z.string(), slug: z.string(), action: z.enum(["publish", "unpublish"]).optional() })).min(1).max(200) }));
+          return json({ release: await rel.add(actor, id, b.items) });
+        }
+        if (id && seg[2] === "items" && seg.length === 4 && m === "DELETE") return json({ release: await rel.removeItem(actor, id, seg[3]) });
+        if (id && seg[2] === "publish" && seg.length === 3 && m === "POST") return json({ release: await rel.publish(actor, id) });
+        if (id && seg[2] === "schedule" && seg.length === 3 && m === "POST") return json({ release: await rel.schedule(actor, id, await body(req, z.object({ publishAt: z.string().max(40).nullable() }))) });
+      }
 
       if ((seg[0] === "audit" || seg[0] === "_audit") && seg.length === 1 && m === "GET") {
         const outcome = q.get("outcome");
@@ -388,6 +463,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             fields: cfg.fields ? toJsonSchema(cfg.fields) : null,
             admin: cfg.admin?.fields ?? {},
             requireAlt: !!cfg.media?.requireAlt,
+            review: cfg.review ?? null,
+            needsReview: core.needsReview(actor, col),
             forbiddenChars: cfg.forbiddenChars ?? [],
             canWrite: core.can(actor, col, "write"),
             canPublish: core.can(actor, col, "publish"),
@@ -396,6 +473,19 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (seg.length === 3 && seg[2] === "_diagnose" && m === "POST") {
           const b = await body(req, z.object({ doc: DocInput, slug: z.string().optional() }));
           return json({ diagnostics: await core.diagnose(actor, col, b.doc, { slug: b.slug }) });
+        }
+        if (seg.length === 3 && seg[2] === "_preview" && m === "POST") {
+          const b = await body(req, z.object({ doc: DocInput, slug: z.string().optional() }));
+          return json(await core.preview(actor, col, b.doc, { slug: b.slug }));
+        }
+        if (seg.length === 3 && seg[2] === "_presence" && m === "GET") return json({ presence: await core.presence.in(actor, col) });
+        if (seg[2] === "_filters") {
+          if (seg.length === 3 && m === "GET") return json({ filters: await core.filters.list(actor, col) });
+          if (seg.length === 3 && m === "POST") return json({ filter: await core.filters.save(actor, col, await body(req, z.object({ name: z.string().max(200), query: z.record(z.unknown()), shared: z.boolean().optional() }))) }, 201);
+          if (seg.length === 4 && m === "DELETE") {
+            await core.filters.remove(actor, seg[3]);
+            return json({ ok: true });
+          }
         }
         if (seg.length === 3 && seg[2] === "_bulk" && m === "POST") {
           const b = await body(req, z.object({ action: z.enum(BULK_ACTIONS), items: z.array(z.object({ slug: z.string(), expectedVersion: z.number().int().positive().optional() })).min(1).max(200) }));
@@ -410,7 +500,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             const lo = {
               drafts: q.get("drafts") === "1" || q.get("fields") === "summary",
               status: (DOC_STATUSES as readonly string[]).includes(status ?? "") ? (status as (typeof DOC_STATUSES)[number]) : undefined,
-              state: (["draft", "published", "modified", "archived"] as const).find((x) => x === state),
+              state: (["draft", "published", "modified", "archived", "scheduled", "review"] as const).find((x) => x === state),
               by: (["user", "key", "system"] as const).find((x) => x === by),
               category: q.get("category") ?? undefined,
               q: q.get("q") ?? undefined,
@@ -435,7 +525,9 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             const doc = await core.get(actor, col, slug, { draft: q.get("draft") === "1" });
             const tag = etag(doc);
             if (req.headers.get("if-none-match") === tag) return new Response(null, { status: 304, headers: { etag: tag } });
-            return json({ doc: wire(doc) }, 200, { etag: tag });
+            // Editors also learn which open release the document is in.
+            const release = q.get("draft") === "1" && core.can(actor, col, "write", doc) ? await core.releases.of(doc.id) : undefined;
+            return json({ doc: wire(doc), release }, 200, { etag: tag });
           }
           if (m === "PATCH") {
             const b = await body(req, WriteBody);
@@ -477,8 +569,24 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json(await core.reviewChanges(actor, col, slug, b));
           }
           if (action === "preview" && m === "POST") {
-            const b = await body(req, z.object({ ttl: z.enum(Object.keys(PREVIEW_TTLS) as [keyof typeof PREVIEW_TTLS]).optional() }), true);
+            const b = await body(req, z.object({ ttl: z.enum(Object.keys(PREVIEW_TTLS) as [keyof typeof PREVIEW_TTLS]).optional(), comments: z.boolean().optional() }), true);
             return json(await core.createPreviewLink(actor, col, slug, b), 201);
+          }
+          if (action === "schedule" && m === "POST") {
+            const b = await body(req, z.object({ publishAt: z.string().max(40).nullable().optional(), unpublishAt: z.string().max(40).nullable().optional(), expectedVersion: z.number().int().positive().optional() }));
+            const doc = await core.schedule(actor, col, slug, { ...b, expectedVersion: expected(b.expectedVersion) });
+            return json({ doc: wire(doc) }, 200, { etag: etag(doc) });
+          }
+          if (action === "schedule" && m === "DELETE") return json({ doc: wire(await core.unschedule(actor, col, slug)) });
+          if (action === "comments" && m === "GET") return json({ comments: await core.comments(actor, col, slug) });
+          if (action === "comments" && m === "POST") return json({ comment: await core.addComment(actor, col, slug, await body(req, CommentBody)) }, 201);
+          if (action === "presence" && m === "POST") {
+            const at = z.object({ line: z.number().int(), ch: z.number().int() }).nullable().optional();
+            return json(await core.presence.touch(actor, col, slug, await body(req, z.object({ cursor: at, selection: at }), true)));
+          }
+          if (action === "presence" && m === "DELETE") {
+            await core.presence.leave(actor, col, slug);
+            return json({ ok: true });
           }
           if (action === "diff" && m === "GET") {
             const a = Number(q.get("a"));
@@ -501,11 +609,22 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           }
         }
 
+        if (slug && seg[3] === "review" && seg.length === 5 && m === "POST") {
+          const b = await body(req, z.object({ note: z.string().max(2000).nullable().optional(), publish: z.boolean().optional() }), true);
+          const doc = seg[4] === "request" ? await core.requestReview(actor, col, slug, b) : seg[4] === "approve" ? await core.approveReview(actor, col, slug, b) : seg[4] === "reject" ? await core.rejectReview(actor, col, slug, b) : null;
+          if (doc) return json({ doc: wire(doc) }, 200, { etag: etag(doc) });
+        }
+        if (slug && seg[3] === "comments" && seg[5] === "resolve" && seg.length === 6 && m === "POST") {
+          const b = await body(req, z.object({ resolved: z.boolean().optional() }), true);
+          return json({ comment: await core.resolveComment(actor, col, slug, seg[4], b) });
+        }
+
         if (slug && seg[3] === "versions") {
           if (seg.length === 4 && m === "GET") return json({ versions: q.get("fields") === "summary" ? await core.versionList(actor, col, slug) : await core.versions(actor, col, slug) });
           const n = Number(seg[4]);
           if (!Number.isInteger(n) || n < 1) throw new CmsError("invalid_version", {}, { messages: core.messages });
           if (seg.length === 5 && m === "GET") return json({ version: await core.version(actor, col, slug, n) });
+          if (seg.length === 5 && m === "PATCH") return json({ version: await core.labelVersion(actor, col, slug, n, await body(req, z.object({ label: z.string().max(200).nullable().optional(), pinned: z.boolean().optional() }))) });
           if (seg.length === 6 && seg[5] === "restore" && m === "POST") {
             const b = await body(req, Expected.extend({ publish: z.boolean().optional() }), true);
             const doc = await core.restore(actor, col, slug, n, { ...b, expectedVersion: expected(b.expectedVersion) });

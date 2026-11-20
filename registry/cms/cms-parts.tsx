@@ -11,18 +11,29 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { useAsset, useCms, useShellNav } from "./use-cms";
+import { personColor, useAsset, useCms, useShellNav } from "./use-cms";
 
 // ── state ────────────────────────────────────────────────────────────────────
 
-const DOT: Record<string, string> = { published: "bg-green-600", draft: "bg-amber-500", archived: "bg-neutral-400" };
+const DOT: Record<string, string> = { published: "bg-green-600", draft: "bg-amber-500", archived: "bg-neutral-400", scheduled: "bg-blue-600", review: "bg-amber-600", changes: "bg-red-600" };
+const STATE_KEY = { draft: "state_draft", published: "state_published", archived: "state_archived", scheduled: "state_scheduled", review: "state_review", changes: "state_changes" } as const;
 
-export function StateBadge({ state, label, className }: { state: "draft" | "published" | "archived"; label?: string; className?: string }) {
+export type BadgeState = keyof typeof STATE_KEY;
+
+/** What a list row says about a document: waiting for review and scheduled come before its plain state. */
+export function flowState(d: { state: "draft" | "published" | "archived"; schedule?: { publishAt: string | null } | null; review?: { state: string } | null }): BadgeState {
+  if (d.review?.state === "requested") return "review";
+  if (d.review?.state === "changes_requested") return "changes";
+  if (d.schedule?.publishAt) return "scheduled";
+  return d.state;
+}
+
+export function StateBadge({ state, label, className }: { state: BadgeState; label?: string; className?: string }) {
   const { t } = useCms();
   return (
     <Badge variant="outline" className={cn("gap-1.5 whitespace-nowrap rounded-full px-2 py-0 text-[11.5px] font-medium", className)}>
       <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", DOT[state])} />
-      {label ?? t(state === "draft" ? "state_draft" : state === "published" ? "state_published" : "state_archived")}
+      {label ?? t(STATE_KEY[state])}
     </Badge>
   );
 }
@@ -57,6 +68,26 @@ export function Who({ kind, label, agent, className }: { kind: string | null | u
     <span className={cn("inline-flex items-center gap-1.5", className)}>
       <Avatar kind={agent ? "key" : kind} label={label} />
       <span>{agent ? `${agent}, ${label ?? ""}` : label}</span>
+    </span>
+  );
+}
+
+/** The people (and agents) who have something open, as overlapping coloured circles. */
+export function People({ people, max = 4, className }: { people: { actorId: string; label: string; kind: string; agent?: string | null }[]; max?: number; className?: string }) {
+  const { t } = useCms();
+  if (!people.length) return null;
+  const names = people.map((p) => p.agent ?? p.label);
+  return (
+    <span role="img" aria-label={t("people_here", { names: names.join(", ") })} title={names.join(", ")} className={cn("inline-flex items-center", className)}>
+      {people.slice(0, max).map((p, i) => {
+        const bot = p.kind !== "user" || !!p.agent;
+        return (
+          <span key={p.actorId} aria-hidden style={{ background: personColor(p.actorId, bot) }} className={cn("grid h-6 w-6 shrink-0 place-items-center rounded-full border-2 border-background text-[11px] font-semibold text-white", i > 0 && "-ml-2")}>
+            {bot ? <Bot className="h-3 w-3" /> : (p.label || "?").trim().charAt(0).toUpperCase()}
+          </span>
+        );
+      })}
+      {people.length > max ? <span className="ml-1 text-xs tabular-nums text-muted-foreground">+{people.length - max}</span> : null}
     </span>
   );
 }

@@ -12,6 +12,7 @@ export default function EditPage({ params }: { params: { collection: string; slu
       onBack={() => router.push(`/admin/${params.collection}`)}
       onOpenVersions={(c, s) => router.push(`/admin/${c}/${s}/versions`)}
       publicUrlFor={(c, s) => (c === "posts" ? `/posts/${s}` : "")}
+      onOpenRelease={(id) => router.push(`/admin/releases/${id}`)}
     />
   );
 }

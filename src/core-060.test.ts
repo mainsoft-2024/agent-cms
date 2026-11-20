@@ -138,7 +138,7 @@ test("docState: draft, published, modified since publish, archived; counts", asy
   assert.deepEqual(states.b, { state: "published", modifiedSincePublish: false });
   assert.deepEqual(states.c, { state: "published", modifiedSincePublish: true });
   assert.deepEqual(states.d, { state: "archived", modifiedSincePublish: false });
-  assert.deepEqual(await cms.counts(admin, "guide"), { all: 4, draft: 1, published: 2, modified: 1, archived: 1 });
+  assert.deepEqual(await cms.counts(admin, "guide"), { all: 4, draft: 1, published: 2, modified: 1, archived: 1, scheduled: 0, review: 0 });
   const page = await cms.page(admin, "guide", { drafts: true, state: "modified" });
   assert.deepEqual(page.docs.map((d) => d.slug), ["c"]);
   assert.equal("body" in page.docs[0], false);

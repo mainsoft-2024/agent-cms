@@ -1,16 +1,17 @@
-// agent-cms registry: cms-doc-editor (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-doc-editor (0.10.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // One document: the info form (from `_schema`), the markdown body with a
 // live preview, autosave, problems from `diagnose()`, agents' changes to
-// accept or revert, save / publish, preview links, and a merge screen when
-// someone saved first.
+// accept or revert, save / publish (now or at a set time), review requests,
+// comments, who else has it open, preview links, and a merge screen when
+// someone saved first and the two edits overlap.
 "use client";
 
 import * as React from "react";
-import { Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Link as LinkIcon, MoreHorizontal } from "lucide-react";
-import { isCmsRemoteError, type CollectionSchema } from "@mainsoft/agent-cms/client";
-import { splitLines } from "@mainsoft/agent-cms/diff";
-import { docState, type CmsDoc, type AutosaveState } from "@mainsoft/agent-cms/types";
+import { Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, MessageSquare, MoreHorizontal } from "lucide-react";
+import { isCmsRemoteError, type CollectionSchema, type CommentThread, type DocRelease } from "@mainsoft/agent-cms/client";
+import { mergeDocs, resolveDocMerge, splitLines } from "@mainsoft/agent-cms/diff";
+import { docState, type CmsDoc, type AutosaveState, type Presence } from "@mainsoft/agent-cms/types";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -20,10 +21,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
 import { CmsFieldForm, problemKey, type FieldProblem } from "./cms-field-form";
+import { AddToReleaseDialog, BodyBackdrop, CommentsPanel, offsetOf, placeOf, PublishButton, ReviewStrip, ScheduleStrip, type BodyCursor } from "./cms-flow";
 import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
+import { pasteAsMarkdown } from "./cms-paste";
 import { CmsMerge } from "./cms-merge";
-import { CodeBox, MarkdownPreview, ModifiedMark, PageHeader, Segmented, StateBadge, StatusText } from "./cms-parts";
-import { contentOf, formatTime, formatUntil, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, type DocContent } from "./use-cms";
+import { CodeBox, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText } from "./cms-parts";
+import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, type DocContent } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
 type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
@@ -47,6 +50,10 @@ export interface CmsDocEditorProps {
   slugPrefix?: string;
   /** Milliseconds of quiet before an autosave. Default 1500. */
   autosaveDelay?: number;
+  /** Open a release (the "in the release ..." strip). */
+  onOpenRelease?: (id: string) => void;
+  /** How often this screen says "I am here" and looks for other people's saves, in ms. Default 15000 (3000 while someone else is here); 0 turns it off. */
+  presenceMs?: number;
   className?: string;
 }
 
@@ -92,7 +99,7 @@ function lineOf(body: string, ch: AgentChange): number | null {
 
 type Mode = { kind: "edit" } | { kind: "merge"; base: DocContent; baseVersion: number; mine: DocContent; theirs: CmsDoc };
 
-export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, className }: CmsDocEditorProps) {
+export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className }: CmsDocEditorProps) {
   const { client, t, locale, me } = useCms();
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
   /** Where the cursor last was in the body (null: the person never put it there). */
@@ -122,6 +129,11 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const [width, setWidth] = React.useState<"375" | "768" | "full">("full");
   const [showProblems, setShowProblems] = React.useState(false);
   const edited = React.useRef(false);
+  const [release, setRelease] = React.useState<DocRelease | null>(null);
+  const [threads, setThreads] = React.useState<CommentThread[]>([]);
+  const [commentsOpen, setCommentsOpen] = React.useState(false);
+  const [releaseOpen, setReleaseOpen] = React.useState(false);
+  const [others, setOthers] = React.useState<Presence[]>([]);
 
   const isNew = !slug;
   const currentSlug = doc?.slug ?? slug ?? "";
@@ -147,6 +159,17 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     [client, collection]
   );
 
+  const loadComments = React.useCallback(
+    async (s: string) => {
+      try {
+        setThreads(await client.comments(collection, s));
+      } catch {
+        /* readers do not see comments */
+      }
+    },
+    [client, collection]
+  );
+
   React.useEffect(() => {
     if (!slug) {
       setDoc(null);
@@ -157,10 +180,13 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     }
     let live = true;
     setLoading(true);
-    Promise.all([client.get(collection, slug, { draft: true }), client.changes(collection, slug).catch(() => [] as AgentChange[])]).then(
-      ([d, ch]) => {
+    Promise.all([client.getWithRelease(collection, slug), client.changes(collection, slug).catch(() => [] as AgentChange[]), client.comments(collection, slug).catch(() => [] as CommentThread[])]).then(
+      ([r, ch, cm]) => {
         if (!live) return;
+        const d = r.doc;
         applyDoc(d);
+        setRelease(r.release ?? null);
+        setThreads(cm);
         setChanges(ch);
         setReviewed({});
         setRestoreOffer(d.autosave && !sameContent(d.autosave.content, d) ? d.autosave : null);
@@ -245,7 +271,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   // ── save ──
   const dirty = !sameContent(content, saved) || revertedIds.length > 0;
 
-  const save = async (publish: boolean) => {
+  const save = async (publish: boolean): Promise<CmsDoc | null> => {
     setBusy(true);
     setStatus(null);
     autosave.cancel();
@@ -257,9 +283,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         setStatus({ text: publish ? t("published_v", { version: d.version }) : t("saved", { version: d.version }), tone: "ok" });
         onSaved?.(d);
         onCreated?.(collection, d.slug);
-        return;
+        return d;
       }
-      if (!doc) return;
+      if (!doc) return null;
       if (revertedIds.length) await client.review(collection, doc.slug, revertedIds, "reverted").catch(() => undefined);
       if (!sameContent(content, saved) || !publish) d = await client.update(collection, doc.slug, toInput(content, doc.fields), { expectedVersion: baseVersion, publish });
       else d = await client.publish(collection, doc.slug, { expectedVersion: baseVersion });
@@ -270,11 +296,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       await loadChanges(d.slug);
       setStatus({ text: publish ? t("published_v", { version: d.publishedVersion ?? d.version }) : t("saved", { version: d.version }), tone: "ok" });
       onSaved?.(d);
+      return d;
     } catch (e) {
       if (isCmsRemoteError(e) && e.code === "conflict_version" && doc) {
         if (!e.current) {
           setStatus({ text: t("merge_no_current"), tone: "error" });
-          return;
+          return null;
         }
         try {
           const base = baseVersion === doc.version ? contentOf(doc) : (await client.version(collection, doc.slug, baseVersion)).snapshot;
@@ -282,14 +309,49 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         } catch (e2) {
           setStatus({ text: errorMessage(e2, t), tone: "error" });
         }
-        return;
+        return null;
       }
       if (isCmsRemoteError(e) && e.diagnostics?.length) setProblems(e.diagnostics as Diagnostic[]);
       setStatus({ text: errorMessage(e, t), tone: "error" });
+      return null;
     } finally {
       setBusy(false);
     }
   };
+
+  // ── schedule and review ──
+  /** The saved document these actions apply to: unsaved edits are saved first. */
+  const savedDoc = async (): Promise<CmsDoc> => {
+    const d = dirty ? await save(false) : doc;
+    if (!d) throw new Error("not saved");
+    return d;
+  };
+  const flow = async (fn: (d: CmsDoc) => Promise<CmsDoc>, done: (d: CmsDoc) => string, rethrow = false) => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const d = await fn(await savedDoc());
+      applyDoc(d);
+      setStatus({ text: done(d), tone: "ok" });
+      onSaved?.(d);
+    } catch (e) {
+      if (isCmsRemoteError(e)) setStatus({ text: errorMessage(e, t), tone: "error" });
+      if (rethrow) throw e;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const zone = me?.timeZone;
+  const scheduleAt = (when: { publishAt: string | null; unpublishAt: string | null }) =>
+    flow(
+      (d) => client.schedule(collection, d.slug, { ...when, expectedVersion: d.version }),
+      (d) => (d.schedule?.publishAt ? t("sched_done", { version: d.schedule.version, time: formatZonedTime(d.schedule.publishAt, locale, zone) }) : t("sched_go")),
+      true
+    );
+  const unschedule = () => flow((d) => client.unschedule(collection, d.slug), () => t("sched_cleared"), true);
+  const requestReview = () => flow((d) => client.requestReview(collection, d.slug), () => t("review_requested_done"));
+  const approve = () => flow((d) => client.approveReview(collection, d.slug, { publish: true }), (d) => t("published_v", { version: d.publishedVersion ?? d.version }));
+  const reject = (note: string) => flow((d) => client.rejectReview(collection, d.slug, note || null), () => t("review_rejected_done"), true);
 
   const restore = () => {
     if (!restoreOffer) return;
@@ -301,6 +363,75 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     setRestoreOffer(null);
     if (doc) await client.discardAutosave(collection, doc.slug).catch(() => undefined);
   };
+
+  // ── who else is here, and their saves ──
+  const live = React.useRef({ content, saved, baseVersion, dirty, others: 0 });
+  live.current = { content, saved, baseVersion, dirty, others: others.length };
+  const slugNow = doc?.slug;
+  React.useEffect(() => {
+    if (!slugNow || !presenceMs || mode.kind !== "edit") return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const point = (at: number) => {
+      const before = live.current.content.body.slice(0, at).split("\n");
+      return { line: before.length, ch: before[before.length - 1].length };
+    };
+    /** Someone else saved: take it when nothing is unsaved here, merge when the two edits do not overlap. */
+    const catchUp = async () => {
+      const latest = await client.get(collection, slugNow, { draft: true });
+      const now = live.current;
+      if (stop || latest.version <= now.baseVersion) return;
+      const who = latest.updatedByAgent ?? latest.updatedBy ?? "";
+      if (!now.dirty) {
+        applyDoc(latest);
+        void loadChanges(slugNow);
+        setStatus({ text: t("other_saved", { who, version: latest.version }), tone: "muted" });
+        return;
+      }
+      const m = mergeDocs(now.saved, now.content, contentOf(latest));
+      if (m.body.conflicts.length || m.fieldConflicts.length) return; // saving opens the merge screen
+      autosave.cancel();
+      const merged = contentOf(resolveDocMerge(m, {}));
+      // Keep the cursor where it was: text that arrived above it pushes it down.
+      const el = bodyRef.current;
+      const sel = caretRef.current;
+      let same = 0;
+      while (same < merged.body.length && merged.body[same] === now.content.body[same]) same++;
+      const shift = (at: number) => (at <= same ? at : Math.max(same, at + merged.body.length - now.content.body.length));
+      setDoc(latest);
+      setSaved(contentOf(latest));
+      setBaseVersion(latest.version);
+      setContentRaw(merged);
+      if (el && sel && document.activeElement === el)
+        requestAnimationFrame(() => {
+          el.setSelectionRange(shift(sel[0]), shift(sel[1]));
+          caretRef.current = [shift(sel[0]), shift(sel[1])];
+        });
+      setStatus({ text: t("other_merged", { who, version: latest.version }), tone: "muted" });
+    };
+    const beat = async () => {
+      try {
+        if (document.visibilityState !== "hidden") {
+          const sel = caretRef.current;
+          const r = await client.presence(collection, slugNow, { cursor: sel ? point(sel[1]) : null, selection: sel && sel[0] !== sel[1] ? point(sel[0]) : null });
+          if (stop) return;
+          setOthers(r.others);
+          if (r.version > live.current.baseVersion) await catchUp();
+        }
+      } catch {
+        /* a reader, or offline: nobody is shown */
+      }
+      if (!stop) timer = setTimeout(() => void beat(), live.current.others ? Math.min(presenceMs, 3000) : presenceMs);
+    };
+    void beat();
+    return () => {
+      stop = true;
+      if (timer) clearTimeout(timer);
+      setOthers([]);
+      void client.leave(collection, slugNow).catch(() => undefined);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, collection, slugNow, presenceMs, mode.kind]);
 
   // ── render ──
   if (mode.kind === "merge" && doc)
@@ -350,24 +481,100 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
 
   const stateBits = st ? (
     <>
-      <StateBadge state={st.state} />
+      <StateBadge state={doc?.review ? (doc.review.state === "requested" ? "review" : "changes") : st.state} />
+      {doc?.schedule?.publishAt ? <StateBadge state="scheduled" /> : null}
       {st.modifiedSincePublish ? <ModifiedMark /> : null}
     </>
   ) : null;
+  const mustReview = !!schema.needsReview;
+  const openThreads = threads.filter((x) => !x.resolvedAt);
+  /** Answering a request is for people who may publish, and never for the one who asked when everyone needs a review. */
+  const mayAnswer = canPublish && me?.actor.kind === "user" && !(schema.review?.everyone === "required" && doc?.review?.byKind === "user" && !doc.review.byAgent && doc.review.byId === me.actor.id);
+  const quiet = (p: Promise<unknown>) => void p.catch(() => undefined);
 
-  const saveButtons = (cls?: string) =>
+  const saveButtons = (cls?: string, up?: boolean) =>
     canWrite ? (
       <>
         <Button type="button" variant="outline" className={cls} disabled={busy || (!dirty && !isNew)} onClick={() => void save(false)}>
           {t("save")}
         </Button>
-        {canPublish ? (
-          <Button type="button" className={cls} disabled={busy || (!dirty && !!st && st.state === "published" && !st.modifiedSincePublish)} onClick={() => void save(true)}>
-            {t("publish")}
+        {canPublish && !mustReview ? (
+          <PublishButton
+            className={cls}
+            up={up}
+            busy={busy}
+            disabled={!dirty && !!st && st.state === "published" && !st.modifiedSincePublish}
+            canSchedule={!!doc}
+            schedule={doc?.schedule ?? null}
+            onPublish={() => void save(true)}
+            onSchedule={scheduleAt}
+            onUnschedule={unschedule}
+          />
+        ) : doc && doc.review?.state !== "requested" ? (
+          <Button type="button" className={cls} disabled={busy} title={mustReview ? t("review_needed") : undefined} onClick={() => void requestReview()}>
+            {t("review_request")}
           </Button>
         ) : null}
       </>
     ) : null;
+
+  const strips = doc ? (
+    <>
+      <ReviewStrip doc={doc} canAnswer={!!mayAnswer} canWrite={canWrite} busy={busy} onApprove={() => void approve()} onReject={reject} onRequest={() => void requestReview()} />
+      <ScheduleStrip
+        doc={doc}
+        canPublish={canPublish}
+        busy={busy}
+        onAgain={() => doc.schedule && quiet(scheduleAt({ publishAt: doc.schedule.publishAt, unpublishAt: doc.schedule.unpublishAt }))}
+        onUnschedule={() => quiet(unschedule())}
+      />
+      {release ? (
+        <div role="status" className="flex flex-wrap items-center gap-2.5 border-b bg-muted/50 px-4 py-2 text-[13.5px] md:px-6">
+          <Layers aria-hidden className="h-4 w-4 shrink-0" />
+          <span>{t("release_in", { name: release.name })}</span>
+          {release.publishAt ? <span className="text-xs tabular-nums text-muted-foreground">{formatZonedTime(release.publishAt, locale, zone)}</span> : null}
+          <span className="flex-1" />
+          {onOpenRelease ? (
+            <Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => onOpenRelease(release.id)}>
+              {t("open")}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  ) : null;
+
+  /** Select a part of the body and bring it into view (a comment was pressed). */
+  const showInBody = (start: number, end: number) => {
+    setMobileTab("edit");
+    requestAnimationFrame(() => {
+      const el = bodyRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(start, end);
+      caretRef.current = [start, end];
+      const line = content.body.slice(0, start).split("\n").length - 1;
+      el.scrollTop = Math.max(0, line * (parseFloat(getComputedStyle(el).lineHeight) || 24) - el.clientHeight / 3);
+    });
+  };
+  const comments = (onClose?: () => void) =>
+    doc ? (
+      <CommentsPanel collection={collection} slug={doc.slug} body={content.body} canWrite={canWrite} threads={threads} onChanged={() => void loadComments(doc.slug)} getSelection={() => (caretRef.current && bodyRef.current ? [bodyRef.current.selectionStart, bodyRef.current.selectionEnd] : caretRef.current)} onGo={showInBody} onClose={onClose} />
+    ) : null;
+  // Drawn behind the text: what open comments are attached to, and where the others are.
+  const marks = [
+    ...openThreads.map((th) => placeOf(content.body, th)).filter((x): x is NonNullable<typeof x> => !!x && x.end > x.start),
+    ...others
+      .filter((o) => o.cursor && o.selection)
+      .map((o) => {
+        const a = offsetOf(content.body, o.cursor!.line, o.cursor!.ch);
+        const b = offsetOf(content.body, o.selection!.line, o.selection!.ch);
+        return { start: Math.min(a, b), end: Math.max(a, b), tone: "select" as const };
+      }),
+  ];
+  const cursors: BodyCursor[] = others
+    .filter((o) => o.cursor)
+    .map((o) => ({ id: o.actorId, at: offsetOf(content.body, o.cursor!.line, o.cursor!.ch), label: o.agent ?? o.label, color: personColor(o.actorId, o.kind !== "user" || !!o.agent) }));
 
   const agentBanner = changes.length ? (
     <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-950">
@@ -488,18 +695,35 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       </div>
       <CmsMediaPicker open={picking} onOpenChange={setPicking} onPick={insertAsset} />
       {blocks}
-      <Textarea
-        ref={bodyRef}
-        id={bodyId}
-        onSelect={(e) => (caretRef.current = [e.currentTarget.selectionStart, e.currentTarget.selectionEnd])}
-        value={content.body}
-        readOnly={!canWrite}
-        spellCheck={false}
-        aria-invalid={bodyInvalid || undefined}
-        aria-describedby={bodyErr?.length ? `${bodyId}-err` : undefined}
-        className="min-h-[360px] flex-1 resize-none rounded-none border-0 font-mono text-[13px] leading-6 shadow-none focus-visible:ring-0"
-        onChange={(e) => setContent({ ...content, body: e.target.value })}
-      />
+      <div className="relative flex min-h-[360px] flex-1 flex-col">
+        {marks.length || cursors.length ? <BodyBackdrop box={bodyRef} text={content.body} marks={marks} cursors={cursors} /> : null}
+        <Textarea
+          ref={bodyRef}
+          id={bodyId}
+          onSelect={(e) => (caretRef.current = [e.currentTarget.selectionStart, e.currentTarget.selectionEnd])}
+          value={content.body}
+          readOnly={!canWrite}
+          spellCheck={false}
+          aria-invalid={bodyInvalid || undefined}
+          aria-describedby={bodyErr?.length ? `${bodyId}-err` : undefined}
+          className="relative min-h-[360px] flex-1 resize-none rounded-none border-0 bg-transparent font-mono text-[13px] leading-6 shadow-none focus-visible:ring-0 dark:bg-transparent"
+          onChange={(e) => setContent({ ...content, body: e.target.value })}
+          onPaste={(e) => {
+            if (!canWrite) return;
+            const r = pasteAsMarkdown({ html: e.clipboardData.getData("text/html"), plain: e.clipboardData.getData("text/plain") });
+            if (!r) return; // nothing to tidy: the browser pastes as usual
+            e.preventDefault();
+            const el = e.currentTarget;
+            const [a, b] = [el.selectionStart, el.selectionEnd];
+            // insertText keeps the browser's undo history; where it is missing, set the text directly.
+            if (!(typeof document.execCommand === "function" && document.execCommand("insertText", false, r.text))) {
+              setContent({ ...content, body: content.body.slice(0, a) + r.text + content.body.slice(b) });
+              requestAnimationFrame(() => el.setSelectionRange(a + r.text.length, a + r.text.length));
+            }
+            if (r.dropped) setStatus({ text: t("paste_dropped"), tone: "muted" });
+          }}
+        />
+      </div>
       {bodyErr?.length ? (
         <p id={`${bodyId}-err`} className="border-t px-3 py-1.5 text-xs text-destructive">
           {bodyErr.map((e) => e.message).join(" ")}
@@ -577,8 +801,25 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     </div>
   );
 
-  const previewDialog =
-    previewAllowed && doc ? <CmsPreviewLinkDialog open={previewOpen} onOpenChange={setPreviewOpen} collection={collection} slug={doc.slug} version={doc.version} /> : null;
+  const previewDialog = (
+    <>
+      {previewAllowed && doc ? <CmsPreviewLinkDialog open={previewOpen} onOpenChange={setPreviewOpen} collection={collection} slug={doc.slug} version={doc.version} /> : null}
+      {doc ? (
+        <AddToReleaseDialog
+          open={releaseOpen}
+          onOpenChange={setReleaseOpen}
+          collection={collection}
+          slug={doc.slug}
+          published={published}
+          onAdded={(r) => {
+            setRelease({ id: r.id, name: r.name, state: "open", publishAt: null });
+            setStatus({ text: t("release_added", { name: r.name }), tone: "ok" });
+          }}
+        />
+      ) : null}
+    </>
+  );
+  const canRelease = !!doc && canWrite && !release;
 
   if (mobile)
     return (
@@ -598,7 +839,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
               <History aria-hidden className="h-4 w-4" />
             </Button>
           ) : null}
-          {publicUrl || previewAllowed ? (
+          <People people={others} max={2} />
+          {publicUrl || previewAllowed || canRelease ? (
             <DropdownMenu>
               <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon", className: "h-8 w-8" })} aria-label={t("more")}>
                 <MoreHorizontal aria-hidden className="h-4 w-4" />
@@ -606,10 +848,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
               <DropdownMenuContent align="end">
                 {publicUrl ? <DropdownMenuItem onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")}>{t("public_page")}</DropdownMenuItem> : null}
                 {previewAllowed ? <DropdownMenuItem onClick={() => setPreviewOpen(true)}>{t("preview_link")}</DropdownMenuItem> : null}
+                {canRelease ? <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem> : null}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
         </PageHeader>
+        {strips}
         <Tabs value={mobileTab} onValueChange={(v) => setMobileTab(String(v))} className="flex min-h-0 flex-1 flex-col">
           <div className="flex items-center gap-1.5 border-b px-4 py-2">
             {stateBits}
@@ -621,6 +865,11 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
               <TabsTrigger value="preview" className="h-6 text-xs">
                 {t("preview")}
               </TabsTrigger>
+              {doc && canWrite ? (
+                <TabsTrigger value="comments" className="h-6 text-xs">
+                  {openThreads.length ? t("comments_n", { n: openThreads.length }) : t("comments")}
+                </TabsTrigger>
+              ) : null}
             </TabsList>
           </div>
           <TabsContent value="edit" className="mt-0 flex min-h-0 flex-1 flex-col">
@@ -646,9 +895,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           <TabsContent value="preview" className="mt-0 flex min-h-0 flex-1 flex-col">
             {previewPane(false)}
           </TabsContent>
+          <TabsContent value="comments" className="mt-0 flex min-h-0 flex-1 flex-col">
+            {comments()}
+          </TabsContent>
         </Tabs>
         {problemsFoot}
-        <div className="sticky bottom-0 flex gap-2 border-t bg-background p-2">{saveButtons("flex-1")}</div>
+        <div className="sticky bottom-0 z-10 flex gap-2 border-t bg-background p-2">{saveButtons("flex-1", true)}</div>
         {previewDialog}
       </div>
     );
@@ -656,6 +908,13 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       <PageHeader title={title} crumbs={[schema.label]} after={stateBits}>
+        <People people={others} className="mr-1" />
+        {doc && canWrite ? (
+          <Button type="button" variant="ghost" className="gap-1.5" aria-pressed={commentsOpen} onClick={() => setCommentsOpen((v) => !v)}>
+            <MessageSquare aria-hidden className="h-4 w-4" />
+            {openThreads.length ? t("comments_n", { n: openThreads.length }) : t("comments")}
+          </Button>
+        ) : null}
         {publicUrl ? (
           <a href={publicUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 px-2 text-sm underline-offset-2 hover:underline">
             <ExternalLink aria-hidden className="h-4 w-4" />
@@ -674,8 +933,19 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
             {t("versions")}
           </Button>
         ) : null}
+        {canRelease ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon" })} aria-label={t("more")}>
+              <MoreHorizontal aria-hidden className="h-4 w-4" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
         {saveButtons()}
       </PageHeader>
+      {strips}
       {agentBanner || restoreBanner ? (
         <div className="flex flex-col gap-2 px-6 pt-2.5">
           {restoreBanner}
@@ -686,6 +956,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       <div className="flex min-h-0 flex-1 divide-x">
         {bodyPane}
         {previewPane(true)}
+        {commentsOpen ? comments(() => setCommentsOpen(false)) : null}
       </div>
       {problemsFoot}
       {previewDialog}
@@ -710,6 +981,7 @@ export interface CmsPreviewLinkDialogProps {
 export function CmsPreviewLinkDialog({ open, onOpenChange, collection, slug, version, defaultTtl = "24h" }: CmsPreviewLinkDialogProps) {
   const { client, t, locale, appUrl } = useCms();
   const [ttl, setTtl] = React.useState<PreviewTtl>(defaultTtl);
+  const [comments, setComments] = React.useState(false);
   const [link, setLink] = React.useState<{ url: string; expiresAt: string; version: number } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -719,7 +991,7 @@ export function CmsPreviewLinkDialog({ open, onOpenChange, collection, slug, ver
     let live = true;
     setLoading(true);
     setError(null);
-    client.previewLink(collection, slug, ttl).then(
+    client.previewLink(collection, slug, ttl, { comments }).then(
       (l) => {
         if (!live) return;
         setLink(l);
@@ -735,7 +1007,7 @@ export function CmsPreviewLinkDialog({ open, onOpenChange, collection, slug, ver
     return () => {
       live = false;
     };
-  }, [open, ttl, client, collection, slug, t]);
+  }, [open, ttl, comments, client, collection, slug, t]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -764,6 +1036,10 @@ export function CmsPreviewLinkDialog({ open, onOpenChange, collection, slug, ver
               ]}
             />
           </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" className="h-4 w-4 accent-primary" checked={comments} onChange={(e) => setComments(e.target.checked)} />
+            {t("pl_comments")}
+          </label>
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">{t("pl_link")}</span>
             {link ? <CodeBox value={/^\//.test(link.url) ? `${appUrl}${link.url}` : link.url} label={t("pl_link")} /> : null}

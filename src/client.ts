@@ -12,7 +12,28 @@ import type { AssetListOptions, AssetUsage, AssetView, UploadInstructions, Uploa
 import type { AgentChange, BulkAction, BulkResult, DocDiff, PreviewLink, PreviewTtl } from "./cms";
 import type { Diagnostic, ErrorParams } from "./errors";
 import type { PatchOp } from "./patch";
-import type { AuditEntry, AutosaveState, CmsDoc, CmsKey, CmsVersion, DocCounts, DocInputWire, DocSummary, KeyScope, VersionSummary } from "./wire";
+import type { CommentThread, ReleaseView, ScheduledRun, TrashItem, TrashRef } from "./flow";
+import type { Block, TocItem } from "./markdown";
+import type { AuditEntry, AutosaveState, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocCounts, DocInputWire, DocSummary, KeyScope, Presence, SavedFilter, VersionSummary } from "./wire";
+
+export type { BlockedItem, CommentThread, ReleaseView, ScheduledRun, TrashItem, TrashRef } from "./flow";
+
+/** What `POST /collections/:c/_preview` answers: the document as it would be, nothing saved. */
+export interface DocPreview {
+  blocks: Block[];
+  toc: TocItem[];
+  diagnostics: Diagnostic[];
+  diff: string | null;
+  publicUrl: string | null;
+  assets: Record<string, { id: string; name: string; kind: string; url: string; alt: string; width: number | null; height: number | null }>;
+}
+/** The open release a document is in. */
+export interface DocRelease {
+  id: string;
+  name: string;
+  state: CmsRelease["state"];
+  publishAt: string | null;
+}
 
 export interface CmsClientOptions {
   /** The CMS base URL, e.g. https://app.example.com/api/cms */
@@ -142,6 +163,10 @@ export interface Me {
   actor: { kind: string; label?: string; id?: string | null };
   isAdmin: boolean;
   previewLinks: boolean;
+  /** Days something stays in the trash (0: there is no trash). */
+  trashDays?: number;
+  /** The zone schedules are shown and entered in. */
+  timeZone?: string;
   /** The media library, when the app has one and this actor may see it. */
   media?: MediaInfo | null;
   collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean }[];
@@ -208,10 +233,13 @@ export interface CollectionSchema {
   forbiddenChars: string[];
   canWrite: boolean;
   canPublish: boolean;
+  /** The collection's review rule, and whether it applies to you. */
+  review?: { agents?: "required"; everyone?: "required" } | null;
+  needsReview?: boolean;
 }
 
 export interface ListQuery {
-  state?: "draft" | "published" | "modified" | "archived";
+  state?: "draft" | "published" | "modified" | "archived" | "scheduled" | "review";
   q?: string;
   category?: string;
   by?: "user" | "key" | "system";
@@ -290,7 +318,40 @@ export function createRestClient(opts: RestClientOptions) {
       req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/versions/${n}/restore`, { body: { publish: o.publish }, ifMatch: o.expectedVersion }).then((r) => r.doc),
     changes: (c: string, s: string) => req<{ changes: AgentChange[] }>("GET", `${doc(c, s)}/changes`).then((r) => r.changes),
     review: (c: string, s: string, hunks: string[] | "all", action: "accepted" | "reverted" = "accepted") => req<{ reviewed: number }>("POST", `${doc(c, s)}/review`, { body: { hunks, action } }),
-    previewLink: (c: string, s: string, ttl: PreviewTtl = "24h") => req<PreviewLink>("POST", `${doc(c, s)}/preview`, { body: { ttl } }),
+    previewLink: (c: string, s: string, ttl: PreviewTtl = "24h", o: { comments?: boolean } = {}) => req<PreviewLink>("POST", `${doc(c, s)}/preview`, { body: { ttl, ...o } }),
+    /** The working copy plus the open release it is in, if any. */
+    getWithRelease: (c: string, s: string) => req<{ doc: CmsDoc; release?: DocRelease | null }>("GET", doc(c, s), { query: { draft: true } }),
+    preview: (c: string, d: DocInputWire, slug?: string) => req<DocPreview>("POST", `/collections/${enc(c)}/_preview`, { body: { doc: d, slug } }),
+    schedule: (c: string, s: string, b: { publishAt?: string | null; unpublishAt?: string | null; expectedVersion?: number }) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/schedule`, { body: b }).then((r) => r.doc),
+    unschedule: (c: string, s: string) => req<{ doc: CmsDoc }>("DELETE", `${doc(c, s)}/schedule`).then((r) => r.doc),
+    requestReview: (c: string, s: string, note?: string | null) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/review/request`, { body: { note } }).then((r) => r.doc),
+    approveReview: (c: string, s: string, o: { publish?: boolean } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/review/approve`, { body: o }).then((r) => r.doc),
+    rejectReview: (c: string, s: string, note?: string | null) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/review/reject`, { body: { note } }).then((r) => r.doc),
+    reviewRequests: (collection?: string) => req<{ requests: DocSummary[] }>("GET", "/reviews", { query: { collection } }).then((r) => r.requests),
+    comments: (c: string, s: string) => req<{ comments: CommentThread[] }>("GET", `${doc(c, s)}/comments`).then((r) => r.comments),
+    addComment: (c: string, s: string, b: { body: string; anchor?: string | null; quote?: string | null; threadId?: string | null }) => req<{ comment: CmsComment }>("POST", `${doc(c, s)}/comments`, { body: b }).then((r) => r.comment),
+    resolveComment: (c: string, s: string, id: string, resolved = true) => req<{ comment: CmsComment }>("POST", `${doc(c, s)}/comments/${enc(id)}/resolve`, { body: { resolved } }).then((r) => r.comment),
+    previewComments: (token: string) => req<{ comments: CommentThread[] }>("GET", "/preview/comments", { query: { token } }).then((r) => r.comments),
+    addPreviewComment: (token: string, b: { name?: string | null; body: string; anchor?: string | null; quote?: string | null; threadId?: string | null }) => req<{ comment: CmsComment }>("POST", "/preview/comments", { query: { token }, body: b }).then((r) => r.comment),
+    presence: (c: string, s: string, b: { cursor?: Presence["cursor"]; selection?: Presence["selection"] } = {}) => req<{ version: number; updatedBy: string | null; others: Presence[] }>("POST", `${doc(c, s)}/presence`, { body: b }),
+    leave: (c: string, s: string) => req<{ ok: true }>("DELETE", `${doc(c, s)}/presence`),
+    presenceIn: (c: string) => req<{ presence: { slug: string; people: Presence[] }[] }>("GET", `/collections/${enc(c)}/_presence`).then((r) => r.presence),
+    labelVersion: (c: string, s: string, n: number, b: { label?: string | null; pinned?: boolean }) => req<{ version: CmsVersion }>("PATCH", `${doc(c, s)}/versions/${n}`, { body: b }).then((r) => r.version),
+    filters: (c: string) => req<{ filters: (SavedFilter & { mine: boolean })[] }>("GET", `/collections/${enc(c)}/_filters`).then((r) => r.filters),
+    saveFilter: (c: string, b: { name: string; query: Record<string, string>; shared?: boolean }) => req<{ filter: SavedFilter }>("POST", `/collections/${enc(c)}/_filters`, { body: b }).then((r) => r.filter),
+    removeFilter: (c: string, id: string) => req<{ ok: true }>("DELETE", `/collections/${enc(c)}/_filters/${enc(id)}`),
+    trash: (kind?: TrashRef["kind"]) => req<{ items: TrashItem[]; days: number; canPurge: boolean }>("GET", "/trash", { query: { kind } }),
+    restoreTrash: (items: TrashRef[]) => req<{ restored: number }>("POST", "/trash/_restore", { body: { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
+    purgeTrash: (items: TrashRef[] | "all") => req<{ purged: number }>("POST", "/trash/_purge", { body: items === "all" ? { all: true } : { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
+    releases: () => req<{ releases: CmsRelease[] }>("GET", "/releases").then((r) => r.releases),
+    release: (id: string) => req<{ release: ReleaseView }>("GET", `/releases/${enc(id)}`).then((r) => r.release),
+    createRelease: (name: string) => req<{ release: ReleaseView }>("POST", "/releases", { body: { name } }).then((r) => r.release),
+    renameRelease: (id: string, name: string) => req<{ release: ReleaseView }>("PATCH", `/releases/${enc(id)}`, { body: { name } }).then((r) => r.release),
+    removeRelease: (id: string) => req<{ ok: true }>("DELETE", `/releases/${enc(id)}`),
+    addToRelease: (id: string, items: { collection: string; slug: string; action?: "publish" | "unpublish" }[]) => req<{ release: ReleaseView }>("POST", `/releases/${enc(id)}/items`, { body: { items } }).then((r) => r.release),
+    removeFromRelease: (id: string, documentId: string) => req<{ release: ReleaseView }>("DELETE", `/releases/${enc(id)}/items/${enc(documentId)}`).then((r) => r.release),
+    publishRelease: (id: string) => req<{ release: CmsRelease }>("POST", `/releases/${enc(id)}/publish`, { body: {} }).then((r) => r.release),
+    scheduleRelease: (id: string, publishAt: string | null) => req<{ release: ReleaseView }>("POST", `/releases/${enc(id)}/schedule`, { body: { publishAt } }).then((r) => r.release),
     search: (q: string, collections?: string[]) => req<{ empty: boolean; hits: { collection: string; slug: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(",") } }),
     keys: () => req<{ keys: CmsKey[] }>("GET", "/keys").then((r) => r.keys),
     createKey: (k: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null }) => req<{ key: CmsKey; secret: string }>("POST", "/keys", { body: k }),

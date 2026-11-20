@@ -20,6 +20,8 @@ export const guide = defineCollection({
   label: "Guide",
   visibility: "internal",
   access: { read: ({ actor }) => actor.kind !== "anonymous" },
+  // What an agent writes here goes out only after a person approved it.
+  review: { agents: "required" },
 });
 
 // The media library is on when the app is given a storage: `npm run s3:dev`
@@ -40,6 +42,8 @@ function make() {
     media,
     previewSecret: process.env.CMS_PREVIEW_SECRET ?? "example-preview-secret-at-least-32-chars",
     timeZone: "Asia/Seoul",
+    // Scheduled publishing runs when a cron job calls POST /api/cms/_cron with this secret.
+    cronSecret: process.env.CMS_CRON_SECRET,
     // The app keeps search misses in its own table (see UPGRADE-0.6.md).
     onSearchMiss: async (e) => {
       for (const c of e.collections) {

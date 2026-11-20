@@ -1,6 +1,6 @@
 /** Types the REST client sends and receives (re-exported for the admin screens). Type-only, browser-safe. */
 
-export type { AuditEntry, AutosaveState, CmsDoc, CmsKey, CmsVersion, DocCounts, DocSummary, KeyScope, VersionSummary } from "./types";
+export type { AuditEntry, AutosaveState, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocCounts, DocSummary, KeyScope, Presence, ReleaseItem, ReviewRequest, SavedFilter, Schedule, VersionSummary } from "./types";
 
 /** A document body for create / update over REST. */
 export interface DocInputWire {

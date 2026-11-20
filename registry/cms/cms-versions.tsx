@@ -1,16 +1,19 @@
-// agent-cms registry: cms-versions (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-versions (0.10.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // Version history of one document: who saved what (agent or person, note,
 // published marker, changed fields), a compare of any two versions (side by
-// side or unified, word-level highlight), restore and publish a version.
+// side or unified, word-level highlight), restore and publish a version,
+// and give a version a name or pin it so it is never cleaned up.
 "use client";
 
 import * as React from "react";
-import { ArrowLeft, ArrowRight, ChevronLeft, RotateCcw } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronLeft, Pin, RotateCcw, Tag } from "lucide-react";
 import { diffWords, type Hunk, type HunkLine } from "@mainsoft/agent-cms/diff";
 import type { CmsDoc, VersionSummary } from "@mainsoft/agent-cms/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -97,6 +100,7 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
   const [savedView, setView] = useLocalStorage<"split" | "unified">("agent-cms:diff-view", "split");
   const view = mobile ? "unified" : savedView;
   const [confirm, setConfirm] = React.useState<"restore" | null>(null);
+  const [naming, setNaming] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [status, setStatus] = React.useState<{ text: string; tone: "ok" | "error" } | null>(null);
 
@@ -187,9 +191,57 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
     </div>
   );
 
+  const mark = async (b: { label?: string | null; pinned?: boolean }) => {
+    if (to === null) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      await client.labelVersion(collection, slug, to, b);
+      setNaming(null);
+      list.reload();
+    } catch (e) {
+      setStatus({ text: errorMessage(e, t), tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  /** Name and pin for the version on the right side of the compare. */
+  const markActions = (size: "sm" | "default") =>
+    canWrite && toInfo ? (
+      <>
+        <Button type="button" variant="ghost" size={size} className={cn("gap-1.5", size === "sm" && "h-7 px-2 text-xs")} disabled={busy} onClick={() => setNaming(toInfo.label ?? "")}>
+          <Tag aria-hidden className="h-4 w-4" />
+          {t("version_label")}
+        </Button>
+        <Button type="button" variant="ghost" size={size} className={cn("gap-1.5", size === "sm" && "h-7 px-2 text-xs")} disabled={busy} aria-pressed={toInfo.pinned} onClick={() => void mark({ pinned: !toInfo.pinned })}>
+          <Pin aria-hidden className="h-4 w-4" />
+          {t(toInfo.pinned ? "version_unpin" : "version_pin")}
+        </Button>
+      </>
+    ) : null;
+  const marks = (v: VersionSummary) =>
+    v.label || v.pinned || v.approvedBy ? (
+      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+        {v.label ? (
+          <span className="inline-flex min-w-0 items-center gap-1 font-medium">
+            <Tag aria-hidden className="h-3 w-3 shrink-0" />
+            <span className="truncate">{v.label}</span>
+          </span>
+        ) : null}
+        {v.pinned ? (
+          <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <Pin aria-hidden className="h-3 w-3" />
+            {t("version_pinned")}
+          </span>
+        ) : null}
+        {v.approvedBy ? <span className="text-muted-foreground">{t("version_approved", { who: v.approvedBy })}</span> : null}
+      </span>
+    ) : null;
+
   const actions = (cls?: string) =>
     from !== null && to !== null ? (
       <>
+        {cls ? null : markActions("default")}
         {canWrite && from !== latest ? (
           <Button type="button" variant="outline" className={cn("gap-1.5", cls)} disabled={busy} onClick={() => setConfirm("restore")}>
             <RotateCcw aria-hidden className="h-4 w-4" />
@@ -326,6 +378,32 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
   );
 
   const confirmDialog = (
+    <>
+    <Dialog open={naming !== null} onOpenChange={(o) => !o && setNaming(null)}>
+      <DialogContent className="max-w-[400px]">
+        <form
+          className="grid gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void mark({ label: (naming ?? "").trim() || null });
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{t("version_label")}</DialogTitle>
+            <DialogDescription>v{to}</DialogDescription>
+          </DialogHeader>
+          <Input aria-label={t("version_label_field")} placeholder={t("version_label_field")} autoFocus maxLength={80} value={naming ?? ""} onChange={(e) => setNaming(e.target.value)} />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setNaming(null)}>
+              {t("cancel")}
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {t("save")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
     <ConfirmDialog
       open={confirm === "restore"}
       onOpenChange={(o) => !o && setConfirm(null)}
@@ -335,6 +413,7 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
       busy={busy}
       onConfirm={() => run("restore")}
     />
+    </>
   );
 
   const statusLine = (
@@ -364,7 +443,9 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
                 <Who kind={toInfo.authorKind} label={toInfo.authorLabel} agent={toInfo.authorAgent} className="font-medium" />
                 <span className="text-muted-foreground">{relativeTime(toInfo.createdAt, t, locale)}</span>
               </div>
+              {marks(toInfo)}
               {toInfo.note ? <div className="text-muted-foreground">{toInfo.note}</div> : null}
+              <div className="-ml-2 flex gap-1">{markActions("sm")}</div>
             </div>
           ) : null}
           <div className="px-4 pb-2">{statusLine}</div>
@@ -411,6 +492,7 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
                         {v.authorKind === "user" && !v.authorAgent ? t("kind_user") : t("kind_agent")}
                       </Badge>
                     </span>
+                    {marks(v)}
                     {v.note ? <span className="text-xs text-muted-foreground">{v.note}</span> : null}
                     {v.changed?.fields.length ? (
                       <span className="text-[11px] text-muted-foreground">

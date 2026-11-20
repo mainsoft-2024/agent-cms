@@ -22,7 +22,11 @@ function tinyPng(): Uint8Array {
   return bytes;
 }
 
-export function makeServer(o: { previewSecret?: string | null; media?: boolean } = {}) {
+export const editor2: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u2", label: "Park", isAdmin: true };
+
+export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number } = {}) {
+  /** Who the browser is signed in as (tests switch it). */
+  const session = { user: admin };
   const stores = { public: new MemoryStorage({ name: "public", publicUrl: "https://cdn.example.com" }), private: new MemoryStorage({ name: "private" }) };
   const guide = defineCollection({
     slug: "guide",
@@ -30,6 +34,7 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean }
     visibility: "public",
     categories: ["start", "integrations"],
     url: (d) => `/guide/${d.slug}`,
+    review: o.review,
     fields: z.object({
       plans: z.array(z.enum(["free", "pro", "team"])).optional(),
       featured: z.boolean().optional(),
@@ -47,6 +52,8 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean }
     previewSecret: o.previewSecret === null ? undefined : (o.previewSecret ?? "x".repeat(40)),
     warn: () => {},
     schemaCheck: false,
+    timeZone: o.timeZone,
+    trash: o.trashDays === undefined ? undefined : { days: o.trashDays },
     media: o.media
       ? {
           stores: { public: { visibility: "public", adapter: stores.public }, private: { visibility: "private", adapter: stores.private } },
@@ -64,7 +71,7 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean }
     if (upload.kind === "single") await stores[(more.store as "private") ?? "public"].send(upload.url, bytes);
     return cms.assets.completeUpload(admin, asset.id);
   };
-  const handler = createCmsHandler({ cms, resolveUser: async () => admin });
+  const handler = createCmsHandler({ cms, resolveUser: async () => session.user });
   const requests: { method: string; path: string; body: unknown }[] = [];
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -72,7 +79,7 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean }
     requests.push({ method: init?.method ?? "GET", path: url.slice(BASE.length), body });
     return handler(new Request(url, init));
   }) as typeof fetch;
-  return { cms, fetch: fetchFn, requests, stores, addFile };
+  return { cms, fetch: fetchFn, requests, stores, addFile, session };
 }
 
 export type Server = ReturnType<typeof makeServer>;
