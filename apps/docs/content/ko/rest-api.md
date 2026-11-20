@@ -7,6 +7,8 @@ sourceVersion: 1
 ---
 인증: `Authorization: Bearer sgk_…` 키, 없으면 앱의 로그인 사용자(`resolveUser`), 그것도 없으면 익명(게시된 문서 읽기만)이에요.
 
+로그인 세션으로 하는 쓰기는 앱 자신의 페이지에서 온 요청이어야 해요. 핸들러가 브라우저의 `Origin`을 요청의 주소(`Host`, 프록시 뒤에서는 `X-Forwarded-Host`)와 비교하고, 다르면 403 `cross_site`로 답해요. 키로 하는 요청은 검사하지 않아요. 어드민을 다른 주소에서 띄운다면 그 주소를 적어 주세요: `createCmsHandler({ cms, resolveUser, trustedOrigins: ["https://admin.example.com"] })`.
+
 ## 문서
 
 ```text

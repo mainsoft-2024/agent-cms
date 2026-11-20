@@ -139,6 +139,13 @@ That gives you REST under `/api/cms/...` (route list at the top of
 `ETag: "v<n>"`; send it back as `If-Match` on PATCH/DELETE (or pass
 `expectedVersion`). `requireIfMatch: true` refuses writes without one (428).
 
+A write that rides on a person's session must come from a page of the app
+itself: the handler compares the browser's `Origin` with the address of the
+request (`Host`, or `X-Forwarded-Host` behind a proxy) and answers 403
+`cross_site` otherwise. Requests with an API key are not checked. If the
+admin lives at another address, list it:
+`createCmsHandler({ ..., trustedOrigins: ["https://admin.example.com"] })`.
+
 ## Admin screens
 
 The screens are source files you copy into your app and then own, like
