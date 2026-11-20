@@ -1,7 +1,7 @@
 import { ArrowRight, ChevronRight, GitMerge, PanelsTopLeft, Plug } from "lucide-react";
 import Link from "next/link";
 import { CopyButton } from "@/components/site/code-block";
-import { listPublished } from "@/lib/content";
+import { listPublished, newestFirst } from "@/lib/content";
 
 const INSTALL = "npm i @mainsoft/agent-cms";
 
@@ -132,7 +132,7 @@ function EditorShot({ compact = false }: { compact?: boolean }) {
 }
 
 export default async function Home() {
-  const latest = (await listPublished("changelog")).sort((a, b) => String((b.fields as { date?: string }).date).localeCompare(String((a.fields as { date?: string }).date)))[0];
+  const latest = (await listPublished("changelog")).sort(newestFirst)[0];
   return (
     <>
       <section className="px-5 pt-10 text-center md:px-10">
