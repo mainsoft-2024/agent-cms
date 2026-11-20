@@ -1,8 +1,17 @@
 # Changelog
 
+## 0.11.1
+
+Commands and messages. The library, the schema and the REST API are the same as 0.11.0.
+
+- **Fix (docs, CLI messages, screens):** every command is now written with the full package name: `npx @mainsoft/agent-cms init`. The name `agent-cms` without the scope belongs to another project on npm, so the short form only worked inside a folder where this package was installed. Anywhere else (a monorepo root, an agent's shell that has only `AGENT_CMS_URL` and a key, a new project) `npx`, `bunx` and `pnpm dlx` downloaded that other package and stopped with `could not determine executable to run`. Changed: the README, the upgrade notes, the docs site, the hints the CLI prints (`init`, `doctor`, `migrate`), the `command` of the `schema_outdated` error, and the commands shown by `cms-keys` (after making a key) and `cms-empty`.
+- **Fix (CLI):** without `drizzle-orm` or `zod` installed (yarn 1 does not install peer dependencies; npm and pnpm can be set not to) every command ended in a Node stack trace, `--version` included. The CLI now names the missing package and how to add it, and `--version` answers by itself.
+- **Screens:** `cms-keys` and `cms-empty` changed, one command each (`npx @mainsoft/agent-cms add --update`). The other screens are untouched: the comment on their first line still names the short form, which works inside your app, and changing it would have left a `.new` copy beside every screen you edited.
+- **Docs:** the install page gives the command for bun, pnpm and yarn, and notes that pnpm 11 skips versions published in the last day by default, so on the day of a release `pnpm add` installs the one before it.
+
 ## 0.11.0
 
-What was left of the media library and the editor. **Schema version 5** (three columns on `cms_assets`; `npx agent-cms migrate apply`). See [UPGRADE-0.11.md](./UPGRADE-0.11.md).
+What was left of the media library and the editor. **Schema version 5** (three columns on `cms_assets`; `npx @mainsoft/agent-cms migrate apply`). See [UPGRADE-0.11.md](./UPGRADE-0.11.md).
 
 - **New: Vercel Blob.** `vercelBlobStorage({ token, access })` from `@mainsoft/agent-cms/storage-vercel-blob` (`@vercel/blob` is an optional peer dependency). Browsers upload straight to Blob with a signed address that holds the file to its declared size; private stores are read through signed links. On this kind of store a file goes up in one request whatever its size, so there is no per-part retry and no carrying on after a reload; `storage check` and `_me.media.stores[].parts` say so. Checked against real public and private stores with `@vercel/blob` 2.9.0.
 - **New: image sizes.** `media.transforms: sharpTransforms({ presets })` from `@mainsoft/agent-cms/image-sharp` (`sharp` is an optional peer dependency, Node only). Named sizes only, at `/files/<id>/<name>?size=card`, made on first request and kept under `_cms/derived/`; limits on side, input size, time and how many at once, with the original as the fallback. `cms.imageUrl(asset, { size })`. Pictures the server stores itself get a list thumbnail.
@@ -23,7 +32,7 @@ What was left of the media library and the editor. **Schema version 5** (three c
 
 ## 0.10.1
 
-- **Fix (cms-doc-editor):** saving or publishing a new document lost its confirmation line ("Saved v1", "Published v1") when the app answered `onCreated` by moving to the document's own address, which is what the examples do. The line now waits for the editor that opens next and shows there once. Update the copy with `npx agent-cms add cms-doc-editor --update`.
+- **Fix (cms-doc-editor):** saving or publishing a new document lost its confirmation line ("Saved v1", "Published v1") when the app answered `onCreated` by moving to the document's own address, which is what the examples do. The line now waits for the editor that opens next and shows there once. Update the copy with `npx @mainsoft/agent-cms add cms-doc-editor --update`.
 
 ## 0.10.0
 
@@ -40,9 +49,9 @@ The editing and publishing flow: its rules, REST routes, admin client, agent too
 - **Saved filters**, **presence** (who has a document open, also agents while they save) and **`cms.preview`** (blocks with source lines, table of contents, problems and diff of unsaved text; `parseMarkdown(src, { lines: true })`).
 - List states `scheduled` and `review`; `counts` has both.
 - Agent tools (16 → 31, plus the file tools): `schedule_document`, `unschedule_document`, `request_review`, `list_review_requests`, `list_comments`, `add_comment`, `resolve_comment`, `list_trash`, `restore_from_trash`, `list_releases`, `create_release`, `add_to_release`, `publish_release`, `label_version`, `preview_document`. Approving a review is a person's job and has no tool.
-- Schema version 4 (run `npx agent-cms migrate apply`).
+- Schema version 4 (run `npx @mainsoft/agent-cms migrate apply`).
 
-Screens (`npx agent-cms add --update`, then `add cms-trash cms-releases`):
+Screens (`npx @mainsoft/agent-cms add --update`, then `add cms-trash cms-releases`):
 
 - **`cms-doc-editor`:** the publish button has a schedule panel (times on the clock of `createCms({ timeZone })`, which `GET /_me` now returns); strips under the header show a schedule, a review request ("Send back", "Approve and publish") and the release the document is in; a comments panel (a tab on phones) with marks on the commented text; who else has the document open, their cursors, and their saves merged into unsaved edits that do not overlap (`presenceMs`); "Add to a release"; "Allow comments" on preview links. The item has a second file, `cms-flow.tsx`.
 - **`cms-doc-list`:** "Scheduled" and "In review" tabs and badges, who has a document open, saved filters. It needs the shadcn `label` part now.
@@ -108,7 +117,7 @@ Breaking changes are listed with what to do in [UPGRADE-0.6.md](./UPGRADE-0.6.md
 - Gaps removed from the library (`cmsGaps`, `CmsGap`, `reportGap`, `gaps`, `setGapState`, `/_gaps`, `list_gaps`, `resolve_gap`, `search.gapLogging`). Searches that found nothing call `onSearchMiss` when the caller asks (`reportMiss`, `?miss=1`); the app stores them. The library never touches an existing `cms_gaps` table.
 - Peer `zod` is `^3.25 || ^4`. MCP is served by the official SDK (`@modelcontextprotocol/sdk` 1.32).
 - `CmsRepo` changed (gap methods out; reviews, audit, meta in; hits by source; key expiry).
-- Database: new columns and `cms_audit`; run `npx agent-cms migrate check`.
+- Database: new columns and `cms_audit`; run `npx @mainsoft/agent-cms migrate check`.
 
 ### Added
 
