@@ -461,6 +461,40 @@ test("db: schema 6 → 7 adds cms_records; automations, runs and roles work on a
   }
 });
 
+test("db: retention deletes old audit entries, hit counts and revoked keys; a rotated key works until its grace time ends", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const clock = { t: Date.parse("2026-01-01T00:00:00Z") };
+    const repo = new DrizzleRepo(db);
+    const cms = createCms({ repo, collections: [guide], now: () => new Date(clock.t), cronSecret: "c".repeat(32), retention: { auditDays: 30, hitsDays: 7, revokedKeysDays: 10, deliveriesDays: 5 } });
+    const doc = await cms.create(admin, "guide", { slug: "a", title: "A" }, { publish: true });
+    await cms.recordHits([doc.id]);
+    const first = await cms.createKey(admin, { name: "deploy", scopes: ["read"], rateLimit: 5, allowedIps: ["10.0.0.0/8"] });
+    const next = await cms.rotateKey(admin, first.key.id, { graceMinutes: 30 });
+    assert.ok((await cms.authenticateKey(first.secret)) && (await cms.authenticateKey(next.secret)));
+    assert.deepEqual(await cms.keyPolicy(next.key.id), { perMinute: 5, allowedIps: ["10.0.0.0/8"] });
+    clock.t += 31 * 60_000;
+    assert.equal(await cms.authenticateKey(first.secret), null);
+    assert.deepEqual((await cms.listKeys(admin)).map((k) => [k.name, k.revokedReason, k.rotatedTo === next.key.id]), [["deploy", null, false], ["deploy", "rotated", true]]);
+    await new Promise((r) => setTimeout(r, 50));
+
+    clock.t += 8 * 86_400_000;
+    const dry = await cms.retention.run(admin, { dryRun: true });
+    assert.deepEqual(dry.items.map((i) => [i.what, i.rows]), [["audit", 0], ["hits", 1], ["keys", 0], ["deliveries", 0]]);
+    assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from cms_hits"))[0].n, 1);
+    clock.t += 30 * 86_400_000;
+    const auditBefore = (await rows<{ n: number }>(db, "select count(*)::int as n from cms_audit"))[0].n;
+    const real = await cms.retention.run(admin);
+    assert.deepEqual(real.items.map((i) => [i.what, i.rows]), [["audit", auditBefore], ["hits", 1], ["keys", 1], ["deliveries", 0]]);
+    assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from cms_hits"))[0].n, 0);
+    assert.deepEqual((await cms.listKeys(admin)).map((k) => k.id), [next.key.id]);
+    assert.ok(await cms.authenticateKey(next.secret));
+  } finally {
+    await close();
+  }
+});
+
 test("splitSql keeps DO $$ bodies and quoted semicolons together", () => {
   const parts = splitSql("SELECT 'a;b'; -- c;d\nDO $$ BEGIN PERFORM 1; END $$;\nSELECT 2");
   assert.deepEqual(parts, ["SELECT 'a;b'", "DO $$ BEGIN PERFORM 1; END $$", "SELECT 2"]);

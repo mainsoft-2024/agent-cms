@@ -100,6 +100,9 @@ From 0.13.0. Admins (or a key with the `admin` scope) unless noted.
 | `GET /export?collections=&drafts=1&download=1` | Documents as markdown files. Anyone who may read |
 | `POST /import` `{files, dryRun?, diff?, publish?, onConflict?, collection?, only?, assetMap?}` | Read files into drafts. Needs write |
 | `GET /openapi.json` | This API as an OpenAPI 3.1 document. Anyone, for what they may read |
+| `POST /keys/:id/rotate` `{graceMinutes?}` | A new secret for the same key; the old one works for the grace time (0.14.0) |
+| `GET /retention`, `POST /retention` `{dryRun?}` | The retention rules; delete what they allow, or only count (0.14.0) |
+| `GET /_events?collections=&since=` | What happens, as a Server-Sent Events stream. Anyone, for what they may read (0.14.0) |
 
 See [Automations, roles and the dashboard](/docs/automations), [Export and import](/docs/import-export) and [OpenAPI and other servers](/docs/openapi).
 

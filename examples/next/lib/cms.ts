@@ -69,6 +69,8 @@ function make() {
     secretsKey: process.env.CMS_SECRETS_KEY ?? "example-secrets-key-at-least-32-characters",
     // Only for trying the receiver in app/api/hook on localhost. Never set this in production.
     webhooks: { allowInsecure: process.env.CMS_WEBHOOKS_INSECURE === "1" },
+    // How long what piles up is kept. A cron call applies it once a day.
+    retention: { auditDays: 365, hitsDays: 400, revokedKeysDays: 90 },
     // The people the roles screen can find. Use your own user table here.
     users: {
       search: (q) => demoUsers.filter((u) => u.label.toLowerCase().includes(q.toLowerCase())),

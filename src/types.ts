@@ -259,9 +259,19 @@ export interface CmsKey {
   /** null = never expires. */
   expiresAt: string | null;
   createdAt: string;
+  /** Requests per minute for this key. Null: the default of `createCms({ rateLimit })`. */
+  rateLimit?: number | null;
+  /** Addresses and ranges the key may be used from ("203.0.113.7", "10.0.0.0/8"). Empty: anywhere. */
+  allowedIps?: string[];
+  /** Why it was revoked (a person's note, or "rotated"). */
+  revokedReason?: string | null;
+  /** The key that replaced this one (`rotateKey`). */
+  rotatedTo?: string | null;
 }
 
 export const AUDIT_ACTIONS = [
+  "key.rotate",
+  "retention.run",
   "key.create",
   "key.revoke",
   "webhook.create",
@@ -473,6 +483,20 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
   review?: { agents?: "required"; everyone?: "required" };
   hooks?: {
     /**
+     * Before the content is checked against the collection's rules (create, update, patch, restore).
+     * Return fields to change them: fill a slug from the title, trim, set defaults. Throw to refuse.
+     */
+    beforeValidate?: Array<(change: HookInput) => void | Partial<DocContent> | Promise<void | Partial<DocContent>>>;
+    /** After a version went public. Like `afterChange`, it never blocks the write; errors go to `onError`. */
+    afterPublish?: Array<(doc: CmsDoc) => void | Promise<void>>;
+    /** After a document was deleted (moved to the trash, or gone when there is no trash). */
+    afterDelete?: Array<(doc: CmsDoc) => void | Promise<void>>;
+    /**
+     * Before a document leaves `get` (one document, not lists): return a changed copy to add or hide
+     * values for this reader. Runs for every reader, so keep it fast. Throw to refuse the read.
+     */
+    afterRead?: Array<(doc: CmsDoc, ctx: { actor: Actor; draft: boolean }) => void | CmsDoc | Promise<void | CmsDoc>>;
+    /**
      * Before a save that makes a version (create, update, patch, restore; not autosave). Return
      * fields to change them (`{ keywords: [...] }`); the result is validated again. Throw to refuse:
      * the caller gets `hook_rejected` with your message.
@@ -625,6 +649,14 @@ export interface CmsRecord<T = Record<string, unknown>> {
   updatedAt: string;
 }
 
+/** What a `beforeValidate` hook gets: the input as it was sent, before any check. */
+export interface HookInput {
+  collection: string;
+  input: Partial<DocContent>;
+  /** The document as it is now; null when it is being created. */
+  prev: CmsDoc | null;
+  actor: Actor;
+}
 /** What a `beforeChange` hook gets. */
 export interface HookChange {
   collection: string;

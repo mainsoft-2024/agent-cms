@@ -144,8 +144,8 @@ test("openapi: the document lists this app's collections with their fields, and 
   expect(doc.servers[0].url).toBe(`${baseURL}${api}`);
   expect(Object.keys(doc.paths)).toEqual(expect.arrayContaining(["/collections/posts", "/collections/posts/{slug}", "/automations", "/roles", "/export", "/import", "/_cron"]));
   expect(Object.keys(doc.components.schemas)).toEqual(expect.arrayContaining(["PostsDoc", "PostsInput", "GuideDoc", "Error"]));
-  // Every documented GET without parameters answers (no 404, no 5xx).
-  const routes = Object.entries(doc.paths as Record<string, Record<string, unknown>>).filter(([p, ops]) => !p.includes("{") && "get" in ops && !["/preview", "/preview/comments", "/_cron", "/stores"].some((x) => p.startsWith(x)));
+  // Every documented GET without parameters answers (no 404, no 5xx). The events stream never ends; it has its own test.
+  const routes = Object.entries(doc.paths as Record<string, Record<string, unknown>>).filter(([p, ops]) => !p.includes("{") && "get" in ops && !["/preview", "/preview/comments", "/_cron", "/stores", "/_events"].some((x) => p.startsWith(x)));
   expect(routes.length).toBeGreaterThan(15);
   for (const [p] of routes) {
     const res = await request.get(`${api}${p}`, { maxRedirects: 0 });

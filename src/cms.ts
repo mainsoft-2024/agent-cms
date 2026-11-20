@@ -24,6 +24,8 @@ import type { z, ZodTypeAny } from "zod";
 import { fieldChanges, hunks, splitLines, unifiedDiff, type FieldChange, type Hunk } from "./diff";
 import { CmsError, formatMessage, isCmsError, type CmsErrorCode, type CmsErrorOptions, type Diagnostic, type ErrorParams, type Messages } from "./errors";
 import { displayPrefix, generateKey, hashKey } from "./keys";
+import { badRanges, createLimiter, type RateLimitOptions } from "./limits";
+import { createRetention, type RetentionOptions } from "./retention";
 import { appLinkKeys, extractToc, parseMarkdown } from "./markdown";
 import { applyPatch, sectionRanges, type PatchOp } from "./patch";
 import type { CmsRepo, DocPatch, StoredVersion } from "./repo";
@@ -178,6 +180,10 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
   automations?: AutomationOptions;
   /** The people of your app, for the roles screen (search by name, look up by id). Without it members are added by id. */
   users?: UsersOptions;
+  /** Requests per minute per API key and per address without a key (`./limits`). Default: no limit. */
+  rateLimit?: RateLimitOptions;
+  /** How long the audit log, read counts, revoked keys and webhook deliveries are kept. Default: forever. */
+  retention?: RetentionOptions;
 }
 
 /** Second argument of `afterChange` hooks and `onChange` listeners. */
@@ -301,7 +307,7 @@ export type CmsTelemetry =
   | { type: "error"; where: string; message: string };
 
 /** First path segments the CMS uses itself. A plugin cannot take one of these names. */
-export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "_stats", "_me", "_cron"]);
+export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "retention", "_events", "auth", "_stats", "_me", "_cron"]);
 
 /** Audit actions that are also events (webhooks, plugin listeners). */
 const EVENT_OF: Partial<Record<AuditAction, WebhookEvent>> = {
@@ -344,8 +350,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   const eventListeners: { event: WebhookEvent | "*"; fn: (e: OutEvent) => void | Promise<void>; plugin: string }[] = [];
   /** Tell the outside what happened. Never throws, never awaited by the write that caused it. */
+  /** Listeners added at run time (the events stream): told about every event until they unsubscribe. */
+  const subscribers = new Set<(e: OutEvent) => void>();
   function emitEvent(e: OutEvent) {
     telemetry({ type: "event", ...e });
+    for (const fn of subscribers) {
+      try {
+        fn(e);
+      } catch (err) {
+        report(err, "subscriber");
+      }
+    }
     void outbox.emit(e);
     void automations.onEvent(e);
     for (const l of eventListeners) {
@@ -555,6 +570,23 @@ export function createCmsCore(opts: CreateCmsOptions) {
     }
     return cur;
   }
+  /** `beforeValidate` hooks: each may change the input before it is checked. */
+  async function prepared(actor: Actor, col: string, prev: CmsDoc | null, input: DocInput): Promise<DocInput> {
+    let cur = input;
+    for (const fn of collection(col).hooks?.beforeValidate ?? []) {
+      const patch = await hook(fn, { collection: col, input: cur as Partial<DocContent>, prev, actor });
+      if (patch && typeof patch === "object") cur = { ...cur, ...patch } as DocInput;
+    }
+    return cur;
+  }
+  /** Hooks that run after the fact: never block, errors go to `onError`. */
+  function after<A>(which: "afterPublish" | "afterDelete", fns: ReadonlyArray<(a: A) => void | Promise<void>> | undefined, arg: A) {
+    for (const fn of fns ?? []) {
+      Promise.resolve()
+        .then(() => fn(arg))
+        .catch((e) => report(e, which));
+    }
+  }
   async function gate(which: "beforePublish" | "beforeDelete", actor: Actor, doc: { collection: string; slug: string; version: number }, content: DocContent) {
     for (const fn of collection(doc.collection).hooks?.[which] ?? []) await hook(fn, { collection: doc.collection, slug: doc.slug, content, version: doc.version, actor });
   }
@@ -609,11 +641,19 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await ensureSchema();
     const doc = await repo.findDoc(col, slug);
     if (!doc) throw fail("not_found", { collection: col, slug });
-    if (o.draft && can(actor, col, "write", doc)) return doc;
+    if (o.draft && can(actor, col, "write", doc)) return read(actor, doc, true);
     assert(actor, col, "read", doc);
     const pub = publicView(doc);
     if (!pub) throw fail("not_found", { collection: col, slug });
-    return pub;
+    return read(actor, pub, false);
+  }
+  /** `afterRead` hooks: each sees what the one before returned. */
+  async function read(actor: Actor, doc: CmsDoc, draft: boolean): Promise<CmsDoc> {
+    const fns = collection(doc.collection).hooks?.afterRead;
+    if (!fns?.length) return doc;
+    let cur = doc;
+    for (const fn of fns) cur = (await hook((d: CmsDoc) => fn(d, { actor, draft }), cur)) ?? cur;
+    return cur;
   }
 
 
@@ -758,11 +798,15 @@ export function createCmsCore(opts: CreateCmsOptions) {
         report(e, "onChange");
       }
     }
-    for (const h of collection(target.collection).hooks?.afterChange ?? []) {
+    const hooks = collection(target.collection).hooks;
+    for (const h of hooks?.afterChange ?? []) {
       Promise.resolve()
         .then(() => h(target, info))
         .catch((e) => report(e, "afterChange"));
     }
+    const wentPublic = !!doc && !doc.deletedAt && doc.publishedVersion !== null && doc.status !== "archived" && (!prev || prev.publishedVersion !== doc.publishedVersion || prev.status === "archived" || !!prev.deletedAt);
+    if (wentPublic) after("afterPublish", hooks?.afterPublish, doc!);
+    if (prev && !prev.deletedAt && (!doc || doc.deletedAt)) after("afterDelete", hooks?.afterDelete, prev);
   }
 
   async function prune(r: CmsRepo, doc: CmsDoc) {
@@ -819,6 +863,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (o.publish && needsReview(actor, col)) throw reviewRequired(actor, col, input.slug ?? null);
     const who = actorRef(actor);
     const cfg = collection(col);
+    input = await prepared(actor, col, null, input);
     const content = await hooked(actor, col, null, validate(col, {
       slug: input.slug ?? "",
       title: input.title ?? "",
@@ -917,7 +962,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       assert(actor, col, "write", cur);
       if (o.publish || (collection(col).versions?.drafts === false && cur.publishedVersion !== null)) assert(actor, col, "publish", cur);
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
-      const next = validate(col, merged(cur, make(cur)));
+      const next = validate(col, merged(cur, await prepared(actor, col, cur, make(cur))));
       await assets.assertDoc(collection(col), next, cur, r);
       if (same(next, cur)) {
         // Nothing changed. Still honour "publish".
@@ -1363,7 +1408,51 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!isAdmin(actor)) throw fail(actor.kind === "anonymous" ? "unauthorized" : "forbidden_keys");
   }
 
-  const toKey = (k: CmsKey & { hash?: string }): CmsKey => ({
+  // What a key carries beyond its row (a record, so no column was needed): its own request limit,
+  // the addresses it may be used from, why it was revoked, which key replaced it.
+  interface KeyMeta {
+    rateLimit?: number | null;
+    allowedIps?: string[];
+    revokedReason?: string | null;
+    rotatedTo?: string | null;
+  }
+  const KEY_META = "key_meta";
+  const KEY_META_TTL = 30_000;
+  let keyMeta: Map<string, KeyMeta> | null = null;
+  let keyMetaAt = 0;
+  async function keyMetas(force = false): Promise<Map<string, KeyMeta>> {
+    if (!force && keyMeta && now().getTime() - keyMetaAt < KEY_META_TTL) return keyMeta;
+    const rows = await repo.listRecords({ kind: KEY_META, limit: 1000 });
+    keyMeta = new Map(rows.filter((r) => r.key).map((r) => [r.key as string, r.data as KeyMeta]));
+    keyMetaAt = now().getTime();
+    return keyMeta;
+  }
+  async function setKeyMeta(id: string, patch: KeyMeta) {
+    const cur = await repo.findRecordByKey(KEY_META, id);
+    const data = { ...((cur?.data as KeyMeta | undefined) ?? {}), ...patch } as Record<string, unknown>;
+    if (cur) await repo.updateRecord(KEY_META, cur.id, { data, at: nowIso() });
+    else await repo.insertRecord({ kind: KEY_META, key: id, data, at: nowIso() });
+    keyMeta = null;
+  }
+  function keyLimits(input: { rateLimit?: number | null; allowedIps?: string[] | null }): KeyMeta {
+    const out: KeyMeta = {};
+    if (input.rateLimit !== undefined && input.rateLimit !== null) {
+      if (!Number.isInteger(input.rateLimit) || input.rateLimit < 1 || input.rateLimit > 100_000) throw fail("invalid_rate_limit");
+      out.rateLimit = input.rateLimit;
+    }
+    const ips = (input.allowedIps ?? []).map((x) => x.trim()).filter(Boolean);
+    const bad = badRanges(ips);
+    if (bad.length) throw fail("invalid_ip_range", { value: bad[0] });
+    if (ips.length) out.allowedIps = [...new Set(ips)].slice(0, 50);
+    return out;
+  }
+  const limiter = createLimiter({ store: opts.rateLimit?.store, now: () => now().getTime() });
+
+  const toKey = (k: CmsKey & { hash?: string }, meta?: KeyMeta): CmsKey => ({
+    rateLimit: meta?.rateLimit ?? null,
+    allowedIps: meta?.allowedIps ?? [],
+    revokedReason: meta?.revokedReason ?? null,
+    rotatedTo: meta?.rotatedTo ?? null,
     id: k.id,
     name: k.name,
     prefix: k.prefix,
@@ -1375,9 +1464,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     createdAt: k.createdAt,
   });
 
-  async function createKey(actor: Actor, input: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null }) {
+  async function createKey(actor: Actor, input: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null; rateLimit?: number | null; allowedIps?: string[] | null }) {
     await ensureSchema();
     assertKeyAdmin(actor);
+    const limits = keyLimits(input);
     const name = input.name.trim();
     if (!name || name.length > 60) throw fail("invalid_key_name");
     if (!input.scopes.length) throw fail("scopes_required");
@@ -1406,20 +1496,54 @@ export function createCmsCore(opts: CreateCmsOptions) {
       createdBy: actor.kind === "user" ? actor.id : null,
       expiresAt,
     });
-    audit(actor, "key.create", { detail: { key: row.id, name, scopes: row.scopes, collections: row.collections, expiresAt } });
-    return { key: toKey(row), secret: raw };
+    if (Object.keys(limits).length) await setKeyMeta(row.id, limits);
+    audit(actor, "key.create", { detail: { key: row.id, name, scopes: row.scopes, collections: row.collections, expiresAt, ...limits } });
+    return { key: toKey(row, limits), secret: raw };
+  }
+
+  /**
+   * A new secret for the same key: same name, scopes, collections, expiry and limits. The old secret
+   * keeps working for `graceMinutes` (default 60, 0 to cut it off now) so callers can switch over.
+   */
+  async function rotateKey(actor: Actor, id: string, o: { graceMinutes?: number } = {}) {
+    await ensureSchema();
+    assertKeyAdmin(actor);
+    const old = (await repo.listKeys()).find((k) => k.id === id);
+    const at = now();
+    if (!old || (old.revokedAt && Date.parse(old.revokedAt) <= at.getTime())) throw fail("key_not_found");
+    if (actor.kind === "key" && (old.scopes.some((x) => !actor.scopes.includes(x)) || (actor.collections && (!old.collections || old.collections.some((c) => !actor.collections!.includes(c)))))) throw fail("key_too_wide");
+    const grace = Math.max(0, Math.min(Math.floor(o.graceMinutes ?? 60), 7 * 24 * 60));
+    const meta = (await keyMetas(true)).get(id) ?? {};
+    const raw = generateKey();
+    const row = await repo.insertKey({ name: old.name, prefix: displayPrefix(raw), hash: hashKey(raw), scopes: old.scopes, collections: old.collections, createdBy: actor.kind === "user" ? actor.id : null, expiresAt: old.expiresAt ?? null });
+    const carried: KeyMeta = { ...(meta.rateLimit ? { rateLimit: meta.rateLimit } : {}), ...(meta.allowedIps?.length ? { allowedIps: meta.allowedIps } : {}) };
+    if (Object.keys(carried).length) await setKeyMeta(row.id, carried);
+    const until = new Date(at.getTime() + grace * 60_000).toISOString();
+    await repo.revokeKey(id, until);
+    await setKeyMeta(id, { revokedReason: "rotated", rotatedTo: row.id });
+    audit(actor, "key.rotate", { detail: { key: id, to: row.id, graceMinutes: grace } });
+    return { key: toKey(row, carried), secret: raw, previous: { id, worksUntil: until } };
   }
 
   async function listKeys(actor: Actor): Promise<CmsKey[]> {
     await ensureSchema();
     assertKeyAdmin(actor);
-    return (await repo.listKeys()).map(toKey).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const metas = await keyMetas(true);
+    return (await repo.listKeys()).map((k) => toKey(k, metas.get(k.id))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  async function revokeKey(actor: Actor, id: string) {
+  async function revokeKey(actor: Actor, id: string, o: { reason?: string | null } = {}) {
     assertKeyAdmin(actor);
     if (!(await repo.revokeKey(id, nowIso()))) throw fail("key_not_found");
-    audit(actor, "key.revoke", { detail: { key: id } });
+    const reason = o.reason?.trim().slice(0, 200) || null;
+    if (reason) await setKeyMeta(id, { revokedReason: reason });
+    audit(actor, "key.revoke", { detail: { key: id, ...(reason ? { reason } : {}) } });
+  }
+
+  /** What limits a key: its own number or the default, and where it may be used from. */
+  async function keyPolicy(id: string): Promise<{ perMinute: number | null; allowedIps: string[] }> {
+    const meta = (await keyMetas()).get(id);
+    return { perMinute: meta?.rateLimit ?? opts.rateLimit?.perMinute ?? null, allowedIps: meta?.allowedIps ?? [] };
   }
 
   /**
@@ -1432,7 +1556,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!row) return null;
     const at = now();
     const anon: Actor = { kind: "anonymous" };
-    if (row.revokedAt) {
+    // A revoke time in the future is a rotated key inside its grace period: it still works.
+    if (row.revokedAt && Date.parse(row.revokedAt) <= at.getTime()) {
       audit(anon, "auth.failed", { outcome: "denied", detail: { key: row.id, reason: "revoked" } });
       return null;
     }
@@ -1535,6 +1660,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
     sendWebhook: (id, e) => outbox.send(id, e),
     options: opts.automations ?? {},
   });
+  const retention = createRetention({
+    repo,
+    options: opts.retention ?? {},
+    now,
+    timeZone,
+    dayIn,
+    assertAdmin: (actor) => {
+      if (!isAdmin(actor)) throw fail(actor.kind === "anonymous" ? "unauthorized" : "forbidden_admin");
+    },
+    audit: (actor, detail) => audit(actor, "retention.run", { detail }),
+  });
   const stats = createStats({ repo, now, dayOf: (d) => dayIn(timeZone, d), ready: ensureSchema, collections: () => [...collections.keys()], can, counts, isAdmin });
 
   const transfer = createTransfer({
@@ -1610,6 +1746,39 @@ export function createCmsCore(opts: CreateCmsOptions) {
     createKey,
     listKeys,
     revokeKey,
+    rotateKey,
+    keyPolicy,
+    /** Request counting (`createCms({ rateLimit })`): `limits.check(who, perMinute)`. */
+    limits: { check: limiter.check, anonymousPerMinute: opts.rateLimit?.anonymousPerMinute ?? null },
+    /** Hear every event as it happens (the events stream uses this). Returns the function that stops it. */
+    subscribe(fn: (e: OutEvent) => void): () => void {
+      subscribers.add(fn);
+      return () => void subscribers.delete(fn);
+    },
+    /** Throws unless `actor` may do `what` in the collection. */
+    assertCan: (actor: Actor, col: string, what: "read" | "write" | "publish" | "delete") => assert(actor, col, what),
+    /**
+     * Documents with a version saved after `since` (any process), newest first: what a client that
+     * was away should fetch again. A reader only gets documents whose public copy is one of those versions.
+     */
+    async changedSince(actor: Actor, since: string, o: { collections?: readonly string[]; limit?: number } = {}) {
+      await ensureSchema();
+      const limit = Math.max(1, Math.min(o.limit ?? 200, 500));
+      const stamps = await repo.versionsSince(since, limit * 3);
+      const byDoc = new Map<string, number[]>();
+      for (const v of stamps) byDoc.set(v.documentId, [...(byDoc.get(v.documentId) ?? []), v.version]);
+      const out: { collection: string; slug: string; version: number; at: string }[] = [];
+      for (const [id, versions] of byDoc) {
+        if (out.length >= limit) break;
+        const doc = await repo.findDocById(id);
+        if (!doc || !collections.has(doc.collection) || (o.collections?.length && !o.collections.includes(doc.collection))) continue;
+        if (can(actor, doc.collection, "write", doc)) out.push({ collection: doc.collection, slug: doc.slug, version: doc.version, at: doc.updatedAt });
+        else if (can(actor, doc.collection, "read", doc) && publicView(doc) && versions.includes(doc.publishedVersion as number)) out.push({ collection: doc.collection, slug: doc.slug, version: doc.publishedVersion as number, at: doc.updatedAt });
+      }
+      return out;
+    },
+    /** Retention: `run(actor, { dryRun })`, `rules()`. Runs once a day with the cron call. */
+    retention,
     authenticateKey,
     audit: auditLog,
     preview,
@@ -1628,7 +1797,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const scheduled = await flow.runScheduled();
       await automations.tick().catch((e) => report(e, "automations"));
       const ran = await jobs.run(o);
-      await Promise.all([jobs.prune(), outbox.prune()]).catch((e) => report(e, "cron housekeeping"));
+      await Promise.all([jobs.prune(), outbox.prune(), retention.tick()]).catch((e) => report(e, "cron housekeeping"));
       telemetry({ type: "cron", ms: Date.now() - t0, jobs: ran });
       return { ...scheduled, jobs: ran };
     },

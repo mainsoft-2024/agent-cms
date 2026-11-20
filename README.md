@@ -695,6 +695,23 @@ The work is a background job: it runs on the next `POST /_cron`, is written into
 
 **The dashboard** (`cms-dashboard`, `GET /_stats?days=7|14|30`) shows documents by state, changes per day by people and by agents, the most read documents and recent activity, for the collections the caller may read.
 
+## Limits, key rotation, retention, events
+
+From 0.14.0. Coming from 0.13: [UPGRADE-0.14.md](./UPGRADE-0.14.md).
+
+```ts
+createCms({
+  rateLimit: { perMinute: 600, anonymousPerMinute: 120 },          // 429 rate_limited + Retry-After
+  retention: { auditDays: 365, hitsDays: 400, revokedKeysDays: 90 }, // applied by the cron call, once a day
+});
+```
+
+- A key can have its own limit and the addresses it may be used from: `createKey({ rateLimit: 60, allowedIps: ["203.0.113.0/24"] })`.
+- `POST /keys/:id/rotate` gives a key a new secret; the old one keeps working for an hour (`graceMinutes`).
+- `npx @mainsoft/agent-cms retention --dry-run` counts what retention would delete.
+- `GET /api/cms/_events` is a Server-Sent Events stream of what happens: `new EventSource("/api/cms/_events?collections=posts")`. Readers hear what goes public, writers hear every save, and a reconnect gets a `resync` of what it missed. The stream is fed by the server process that answers it.
+- Collection hooks: `beforeValidate`, `beforeChange`, `beforePublish`, `beforeDelete`, `afterChange`, `afterPublish`, `afterDelete`, `afterRead`.
+
 ## Export, import, OpenAPI
 
 ```

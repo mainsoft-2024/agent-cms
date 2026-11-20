@@ -35,6 +35,8 @@ export interface ApiRoute {
   status?: number;
   /** Only present when this part of the CMS is switched on. */
   needs?: "media" | "cron" | "preview";
+  /** The answer is a `text/event-stream` that stays open. */
+  stream?: boolean;
 }
 
 const docInput = z
@@ -144,8 +146,12 @@ export const API_ROUTES: readonly ApiRoute[] = [
 
   { method: "get", path: "/audit", summary: "Audit log", tag: "operations", auth: "admin", query: { cursor: "", limit: "", action: "", outcome: "ok | denied | failed", actorKind: "user | key | system | anonymous" }, returns: any },
   { method: "get", path: "/keys", summary: "API keys", tag: "operations", auth: "admin", returns: obj({ keys: arr(any) }) },
-  { method: "post", path: "/keys", summary: "Make an API key (the secret is shown once)", tag: "operations", auth: "admin", body: z.object({ name: z.string(), scopes: z.array(z.enum(KEY_SCOPES)).min(1), collections: z.array(z.string()).nullable().optional(), expiresAt: z.string().nullable().optional() }), returns: any, status: 201 },
-  { method: "delete", path: "/keys/{id}", summary: "Revoke a key", tag: "operations", auth: "admin", returns: OK },
+  { method: "post", path: "/keys", summary: "Make an API key (the secret is shown once)", tag: "operations", auth: "admin", body: z.object({ name: z.string(), scopes: z.array(z.enum(KEY_SCOPES)).min(1), collections: z.array(z.string()).nullable().optional(), expiresAt: z.string().nullable().optional(), rateLimit: z.number().int().min(1).max(100000).nullable().optional().describe("Requests per minute"), allowedIps: z.array(z.string()).max(50).nullable().optional().describe("Addresses and ranges, e.g. 203.0.113.0/24") }), returns: any, status: 201 },
+  { method: "post", path: "/keys/{id}/rotate", summary: "A new secret for the same key; the old one works for graceMinutes more (default 60)", tag: "operations", auth: "admin", body: z.object({ graceMinutes: z.number().int().min(0).max(10080).optional() }), returns: any, status: 201 },
+  { method: "delete", path: "/keys/{id}", summary: "Revoke a key", tag: "operations", auth: "admin", query: { reason: "Why (kept with the key)" }, returns: OK },
+  { method: "get", path: "/retention", summary: "The retention rules in force", tag: "operations", auth: "admin", returns: obj({ rules: arr(any) }) },
+  { method: "post", path: "/retention", summary: "Delete what is older than the rules allow; `dryRun` only counts", tag: "operations", auth: "admin", body: z.object({ dryRun: z.boolean().optional() }), returns: any },
+  { method: "get", path: "/_events", summary: "What happens, as a stream (Server-Sent Events)", tag: "operations", auth: "public", query: { collections: "Comma-separated. Default: all you may read", since: "An ISO time: start with a `resync` of what was saved after it" }, stream: true },
   { method: "get", path: "/_stats", summary: "The dashboard's numbers", tag: "operations", auth: "read", query: { days: "7 | 14 | 30" }, returns: any },
   { method: "get", path: "/export", summary: "Documents as markdown files", tag: "import and export", auth: "read", query: { collections: "Comma-separated. Default: all you may read", drafts: "1: working copies where you may write", download: "1: as a file download" }, returns: obj({ files: arr(ref("TransferFile")), documents: { type: "integer" } }) },
   { method: "post", path: "/import", summary: "Read files into documents (drafts); `dryRun` says what would happen", tag: "import and export", auth: "write", body: z.object({ files: z.array(z.object({ path: z.string().max(400), text: z.string() })).max(2000), dryRun: z.boolean().optional(), diff: z.boolean().optional(), publish: z.boolean().optional(), onConflict: z.enum(["file-wins", "db-wins", "newest"]).optional(), collection: z.string().optional(), only: z.array(z.string()).optional(), assetMap: z.record(z.string()).optional() }), returns: obj({ items: arr(any), applied: { type: "boolean" } }) },
@@ -286,7 +292,7 @@ export function openApiDocument(cms: CmsLike, o: OpenApiOptions = {}): Json {
       ...(r.auth === "public" ? { security: [{}, { apiKey: [] }, { session: [] }] } : r.auth === "cron" ? { security: [{ cronSecret: [] }] } : {}),
       parameters: [...names.map((n) => param(n, n === "collection" ? cols.map((c) => c.slug) : undefined)), ...Object.entries(r.query ?? {}).map(([name, description]) => ({ name, in: "query", required: false, schema: { type: "string" }, ...(description ? { description } : {}) }))],
       responses: {
-        [String(r.status ?? 200)]: r.status === 302 ? { description: "Redirect to the file", headers: { location: { schema: { type: "string" } } } } : { description: "OK", content: { "application/json": { schema: swap(r.returns) ?? any } } },
+        [String(r.status ?? 200)]: r.status === 302 ? { description: "Redirect to the file", headers: { location: { schema: { type: "string" } } } } : r.stream ? { description: "Messages with `id`, `event` and a JSON `data` line", content: { "text/event-stream": { schema: { type: "string" } } } } : { description: "OK", content: { "application/json": { schema: swap(r.returns) ?? any } } },
         default: { description: "An error. `error` is a stable code; `message` is for people.", content: { "application/json": { schema: ref("Error") } } },
       },
     };

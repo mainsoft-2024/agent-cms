@@ -51,7 +51,9 @@ test("openapi: every documented route is answered by the handler, and the handle
         body: hasBody ? "{}" : undefined,
       })
     );
-    const text = res.status === 302 || res.status === 304 ? "" : await res.text();
+    const stream = res.headers.get("content-type")?.startsWith("text/event-stream");
+    if (stream) await res.body?.cancel();
+    const text = stream || res.status === 302 || res.status === 304 ? "" : await res.text();
     if (/"error":"route_not_found"/.test(text)) missing.push(`${r.method.toUpperCase()} ${r.path}`);
   }
   assert.deepEqual(missing, [], "documented but not handled");

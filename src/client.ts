@@ -415,8 +415,13 @@ export function createRestClient(opts: RestClientOptions) {
     retryJob: (id: string) => req<{ ok: true }>("POST", `/jobs/${enc(id)}/retry`),
     search: (q: string, collections?: string[]) => req<{ empty: boolean; hits: { collection: string; slug: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(",") } }),
     keys: () => req<{ keys: CmsKey[] }>("GET", "/keys").then((r) => r.keys),
-    createKey: (k: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null }) => req<{ key: CmsKey; secret: string }>("POST", "/keys", { body: k }),
-    revokeKey: (id: string) => req<{ ok: true }>("DELETE", `/keys/${enc(id)}`),
+    createKey: (k: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null; rateLimit?: number | null; allowedIps?: string[] | null }) => req<{ key: CmsKey; secret: string }>("POST", "/keys", { body: k }),
+    revokeKey: (id: string, o: { reason?: string } = {}) => req<{ ok: true }>("DELETE", `/keys/${enc(id)}${o.reason ? `?reason=${encodeURIComponent(o.reason)}` : ""}`),
+    /** A new secret for the same key; the old one keeps working for `graceMinutes` (default 60). */
+    rotateKey: (id: string, o: { graceMinutes?: number } = {}) => req<{ key: CmsKey; secret: string; previous: { id: string; worksUntil: string } }>("POST", `/keys/${enc(id)}/rotate`, { body: o }),
+    /** Retention: the rules, and a run (`dryRun` only counts). Admins. */
+    retentionRules: () => req<{ rules: { what: string; days: number }[] }>("GET", "/retention"),
+    runRetention: (o: { dryRun?: boolean } = {}) => req<{ dryRun: boolean; at: string; items: { what: string; days: number; before: string; rows: number }[] }>("POST", "/retention", { body: o }),
     assets: (q: Omit<AssetListOptions, "kinds"> & { kind?: string } = {}) => req<{ assets: AssetView[]; cursor: string | null; counts: AssetCounts }>("GET", "/assets", { query: { ...q } }),
     assetFolders: () => req<{ stores: FolderTree[] }>("GET", "/assets/_folders").then((r) => r.stores),
     createAssetFolder: (path: string, store?: string | null) => req<{ store: string; path: string }>("POST", "/assets/_folders", { body: { path, store } }),

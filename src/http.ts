@@ -100,7 +100,9 @@ import { z } from "zod";
 import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "./cms";
 import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
+import { clientIp, ipAllowed } from "./limits";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
+import { eventStream } from "./events";
 import { openApiDocument } from "./openapi";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
@@ -124,6 +126,12 @@ export interface CmsHandlerOptions {
    * can read). Default: a key is required (401).
    */
   mcp?: McpOptions;
+  /**
+   * The caller's address, for request limits and a key's allowed addresses. Default: the first
+   * entry of `X-Forwarded-For`, else `X-Real-IP`. Give your own when the server is not behind a
+   * proxy that sets those (a client could send the header itself).
+   */
+  clientIp?: (req: Request) => string | null;
 }
 
 const DocInput = z
@@ -155,7 +163,8 @@ export function errorResponse(err: unknown, cms?: CmsLike): Response {
   const core = cms ? coreOf(cms) : null;
   if (isCmsError(err)) {
     const body = { ...err.toJSON(), message: core ? core.message(err) : err.message };
-    return json(body, err.status);
+    const wait = err.status === 429 ? Number(err.params.retryAfter ?? err.params.seconds ?? 60) : null;
+    return json(body, err.status, wait ? { "retry-after": String(wait) } : undefined);
   }
   if (err instanceof z.ZodError) {
     const issues = err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
@@ -188,14 +197,21 @@ export function sameSite(req: Request, trusted: readonly string[] = []): boolean
   return own.some((h) => !!h && h.toLowerCase() === from.toLowerCase());
 }
 
-export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsHandlerOptions["resolveUser"], trustedOrigins?: readonly string[]): Promise<Actor> {
+export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsHandlerOptions["resolveUser"], trustedOrigins?: readonly string[], ipOf: (req: Request) => string | null = clientIp): Promise<Actor> {
   const core = coreOf(cms);
+  const limited = async (who: string, perMinute: number | null) => {
+    const v = await core.limits.check(who, perMinute);
+    if (!v.ok) throw new CmsError("rate_limited", { retryAfter: v.retryAfter, limit: v.limit }, { status: 429, messages: core.messages });
+  };
   // Only a header that carries an `sgk_` key is a key login; anything else
   // (another auth scheme from a proxy) falls through to the session.
   const raw = keyFromHeader(req.headers.get("authorization"));
   if (raw) {
     const actor = await core.authenticateKey(raw);
     if (!actor) throw new CmsError("invalid_key", {}, { messages: core.messages });
+    const policy = await core.keyPolicy(actor.id);
+    if (policy.allowedIps.length && !ipAllowed(ipOf(req), policy.allowedIps)) throw new CmsError("forbidden_ip", {}, { messages: core.messages });
+    await limited(`key:${actor.id}`, policy.perMinute);
     return actor;
   }
   if (/\bsgk_/.test(req.headers.get("authorization") ?? "")) throw new CmsError("invalid_key", {}, { messages: core.messages });
@@ -204,7 +220,11 @@ export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsH
     // Cookie sessions: refuse cross-site writes.
     if (!sameSite(req, trustedOrigins)) throw new CmsError("cross_site", {}, { messages: core.messages });
   }
-  if (!user) return { kind: "anonymous" };
+  if (!user) {
+    // Without a key or a session the address is all there is to count by.
+    if (core.limits.anonymousPerMinute) await limited(`ip:${ipOf(req) ?? "unknown"}`, core.limits.anonymousPerMinute);
+    return { kind: "anonymous" };
+  }
   // "An agent acting for this person" can only be said by code in the app
   // that calls the CMS directly; a request never carries it.
   const { agent: _agent, ...person } = user;
@@ -284,7 +304,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         return json(await core.cron());
       }
       const client = req.headers.get("x-agent-cms-client");
-      const who = await resolveActor(core, req, opts.resolveUser, opts.trustedOrigins);
+      const who = await resolveActor(core, req, opts.resolveUser, opts.trustedOrigins, opts.clientIp);
       const actor: Actor = { ...who, via: seg[0] === "mcp" ? (client === "cli" ? "cli" : "mcp") : client === "cli" ? "cli" : "rest" };
       note({ kind: actor.kind, via: actor.via ?? null });
       const q = url.searchParams;
@@ -402,13 +422,32 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       if (seg[0] === "keys") {
         if (seg.length === 1 && m === "GET") return json({ keys: await core.listKeys(actor) });
         if (seg.length === 1 && m === "POST") {
-          const b = await body(req, z.object({ name: z.string(), scopes: z.array(z.enum(KEY_SCOPES)).min(1), collections: z.array(z.string()).nullable().optional(), expiresAt: z.string().nullable().optional() }));
+          const b = await body(req, z.object({ name: z.string(), scopes: z.array(z.enum(KEY_SCOPES)).min(1), collections: z.array(z.string()).nullable().optional(), expiresAt: z.string().nullable().optional(), rateLimit: z.number().nullable().optional(), allowedIps: z.array(z.string().max(60)).max(50).nullable().optional() }));
           return json(await core.createKey(actor, b), 201);
         }
+        if (seg.length === 3 && seg[2] === "rotate" && m === "POST") {
+          const b = await body(req, z.object({ graceMinutes: z.number().int().min(0).max(10080).optional() }), true);
+          return json(await core.rotateKey(actor, seg[1], b), 201);
+        }
         if (seg.length === 2 && m === "DELETE") {
-          await core.revokeKey(actor, seg[1]);
+          await core.revokeKey(actor, seg[1], { reason: q.get("reason") });
           return json({ ok: true });
         }
+      }
+
+      if (seg[0] === "retention" && seg.length === 1) {
+        if (m === "GET") {
+          if (!core.isAdmin(actor)) throw new CmsError(actor.kind === "anonymous" ? "unauthorized" : "forbidden_admin", {}, { messages: core.messages });
+          return json({ rules: core.retention.rules() });
+        }
+        if (m === "POST") {
+          const b = await body(req, z.object({ dryRun: z.boolean().optional() }), true);
+          return json(await core.retention.run(actor, b));
+        }
+      }
+
+      if (seg[0] === "_events" && seg.length === 1 && m === "GET") {
+        return eventStream(core, actor, { collections: q.get("collections")?.split(",").filter(Boolean), since: q.get("since") ?? req.headers.get("last-event-id"), signal: req.signal });
       }
 
       if (seg[0] === "files" && seg[1] && seg.length <= 3 && (m === "GET" || m === "HEAD")) {
