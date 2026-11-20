@@ -41,7 +41,7 @@ export interface AuditQuery {
   actorKind?: AuditEntry["actorKind"];
 }
 
-export type NewAsset = Omit<CmsAsset, "createdAt" | "updatedAt" | "deletedAt" | "deletedBy"> & { createdAt?: string; updatedAt?: string };
+export type NewAsset = Omit<CmsAsset, "createdAt" | "updatedAt" | "deletedAt" | "deletedBy" | "focalX" | "focalY" | "rev"> & { createdAt?: string; updatedAt?: string; focalX?: number | null; focalY?: number | null; rev?: number };
 export type VersionPatch = Partial<Pick<CmsVersion, "label" | "pinned" | "approvedBy" | "approvedAt">>;
 export type NewComment = Omit<CmsComment, "id" | "resolvedAt" | "resolvedBy">;
 export type NewRelease = Pick<CmsRelease, "name" | "createdBy" | "createdById" | "createdAt">;
@@ -335,7 +335,7 @@ export class MemoryRepo implements CmsRepo {
     if (this.assets.has(a.id)) throw new Error("duplicate asset id");
     for (const o of this.assets.values()) if (o.store === a.store && o.key === a.key) throw new Error("duplicate asset key");
     const now = new Date().toISOString();
-    const row: CmsAsset = { deletedAt: null, deletedBy: null, ...structuredClone(a), createdAt: a.createdAt ?? now, updatedAt: a.updatedAt ?? now };
+    const row: CmsAsset = { deletedAt: null, deletedBy: null, focalX: null, focalY: null, rev: 0, ...structuredClone(a), createdAt: a.createdAt ?? now, updatedAt: a.updatedAt ?? now };
     this.assets.set(row.id, row);
     return structuredClone(row);
   }

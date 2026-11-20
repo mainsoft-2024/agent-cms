@@ -1,6 +1,8 @@
 // What `npx agent-cms init` writes, filled in for the example.
 import { assetId, createCms, defineCollection, DrizzleRepo, type Actor, type MediaOptions } from "@mainsoft/agent-cms";
+import { sharpTransforms } from "@mainsoft/agent-cms/image-sharp";
 import { s3Storage } from "@mainsoft/agent-cms/storage-s3";
+import { vercelBlobStorage } from "@mainsoft/agent-cms/storage-vercel-blob";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, ready } from "./db";
@@ -29,8 +31,26 @@ export const guide = defineCollection({
 //   S3_ENDPOINT=http://127.0.0.1:9100 S3_KEY=test S3_SECRET=testsecret1 npm run dev
 // A real bucket with a public address would also set `publicUrl` on the adapter.
 const s3 = (bucket: string) => s3Storage({ bucket, endpoint: process.env.S3_ENDPOINT, region: process.env.S3_REGION, accessKeyId: process.env.S3_KEY ?? "", secretAccessKey: process.env.S3_SECRET ?? "" });
-export const media: MediaOptions | undefined = process.env.S3_ENDPOINT
-  ? { stores: { public: { visibility: "public", adapter: s3(process.env.S3_BUCKET ?? "media") }, private: { visibility: "private", adapter: s3(process.env.S3_PRIVATE_BUCKET ?? "private") } } }
+// Or Vercel Blob: BLOB_READ_WRITE_TOKEN of a public store and, for private files,
+// BLOB_PRIVATE_READ_WRITE_TOKEN of a private one (`npm install @vercel/blob`).
+const blob = process.env.BLOB_READ_WRITE_TOKEN;
+const blobPrivate = process.env.BLOB_PRIVATE_READ_WRITE_TOKEN;
+const stores: MediaOptions["stores"] | null = blob
+  ? {
+      public: { visibility: "public", adapter: vercelBlobStorage({ token: blob, access: "public", prefix: process.env.BLOB_PREFIX }) },
+      ...(blobPrivate ? { private: { visibility: "private" as const, adapter: vercelBlobStorage({ token: blobPrivate, access: "private", prefix: process.env.BLOB_PREFIX }) } } : {}),
+    }
+  : process.env.S3_ENDPOINT
+    ? { public: { visibility: "public", adapter: s3(process.env.S3_BUCKET ?? "media") }, private: { visibility: "private", adapter: s3(process.env.S3_PRIVATE_BUCKET ?? "private") } }
+    : null;
+export const media: MediaOptions | undefined = stores
+  ? {
+      stores,
+      // Named image sizes, made by sharp the first time one is asked for: /api/cms/files/<id>/<name>?size=card
+      transforms: sharpTransforms({ presets: { thumb: { width: 480 }, card: { width: 800, height: 450, fit: "cover" }, full: { width: 1600 } } }),
+      // Photos lose their location and device data in the browser, before they are sent.
+      stripMetadata: true,
+    }
   : undefined;
 
 const g = globalThis as unknown as { __exampleCms?: ReturnType<typeof make> };

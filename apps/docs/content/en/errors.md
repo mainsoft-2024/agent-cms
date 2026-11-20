@@ -21,6 +21,13 @@ REST, MCP, the tools (`callTool`) and the CLI return the same shape:
 - `conflict`: `conflict_version`, `slug_taken`
 - `precondition`: `precondition_required` (428, when `requireIfMatch` is on)
 
+With a [media library](/docs/media-library), files add their own:
+
+- `not_found`: `asset_not_found`, `unknown_store`, `unknown_image_size`
+- `forbidden`: `forbidden_media`
+- `invalid`: `asset_type_not_allowed`, `asset_type_mismatch` (the content is not what the extension says), `asset_too_large` (413), `upload_incomplete`, `asset_rejected` (your `media.scan` said no), `asset_replace_type` (a file is replaced by one of the same type only), `import_blocked`, `import_failed`, `invalid_folder`, `media_disabled`
+- `conflict`: `asset_in_use` (with the documents in `current`), `folder_not_empty`
+
 The full list is `ERROR_CODES` in `@mainsoft/agent-cms/errors`.
 
 ## Messages

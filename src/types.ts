@@ -279,6 +279,7 @@ export const AUDIT_ACTIONS = [
   "review.reject",
   "release.publish",
   "asset.restore",
+  "asset.replace",
   "preview.create",
   "asset.upload",
   "asset.move",
@@ -369,6 +370,11 @@ export interface CmsAsset {
   alt: string;
   tags: string[];
   thumbKey: string | null;
+  /** The point of an image that must stay in view when it is cropped (0..1 from the left and from the top), or null. */
+  focalX: number | null;
+  focalY: number | null;
+  /** How many times the content was replaced at the same address. */
+  rev: number;
   /** `pending` while it is being uploaded. */
   status: "pending" | "ready";
   uploadId: string | null;

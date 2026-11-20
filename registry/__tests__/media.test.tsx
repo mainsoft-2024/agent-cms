@@ -215,3 +215,126 @@ test("media: import from a URL into the open folder, and rename a file in its pa
   await user.type(screen.getByRole("textbox", { name: "이름 바꾸기" }), "x{Escape}");
   assert.ok(await screen.findByRole("heading", { name: "team-2026.png" }));
 });
+
+test("upload: new content for a file, carrying on after a reload, and photos without camera data", async () => {
+  const s = makeServer({ media: true, stripMetadata: true });
+  const client = createRestClient({ url: BASE, fetch: s.fetch });
+  const memory = new Map<string, string>();
+  const store = { get: (k: string) => memory.get(k) ?? null, set: (k: string, v: string) => void memory.set(k, v), remove: (k: string) => void memory.delete(k) };
+  /** A fresh uploader with the same browser storage: what a reload leaves. */
+  const open = (broken: () => boolean) => {
+    const state = { last: [] as UploadItem[], sent: [] as string[], resumed: false };
+    const up = createUploader({
+      client,
+      memory: store,
+      retries: 0,
+      retryDelayMs: 1,
+      stripMetadata: () => !!me.media?.stripMetadata,
+      describe: async () => ({}),
+      onChange: (items) => ((state.last = items), (state.resumed ||= !!items[0]?.resumed)),
+      send: async (url, body, o) => {
+        const part = /partNumber=(\d+)/.exec(url)?.[1] ?? "single";
+        state.sent.push(part);
+        if (broken() && part === "2") throw new Error("network");
+        const status = await s.stores.public.send(url, new Uint8Array(await body.arrayBuffer()));
+        if (status !== 200) throw new Error(`HTTP ${status}`);
+        o.onProgress(body.size);
+      },
+    });
+    return { up, state };
+  };
+  const me = await client.me();
+  assert.equal(me.media?.stripMetadata, true);
+
+  // Replace: the same file comes back, with the new content at its address.
+  const logo = await s.addFile("logo.png", { folder: "brand", alt: "Logo" });
+  const next = new Uint8Array(900);
+  next.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 64, 0, 0, 0, 32]);
+  const a = open(() => false);
+  a.up.add([new File([next], "logo-v2.png", { type: "image/png" })], { replace: logo.id });
+  await waitFor(() => assert.equal(a.state.last[0]?.state, "done"));
+  assert.deepEqual([a.state.last[0].replaces, a.state.last[0].asset?.id, a.state.last[0].asset?.name, a.state.last[0].asset?.rev, a.state.last[0].asset?.size, a.state.last[0].asset?.alt], [logo.id, logo.id, "logo.png", 1, 900, "Logo"]);
+  assert.equal(s.stores.public.objects.get("brand/logo.png")?.body.length, 900);
+  assert.equal(client.fileUrl(a.state.last[0].asset!), `${BASE}/files/${logo.id}/logo.png?v=1`, "a new address for the browser's cache");
+  // Another kind of file is refused with the server's reason.
+  a.up.add([new File(["%PDF-1.7"], "logo.pdf", { type: "application/pdf" })], { replace: logo.id });
+  await waitFor(() => assert.equal(a.state.last[1]?.state, "failed"));
+  assert.equal(a.state.last[1].error, "A file can only be replaced by one of the same type (image/png)");
+
+  // A large upload breaks, the page is reloaded, the same file is picked again: only the missing part goes up.
+  const bytes = new Uint8Array(PART_SIZE * 2 + 1000);
+  bytes.set([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70]);
+  const file = new File([bytes], "talk.mp4", { type: "video/mp4", lastModified: 1_700_000_000_000 });
+  const first = open(() => true);
+  first.up.add([file], { folder: "talks" });
+  await waitFor(() => assert.equal(first.state.last[0]?.state, "failed"), { timeout: 8000 });
+  assert.equal(memory.size, 1);
+  const second = open(() => false);
+  second.up.add([new File([bytes], "talk.mp4", { type: "video/mp4", lastModified: 1_700_000_000_000 })], { folder: "talks" });
+  await waitFor(() => assert.equal(second.state.last[0]?.state, "done"), { timeout: 8000 });
+  assert.deepEqual([second.state.sent, second.state.resumed, memory.size], [["2"], true, 0]);
+  assert.equal(s.stores.public.objects.get("talks/talk.mp4")?.body.length, file.size);
+  // Remembered, but the server no longer knows the upload (it was cleaned up): it simply starts over.
+  const other = new File([bytes], "talk-2.mp4", { type: "video/mp4", lastModified: 5 });
+  memory.set(`agent-cms:upload:talk-2.mp4|${other.size}|5|||`, JSON.stringify({ id: "gonegonegone", at: Date.now() }));
+  const third = open(() => false);
+  third.up.add([other]);
+  await waitFor(() => assert.equal(third.state.last[0]?.state, "done"), { timeout: 8000 });
+  assert.deepEqual([third.state.sent.sort(), third.state.last[0].resumed, memory.size], [["1", "2", "3"], false, 0]);
+
+  // A photo: what the camera wrote is taken out before anything is sent; the picture's turn stays.
+  const exif = [0x45, 0x78, 0x69, 0x66, 0, 0, 0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0, ...new TextEncoder().encode("SecretCam GPS 37.5665N 126.9780E")];
+  const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe1, 0, exif.length + 2, ...exif, 0xff, 0xdb, 0, 4, 1, 2, 0xff, 0xda, 0, 2, 9, 9, 9, 0xff, 0xd9]);
+  const photo = open(() => false);
+  photo.up.add([new File([jpeg], "trip.jpg", { type: "image/jpeg" })]);
+  await waitFor(() => assert.equal(photo.state.last[0]?.state, "done"));
+  const stored = s.stores.public.objects.get("trip.jpg")!.body;
+  assert.equal(new TextDecoder("latin1").decode(stored).includes("SecretCam"), false);
+  assert.deepEqual([stored.length, photo.state.last[0].size, photo.state.last[0].asset?.size], [2 + 36 + 6 + 9, stored.length, stored.length]);
+  assert.deepEqual([...stored.subarray(2, 6), stored[31]], [0xff, 0xe1, 0, 34, 6], "the orientation is kept in a block of its own");
+});
+
+test("media: the focal point by keyboard, and replacing a file asks first", async () => {
+  const s = makeServer({ media: true });
+  const logo = await s.addFile("logo.png", { folder: "brand" });
+  await s.cms.create(admin, "guide", { slug: "about", title: "About", body: `![Logo](asset:${logo.id}/logo.png)` });
+  const user = userEvent.setup();
+  renderWith(s, <CmsMedia />, { messages: ko });
+  await user.click(await screen.findByRole("button", { name: /logo\.png/ }));
+  const panel = await screen.findByRole("complementary", { name: "logo.png" });
+
+  // No point yet: nothing is drawn until someone sets one.
+  assert.equal(within(panel).queryByRole("button", { name: /^초점:/ }), null);
+  const toggle = within(panel).getByRole("button", { name: "초점" });
+  assert.equal(toggle.getAttribute("aria-pressed"), "false");
+  await user.click(toggle);
+  const point = within(panel).getByRole("button", { name: "초점: 왼쪽에서 50%, 위에서 50%" });
+  assert.ok(within(panel).getByText(/잘라낼 때 꼭 보여야 하는 곳/));
+  assert.deepEqual(await axeViolations(), []);
+  point.focus();
+  await user.keyboard("{ArrowRight}");
+  await within(panel).findByRole("button", { name: "초점: 왼쪽에서 52%, 위에서 50%" });
+  await user.keyboard("{Shift>}{ArrowUp}{/Shift}");
+  await within(panel).findByRole("button", { name: "초점: 왼쪽에서 52%, 위에서 40%" });
+  assert.deepEqual([(await s.cms.assets.get(admin, logo.id)).focalX, (await s.cms.assets.get(admin, logo.id)).focalY], [0.52, 0.4]);
+  // Done aiming: the point stays visible, but no longer takes input.
+  await user.click(toggle);
+  assert.equal((within(panel).getByRole("button", { name: /^초점:/ }) as HTMLButtonElement).disabled, true);
+  await user.click(toggle);
+  await user.click(within(panel).getByRole("button", { name: "지우기" }));
+  await waitFor(async () => assert.equal((await s.cms.assets.get(admin, logo.id)).focalX, null));
+
+  // Replace: pick a file, see what will happen, then say yes.
+  const input = panel.querySelector('input[type="file"]') as HTMLInputElement;
+  assert.equal(input.accept, ".png");
+  await user.upload(input, new File([new Uint8Array(1500)], "logo-2026.png", { type: "image/png" }));
+  const dialog = await screen.findByRole("dialog", { name: "“logo.png”의 내용을 바꿀까요?" });
+  assert.ok(within(dialog).getByText("주소는 그대로예요. 지금 내용은 되돌릴 수 없어요."));
+  assert.ok(within(dialog).getByText(/logo-2026\.png/));
+  assert.ok(within(dialog).getByText("이 파일을 쓰는 문서 1개에 새 내용이 보여요."));
+  assert.deepEqual(await axeViolations(), []);
+  assert.equal(s.requests.some((r) => r.path === "/assets/uploads"), false, "nothing is sent before the answer");
+  await user.click(within(dialog).getByRole("button", { name: "바꾸기" }));
+  await waitFor(() => assert.deepEqual(s.requests.find((r) => r.method === "POST" && r.path === "/assets/uploads")?.body, { name: "logo-2026.png", mime: "image/png", size: 1500, replace: logo.id }));
+  assert.equal(screen.queryByRole("dialog", { name: /내용을 바꿀까요/ }), null);
+});

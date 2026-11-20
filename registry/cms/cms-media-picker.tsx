@@ -1,4 +1,4 @@
-// agent-cms registry: cms-media-picker (0.8.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-media-picker (0.11.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // The "choose media" dialog the editor opens, and the pieces it shares with
 // the media library screen: tiles, the upload panel, the file list.
@@ -161,11 +161,14 @@ export const SELECT_CLASS = "h-9 min-w-0 rounded-md border border-input bg-backg
 
 /** One uploader for a screen. `onDone` runs for each file that reaches the library. */
 export function useUploads(onDone?: (asset: AssetView) => void) {
-  const { client } = useCms();
+  const { client, me } = useCms();
   const [items, setItems] = React.useState<UploadItem[]>([]);
   const done = React.useRef(onDone);
   done.current = onDone;
-  const uploader = React.useMemo(() => createUploader({ client, onChange: setItems, onDone: (a) => done.current?.(a) }), [client]);
+  // Read when a file is sent, not when the screen opens: `me` may arrive later.
+  const strip = React.useRef(false);
+  strip.current = !!me?.media?.stripMetadata;
+  const uploader = React.useMemo(() => createUploader({ client, onChange: setItems, onDone: (a) => done.current?.(a), stripMetadata: () => strip.current }), [client]);
   // Leaving with uploads on the way loses them: ask first.
   const busy = items.some((i) => i.state === "sending" || i.state === "waiting");
   React.useEffect(() => {
@@ -241,7 +244,10 @@ export function UploadPanel({ items, onRetry, onRemove, onClose, className }: { 
                 ) : i.state === "failed" ? (
                   <CircleAlert aria-hidden className="h-4 w-4 text-destructive" />
                 ) : (
-                  <span className="text-xs tabular-nums text-muted-foreground">{t("media_upload_progress", { sent: fileSize(i.sent), total: fileSize(i.size) })}</span>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {i.resumed ? `${t("media_upload_resumed")} · ` : ""}
+                    {t("media_upload_progress", { sent: fileSize(i.sent), total: fileSize(i.size) })}
+                  </span>
                 )}
                 {i.state === "done" ? null : (
                   <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={t("media_upload_remove", { name: i.name })} onClick={() => onRemove(i.key)}>

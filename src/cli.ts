@@ -448,7 +448,8 @@ async function storageCheck(media: MediaOptions, origin: string | undefined, io:
       expect(res.ok, `PUT answered ${res.status}`);
       expect((await a.head(`${run}/b.txt`))?.size === text.length, "the file did not arrive");
     });
-    await step("large files in parts", async () => {
+    if (a.multipart === false) io.out("skip  large files in parts: not supported on this store (a file goes up in one request, and a failed upload starts again)");
+    else await step("large files in parts", async () => {
       const id = await a.createMultipart(`${run}/c.bin`, { mime: "application/octet-stream" });
       const sizes = [5 * 1024 * 1024, 1024];
       for (const n of [1, 2]) {
@@ -497,6 +498,7 @@ async function storageCheck(media: MediaOptions, origin: string | undefined, io:
     } else io.out("skip  CORS (pass --origin https://your-site to test it)");
     for (const k of ["a.txt", "b.txt", "c.bin", "d.txt"]) await a.delete(`${run}/${k}`).catch(() => {});
   }
+  if (Object.values(media.stores).every((s) => s.adapter.multipart === false)) return bad ? 1 : 0;
   io.out("");
   io.out("CORS rule the bucket needs (replace the origin with your site):");
   io.out(JSON.stringify([{ AllowedOrigins: [origin ?? "https://your-site.example"], AllowedMethods: ["GET", "HEAD", "PUT"], AllowedHeaders: ["*"], ExposeHeaders: ["ETag"], MaxAgeSeconds: 3600 }], null, 2));

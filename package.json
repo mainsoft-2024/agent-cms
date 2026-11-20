@@ -1,6 +1,6 @@
 {
   "name": "@mainsoft/agent-cms",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (MCP, REST, CLI) together.",
   "license": "MIT",
   "type": "module",
@@ -20,6 +20,7 @@
     "UPGRADE-0.6.md",
     "UPGRADE-0.8.md",
     "UPGRADE-0.10.md",
+    "UPGRADE-0.11.md",
     "CHANGELOG.md",
     "TODO.md",
     "LICENSE"
@@ -100,6 +101,26 @@
       "require": {
         "types": "./dist/storage-s3.d.cts",
         "default": "./dist/storage-s3.cjs"
+      }
+    },
+    "./storage-vercel-blob": {
+      "import": {
+        "types": "./dist/storage-vercel-blob.d.ts",
+        "default": "./dist/storage-vercel-blob.js"
+      },
+      "require": {
+        "types": "./dist/storage-vercel-blob.d.cts",
+        "default": "./dist/storage-vercel-blob.cjs"
+      }
+    },
+    "./image-sharp": {
+      "import": {
+        "types": "./dist/image-sharp.d.ts",
+        "default": "./dist/image-sharp.js"
+      },
+      "require": {
+        "types": "./dist/image-sharp.d.cts",
+        "default": "./dist/image-sharp.cjs"
       }
     },
     "./agent": {
@@ -227,11 +248,22 @@
     "check:pack": "publint --strict && attw --pack . --profile node16",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "build:registry": "tsx scripts/build-registry.ts",
-    "test:shadcn": "bash scripts/shadcn-smoke.sh"
+    "test:shadcn": "bash scripts/shadcn-smoke.sh",
+    "test:blob": "tsx --test src/storage-vercel-blob.test.ts"
   },
   "peerDependencies": {
+    "@vercel/blob": ">=2.9.0",
     "drizzle-orm": ">=0.36.0",
+    "sharp": ">=0.33.0",
     "zod": "^3.25.0 || ^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@vercel/blob": {
+      "optional": true
+    },
+    "sharp": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
@@ -245,6 +277,7 @@
     "@types/pg": "8.23.1",
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
+    "@vercel/blob": "2.9.0",
     "axe-core": "4.14.1",
     "drizzle-orm": "0.45.2",
     "global-jsdom": "26.0.0",
@@ -253,6 +286,7 @@
     "publint": "0.3.25",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "sharp": "0.35.5",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

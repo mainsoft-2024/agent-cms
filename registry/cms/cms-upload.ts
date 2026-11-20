@@ -1,12 +1,20 @@
-// agent-cms registry: cms-media-picker (0.8.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-media-picker (0.11.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // Uploads without a framework: files go from the browser straight to the
 // storage with the signed addresses the CMS hands out. Files above the part
 // size go up in parts, four at a time; a part that fails is tried three more
-// times, and `retry` sends only the parts that are still missing.
+// times, and `retry` sends only the parts that are still missing. A large
+// upload cut short by a reload carries on when the same file is picked again.
 import type { AssetView as Asset, RestClient } from "@mainsoft/agent-cms/client";
+import { stripJpegMetadata } from "@mainsoft/agent-cms/storage";
 
-export type UploadTarget = { store?: string | null; folder?: string | null; field?: { collection: string; path: string } | null };
+export type UploadTarget = {
+  store?: string | null;
+  folder?: string | null;
+  field?: { collection: string; path: string } | null;
+  /** New content for this file (same id, same address) instead of a new file. */
+  replace?: string | null;
+};
 export type UploadState = "waiting" | "sending" | "done" | "failed";
 
 export interface UploadItem {
@@ -19,6 +27,17 @@ export interface UploadItem {
   /** A message from the CMS (already translated), or null for a network failure. */
   error?: string | null;
   asset?: Asset;
+  /** Carrying on an upload that a reload cut short. */
+  resumed?: boolean;
+  /** The id of the file whose content this replaces. */
+  replaces?: string;
+}
+
+/** Where unfinished large uploads are remembered across reloads (default: the browser's localStorage). */
+export interface UploadMemory {
+  get(key: string): string | null;
+  set(key: string, value: string): void;
+  remove(key: string): void;
 }
 
 /** PUT `body` to `url`, reporting bytes sent. Rejects on a non-2xx answer. */
@@ -35,6 +54,37 @@ export interface UploaderOptions {
   partsInParallel?: number;
   retries?: number;
   retryDelayMs?: number;
+  /** Take camera data (location, time, device) out of JPEG photos before they are sent (`media.stripMetadata`). */
+  stripMetadata?: boolean | (() => boolean);
+  /** `null` turns remembering off. */
+  memory?: UploadMemory | null;
+}
+
+/** Photos above this size are sent as they are: cleaning one means holding it in memory twice. */
+const STRIP_MAX_BYTES = 64 * 1024 * 1024;
+/** The server drops unfinished uploads after 24 hours. */
+const REMEMBER_MS = 23 * 3600 * 1000;
+
+function browserMemory(): UploadMemory | null {
+  try {
+    const s = typeof window === "undefined" ? null : window.localStorage;
+    if (!s) return null;
+    return { get: (k) => s.getItem(k), set: (k, v) => s.setItem(k, v), remove: (k) => s.removeItem(k) };
+  } catch {
+    return null; // storage turned off
+  }
+}
+
+/** The file without camera data, or the file itself when there is none (or it is not a JPEG). */
+export async function withoutCameraData(file: File): Promise<File> {
+  if (file.type !== "image/jpeg" || file.size > STRIP_MAX_BYTES) return file;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const clean = stripJpegMetadata(bytes);
+    return clean === bytes ? file : new File([clean as BlobPart], file.name, { type: file.type, lastModified: file.lastModified });
+  } catch {
+    return file;
+  }
 }
 
 export interface MediaFacts {
@@ -122,6 +172,10 @@ interface Job {
   target: UploadTarget;
   id?: string;
   abort: AbortController;
+  /** The camera data was looked at (once per file, also across retries). */
+  cleaned?: boolean;
+  /** What this upload is remembered under. */
+  memo?: string;
 }
 
 export interface Uploader {
@@ -144,6 +198,31 @@ export function createUploader(o: UploaderOptions): Uploader {
   let seq = 0;
   const changed = () => o.onChange?.(jobs.map((j) => ({ ...j.item })));
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const memory = o.memory === undefined ? browserMemory() : o.memory;
+  const recall = (key: string): string | null => {
+    try {
+      const v = JSON.parse(memory?.get(key) ?? "null") as { id?: string; at?: number } | null;
+      if (v?.id && typeof v.at === "number" && Date.now() - v.at < REMEMBER_MS) return v.id;
+      if (v) memory?.remove(key);
+    } catch {
+      // not ours, or storage is full or off
+    }
+    return null;
+  };
+  const remember = (key: string, id: string) => {
+    try {
+      memory?.set(key, JSON.stringify({ id, at: Date.now() }));
+    } catch {
+      // resuming is a convenience
+    }
+  };
+  const forget = (job: Job) => {
+    try {
+      if (job.memo) memory?.remove(job.memo);
+    } catch {
+      // nothing to do
+    }
+  };
 
   async function sendWithRetries(url: () => Promise<string>, body: Blob, headers: Record<string, string> | undefined, job: Job, onProgress: (n: number) => void) {
     for (let attempt = 0; ; attempt++) {
@@ -157,11 +236,25 @@ export function createUploader(o: UploaderOptions): Uploader {
     }
   }
 
-  async function run(job: Job) {
-    const { item, file } = job;
+  async function run(job: Job): Promise<void> {
+    const { item } = job;
     item.state = "sending";
     item.error = undefined;
     changed();
+    if (!job.cleaned) {
+      job.cleaned = true;
+      // The same file gives the same bytes every time, so a cleaned photo can still be carried on later.
+      if (typeof o.stripMetadata === "function" ? o.stripMetadata() : o.stripMetadata) job.file = await withoutCameraData(job.file);
+      item.size = job.file.size;
+      job.memo = `agent-cms:upload:${[job.file.name, job.file.size, job.file.lastModified, job.target.store ?? "", job.target.folder ?? "", job.target.replace ?? ""].join("|")}`;
+      // Picked again after a reload: the parts that arrived are still there.
+      const known = recall(job.memo);
+      if (known) {
+        job.id = known;
+        item.resumed = true;
+      }
+    }
+    const { file } = job;
     let done: number[] = [];
     let partSize = 0;
     let partCount = 0;
@@ -171,12 +264,17 @@ export function createUploader(o: UploaderOptions): Uploader {
       if (r.upload.kind === "single") {
         const single = r.upload;
         await sendWithRetries(async () => single.url, file, single.headers, job, (n) => ((item.sent = n), changed()));
-      } else ({ partSize, partCount } = r.upload);
+      } else {
+        ({ partSize, partCount } = r.upload);
+        if (job.memo) remember(job.memo, job.id);
+      }
     } else {
-      // Retry: ask which parts arrived. A small file simply starts over.
+      // Retry or resume: ask which parts arrived. A small file, or an upload the server no longer knows, starts over.
       const s = await client.uploadStatus(job.id).catch(() => null);
-      if (!s || s.partCount <= 1) {
+      if (!s || s.partCount <= 1 || s.asset.status !== "pending" || s.asset.size !== file.size) {
+        forget(job);
         job.id = undefined;
+        item.resumed = false;
         return run(job);
       }
       ({ partSize, partCount, done } = s);
@@ -211,6 +309,7 @@ export function createUploader(o: UploaderOptions): Uploader {
     const facts = await describe(file, file.name);
     let asset = await client.completeUpload(job.id, { width: facts.width, height: facts.height, duration: facts.duration });
     if (facts.thumb) asset = await client.setAssetThumb(asset.id, facts.thumb).catch(() => asset);
+    forget(job);
     item.asset = asset;
     item.state = "done";
     changed();
@@ -237,7 +336,7 @@ export function createUploader(o: UploaderOptions): Uploader {
   return {
     items: () => jobs.map((j) => ({ ...j.item })),
     add(files, target = {}) {
-      for (const file of files) jobs.push({ file, target, abort: new AbortController(), item: { key: `u${++seq}`, name: file.name, size: file.size, sent: 0, state: "waiting" } });
+      for (const file of files) jobs.push({ file, target, abort: new AbortController(), item: { key: `u${++seq}`, name: file.name, size: file.size, sent: 0, state: "waiting", ...(target.replace ? { replaces: target.replace } : {}) } });
       changed();
       void pump();
     },
@@ -254,6 +353,7 @@ export function createUploader(o: UploaderOptions): Uploader {
       if (i < 0) return;
       const [job] = jobs.splice(i, 1);
       job.abort.abort();
+      forget(job);
       if (job.id && job.item.state !== "done") void client.abortUpload(job.id).catch(() => {});
       changed();
     },

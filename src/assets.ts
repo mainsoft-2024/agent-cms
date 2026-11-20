@@ -36,6 +36,9 @@ import {
   sniff,
   type StorageList,
   THUMB_PREFIX,
+  DERIVED_PREFIX,
+  REPLACE_PREFIX,
+  stripJpegMetadata,
   type StorageAdapter,
 } from "./storage";
 import type { Actor, AssetKind, AuditAction, CmsAsset, CmsDoc, DocContent } from "./types";
@@ -64,6 +67,42 @@ export interface ScanFile {
   bytes?: Uint8Array;
 }
 
+export type ImageFormat = "webp" | "avif" | "jpeg" | "png";
+
+/** One named size of an image. With both sides and `fit: "cover"` the picture is cropped around its focal point. */
+export interface ImagePreset {
+  width?: number;
+  height?: number;
+  /** `inside` (default): fits within the box, never enlarged. `cover`: fills the box exactly, cropping what sticks out. */
+  fit?: "inside" | "cover";
+  format?: ImageFormat;
+  /** 1..100. Default: the library's own for the format. */
+  quality?: number;
+}
+
+export interface ImageJob {
+  width: number | null;
+  height: number | null;
+  fit: "inside" | "cover";
+  format: ImageFormat;
+  quality: number | null;
+  focal: { x: number; y: number } | null;
+}
+
+/** What makes resized copies (`sharpTransforms()` from `./image-sharp`, or your own). */
+export interface ImageTransforms {
+  presets: Record<string, ImagePreset>;
+  /** The format of sizes that do not name one. */
+  format: ImageFormat;
+  make(bytes: Uint8Array, job: ImageJob): Promise<{ bytes: Uint8Array; width: number; height: number }>;
+  /** Originals above this many bytes are served as they are. Default 40MB. */
+  maxInputBytes?: number;
+  /** Copies made at the same time. Default 4. */
+  concurrency?: number;
+  /** A request waits this long for a copy, then gets the original. Default 10000. */
+  timeoutMs?: number;
+}
+
 export interface MediaOptions {
   /** The first one is the default store. */
   stores: Record<string, MediaStoreConfig>;
@@ -73,6 +112,19 @@ export interface MediaOptions {
   maxFileSize?: number;
   /** Turn an image address into a resized one (your CDN, an image proxy, `/_next/image`). */
   imageUrl?: (o: { url: string; width: number; asset: AssetInfo }) => string;
+  /**
+   * Named image sizes made on the server: `sharpTransforms({ presets })`
+   * from `@mainsoft/agent-cms/image-sharp`. A size is made the first time
+   * `/files/<id>/<name>?size=<name>` is asked for and kept in the store.
+   */
+  transforms?: ImageTransforms;
+  /**
+   * Remove what cameras write into JPEG photos (location, time, device)
+   * before they are stored. The admin does it in the browser, so the data
+   * never leaves the person's computer; imports are cleaned on the server.
+   * Default false.
+   */
+  stripMetadata?: boolean;
   /** How long a link to a private file works, in seconds. Default 300. */
   linkTtlSeconds?: number;
   /** Largest file an agent may import by URL, in bytes. Default 50MB. */
@@ -118,6 +170,8 @@ export interface AssetInfo {
   alt: string;
   url: string;
   visibility: "public" | "private";
+  /** The point to keep in view when cropping (`object-position: ${x * 100}% ${y * 100}%`), or null. */
+  focal: { x: number; y: number } | null;
 }
 
 export interface AssetUsage {
@@ -144,6 +198,8 @@ export interface UploadRequest {
   tags?: string[];
   /** Uploading for one field: its `accept` and `maxFileSize` apply too. */
   field?: { collection: string; path: string } | null;
+  /** New content for this file: same id, same address, same type. Folder, store, alt and tags are the file's own. */
+  replace?: string | null;
 }
 
 export interface AssetListOptions {
@@ -176,6 +232,20 @@ export interface AssetsContext {
 const SIGN_SECONDS = 3600;
 const MAX_THUMB_BYTES = 512 * 1024;
 const TAG_MAX = 30;
+const IMAGE_EXT: Record<ImageFormat, string> = { webp: "webp", avif: "avif", jpeg: "jpg", png: "png" };
+const FOREVER = "public, max-age=31536000, immutable";
+
+/** A short stable name for a set of values (FNV-1a). */
+function stamp(v: unknown): string {
+  let h = 0x811c9dc5;
+  for (const c of JSON.stringify(v)) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193);
+  return (h >>> 0).toString(36);
+}
+/** A replaced file keeps its address; `?v=` makes caches fetch it again. */
+const withRev = (url: string, rev: number) => (rev > 0 ? `${url}${url.includes("?") ? "&" : "?"}v=${rev}` : url);
+const focalOf = (a: Pick<CmsAsset, "focalX" | "focalY">) => (a.focalX !== null && a.focalY !== null ? { x: a.focalX, y: a.focalY } : null);
+/** Pictures a resizer can take: not vector drawings, not animations. */
+const resizable = (a: Pick<CmsAsset, "kind" | "mime">) => a.kind === "image" && a.mime !== "image/svg+xml" && a.mime !== "image/gif";
 
 /** A field that holds a media library file: `fields: z.object({ cover: assetId().optional() })` with `admin.fields.cover.widget: "image"`. */
 export const assetId = () => z.string().regex(ASSET_ID_RE, "not a file id");
@@ -206,6 +276,7 @@ export function createAssets(ctx: AssetsContext) {
   const names = Object.keys(media?.stores ?? {});
   const filesUrl = (media?.filesUrl ?? "/api/cms/files").replace(/\/+$/, "");
   const ttl = media?.linkTtlSeconds ?? 300;
+  const transforms = media?.transforms ?? null;
 
   for (const n of names) {
     const s = media!.stores[n];
@@ -249,11 +320,12 @@ export function createAssets(ctx: AssetsContext) {
   function view(a: CmsAsset): AssetView {
     const cfg = media?.stores[a.store];
     const href = `${filesUrl}/${a.id}/${encodeURIComponent(a.name)}`;
-    return { ...a, visibility: cfg?.visibility ?? "private", href, publicUrl: cfg?.visibility === "public" ? cfg.adapter.publicUrl(a.key) : null, thumbHref: a.thumbKey ? `${href}?thumb=1` : null };
+    const direct = cfg?.visibility === "public" ? cfg.adapter.publicUrl(a.key) : null;
+    return { ...a, visibility: cfg?.visibility ?? "private", href, publicUrl: direct ? withRev(direct, a.rev) : null, thumbHref: a.thumbKey ? `${href}?thumb=1${a.rev ? `&v=${a.rev}` : ""}` : null };
   }
   const info = (a: CmsAsset): AssetInfo => {
     const v = view(a);
-    return { id: a.id, name: a.name, kind: a.kind, mime: a.mime, size: a.size, width: a.width, height: a.height, duration: a.duration, alt: a.alt, url: v.publicUrl ?? v.href, visibility: v.visibility };
+    return { id: a.id, name: a.name, kind: a.kind, mime: a.mime, size: a.size, width: a.width, height: a.height, duration: a.duration, alt: a.alt, url: v.publicUrl ?? v.href, visibility: v.visibility, focal: focalOf(a) };
   };
 
   async function load(id: string, o: { pending?: boolean } = {}): Promise<CmsAsset> {
@@ -303,23 +375,26 @@ export function createAssets(ctx: AssetsContext) {
 
   async function requestUpload(actor: Actor, input: UploadRequest): Promise<{ asset: AssetView; upload: UploadInstructions }> {
     await ctx.ready();
-    const store = storeOf(input.store);
+    const target = input.replace ? await replaceable(actor, input.replace, input) : null;
+    const store = storeOf(target ? target.store : input.store);
     need(actor, store.name, "write");
-    const a = admit(store, input);
-    const free = await freeKey(store, a.folder, a.name);
+    const a = target ? admit(store, { name: target.name, mime: target.mime, size: input.size, folder: target.folder }) : admit(store, input);
+    const id = newAssetId();
+    // New content waits beside the library until it is checked; only then does it take the file's place.
+    const free = target ? { key: `${REPLACE_PREFIX}${target.id}/${id}${extOf(target.name) ? `.${extOf(target.name)}` : ""}`, name: target.name } : await freeKey(store, a.folder, a.name);
     const put = { mime: a.mime, disposition: dispositionFor(free.name, a.mime) };
     const who = ctx.actorRef(actor);
     let upload: UploadInstructions;
     let uploadId: string | null = null;
-    if (input.size <= PART_SIZE) {
-      const signed = await store.cfg.adapter.presignPut(free.key, { ...put, expires: SIGN_SECONDS });
+    if (input.size <= PART_SIZE || store.cfg.adapter.multipart === false) {
+      const signed = await store.cfg.adapter.presignPut(free.key, { ...put, expires: SIGN_SECONDS, size: input.size });
       upload = { kind: "single", url: signed.url, headers: signed.headers };
     } else {
       uploadId = await store.cfg.adapter.createMultipart(free.key, put);
       upload = { kind: "multipart", partSize: PART_SIZE, partCount: Math.ceil(input.size / PART_SIZE) };
     }
     const row = await repo.insertAsset({
-      id: newAssetId(),
+      id,
       store: store.name,
       key: free.key,
       folder: a.folder,
@@ -369,8 +444,132 @@ export function createAssets(ctx: AssetsContext) {
       if (a.uploadId) await adapter.abortMultipart(a.key, a.uploadId).catch(() => {});
       await adapter.delete(a.key).catch(() => {});
       if (a.thumbKey) await adapter.delete(a.thumbKey).catch(() => {});
+      await dropDerived(a);
     }
     await repo.deleteAsset(a.id);
+  }
+
+  // ── replacing a file's content ────────────────────────────────────────────
+
+  /** The file `id` when this actor may replace it with what `input` describes. */
+  async function replaceable(actor: Actor, id: string, input: { name: string; mime?: string | null }): Promise<CmsAsset> {
+    const t = await load(id);
+    need(actor, t.store, "delete");
+    // The address ends in the old extension, so the new content must be the same kind of file.
+    if (t.kind === "folder" || mimeOf(cleanName(input.name), input.mime) !== t.mime) throw fail("asset_replace_type", { name: input.name, mime: t.mime });
+    return t;
+  }
+
+  /** The new content is at the file's address: forget what was made from the old one and record the change. */
+  async function replaced(actor: Actor, t: CmsAsset, now: { size: number; width: number | null; height: number | null; duration: number | null }): Promise<CmsAsset> {
+    const adapter = storeOf(t.store).cfg.adapter;
+    if (t.thumbKey) await adapter.delete(t.thumbKey).catch(() => {});
+    await dropDerived(t);
+    const row = (await repo.updateAsset(t.id, { ...now, thumbKey: null, rev: t.rev + 1, updatedAt: ctx.nowIso() }))!;
+    ctx.audit(actor, "asset.replace", { detail: { id: t.id, store: t.store, key: t.key, size: now.size, was: t.size } });
+    return row;
+  }
+
+  /** Replace a file's content with bytes the server holds. Same id, same address; documents need no change. */
+  async function replace(actor: Actor, id: string, input: { bytes: Uint8Array; mime?: string | null; width?: number | null; height?: number | null; duration?: number | null }): Promise<AssetView> {
+    await ctx.ready();
+    const t = await replaceable(actor, id, { name: (await load(id)).name, mime: input.mime });
+    const store = storeOf(t.store);
+    const bytes = media?.stripMetadata && t.mime === "image/jpeg" ? stripJpegMetadata(input.bytes) : input.bytes;
+    admit(store, { name: t.name, mime: t.mime, size: bytes.length, folder: t.folder });
+    if (!contentMatches(t.mime, bytes.subarray(0, 4096))) throw fail("asset_type_mismatch", { name: t.name, mime: t.mime });
+    await scanned(actor, { store: t.store, key: t.key, name: t.name, mime: t.mime, size: bytes.length, bytes }, null);
+    await store.cfg.adapter.put(t.key, bytes, { mime: t.mime, disposition: dispositionFor(t.name, t.mime) });
+    const given = dims(input);
+    const read = t.kind === "image" && !given.width ? imageSize(bytes) : null;
+    return view(await serverThumb(await replaced(actor, t, { size: bytes.length, width: given.width ?? read?.width ?? null, height: given.height ?? read?.height ?? null, duration: given.duration }), bytes));
+  }
+
+  // ── image sizes ───────────────────────────────────────────────────────────
+
+  const made = new Set<string>();
+  const making = new Map<string, Promise<string | null>>();
+  const waiting: (() => void)[] = [];
+  let active = 0;
+
+  const jobOf = (a: Pick<CmsAsset, "focalX" | "focalY">, p: ImagePreset): ImageJob => ({ width: p.width ?? null, height: p.height ?? null, fit: p.fit ?? "inside", format: p.format ?? transforms!.format, quality: p.quality ?? null, focal: focalOf(a) });
+
+  /**
+   * The key of an image at a named size, made now when it is not there yet.
+   * Null means "serve the original": the file is not a picture a resizer
+   * takes, it is too large, or making the copy failed or took too long.
+   */
+  async function sized(a: CmsAsset, size: string): Promise<string | null> {
+    const preset = transforms?.presets[size];
+    if (!transforms || !preset) throw fail("unknown_image_size", { size });
+    if (!resizable(a) || a.size > (transforms.maxInputBytes ?? 40 * 1024 * 1024)) return null;
+    const job = jobOf(a, preset);
+    // The name changes with the content, the focal point and the size's own settings, so an old copy is never served for a new picture.
+    const key = `${DERIVED_PREFIX}${a.id}/${size}-${stamp([a.rev, a.size, job])}.${IMAGE_EXT[job.format]}`;
+    if (made.has(key)) return key;
+    let work = making.get(key);
+    if (!work) {
+      work = (async () => {
+        const adapter = storeOf(a.store).cfg.adapter;
+        if (await adapter.head(key)) return key;
+        if (active >= (transforms.concurrency ?? 4)) await new Promise<void>((go) => waiting.push(go));
+        else active++;
+        try {
+          const bytes = await adapter.readStart(a.key, a.size);
+          if (!bytes) return null;
+          const out = await transforms.make(bytes, job);
+          await adapter.put(key, out.bytes, { mime: `image/${job.format}`, cacheControl: FOREVER });
+          return key;
+        } finally {
+          const next = waiting.shift();
+          if (next) next(); // the slot goes straight to whoever waited longest
+          else active--;
+        }
+      })()
+        .then((k) => (k && made.add(k), k))
+        .catch((e) => (ctx.warn(`image-size-${a.id}-${size}`, `could not make size "${size}" of ${a.key}: ${e instanceof Error ? e.message : String(e)}`), null))
+        .finally(() => making.delete(key));
+      making.set(key, work);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>((r) => (timer = setTimeout(() => r(null), transforms.timeoutMs ?? 10_000)));
+    try {
+      return await Promise.race([work, late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Remove the resized copies of a file (it is going away, or its content changed). */
+  async function dropDerived(a: Pick<CmsAsset, "id" | "store">): Promise<void> {
+    const adapter = media?.stores[a.store]?.adapter;
+    if (!adapter || !transforms) return;
+    try {
+      let cursor: string | null = null;
+      do {
+        const page: Awaited<ReturnType<typeof adapter.list>> = await adapter.list({ prefix: `${DERIVED_PREFIX}${a.id}/`, cursor, limit: 200 });
+        for (const o of page.objects) {
+          await adapter.delete(o.key).catch(() => {});
+          made.delete(o.key);
+        }
+        cursor = page.cursor;
+      } while (cursor);
+    } catch {
+      // Leftover copies cost a little space; they never show for the new content (their names differ).
+    }
+  }
+
+  /** A list picture for a file the server stored itself (an import): nobody's browser made one. */
+  async function serverThumb(row: CmsAsset, bytes: Uint8Array): Promise<CmsAsset> {
+    if (!transforms || !resizable(row) || bytes.length > (transforms.maxInputBytes ?? 40 * 1024 * 1024)) return row;
+    try {
+      const out = await transforms.make(bytes, { width: 480, height: 480, fit: "inside", format: "webp", quality: null, focal: null });
+      const key = `${THUMB_PREFIX}${row.id}.webp`;
+      await storeOf(row.store).cfg.adapter.put(key, out.bytes, { mime: "image/webp", cacheControl: FOREVER });
+      return (await repo.updateAsset(row.id, { thumbKey: key })) ?? row;
+    } catch {
+      return row;
+    }
   }
 
   const dims = (o: { width?: unknown; height?: unknown; duration?: unknown }) => {
@@ -409,6 +608,19 @@ export function createAssets(ctx: AssetsContext) {
     });
     const given = dims(meta);
     const read = a.kind === "image" && !given.width ? imageSize(start) : null;
+    const settle = (key: string, name: string) => adapter.settle?.(key, { mime: a.mime, disposition: dispositionFor(name, a.mime) });
+    if (a.key.startsWith(REPLACE_PREFIX)) {
+      const t = await repo.findAsset(a.key.slice(REPLACE_PREFIX.length).split("/")[0]);
+      if (!t || t.status !== "ready" || !canAsset(actor, t.store, "delete")) {
+        await discard({ ...a, uploadId: null });
+        throw fail("asset_not_found", { id });
+      }
+      await adapter.copy(a.key, t.key);
+      await settle(t.key, t.name);
+      await discard({ ...a, uploadId: null });
+      return view(await replaced(actor, t, { size: head.size, width: given.width ?? read?.width ?? null, height: given.height ?? read?.height ?? null, duration: given.duration }));
+    }
+    await settle(a.key, a.name);
     const row = (await repo.updateAsset(a.id, { status: "ready", uploadId: null, width: given.width ?? read?.width ?? null, height: given.height ?? read?.height ?? null, duration: given.duration, updatedAt: ctx.nowIso() }))!;
     ctx.audit(actor, "asset.upload", { detail: { id: a.id, store: a.store, key: a.key, size: a.size } });
     return view(row);
@@ -438,6 +650,7 @@ export function createAssets(ctx: AssetsContext) {
     await ctx.ready();
     const store = storeOf(input.store);
     need(actor, store.name, "write");
+    if (media?.stripMetadata && mimeOf(cleanName(input.name), input.mime) === "image/jpeg") input = { ...input, bytes: stripJpegMetadata(input.bytes) };
     const a = admit(store, { ...input, size: input.bytes.length });
     if (!contentMatches(a.mime, input.bytes.subarray(0, 4096))) throw fail("asset_type_mismatch", { name: a.name, mime: a.mime });
     const free = await freeKey(store, a.folder, a.name);
@@ -471,7 +684,7 @@ export function createAssets(ctx: AssetsContext) {
       updatedAt: ctx.nowIso(),
     });
     ctx.audit(actor, "asset.upload", { detail: { id: row.id, store: row.store, key: row.key, size: row.size } });
-    return view(row);
+    return view(await serverThumb(row, input.bytes));
   }
 
   /** Fetch a file from the public internet and store it (https only; private addresses are refused). */
@@ -593,10 +806,14 @@ export function createAssets(ctx: AssetsContext) {
     return { ...view(a), usage: u.documents, usageHidden: u.hidden };
   }
 
-  async function update(actor: Actor, id: string, patch: { alt?: string; tags?: string[] }): Promise<AssetView> {
+  async function update(actor: Actor, id: string, patch: { alt?: string; tags?: string[]; focal?: { x: number; y: number } | null }): Promise<AssetView> {
     const a = await load(id);
     need(actor, a.store, "write");
-    const row = await repo.updateAsset(a.id, { ...(patch.alt !== undefined ? { alt: String(patch.alt).trim().slice(0, 500) } : {}), ...(patch.tags !== undefined ? { tags: cleanTags(patch.tags) } : {}), updatedAt: ctx.nowIso() });
+    const unit = (v: number) => Math.round(Math.min(1, Math.max(0, Number(v) || 0)) * 1000) / 1000;
+    const focal = patch.focal === undefined ? {} : patch.focal === null || a.kind !== "image" ? { focalX: null, focalY: null } : { focalX: unit(patch.focal.x), focalY: unit(patch.focal.y) };
+    const row = await repo.updateAsset(a.id, { ...(patch.alt !== undefined ? { alt: String(patch.alt).trim().slice(0, 500) } : {}), ...(patch.tags !== undefined ? { tags: cleanTags(patch.tags) } : {}), ...focal, updatedAt: ctx.nowIso() });
+    // Cropped sizes were cut around the old point.
+    if ("focalX" in focal && (focal.focalX !== a.focalX || focal.focalY !== a.focalY)) await dropDerived(a);
     return view(row!);
   }
 
@@ -678,13 +895,14 @@ export function createAssets(ctx: AssetsContext) {
   }
 
   /** Where to send someone who asks for the file: checks permission, then a public or a short-lived address. */
-  async function open(actor: Actor, id: string, o: { thumb?: boolean; download?: boolean } = {}): Promise<{ url: string; visibility: "public" | "private"; ttl: number }> {
+  async function open(actor: Actor, id: string, o: { thumb?: boolean; download?: boolean; size?: string | null } = {}): Promise<{ url: string; visibility: "public" | "private"; ttl: number }> {
     await ctx.ready();
     const a = await load(id);
     const store = storeOf(a.store);
     if (store.cfg.visibility === "private" || store.cfg.access?.read) need(actor, a.store, "read");
-    const key = o.thumb && a.thumbKey ? a.thumbKey : a.key;
-    const direct = store.cfg.visibility === "public" && !o.download ? store.cfg.adapter.publicUrl(key) : null;
+    const key = o.thumb && a.thumbKey ? a.thumbKey : o.size && !o.thumb ? ((await sized(a, o.size)) ?? a.key) : a.key;
+    const plain = store.cfg.visibility === "public" && !o.download ? store.cfg.adapter.publicUrl(key) : null;
+    const direct = plain && !key.startsWith(DERIVED_PREFIX) ? withRev(plain, a.rev) : plain;
     return { url: direct ?? (await store.cfg.adapter.presignGet(key, { expires: ttl, download: o.download ? a.name : null })), visibility: store.cfg.visibility, ttl };
   }
 
@@ -783,9 +1001,15 @@ export function createAssets(ctx: AssetsContext) {
     return Object.fromEntries(rows.filter((a) => a.status === "ready" && media.stores[a.store]).map((a) => [a.id, info(a)]));
   }
 
-  /** The address of an image at a width, through `media.imageUrl` when the app set one. */
-  function imageUrl(asset: AssetInfo, o: { width: number }): string {
-    return media?.imageUrl && asset.kind === "image" && asset.mime !== "image/svg+xml" ? media.imageUrl({ url: asset.url, width: o.width, asset }) : asset.url;
+  /**
+   * The address of an image at a named size (`media.transforms`), or at a
+   * width through `media.imageUrl` when the app set one. Anything that
+   * cannot be resized gets its plain address.
+   */
+  function imageUrl(asset: AssetInfo, o: { width?: number; size?: string }): string {
+    if (asset.kind !== "image" || asset.mime === "image/svg+xml") return asset.url;
+    if (o.size && transforms?.presets[o.size] && asset.mime !== "image/gif") return `${filesUrl}/${asset.id}/${encodeURIComponent(asset.name)}?size=${encodeURIComponent(o.size)}`;
+    return media?.imageUrl && o.width ? media.imageUrl({ url: asset.url, width: o.width, asset }) : asset.url;
   }
 
   /** What the admin needs to know: stores, their rules, and what this actor may do. */
@@ -1043,9 +1267,9 @@ export function createAssets(ctx: AssetsContext) {
       .filter((n) => canAsset(actor, n, "read"))
       .map((n) => {
         const cfg = media.stores[n];
-        return { name: n, label: cfg.label ?? n, visibility: cfg.visibility, ...rulesOf(cfg), can: { write: canAsset(actor, n, "write"), delete: canAsset(actor, n, "delete"), browse: canBrowse(actor, n) } };
+        return { name: n, label: cfg.label ?? n, visibility: cfg.visibility, ...rulesOf(cfg), parts: cfg.adapter.multipart !== false, can: { write: canAsset(actor, n, "write"), delete: canAsset(actor, n, "delete"), browse: canBrowse(actor, n) } };
       });
-    return stores.length ? { stores, partSize: PART_SIZE } : null;
+    return stores.length ? { stores, partSize: PART_SIZE, stripMetadata: !!media.stripMetadata, sizes: Object.keys(transforms?.presets ?? {}) } : null;
   }
 
   return {
@@ -1060,6 +1284,7 @@ export function createAssets(ctx: AssetsContext) {
     abortUpload,
     setThumb,
     put,
+    replace,
     import: importFromUrl,
     list,
     folders,

@@ -181,12 +181,18 @@ export interface MediaStoreInfo {
   /** File types the store takes (MIME types, `image/*` groups, `.ext`). */
   accept: readonly string[];
   maxFileSize: number;
+  /** `false`: the store takes a file in one request, so a failed upload starts again instead of carrying on. */
+  parts?: boolean;
   can: { write: boolean; delete: boolean; browse: boolean };
 }
 
 export interface MediaInfo {
   stores: MediaStoreInfo[];
   partSize: number;
+  /** Photos lose their camera data (location, time, device) in the browser before they are sent. */
+  stripMetadata?: boolean;
+  /** Names of the image sizes the server makes (`?size=`). */
+  sizes?: string[];
 }
 
 export interface FolderTree {
@@ -361,7 +367,7 @@ export function createRestClient(opts: RestClientOptions) {
     createAssetFolder: (path: string, store?: string | null) => req<{ store: string; path: string }>("POST", "/assets/_folders", { body: { path, store } }),
     deleteAssetFolder: (path: string, store?: string | null) => req<{ ok: true }>("DELETE", "/assets/_folders", { query: { path, store } }),
     asset: (id: string) => req<{ asset: AssetDetail }>("GET", `/assets/${enc(id)}`).then((r) => r.asset),
-    updateAsset: (id: string, patch: { alt?: string; tags?: string[] }) => req<{ asset: AssetView }>("PATCH", `/assets/${enc(id)}`, { body: patch }).then((r) => r.asset),
+    updateAsset: (id: string, patch: { alt?: string; tags?: string[]; focal?: { x: number; y: number } | null }) => req<{ asset: AssetView }>("PATCH", `/assets/${enc(id)}`, { body: patch }).then((r) => r.asset),
     moveAsset: (id: string, to: { folder?: string | null; name?: string | null }) => req<{ asset: AssetView }>("POST", `/assets/${enc(id)}/move`, { body: to }).then((r) => r.asset),
     /** Fails with `asset_in_use` (the documents are in `error.current`) unless `confirm` is set. */
     removeAsset: (id: string, o: { confirm?: boolean } = {}) => req<{ ok: true }>("DELETE", `/assets/${enc(id)}`, { query: { confirm: o.confirm } }),
@@ -393,7 +399,11 @@ export function createRestClient(opts: RestClientOptions) {
     /** Address of a file by its key (files the CMS has no row for). */
     storeFileUrl: (store: string, key: string, o: { download?: boolean } = {}) => `${base}/stores/${enc(store)}/files/_open?key=${enc(key)}${o.download ? "&download=1" : ""}`,
     /** Address of a file through the CMS route (`thumb`: its small picture). */
-    fileUrl: (a: { id: string; name: string }, o: { thumb?: boolean; download?: boolean } = {}) => `${base}/files/${enc(a.id)}/${enc(a.name)}${o.thumb ? "?thumb=1" : o.download ? "?download=1" : ""}`,
+    fileUrl: (a: { id: string; name: string; rev?: number }, o: { thumb?: boolean; download?: boolean; size?: string } = {}) => {
+      // `v` is not read by the server: it gives a replaced file a new address for the browser's cache.
+      const query = [o.thumb ? "thumb=1" : o.download ? "download=1" : o.size ? `size=${enc(o.size)}` : "", a.rev ? `v=${a.rev}` : ""].filter(Boolean).join("&");
+      return `${base}/files/${enc(a.id)}/${enc(a.name)}${query ? `?${query}` : ""}`;
+    },
     audit: (q: { cursor?: string | null; action?: string; outcome?: string; actorKind?: "user" | "key" | "system" | "anonymous"; limit?: number } = {}) => req<{ entries: AuditEntry[]; nextCursor: string | null }>("GET", "/audit", { query: q }),
   };
 }

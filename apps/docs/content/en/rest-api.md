@@ -65,6 +65,29 @@ GET    /_cron                             run what is due (Authorization: Bearer
 
 See [Publishing flow](/docs/publishing-flow).
 
+## Files
+
+Only with a [media library](/docs/media-library); without one these answer `media_disabled`.
+
+```text
+GET    /assets?store=&folder=&kind=image,video&q=&tag=&cursor=&limit=
+GET    /assets/_folders | POST {path, store?} | DELETE ?path=&store=
+POST   /assets/_import                    {url, folder?, store?, alt?, tags?}   https only, public addresses only
+POST   /assets/uploads                    {name, mime, size, folder?, store?, alt?, tags?, replace?} → {asset, upload}
+GET    /assets/uploads/:id                which parts arrived   DELETE: give up
+POST   /assets/uploads/:id/parts          {parts: [1, 2]} → signed addresses for those parts
+POST   /assets/uploads/:id/complete       {width?, height?, duration?} → the file is checked and joins the library
+GET    /assets/:id | PATCH {alt?, tags?, focal?: {x, y} | null} | DELETE ?confirm=1
+POST   /assets/:id/move                   {folder?, name?}
+POST   /assets/:id/share                  {ttl?: "1h" | "24h" | "7d"}
+POST   /assets/:id/thumb                  the small picture, as the request body
+GET    /files/:id/:name                   302 to the file; ?thumb=1, ?download=1, ?size=<name>
+GET    /stores/:store/files?prefix=&q=&cursor=   everything in the bucket (file manager)
+POST   /stores/:store/files/_register | _move | _delete
+```
+
+`upload` is `{kind: "single", url, headers}` (PUT the file there) or `{kind: "multipart", partSize, partCount}` (ask for part addresses, PUT each part). With `replace: <id>` the upload becomes that file's new content once it passed the checks. `?size=` needs [image sizes](/docs/media-library#image-sizes); an unknown name answers `unknown_image_size`.
+
 ## Other
 
 ```text

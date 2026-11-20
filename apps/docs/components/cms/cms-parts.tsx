@@ -397,91 +397,142 @@ function MediaBlock({ asset, name, src, alt, caption }: { asset?: string | null;
 
 const CALLOUT_ICON = { note: Info, tip: Lightbulb, warning: TriangleAlert } as const;
 
-function Blocks({ blocks }: { blocks: Block[] }) {
+/**
+ * Your own drawing of a kind of block. `children` is what the admin would
+ * have drawn, for wrapping or for kinds you leave alone.
+ *
+ *   renderBlocks(blocks, { code: ({ block }) => <Highlight lang={block.lang}>{block.v}</Highlight> })
+ */
+export type BlockComponents = { [K in Block["t"]]?: (props: { block: Extract<Block, { t: K }>; children: React.ReactNode }) => React.ReactNode };
+
+/** Draws parsed blocks (`parseMarkdown`), with your components where you give them. */
+export function renderBlocks(blocks: Block[], components?: BlockComponents): React.ReactNode {
+  return <Blocks blocks={blocks} components={components} />;
+}
+
+function Blocks({ blocks, components, lines }: { blocks: Block[]; components?: BlockComponents; lines?: boolean }) {
   return (
     <>
       {blocks.map((b, n) => {
-        switch (b.t) {
-          case "heading":
-            return b.level === 2 ? (
-              <h2 key={n} id={b.id} className="mb-2 mt-6 text-lg font-semibold">
-                <Inlines items={b.inline} />
-              </h2>
-            ) : (
-              <h3 key={n} id={b.id} className="mb-1.5 mt-4 font-semibold">
-                <Inlines items={b.inline} />
-              </h3>
-            );
-          case "p":
-            return (
-              <p key={n} className="my-2 leading-7">
-                <Inlines items={b.inline} />
-              </p>
-            );
-          case "list": {
-            const L = b.ordered ? "ol" : "ul";
-            return (
-              <L key={n} className={cn("my-2 space-y-1 pl-6 leading-7", b.ordered ? "list-decimal" : "list-disc")}>
-                {b.items.map((it, k) => (
-                  <li key={k}>
-                    <Inlines items={it} />
-                  </li>
-                ))}
-              </L>
-            );
-          }
-          case "quote": {
-            if (b.callout) {
-              const Icon = CALLOUT_ICON[b.callout];
-              return (
-                <div key={n} className={cn("my-3 flex gap-2 rounded-md border px-3 py-2.5 text-sm", b.callout === "warning" ? "border-amber-200 bg-amber-50" : "border-blue-200 bg-blue-50")}>
-                  <Icon aria-hidden className="mt-1 h-4 w-4 shrink-0" />
-                  <div className="min-w-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                    <Blocks blocks={b.blocks} />
-                  </div>
-                </div>
-              );
-            }
-            return (
-              <blockquote key={n} className="my-3 border-l-2 pl-3 text-muted-foreground">
-                <Blocks blocks={b.blocks} />
-              </blockquote>
-            );
-          }
-          case "code":
-            return (
-              <pre key={n} className="my-3 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-                <code>{b.v}</code>
-              </pre>
-            );
-          case "hr":
-            return <hr key={n} className="my-5" />;
-          case "media":
-            return <MediaBlock key={n} asset={b.asset} name={b.name} src={b.src} alt={b.alt} caption={b.caption} />;
-          case "links":
-            return (
-              <div key={n} className="my-3 flex flex-wrap gap-2">
-                {b.items.map((l, k) => (
-                  <AppLinkChip key={k} label={l.v} linkKey={l.key} />
-                ))}
-              </div>
-            );
-          default:
-            return null;
-        }
+        let el = <Block1 b={b} components={components} />;
+        const own = components?.[b.t] as ((p: { block: Block; children: React.ReactNode }) => React.ReactNode) | undefined;
+        if (own) el = <>{own({ block: b, children: el })}</>;
+        // Top-level blocks say which source lines they came from, so the editor can find them.
+        return lines && b.line ? (
+          <div key={n} data-line={b.line} data-end-line={b.endLine ?? b.line}>
+            {el}
+          </div>
+        ) : (
+          <React.Fragment key={n}>{el}</React.Fragment>
+        );
       })}
     </>
   );
 }
 
-/** Draws a document the way `./markdown` parses it. Swap in your own public components here. */
-export function MarkdownPreview({ title, summary, body, className }: { title?: string; summary?: string; body: string; className?: string }) {
-  const blocks = React.useMemo(() => parseMarkdown(body), [body]);
+function Block1({ b, components }: { b: Block; components?: BlockComponents }) {
+  switch (b.t) {
+    case "heading":
+      return b.level === 2 ? (
+        <h2 id={b.id} className="mb-2 mt-6 text-lg font-semibold">
+          <Inlines items={b.inline} />
+        </h2>
+      ) : (
+        <h3 id={b.id} className="mb-1.5 mt-4 font-semibold">
+          <Inlines items={b.inline} />
+        </h3>
+      );
+    case "p":
+      return (
+        <p className="my-2 leading-7">
+          <Inlines items={b.inline} />
+        </p>
+      );
+    case "list": {
+      const L = b.ordered ? "ol" : "ul";
+      return (
+        <L className={cn("my-2 space-y-1 pl-6 leading-7", b.ordered ? "list-decimal" : "list-disc")}>
+          {b.items.map((it, k) => (
+            <li key={k}>
+              <Inlines items={it} />
+            </li>
+          ))}
+        </L>
+      );
+    }
+    case "quote": {
+      if (b.callout) {
+        const Icon = CALLOUT_ICON[b.callout];
+        return (
+          <div className={cn("my-3 flex gap-2 rounded-md border px-3 py-2.5 text-sm", b.callout === "warning" ? "border-amber-200 bg-amber-50" : "border-blue-200 bg-blue-50")}>
+            <Icon aria-hidden className="mt-1 h-4 w-4 shrink-0" />
+            <div className="min-w-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+              <Blocks blocks={b.blocks} components={components} />
+            </div>
+          </div>
+        );
+      }
+      return (
+        <blockquote className="my-3 border-l-2 pl-3 text-muted-foreground">
+          <Blocks blocks={b.blocks} components={components} />
+        </blockquote>
+      );
+    }
+    case "code":
+      return (
+        <pre className="my-3 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
+          <code>{b.v}</code>
+        </pre>
+      );
+    case "hr":
+      return <hr className="my-5" />;
+    case "media":
+      return <MediaBlock asset={b.asset} name={b.name} src={b.src} alt={b.alt} caption={b.caption} />;
+    case "links":
+      return (
+        <div className="my-3 flex flex-wrap gap-2">
+          {b.items.map((l, k) => (
+            <AppLinkChip key={k} label={l.v} linkKey={l.key} />
+          ))}
+        </div>
+      );
+    default:
+      return null;
+  }
+}
+
+export interface MarkdownPreviewProps {
+  title?: string;
+  summary?: string;
+  body: string;
+  className?: string;
+  /** Your own components for some kinds of block (see `renderBlocks`). */
+  components?: BlockComponents;
+  /**
+   * Called with the source lines (1-based) of the block someone clicks.
+   * With it every top-level block carries `data-line` / `data-end-line`.
+   */
+  onPickLines?: (line: number, endLine: number) => void;
+}
+
+/** Draws a document the way `./markdown` parses it. Swap in your own public components with `components`. */
+export function MarkdownPreview({ title, summary, body, className, components, onPickLines }: MarkdownPreviewProps) {
+  const lines = !!onPickLines;
+  const blocks = React.useMemo(() => parseMarkdown(body, { lines }), [body, lines]);
+  const pick = (e: React.MouseEvent<HTMLElement>) => {
+    if (!onPickLines) return;
+    const at = e.target as HTMLElement;
+    // Links, players and buttons keep their own click; so does someone selecting text to copy.
+    if (at.closest("a, button, video, audio, input, summary") || (typeof window !== "undefined" && window.getSelection()?.toString())) return;
+    const block = at.closest<HTMLElement>("[data-line]");
+    if (block) onPickLines(Number(block.dataset.line), Number(block.dataset.endLine));
+  };
   return (
-    <article className={cn("text-[15px]", className)}>
+    // The click is a pointer shortcut: the same text is reachable in the editor with the keyboard.
+    <article className={cn("text-[15px]", lines && "[&>[data-line]]:-mx-1.5 [&>[data-line]]:cursor-pointer [&>[data-line]]:rounded-sm [&>[data-line]]:px-1.5 [&>[data-line]:hover]:bg-muted/60", className)} onClick={onPickLines ? pick : undefined}>
       {title ? <h1 className="mb-1 text-2xl font-bold">{title}</h1> : null}
       {summary ? <p className="mb-4 mt-0 text-muted-foreground">{summary}</p> : null}
-      <Blocks blocks={blocks} />
+      <Blocks blocks={blocks} components={components} lines={lines} />
     </article>
   );
 }

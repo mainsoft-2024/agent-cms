@@ -66,6 +66,29 @@ GET    /_cron                             때가 된 것을 실행 (Authorizatio
 
 [게시 흐름](/ko/docs/publishing-flow)을 보세요.
 
+## 파일
+
+[미디어 라이브러리](/ko/docs/media-library)가 있을 때만 동작해요. 없으면 `media_disabled`로 답해요.
+
+```text
+GET    /assets?store=&folder=&kind=image,video&q=&tag=&cursor=&limit=
+GET    /assets/_folders | POST {path, store?} | DELETE ?path=&store=
+POST   /assets/_import                    {url, folder?, store?, alt?, tags?}   https와 공개 주소만
+POST   /assets/uploads                    {name, mime, size, folder?, store?, alt?, tags?, replace?} → {asset, upload}
+GET    /assets/uploads/:id                어느 조각이 도착했는지   DELETE: 그만두기
+POST   /assets/uploads/:id/parts          {parts: [1, 2]} → 그 조각들의 서명된 주소
+POST   /assets/uploads/:id/complete       {width?, height?, duration?} → 검사를 거쳐 라이브러리에 들어가요
+GET    /assets/:id | PATCH {alt?, tags?, focal?: {x, y} | null} | DELETE ?confirm=1
+POST   /assets/:id/move                   {folder?, name?}
+POST   /assets/:id/share                  {ttl?: "1h" | "24h" | "7d"}
+POST   /assets/:id/thumb                  작은 그림을 요청 본문으로
+GET    /files/:id/:name                   파일로 302. ?thumb=1, ?download=1, ?size=<이름>
+GET    /stores/:store/files?prefix=&q=&cursor=   버킷에 있는 모든 것 (파일 관리자)
+POST   /stores/:store/files/_register | _move | _delete
+```
+
+`upload`는 `{kind: "single", url, headers}`(그 주소로 파일을 PUT)이거나 `{kind: "multipart", partSize, partCount}`(조각 주소를 받아 조각마다 PUT)예요. `replace: <id>`를 주면 올린 파일이 검사를 통과한 뒤 그 파일의 새 내용이 돼요. `?size=`는 [이미지 크기](/ko/docs/media-library#이미지-크기)를 켜야 하고, 없는 이름이면 `unknown_image_size`로 답해요.
+
 ## 그 밖
 
 ```text

@@ -54,7 +54,7 @@
  *   POST   /assets/:id/move {folder?, name?}
  *   POST   /assets/:id/thumb                          body: a WebP, JPEG or PNG up to 512KB
  *   DELETE /assets/:id                                409 asset_in_use with the documents; ?confirm=1 deletes anyway
- *   GET    /files/:id/:name                           redirect to the file (?thumb=1, ?download=1); private files need a session or key
+ *   GET    /files/:id/:name                           redirect to the file (?thumb=1, ?download=1, ?size=<name>); private files need a session or key
  *
  * File manager (the bucket as it is, also files the CMS did not upload):
  *
@@ -376,7 +376,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       }
 
       if (seg[0] === "files" && seg[1] && seg.length <= 3 && (m === "GET" || m === "HEAD")) {
-        const to = await core.assets.open(actor, seg[1], { thumb: q.get("thumb") === "1", download: q.get("download") === "1" });
+        const to = await core.assets.open(actor, seg[1], { thumb: q.get("thumb") === "1", download: q.get("download") === "1", size: q.get("size") });
         // A public address may be cached briefly; a signed one is for this request only.
         return new Response(null, { status: 302, headers: { location: to.url, "cache-control": to.visibility === "public" && q.get("download") !== "1" ? "public, max-age=300" : "private, no-store" } });
       }
@@ -430,6 +430,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
                 alt: z.string().max(500).optional(),
                 tags,
                 field: z.object({ collection: z.string(), path: z.string() }).nullable().optional(),
+                replace: z.string().max(40).nullable().optional(),
               })
             );
             return json(await assets.requestUpload(actor, b), 201);
@@ -452,7 +453,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const id = seg[1];
         if (id && !id.startsWith("_") && id !== "uploads") {
           if (seg.length === 2 && m === "GET") return json({ asset: await assets.get(actor, id) });
-          if (seg.length === 2 && m === "PATCH") return json({ asset: await assets.update(actor, id, await body(req, z.object({ alt: z.string().max(500).optional(), tags }))) });
+          if (seg.length === 2 && m === "PATCH") return json({ asset: await assets.update(actor, id, await body(req, z.object({ alt: z.string().max(500).optional(), tags, focal: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }).nullable().optional() }))) });
           if (seg.length === 2 && m === "DELETE") {
             await assets.remove(actor, id, { confirm: q.get("confirm") === "1" });
             return json({ ok: true });

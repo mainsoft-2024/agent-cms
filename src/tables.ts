@@ -182,6 +182,9 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       alt: text("alt").notNull().default(""),
       tags: jsonb("tags").$type<string[]>().notNull().default([]),
       thumbKey: text("thumb_key"),
+      focalX: real("focal_x"),
+      focalY: real("focal_y"),
+      rev: integer("rev").notNull().default(0),
       status: text("status").notNull().default("pending"),
       uploadId: text("upload_id"),
       createdBy: text("created_by"),
@@ -384,6 +387,9 @@ CREATE TABLE IF NOT EXISTS ${tbl("assets")} (
   "alt" text NOT NULL DEFAULT '',
   "tags" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "thumb_key" text,
+  "focal_x" real,
+  "focal_y" real,
+  "rev" integer NOT NULL DEFAULT 0,
   "status" text NOT NULL DEFAULT 'pending',
   "upload_id" text,
   "created_by" text,
@@ -473,6 +479,14 @@ CREATE TABLE IF NOT EXISTS ${tbl("presence")} (
   PRIMARY KEY ("document_id", "actor_id")
 );
 CREATE INDEX IF NOT EXISTS ${idx("presence_seen_idx")} ON ${tbl("presence")} ("seen_at");`.trim(),
+    },
+    {
+      version: 5,
+      name: "agent-cms 0.11.0: an image's focal point, replacing a file at the same address",
+      sql: `
+ALTER TABLE ${tbl("assets")} ADD COLUMN IF NOT EXISTS "focal_x" real;
+ALTER TABLE ${tbl("assets")} ADD COLUMN IF NOT EXISTS "focal_y" real;
+ALTER TABLE ${tbl("assets")} ADD COLUMN IF NOT EXISTS "rev" integer NOT NULL DEFAULT 0;`.trim(),
     },
   ];
 }

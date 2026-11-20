@@ -105,3 +105,82 @@ test("files: upload into the bucket view, select the file and make a link", asyn
   expect(res.status()).toBe(200);
   expect((await res.body()).length).toBeGreaterThan(50);
 });
+
+test("media: a photo loses its camera data, the focal point crops the cover, and a file is replaced at its address", async ({ page, request, isMobile }) => {
+  test.skip(!on || isMobile, "needs S3_ENDPOINT; desktop only");
+  const sharp = (await import("sharp")).default;
+  /** Left half red, right half blue: a crop shows which side it kept. */
+  const halves = async (w: number, h: number) => {
+    const left = await sharp({ create: { width: w / 2, height: h, channels: 3, background: "#ff0000" } }).png().toBuffer();
+    return sharp({ create: { width: w, height: h, channels: 3, background: "#0000ff" } }).composite([{ input: left, left: 0, top: 0 }]);
+  };
+  const photo = await (await halves(1600, 400)).jpeg().withExifMerge({ IFD0: { Make: "SecretCam" }, IFD3: { GPSLatitudeRef: "N", GPSLatitude: "37/1 33/1 59/1" } }).toBuffer();
+  expect(photo.toString("latin1")).toContain("SecretCam");
+  const name = `trip-${Date.now()}.jpg`;
+  await page.goto("/admin/media");
+  await page.getByLabel("Upload", { exact: true }).setInputFiles({ name, mimeType: "image/jpeg", buffer: photo });
+  await expect(page.getByText("Uploaded 1 files")).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name, exact: true }).click();
+  const panel = page.getByRole("complementary", { name });
+  await expect(panel.getByText(/1600×400/)).toBeVisible();
+  const id = /\/files\/([a-z0-9]{12})\//.exec((await panel.locator("img").getAttribute("src")) ?? "")![1];
+  const fileUrl = `/api/cms/files/${id}/${name}`;
+
+  // What is in the storage has no camera data, and is smaller than what was picked.
+  const stored = await (await request.get(fileUrl)).body();
+  expect(stored.toString("latin1")).not.toContain("SecretCam");
+  expect(stored.length).toBeLessThan(photo.length);
+  expect((await sharp(stored).metadata()).width).toBe(1600);
+
+  // A named size: made on first request, 800×450 cut around the middle (red on the left, blue on the right).
+  const colour = async (bytes: Buffer, x: number) => {
+    const { data, info } = await sharp(bytes).raw().toBuffer({ resolveWithObject: true });
+    const i = (Math.floor(info.height / 2) * info.width + x) * info.channels;
+    return data[i] > 180 ? "red" : data[i + 2] > 180 ? "blue" : "other";
+  };
+  const card = async () => (await request.get(`${fileUrl}?size=card`)).body();
+  const middle = await card();
+  expect([(await sharp(middle).metadata()).format, (await sharp(middle).metadata()).width, (await sharp(middle).metadata()).height]).toEqual(["webp", 711, 400]);
+  expect([await colour(middle, 20), await colour(middle, 690)]).toEqual(["red", "blue"]);
+  expect((await request.get(`${fileUrl}?size=poster`)).status()).toBe(404);
+
+  // Focal point: click near the right edge of the picture; the card is now cut from the blue side.
+  await panel.getByRole("button", { name: "Focal point", exact: true }).click();
+  const box = (await panel.locator("img").boundingBox())!;
+  await panel.locator("img").click({ position: { x: box.width * 0.9, y: box.height * 0.5 } });
+  await expect(panel.getByRole("button", { name: /^Focal point: 9\d% from the left, 5\d% from the top$/ })).toBeVisible();
+  const right = await card();
+  expect([await colour(right, 20), await colour(right, 690)]).toEqual(["blue", "blue"]);
+  // The dot sits where the click was.
+  const dot = (await panel.getByRole("button", { name: /^Focal point:/ }).boundingBox())!;
+  expect(Math.abs(dot.x + dot.width / 2 - (box.x + box.width * 0.9))).toBeLessThan(3);
+
+  // Used as a post's cover: the public page shows the card, and the browser gets a 16:9 picture.
+  const slug = `cover-${Date.now()}`;
+  expect((await request.post("/api/cms/collections/posts", { data: { doc: { slug, title: "Cover", body: "text", fields: { cover: id } }, publish: true } })).status()).toBe(201);
+  await page.goto(`/posts/${slug}`);
+  const cover = page.locator("img[data-cover]");
+  await expect(cover).toHaveAttribute("src", new RegExp(`/api/cms/files/${id}/.+\\?size=card$`));
+  await expect.poll(() => cover.evaluate((el: HTMLImageElement) => [el.naturalWidth, el.naturalHeight])).toEqual([711, 400]);
+  // The same point the click set (a click lands on a whole pixel, so within a percent).
+  const [px, py] = (await cover.evaluate((el) => getComputedStyle(el).objectPosition)).split(" ").map(parseFloat);
+  expect([Math.abs(px - 90) < 1.5, Math.abs(py - 50) < 1.5]).toEqual([true, true]);
+
+  // Replace: same address, new content (all blue, smaller). The panel shows the new size; old sizes are gone.
+  await page.goto("/admin/media");
+  await page.getByRole("button", { name, exact: true }).click();
+  const next = await sharp({ create: { width: 800, height: 200, channels: 3, background: "#0000ff" } }).jpeg().toBuffer();
+  await panel.locator('input[type="file"]').setInputFiles({ name: "other-name.jpg", mimeType: "image/jpeg", buffer: next });
+  const ask = page.getByRole("dialog", { name: `Replace the content of “${name}”?` });
+  await expect(ask.getByText("1 documents use this file and will show the new content.")).toBeVisible();
+  await ask.getByRole("button", { name: "Replace", exact: true }).click();
+  await expect(panel.getByText(/800×200/)).toBeVisible({ timeout: 20_000 });
+  await expect(panel.locator("img")).toHaveAttribute("src", /\?v=1$/);
+  await expect.poll(() => panel.locator("img").evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(800);
+  const now = await (await request.get(fileUrl)).body();
+  expect([(await sharp(now).metadata()).width, await colour(now, 20)]).toEqual([800, "blue"]);
+  const cardNow = await card();
+  expect([(await sharp(cardNow).metadata()).width, (await sharp(cardNow).metadata()).height, await colour(cardNow, 20)]).toEqual([356, 200, "blue"]);
+  // The focal point belongs to the file, not to its content: it is still there.
+  await expect(panel.getByRole("button", { name: /^Focal point: 9\d%/ })).toBeDisabled();
+});

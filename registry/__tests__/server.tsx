@@ -24,7 +24,7 @@ function tinyPng(): Uint8Array {
 
 export const editor2: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u2", label: "Park", isAdmin: true };
 
-export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number } = {}) {
+export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean } = {}) {
   /** Who the browser is signed in as (tests switch it). */
   const session = { user: admin };
   const stores = { public: new MemoryStorage({ name: "public", publicUrl: "https://cdn.example.com" }), private: new MemoryStorage({ name: "private" }) };
@@ -57,6 +57,7 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     media: o.media
       ? {
           stores: { public: { visibility: "public", adapter: stores.public }, private: { visibility: "private", adapter: stores.private } },
+          stripMetadata: o.stripMetadata,
           // Imports from a URL: every host is "public" and answers with a small PNG.
           resolveHost: async (host: string) => (host === "intranet.example" ? ["10.0.0.5"] : ["93.184.216.34"]),
           fetch: (async () => new Response(tinyPng() as BodyInit, { headers: { "content-type": "image/png" } })) as typeof fetch,

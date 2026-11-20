@@ -1,14 +1,15 @@
-// agent-cms registry: cms-doc-editor (0.10.1). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-doc-editor (0.11.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // One document: the info form (from `_schema`), the markdown body with a
-// live preview, autosave, problems from `diagnose()`, agents' changes to
+// live preview that follows the text (and finds its lines when clicked),
+// the order of the sections, autosave, problems from `diagnose()`, agents' changes to
 // accept or revert, save / publish (now or at a set time), review requests,
 // comments, who else has it open, preview links, and a merge screen when
 // someone saved first and the two edits overlap.
 "use client";
 
 import * as React from "react";
-import { Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, MessageSquare, MoreHorizontal } from "lucide-react";
+import { ArrowUpDown, Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, MessageSquare, MoreHorizontal } from "lucide-react";
 import { isCmsRemoteError, type CollectionSchema, type CommentThread, type DocRelease } from "@mainsoft/agent-cms/client";
 import { mergeDocs, resolveDocMerge, splitLines } from "@mainsoft/agent-cms/diff";
 import { docState, type CmsDoc, type AutosaveState, type Presence } from "@mainsoft/agent-cms/types";
@@ -23,6 +24,7 @@ import { errorMessage } from "./cms-messages";
 import { CmsFieldForm, problemKey, type FieldProblem } from "./cms-field-form";
 import { AddToReleaseDialog, BodyBackdrop, CommentsPanel, offsetOf, placeOf, PublishButton, ReviewStrip, ScheduleStrip, type BodyCursor } from "./cms-flow";
 import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
+import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-tools";
 import { pasteAsMarkdown } from "./cms-paste";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText } from "./cms-parts";
@@ -467,6 +469,55 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   }, [client, collection, slugNow, presenceMs, mode.kind]);
 
   // ── render ──
+  // The body beside its preview: scrolling together, a click in the preview finds the lines, and the section cards.
+  const previewRef = React.useRef<HTMLDivElement>(null);
+  const [outline, setOutline] = React.useState(false);
+  const wide = !mobile && !loading && !!schema && !loadError && mode.kind !== "merge";
+  const sync = usePreviewSync(bodyRef, previewRef, content.body, wide, width);
+  // Wide screens: the row with the text and the preview is as tall as the window minus the header and the
+  // status line, which both stay in place. The info form scrolls away above it once you work in the body.
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const headRef = React.useRef<HTMLDivElement>(null);
+  const rowRef = React.useRef<HTMLDivElement>(null);
+  const footRef = React.useRef<HTMLDivElement>(null);
+  const [rowHeight, setRowHeight] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    const [root, head, foot] = [rootRef.current, headRef.current, footRef.current];
+    if (!wide || !root || !head || !foot) return;
+    const fit = () => setRowHeight(Math.max(360, root.clientHeight - head.offsetHeight - foot.offsetHeight));
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(fit);
+    for (const el of [root, head, foot]) ro.observe(el);
+    return () => ro.disconnect();
+  }, [wide]);
+  /** Scrolling or typing in the body: give it the whole window (the form is one scroll up). */
+  const showBody = React.useCallback(() => {
+    const [root, head, row] = [rootRef.current, headRef.current, rowRef.current];
+    if (!root || !head || !row) return;
+    const top = row.offsetTop - head.offsetHeight;
+    if (root.scrollTop >= top - 1) return;
+    if (typeof root.scrollTo === "function") root.scrollTo({ top, behavior: "smooth" });
+    else root.scrollTop = top;
+  }, []);
+  const sectionCount = React.useMemo(() => bodySections(content.body).length, [content.body]);
+  const pendingPick = React.useRef<[number, number] | null>(null);
+  const pickLines = (line: number, endLine: number) => {
+    setOutline(false);
+    if (mobile && mobileTab !== "edit") {
+      // The text box is on the other tab: go there first.
+      pendingPick.current = [line, endLine];
+      setMobileTab("edit");
+    } else requestAnimationFrame(() => sync.select(line, endLine));
+  };
+  React.useEffect(() => {
+    const p = pendingPick.current;
+    if (!p || mobileTab !== "edit") return;
+    pendingPick.current = null;
+    const id = requestAnimationFrame(() => sync.select(p[0], p[1]));
+    return () => cancelAnimationFrame(id);
+  }, [mobileTab, sync]);
+
   if (mode.kind === "merge" && doc)
     return (
       <CmsMerge
@@ -718,6 +769,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           {t("field_body")}
         </Label>
         <span className="flex-1" />
+        {canWrite && sectionCount > 1 ? (
+          <Button type="button" variant="ghost" size="sm" aria-pressed={outline} aria-label={t("sections_order")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", outline && "bg-muted")} onClick={() => setOutline((v) => !v)}>
+            <ArrowUpDown aria-hidden className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{t("sections_order")}</span>
+          </Button>
+        ) : null}
         {me?.media && canWrite ? (
           <Button type="button" variant="ghost" size="sm" className="-my-1 h-7 gap-1.5 px-2 text-xs text-foreground" onClick={() => setPicking(true)}>
             <ImagePlus aria-hidden className="h-3.5 w-3.5" />
@@ -728,19 +785,40 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       </div>
       <CmsMediaPicker open={picking} onOpenChange={setPicking} onPick={insertAsset} />
       {blocks}
-      <div className="relative flex min-h-[360px] flex-1 flex-col">
+      {outline && sectionCount > 1 ? (
+        <SectionsOrder
+          body={content.body}
+          className="min-h-[360px]"
+          onChange={(body, m) => {
+            setContent({ ...content, body });
+            setStatus({ text: t("section_moved", { title: m.title, n: m.place, total: m.total }), tone: "muted" });
+          }}
+          onOpen={(s) => {
+            const line = lineAt(content.body, s.start);
+            pickLines(line, line);
+          }}
+        />
+      ) : null}
+      <div className={cn("relative flex min-h-[360px] flex-1 flex-col", outline && sectionCount > 1 && "hidden")}>
         {marks.length || cursors.length ? <BodyBackdrop box={bodyRef} text={content.body} marks={marks} cursors={cursors} /> : null}
         <Textarea
           ref={bodyRef}
           id={bodyId}
-          onSelect={(e) => (caretRef.current = [e.currentTarget.selectionStart, e.currentTarget.selectionEnd])}
+          onSelect={(e) => {
+            caretRef.current = [e.currentTarget.selectionStart, e.currentTarget.selectionEnd];
+            sync.reveal(lineAt(e.currentTarget.value, e.currentTarget.selectionStart));
+          }}
           value={content.body}
           readOnly={!canWrite}
           spellCheck={false}
           aria-invalid={bodyInvalid || undefined}
           aria-describedby={bodyErr?.length ? `${bodyId}-err` : undefined}
           className="relative min-h-[360px] flex-1 resize-none rounded-none border-0 bg-transparent font-mono text-[13px] leading-6 shadow-none focus-visible:ring-0 dark:bg-transparent"
-          onChange={(e) => setContent({ ...content, body: e.target.value })}
+          onChange={(e) => {
+            setContent({ ...content, body: e.target.value });
+            showBody();
+          }}
+          onScroll={showBody}
           onPaste={(e) => {
             if (!canWrite) return;
             const r = pasteAsMarkdown({ html: e.clipboardData.getData("text/html"), plain: e.clipboardData.getData("text/plain") });
@@ -785,8 +863,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           />
         </div>
       ) : null}
-      <div className="flex-1 overflow-auto">
-        <MarkdownPreview title={content.title} summary={content.summary} body={content.body} className={cn("mx-auto px-5 py-4", width === "375" ? "max-w-[375px]" : width === "768" ? "max-w-[768px]" : "max-w-none")} />
+      <div ref={previewRef} className="flex-1 overflow-auto" onScroll={showBody}>
+        <MarkdownPreview title={content.title} summary={content.summary} body={content.body} onPickLines={pickLines} className={cn("mx-auto px-5 py-4", width === "375" ? "max-w-[375px]" : width === "768" ? "max-w-[768px]" : "max-w-none")} />
       </div>
     </section>
   );
@@ -938,46 +1016,50 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       </div>
     );
 
+  // Wide screens: the editor is as tall as the window, so the text and the preview scroll side by side
+  // (and follow each other). Under a top bar of your own, pass e.g. className="h-[calc(100dvh-4rem)]".
   return (
-    <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
-      <PageHeader title={title} crumbs={[schema.label]} after={stateBits}>
-        <People people={others} className="mr-1" />
-        {doc && canWrite ? (
-          <Button type="button" variant="ghost" className="gap-1.5" aria-pressed={commentsOpen} onClick={() => setCommentsOpen((v) => !v)}>
-            <MessageSquare aria-hidden className="h-4 w-4" />
-            {openThreads.length ? t("comments_n", { n: openThreads.length }) : t("comments")}
-          </Button>
-        ) : null}
-        {publicUrl ? (
-          <a href={publicUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 px-2 text-sm underline-offset-2 hover:underline">
-            <ExternalLink aria-hidden className="h-4 w-4" />
-            {t("public_page")}
-          </a>
-        ) : null}
-        {previewAllowed ? (
-          <Button type="button" variant="ghost" className="gap-1.5" onClick={() => setPreviewOpen(true)}>
-            <LinkIcon aria-hidden className="h-4 w-4" />
-            {t("preview_link")}
-          </Button>
-        ) : null}
-        {doc && onOpenVersions ? (
-          <Button type="button" variant="ghost" className="gap-1.5" onClick={() => onOpenVersions(collection, doc.slug)}>
-            <History aria-hidden className="h-4 w-4" />
-            {t("versions")}
-          </Button>
-        ) : null}
-        {canRelease ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon" })} aria-label={t("more")}>
-              <MoreHorizontal aria-hidden className="h-4 w-4" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
-        {saveButtons()}
-      </PageHeader>
+    <div ref={rootRef} className={cn("relative flex h-dvh min-h-0 flex-none flex-col overflow-y-auto", className)}>
+      <div ref={headRef} className="sticky top-0 z-20 bg-background">
+        <PageHeader title={title} crumbs={[schema.label]} after={stateBits}>
+          <People people={others} className="mr-1" />
+          {doc && canWrite ? (
+            <Button type="button" variant="ghost" className="gap-1.5" aria-pressed={commentsOpen} onClick={() => setCommentsOpen((v) => !v)}>
+              <MessageSquare aria-hidden className="h-4 w-4" />
+              {openThreads.length ? t("comments_n", { n: openThreads.length }) : t("comments")}
+            </Button>
+          ) : null}
+          {publicUrl ? (
+            <a href={publicUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 px-2 text-sm underline-offset-2 hover:underline">
+              <ExternalLink aria-hidden className="h-4 w-4" />
+              {t("public_page")}
+            </a>
+          ) : null}
+          {previewAllowed ? (
+            <Button type="button" variant="ghost" className="gap-1.5" onClick={() => setPreviewOpen(true)}>
+              <LinkIcon aria-hidden className="h-4 w-4" />
+              {t("preview_link")}
+            </Button>
+          ) : null}
+          {doc && onOpenVersions ? (
+            <Button type="button" variant="ghost" className="gap-1.5" onClick={() => onOpenVersions(collection, doc.slug)}>
+              <History aria-hidden className="h-4 w-4" />
+              {t("versions")}
+            </Button>
+          ) : null}
+          {canRelease ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon" })} aria-label={t("more")}>
+                <MoreHorizontal aria-hidden className="h-4 w-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          {saveButtons()}
+        </PageHeader>
+      </div>
       {strips}
       {agentBanner || restoreBanner ? (
         <div className="flex flex-col gap-2 px-6 pt-2.5">
@@ -986,12 +1068,14 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         </div>
       ) : null}
       <div className="border-b px-6 py-3.5">{form}</div>
-      <div className="flex min-h-0 flex-1 divide-x">
+      <div ref={rowRef} className={cn("flex min-h-[360px] divide-x", rowHeight === null ? "flex-1" : "shrink-0")} style={rowHeight === null ? undefined : { height: rowHeight }}>
         {bodyPane}
         {previewPane(true)}
         {commentsOpen ? comments(() => setCommentsOpen(false)) : null}
       </div>
-      {problemsFoot}
+      <div ref={footRef} className="sticky bottom-0 z-10 bg-background">
+        {problemsFoot}
+      </div>
       {previewDialog}
     </div>
   );

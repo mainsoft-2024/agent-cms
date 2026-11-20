@@ -68,6 +68,8 @@ export const ERROR_CODES = {
   import_blocked: "invalid",
   import_failed: "invalid",
   asset_rejected: "invalid",
+  asset_replace_type: "invalid",
+  unknown_image_size: "not_found",
   asset_missing: "invalid",
   asset_wrong_kind: "invalid",
   asset_alt_missing: "invalid",

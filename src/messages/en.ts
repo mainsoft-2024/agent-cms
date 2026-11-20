@@ -58,6 +58,8 @@ export const en: Messages = {
   import_blocked: "That address cannot be fetched",
   import_failed: "Could not fetch the file ({reason})",
   asset_rejected: "This file did not pass the check",
+  asset_replace_type: "A file can only be replaced by one of the same type ({mime})",
+  unknown_image_size: "There is no image size named “{size}”",
   asset_missing: "The file {id} does not exist",
   asset_wrong_kind: "The file {id} is not a kind this field takes",
   asset_alt_missing: "The image on line {line} has no alt text",

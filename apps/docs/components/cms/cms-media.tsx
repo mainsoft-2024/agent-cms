@@ -1,4 +1,4 @@
-// agent-cms registry: cms-media (0.8.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-media (0.11.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // The media library: stores and folders on the left, files as a grid or a
 // list, a panel with one file's details (alt text, tags, where it is used),
@@ -7,7 +7,7 @@
 "use client";
 
 import * as React from "react";
-import { Copy, Download, Folder, FolderPlus, LayoutGrid, Link as LinkIcon, List, Pencil, Search, Trash2, X } from "lucide-react";
+import { Copy, Crosshair, Download, Folder, FolderPlus, LayoutGrid, Link as LinkIcon, List, Pencil, Replace, Search, Trash2, X } from "lucide-react";
 import type { AssetDetail, AssetView, FolderTree } from "@mainsoft/agent-cms/client";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -51,7 +51,12 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
     list.reload();
     tree.reload();
   };
-  const uploads = useUploads(refresh);
+  /** Bumped when the open file's content was replaced, so its panel loads it again. */
+  const [stamp, setStamp] = React.useState(0);
+  const uploads = useUploads((a) => {
+    refresh();
+    if (a.rev) (forgetAsset(client, a.id), setStamp((n) => n + 1));
+  });
   const options = folderOptions(tree.data ?? [], t);
   const tags = React.useMemo(() => [...new Set([...(tag ? [tag] : []), ...list.assets.flatMap((a) => a.tags)])].sort(), [list.assets, tag]);
   const total = list.counts ? (kind === "all" ? list.counts.all : kind === "document" ? list.counts.document + list.counts.other : list.counts[kind]) : 0;
@@ -230,6 +235,8 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
             id={openId}
             basePath={basePath}
             docHref={docHref}
+            stamp={stamp}
+            onReplace={(file) => uploads.add([file], { replace: openId })}
             onClose={() => setOpenId(null)}
             onChanged={(a) => list.setState((s) => ({ ...s, assets: s.assets.map((x) => (x.id === a.id ? { ...x, ...a } : x)) }))}
             onDeleted={() => {
@@ -356,10 +363,31 @@ function ImportDialog({ open, onOpenChange, onImport }: { open: boolean; onOpenC
 
 // ── one file ─────────────────────────────────────────────────────────────────
 
-export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDeleted }: { id: string; basePath: string; docHref?: CmsMediaProps["docHref"]; onClose: () => void; onChanged: (a: AssetView) => void; onDeleted: () => void }) {
+export interface AssetPanelProps {
+  id: string;
+  basePath: string;
+  docHref?: CmsMediaProps["docHref"];
+  onClose: () => void;
+  onChanged: (a: AssetView) => void;
+  onDeleted: () => void;
+  /** Send this file as the new content of the open one. Without it there is no "Replace" button. */
+  onReplace?: (file: File) => void;
+  /** Change it to load the file again (its content was replaced). */
+  stamp?: number;
+}
+
+/** Arrow keys move the focal point by this much (Shift: five times). */
+const FOCAL_STEP = 0.02;
+
+export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDeleted, onReplace, stamp = 0 }: AssetPanelProps) {
   const { client, t, me, appUrl, slots, locale } = useCms();
   const mobile = useIsMobile();
-  const { data: asset, error, setData } = useAsync<AssetDetail>(() => client.asset(id), [client, id]);
+  const { data: asset, error, setData } = useAsync<AssetDetail>(() => client.asset(id), [client, id, stamp]);
+  /** The file chosen as new content, waiting for a yes. */
+  const [incoming, setIncoming] = React.useState<File | null>(null);
+  const replaceInput = React.useRef<HTMLInputElement>(null);
+  /** Setting the focal point (the picture takes clicks). */
+  const [aiming, setAiming] = React.useState(false);
   const [alt, setAlt] = React.useState<string | null>(null);
   const [tagText, setTagText] = React.useState("");
   const [saveError, setSaveError] = React.useState<unknown>(null);
@@ -384,7 +412,7 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
   };
   const store = me?.media?.stores.find((s) => s.name === asset?.store);
   const can = store?.can;
-  const save = async (patch: { alt?: string; tags?: string[] }) => {
+  const save = async (patch: { alt?: string; tags?: string[]; focal?: { x: number; y: number } | null }) => {
     try {
       const next = await client.updateAsset(id, patch);
       forgetAsset(client, id);
@@ -395,6 +423,8 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
       setSaveError(e);
     }
   };
+  const focal = asset && asset.focalX !== null && asset.focalY !== null ? { x: asset.focalX, y: asset.focalY } : null;
+  const point = focal ?? { x: 0.5, y: 0.5 };
   const body = !asset ? (
     <StatusText tone={error ? "error" : "muted"}>{error ? errorMessage(error, t) : t("loading")}</StatusText>
   ) : (
@@ -438,7 +468,57 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
       ) : asset.kind === "audio" ? (
         <audio controls preload="metadata" src={client.fileUrl(asset)} className="w-full" />
       ) : asset.kind === "image" ? (
-        <img src={client.fileUrl(asset)} alt={asset.alt} className="max-h-64 w-full rounded-md border bg-muted object-contain" />
+        <div className="grid gap-1.5">
+          <div className="flex justify-center overflow-hidden rounded-md border bg-muted">
+            {/* The box is exactly the picture, so a place in the box is a place in the picture. */}
+            <div className="relative">
+              {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- the point itself is a button that takes the arrow keys */}
+              <img
+                src={client.fileUrl(asset)}
+                alt={asset.alt}
+                className={cn("block max-h-64 max-w-full", aiming && "cursor-crosshair")}
+                onClick={
+                  aiming
+                    ? (e) => {
+                        const box = e.currentTarget.getBoundingClientRect();
+                        if (box.width && box.height) void save({ focal: { x: (e.clientX - box.left) / box.width, y: (e.clientY - box.top) / box.height } });
+                      }
+                    : undefined
+                }
+              />
+              {aiming || focal ? (
+                <button
+                  type="button"
+                  disabled={!aiming}
+                  aria-label={t("media_focal_at", { x: Math.round(point.x * 100), y: Math.round(point.y * 100) })}
+                  className={cn(
+                    "absolute h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-primary/80 shadow outline-none ring-1 ring-black/40 focus-visible:ring-2 focus-visible:ring-ring",
+                    !aiming && "pointer-events-none h-3 w-3",
+                    aiming && !focal && "border-dashed bg-primary/40"
+                  )}
+                  style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
+                  onKeyDown={(e) => {
+                    const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+                    if (!d) return;
+                    e.preventDefault();
+                    const k = FOCAL_STEP * (e.shiftKey ? 5 : 1);
+                    void save({ focal: { x: Math.min(1, Math.max(0, point.x + d[0] * k)), y: Math.min(1, Math.max(0, point.y + d[1] * k)) } });
+                  }}
+                />
+              ) : null}
+            </div>
+          </div>
+          {aiming ? (
+            <p className="flex items-start gap-2 text-xs text-muted-foreground">
+              <span className="flex-1">{t("media_focal_help")}</span>
+              {focal ? (
+                <button type="button" className="shrink-0 rounded-sm underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void save({ focal: null })}>
+                  {t("media_focal_clear")}
+                </button>
+              ) : null}
+            </p>
+          ) : null}
+        </div>
       ) : (
         <AssetThumb asset={asset} className="aspect-video w-full" />
       )}
@@ -452,6 +532,31 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
           <Download aria-hidden className="h-3.5 w-3.5" />
           {t("media_download")}
         </a>
+        {can?.write && asset.kind === "image" && asset.mime !== "image/svg+xml" ? (
+          <Button type="button" variant="outline" size="sm" aria-pressed={aiming} className={cn("h-8 px-2.5", aiming && "bg-muted")} onClick={() => setAiming((v) => !v)}>
+            <Crosshair aria-hidden className="h-3.5 w-3.5" />
+            {t("media_focal")}
+          </Button>
+        ) : null}
+        {can?.delete && onReplace ? (
+          <>
+            <input
+              ref={replaceInput}
+              type="file"
+              hidden
+              // The address keeps its ending, so only the same kind of file is offered.
+              accept={/\.[a-z0-9]+$/i.exec(asset.name)?.[0] ?? asset.mime}
+              onChange={(e) => {
+                setIncoming(e.target.files?.[0] ?? null);
+                e.target.value = "";
+              }}
+            />
+            <Button type="button" variant="outline" size="sm" className="h-8 px-2.5" onClick={() => replaceInput.current?.click()}>
+              <Replace aria-hidden className="h-3.5 w-3.5" />
+              {t("media_replace")}
+            </Button>
+          </>
+        ) : null}
         <span className="flex-1" />
         {can?.delete ? (
           <Button type="button" variant="ghost" size="sm" className="h-8 px-2.5 text-destructive hover:text-destructive" onClick={() => setAsking(true)}>
@@ -530,6 +635,26 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
         {asset.usage.length ? <UsageList asset={asset} basePath={basePath} docHref={docHref} /> : asset.usageHidden ? null : <p className="text-sm text-muted-foreground">{t("none")}</p>}
         {asset.usageHidden ? <p className="text-xs text-muted-foreground">{t("media_usage_hidden", { n: asset.usageHidden })}</p> : null}
       </div>
+      <ConfirmDialog
+        open={!!incoming}
+        onOpenChange={(o) => !o && setIncoming(null)}
+        title={t("media_replace_title", { name: asset.name })}
+        description={t("media_replace_text")}
+        confirmLabel={t("media_replace")}
+        onConfirm={() => {
+          if (incoming) onReplace?.(incoming);
+          setIncoming(null);
+        }}
+      >
+        {incoming ? (
+          <div className="grid gap-1.5 text-sm">
+            <p className="truncate">
+              <span className="text-muted-foreground">{t("media_replace_with")}</span> {incoming.name} <span className="tabular-nums text-muted-foreground">({fileSize(incoming.size)})</span>
+            </p>
+            {asset.usage.length + asset.usageHidden ? <p className="font-medium">{t("media_replace_used", { n: asset.usage.length + asset.usageHidden })}</p> : null}
+          </div>
+        ) : null}
+      </ConfirmDialog>
       <ConfirmDialog
         open={asking}
         onOpenChange={setAsking}

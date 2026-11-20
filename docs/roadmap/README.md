@@ -13,12 +13,12 @@
 | 1 | 미디어 라이브러리 | 0.8.0 | [0-media-library.md](0-media-library.md) | media-library v1 (승인됨) |
 | 1-2 | 파일 관리자, Vercel Blob, 이미지 변환 | 0.9.0 | [1-media-and-files.md](1-media-and-files.md) | media-library v1의 8번 화면 |
 | 2 | 편집과 게시 흐름 | 0.10.0 | [2-editing-and-publishing.md](2-editing-and-publishing.md) | publish-flow |
-| 3 | 연동과 운영 | 0.11.0 | [3-integrations-and-ops.md](3-integrations-and-ops.md) | ops-integrations |
-| 4 | 콘텐츠 모델 | 0.12.0 | [4-content-model.md](4-content-model.md) | content-model |
-| 5 | 검색과 AI (모델을 부르는 기능은 빼고) | 0.13.0 | [5-search-and-ai.md](5-search-and-ai.md) | search-ai |
+| 3 | 연동과 운영 | 0.12.0 | [3-integrations-and-ops.md](3-integrations-and-ops.md) | ops-integrations |
+| 4 | 콘텐츠 모델 | 0.13.0 | [4-content-model.md](4-content-model.md) | content-model |
+| 5 | 검색과 AI (모델을 부르는 기능은 빼고) | 0.14.0 | [5-search-and-ai.md](5-search-and-ai.md) | search-ai |
 | 6 | 오픈소스 공개 준비 | 1.0.0 | [6-open-source.md](6-open-source.md) | 없음 |
 
-버전 번호는 임시다. 묶음이 크면 둘로 나눠 낼 수 있다 (예: 0.11.0과 0.11.1). 순서는 바꾸지 않는다.
+버전 번호는 임시다. 묶음이 크면 둘로 나눠 낼 수 있다 (예: 0.12.0과 0.12.1). 순서는 바꾸지 않는다. 0.11.0은 묶음 1과 2에서 남았던 항목(35, 36, 48, 109, 110, 130)을 낸 버전이라, 묶음 3부터 한 칸씩 밀렸다.
 
 ## 작업 규칙
 
