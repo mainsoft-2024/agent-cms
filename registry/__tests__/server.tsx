@@ -24,7 +24,7 @@ function tinyPng(): Uint8Array {
 
 export const editor2: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u2", label: "Park", isAdmin: true };
 
-export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean; webhooks?: boolean; plugins?: Parameters<typeof createCms>[0]["plugins"] } = {}) {
+export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean; webhooks?: boolean; plugins?: Parameters<typeof createCms>[0]["plugins"]; users?: boolean; codedWrite?: boolean } = {}) {
   /** Who the browser is signed in as (tests switch it). */
   const session = { user: admin };
   /** What the outside address answers to a webhook (tests change it), and what it was sent. */
@@ -47,7 +47,10 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     }),
     admin: { fields: { plans: { label: "Plans", help: "Who sees this" }, order: { label: "Order", help: "0 to 100" }, ...(o.media ? { cover: { label: "Cover", widget: "image" as const } } : {}) } },
   });
-  const notices = defineCollection({ slug: "notices", label: "Notices", visibility: "internal", access: { read: ({ actor }) => actor.kind !== "anonymous" } });
+  const notices = defineCollection({ slug: "notices", label: "Notices", visibility: "internal", access: { read: ({ actor }) => actor.kind !== "anonymous", ...(o.codedWrite ? { write: ({ actor }: { actor: Actor }) => actor.kind === "user" && !!actor.isAdmin } : {}) } });
+  /** The people the app knows (for the roles screen's search). */
+  const people = [{ id: "u7", label: "Park Jiwoo" }, { id: "u8", label: "Lee Minho" }];
+  const notified: string[] = [];
   const cms = createCms({
     repo: new MemoryRepo(),
     collections: [guide, notices] as const,
@@ -57,6 +60,9 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     timeZone: o.timeZone,
     secretsKey: o.webhooks ? "s".repeat(40) : undefined,
     plugins: o.plugins,
+    cronSecret: "c".repeat(32),
+    automations: { actions: { notify: (c) => void notified.push(`${c.automation.name}:${c.doc?.slug ?? "-"}`) } },
+    users: o.users ? { search: (q: string) => people.filter((p) => p.label.toLowerCase().includes(q.toLowerCase())), get: (id: string) => people.find((p) => p.id === id) ?? null } : undefined,
     webhooks: {
       resolveHost: async (host: string) => (host === "intranet.example" ? ["10.0.0.5"] : ["93.184.216.34"]),
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -91,7 +97,7 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     requests.push({ method: init?.method ?? "GET", path: url.slice(BASE.length), body });
     return handler(new Request(url, init));
   }) as typeof fetch;
-  return { cms, hooks, fetch: fetchFn, requests, stores, addFile, session };
+  return { cms, hooks, fetch: fetchFn, requests, stores, addFile, session, notified };
 }
 
 export type Server = ReturnType<typeof makeServer>;

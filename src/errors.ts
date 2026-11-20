@@ -80,6 +80,7 @@ export const ERROR_CODES = {
   // concurrency
   conflict_version: "conflict",
   slug_taken: "conflict",
+  name_taken: "conflict",
   asset_in_use: "conflict",
   folder_not_empty: "conflict",
   slug_in_trash: "conflict",

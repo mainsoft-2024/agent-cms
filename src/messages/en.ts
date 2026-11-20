@@ -46,6 +46,7 @@ export const en: Messages = {
   schema_outdated: "The database schema is v{found}, this version needs v{expected}. Run: {command}",
   conflict_version: "Someone else saved v{current} since you read v{expected}. Reload or merge, then save",
   slug_taken: "The slug {slug} is already used",
+  name_taken: "The name {name} is already used",
   asset_not_found: "File not found",
   unknown_store: "Unknown file store: {store}",
   forbidden_media: "You are not allowed to do that with files in this store",

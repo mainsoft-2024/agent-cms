@@ -1,0 +1,293 @@
+// 0.13.0 screens: automations, roles, the dashboard, import and export.
+import "./setup";
+import assert from "node:assert/strict";
+import { afterEach, test } from "node:test";
+import * as React from "react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { isCmsError } from "../../src/errors";
+import type { Actor } from "../../src/types";
+import { CmsAutomations } from "../cms/cms-automations";
+import { CmsDashboard } from "../cms/cms-dashboard";
+import { ko } from "../cms/cms-messages";
+import { CmsRoles } from "../cms/cms-roles";
+import { CmsTransfer } from "../cms/cms-transfer";
+import { setMobile } from "./setup";
+import { admin, agent, axeViolations, makeServer, renderWith } from "./server";
+
+afterEach(() => {
+  cleanup();
+  setMobile(false);
+});
+
+const code = async (p: Promise<unknown>) => p.then(() => "ok", (e) => (isCmsError(e) ? e.code : String(e)));
+const tick = () => new Promise((r) => setTimeout(r, 10));
+
+test("automations: make one on the screen; a publish that matches runs on the next cron call, another is skipped; try it; delete", async () => {
+  const s = makeServer();
+  const user = userEvent.setup();
+  renderWith(s, <CmsAutomations />);
+  await screen.findByText(/^No automations yet\./);
+
+  await user.click(screen.getByRole("button", { name: "New automation" }));
+  const name = (await screen.findByLabelText("Name")) as HTMLInputElement;
+  assert.equal(name.value, "New automation 1");
+  await screen.findByText(/^It has not run yet\./);
+  await user.clear(name);
+  await user.type(name, "News keyword");
+  await user.selectOptions(screen.getByLabelText("When"), "doc.published");
+  await user.selectOptions(screen.getByLabelText("Collection"), "guide");
+  await user.click(screen.getByRole("button", { name: "Add a condition" }));
+  await user.type(screen.getByLabelText("Value"), "start");
+  await user.click(screen.getByRole("button", { name: "Add an action" }));
+  await user.type(screen.getByLabelText("Keyword"), "news");
+  await user.click(screen.getByRole("button", { name: "Add an action" }));
+  await user.selectOptions(screen.getAllByLabelText("Do")[1], "call");
+  await user.selectOptions(screen.getByLabelText("Target"), "notify");
+  await user.click(screen.getByRole("checkbox", { name: "On" }));
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Saved.");
+  const nav = screen.getByRole("navigation", { name: "Automations" });
+  await within(nav).findByText("News keyword");
+  assert.match(nav.textContent ?? "", /A document is published/);
+  assert.deepEqual(await axeViolations(), []);
+
+  // Nothing runs inside the request that published; the cron call does the work.
+  await s.cms.create(admin, "guide", { slug: "hello", title: "Hello", category: "start", body: "x\n" }, { publish: true });
+  await s.cms.create(admin, "guide", { slug: "other", title: "Other", category: "integrations", body: "x\n" }, { publish: true });
+  await tick();
+  assert.deepEqual((await s.cms.get(admin, "guide", "hello", { draft: true })).keywords, []);
+  await s.cms.cron();
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  const runs = screen.getByRole("list", { name: "Runs" });
+  await waitFor(() => assert.equal(within(runs).getAllByRole("listitem").length, 2));
+  assert.deepEqual(
+    within(runs)
+      .getAllByRole("listitem")
+      .map((li) => (li.textContent ?? "").replace(/(Hello|Other).*$/, "$1"))
+      .sort(),
+    ["DoneHello", "SkippedOther"]
+  );
+  const hello = await s.cms.get(admin, "guide", "hello", { draft: true });
+  assert.deepEqual([hello.keywords, hello.updatedBy, s.notified], [["news"], "automation: News keyword", ["News keyword:hello"]]);
+  await waitFor(() => assert.match(nav.textContent ?? "", /A document is published · (Done|Skipped)/));
+
+  // "Try it" changes nothing and says what would happen.
+  const before = s.requests.length;
+  await user.type(screen.getByLabelText("Document address (slug)"), "other");
+  await user.click(screen.getByRole("button", { name: "Try it" }));
+  await screen.findByText("“Other” does not match the conditions, so it would be skipped.");
+  await user.clear(screen.getByLabelText("Document address (slug)"));
+  await user.type(screen.getByLabelText("Document address (slug)"), "hello");
+  await user.click(screen.getByRole("button", { name: "Try it" }));
+  await screen.findByText("“Hello” matches. It would do: Add a keyword, Call an app function");
+  assert.ok(s.requests.slice(before).every((r) => r.method === "GET" || r.path.endsWith("/test")), "no write was made");
+  await user.clear(screen.getByLabelText("Document address (slug)"));
+  await user.type(screen.getByLabelText("Document address (slug)"), "nope");
+  await user.click(screen.getByRole("button", { name: "Try it" }));
+  await screen.findByText(/not found|No document/i);
+
+  // An action without what it needs is refused with the reason.
+  await user.selectOptions(screen.getAllByLabelText("Do")[1], "add_to_release");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText(/needs a target/);
+  await user.click(screen.getAllByRole("button", { name: "Remove this step" })[2]);
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Saved.");
+
+  await user.click(screen.getByRole("button", { name: "Delete" }));
+  const dlg = await screen.findByRole("dialog", { name: "Delete “News keyword”?" });
+  assert.match(dlg.textContent ?? "", /Its run history goes with it\./);
+  await user.click(within(dlg).getByRole("button", { name: "Delete" }));
+  await screen.findByText(/^No automations yet\./);
+  assert.equal((await s.cms.automations.list(admin)).automations.length, 0);
+});
+
+test("automations: Korean strings, and someone who is not an admin is told so", async () => {
+  const s = makeServer();
+  await s.cms.automations.create(admin, { name: "알림", trigger: { event: "schedule.weekly", collection: null }, actions: [{ type: "call", target: "notify" }] });
+  renderWith(s, <CmsAutomations />, { messages: ko });
+  await screen.findByRole("heading", { name: "자동화" });
+  assert.match((await screen.findByRole("navigation", { name: "자동화" })).textContent ?? "", /알림매주 월요일/);
+  assert.equal((screen.getByLabelText("언제") as HTMLSelectElement).value, "schedule.weekly");
+  assert.ok(screen.queryByLabelText("컬렉션") === null, "a schedule has no collection");
+  await screen.findByText(/^아직 실행된 적이 없어요\./);
+  cleanup();
+
+  s.session.user = { kind: "user", id: "u5", label: "Reader", isAdmin: false };
+  renderWith(s, <CmsAutomations />);
+  await screen.findByText(/admin/i);
+  assert.ok(screen.queryByLabelText("Name") === null);
+});
+
+test("roles: a role lets a person write but not publish; code-decided collections are fixed; people are found by name", async () => {
+  const s = makeServer({ users: true, codedWrite: true });
+  const user = userEvent.setup();
+  const park: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u7", label: "Park Jiwoo", isAdmin: false };
+  assert.equal(await code(s.cms.create(park, "guide", { slug: "p", title: "P", body: "x\n" })), "forbidden_write");
+
+  renderWith(s, <CmsRoles />);
+  await screen.findByText(/^No roles yet\./);
+  await user.click(screen.getByRole("button", { name: "New role" }));
+  const name = (await screen.findByLabelText("Name")) as HTMLInputElement;
+  assert.equal(name.value, "New role 1");
+  await user.clear(name);
+  await user.type(name, "Writers");
+
+  const table = screen.getByRole("table");
+  const row = (label: string) => within(table).getByRole("cell", { name: label }).closest("tr")!;
+  assert.equal(within(row("Notices")).getAllByText("Set in code").length, 1, "write is decided in code");
+  assert.ok(within(row("Notices")).queryByRole("checkbox", { name: "Notices: Write" }) === null);
+  await user.click(within(row("Guide")).getByRole("checkbox", { name: "Guide: Write" }));
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Saved.");
+
+  await screen.findByText("Nobody yet.");
+  await user.type(screen.getByLabelText("Name or id"), "park");
+  const found = await screen.findByRole("list", { name: "Name or id" });
+  await user.click(within(found).getByRole("button", { name: "Park Jiwoo" }));
+  await screen.findByText("People 1");
+  await screen.findByRole("button", { name: "Remove Park Jiwoo" });
+  assert.deepEqual(await axeViolations(), []);
+
+  await s.cms.create(park, "guide", { slug: "p", title: "P", body: "x\n" });
+  assert.equal(await code(s.cms.publish(park, "guide", "p")), "forbidden_publish");
+  await user.click(within(row("Guide")).getByRole("checkbox", { name: "Guide: Publish" }));
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(async () => assert.equal(await code(s.cms.publish(park, "guide", "p")), "ok"));
+  assert.equal(await code(s.cms.remove(park, "guide", "p")), "forbidden_publish", "deleting is its own box");
+
+  // An admin role hides the table: it may do everything.
+  await user.click(screen.getByRole("checkbox", { name: /^Admin:/ }));
+  assert.ok(screen.queryByRole("table") === null);
+  await user.click(screen.getByRole("checkbox", { name: /^Admin:/ }));
+
+  await user.click(screen.getByRole("button", { name: "Remove Park Jiwoo" }));
+  await screen.findByText("Nobody yet.");
+  assert.equal(await code(s.cms.update(park, "guide", "p", { title: "P2" })), "forbidden_write");
+
+  await user.click(screen.getByRole("button", { name: "Delete" }));
+  const dlg = await screen.findByRole("dialog", { name: "Delete the role “Writers”?" });
+  await user.click(within(dlg).getByRole("button", { name: "Delete" }));
+  await screen.findByText(/^No roles yet\./);
+});
+
+test("roles: without a user list a person is added by id; on a phone the roles are a row above the form", async () => {
+  setMobile(true);
+  const s = makeServer();
+  const user = userEvent.setup();
+  await s.cms.roles.create(admin, { name: "Editors", permissions: { guide: { write: true, publish: true } } });
+  await s.cms.roles.create(admin, { name: "Owners", admin: true });
+  renderWith(s, <CmsRoles />, { messages: ko });
+  const nav = await screen.findByRole("navigation", { name: "역할" });
+  await within(nav).findByRole("button", { name: /Editors/ });
+  assert.equal((screen.getByRole("checkbox", { name: "Guide: 게시" }) as HTMLElement).getAttribute("aria-checked"), "true");
+  await user.type(screen.getByLabelText("사용자 ID"), "u42");
+  await user.click(screen.getByRole("button", { name: "추가" }));
+  await screen.findByText("사람 1");
+  assert.deepEqual((await s.cms.roles.list(admin)).roles.find((r) => r.name === "Editors")?.members, [{ id: "u42", label: "u42" }]);
+  await user.click(within(nav).getByRole("button", { name: /Owners/ }));
+  await waitFor(() => assert.ok(screen.queryByRole("table") === null));
+  assert.equal((screen.getByLabelText("이름") as HTMLInputElement).value, "Owners");
+});
+
+test("dashboard: the cards match the lists, changes split people and agents, the period switches", async () => {
+  const s = makeServer();
+  const user = userEvent.setup();
+  await s.cms.create(admin, "guide", { slug: "a", title: "Getting started", category: "start", body: "x\n" }, { publish: true });
+  await s.cms.create(agent, "guide", { slug: "b", title: "From the agent", category: "start", body: "x\n" });
+  await s.cms.recordHits([(await s.cms.get(admin, "guide", "a")).id]);
+  renderWith(s, <CmsDashboard />);
+  const card = async (label: string) => (await screen.findByText(label, { selector: "dt" })).parentElement!.querySelector("dd")!.textContent;
+  const counts = await s.cms.counts(admin, "guide");
+  assert.deepEqual([await card("Documents"), await card("Published"), await card("Waiting for review"), await card("Scheduled")], [String(counts.all), String(counts.published), "0", "0"]);
+
+  const bars = screen.getByRole("list", { name: "Changes" });
+  assert.equal(within(bars).getAllByRole("listitem").length, 14);
+  assert.match(within(bars).getAllByRole("listitem")[13].textContent ?? "", /: people 1, agents 1$/);
+  const top = screen.getByRole("heading", { name: "Most read" }).parentElement!;
+  const link = within(top).getByRole("link", { name: "Getting started" });
+  assert.equal(link.getAttribute("href"), "/admin/guide/a");
+  assert.match(link.closest("li")!.textContent ?? "", /Getting started1$/);
+  const recent = screen.getByRole("heading", { name: "Recent activity" }).parentElement!;
+  assert.match(recent.textContent ?? "", /docs-agent edited From the agent/);
+  assert.match(recent.textContent ?? "", /Admin published Getting started/);
+  assert.deepEqual(await axeViolations(), []);
+
+  await user.click(screen.getByRole("radio", { name: "7 days" }));
+  await waitFor(() => assert.equal(within(screen.getByRole("list", { name: "Changes" })).getAllByRole("listitem").length, 7));
+  assert.equal(s.requests.filter((r) => r.path.startsWith("/_stats")).pop()?.path, "/_stats?days=7");
+});
+
+test("dashboard: empty CMS, Korean, and a reader sees only what they may read", async () => {
+  const s = makeServer();
+  renderWith(s, <CmsDashboard basePath="/cms" />, { messages: ko });
+  await screen.findByText("이 기간에 읽힌 문서가 없어요.");
+  await screen.findByText("아직 활동이 없어요.");
+  assert.equal(screen.getByText("문서", { selector: "dt" }).parentElement!.querySelector("dd")!.textContent, "0");
+  cleanup();
+
+  await s.cms.create(admin, "notices", { slug: "n", title: "Internal", body: "x\n" }, { publish: true });
+  await s.cms.create(admin, "guide", { slug: "g", title: "Public", body: "x\n" });
+  s.session.user = { kind: "user", id: "u5", label: "Reader", isAdmin: false };
+  renderWith(s, <CmsDashboard />);
+  const docs = (await screen.findByText("Documents", { selector: "dt" })).parentElement!.querySelector("dd")!.textContent;
+  assert.equal(docs, "1", "the draft in Guide is not theirs to see; the published notice is");
+  assert.ok(!/Admin/.test(screen.getByRole("heading", { name: "Recent activity" }).parentElement!.textContent ?? ""), "no edit history for a reader");
+});
+
+test("import: a bundle is looked at first, then only the ticked files become drafts; export links follow the choices", async () => {
+  const s = makeServer();
+  const user = userEvent.setup();
+  await s.cms.create(admin, "guide", { slug: "a", title: "A", category: "start", body: "one\n" }, { publish: true });
+  const bundle = await s.cms.transfer.export(admin, { drafts: true });
+  const files = [
+    ...bundle.files.map((f) => (f.path === "guide/a.md" ? { ...f, text: f.text.replace("one", "two") } : f)),
+    { path: "guide/b.md", text: "---\ntitle: B\ncategory: start\n---\nbody\n" },
+    { path: "guide/c.md", text: "---\ntitle: C\ncategory: start\n---\nbody\n" },
+    { path: "guide/bad.md", text: "---\ntitle: Bad\ncategory: nope\n---\nx\n" },
+  ];
+
+  renderWith(s, <CmsTransfer />);
+  await screen.findByText(/^An export file \(\.json\) or markdown files/);
+  await user.upload(screen.getByLabelText("Choose a file"), new File([JSON.stringify({ files })], "cms-export.json", { type: "application/json" }));
+  const table = await screen.findByRole("table");
+  const row = (path: string) => within(table).getByText(path).closest("tr")!;
+  assert.match(row("guide/a.md").textContent ?? "", /Av1 → v2None$/);
+  assert.match(row("guide/b.md").textContent ?? "", /BNew documentNone$/);
+  assert.match(row("guide/bad.md").textContent ?? "", /Cannot import|category/i);
+  assert.equal((within(row("guide/bad.md")).getByRole("checkbox") as HTMLButtonElement).disabled, true);
+  await screen.findByText("3 of 4 files selected");
+  assert.equal((await s.cms.counts(admin, "guide")).all, 1, "looking changes nothing");
+  assert.deepEqual(await axeViolations(), []);
+
+  // Leave one out, then import.
+  await user.click(within(row("guide/c.md")).getByRole("checkbox"));
+  await screen.findByText("2 of 4 files selected");
+  await user.click(screen.getByRole("button", { name: "Import" }));
+  await screen.findByText("Imported 2 documents as drafts.");
+  assert.ok(screen.queryByRole("table") === null);
+  assert.equal((await s.cms.get(admin, "guide", "a", { draft: true })).body.trim(), "two");
+  assert.equal((await s.cms.get(admin, "guide", "a")).body.trim(), "one", "the public copy stays until someone publishes");
+  assert.equal((await s.cms.get(admin, "guide", "b", { draft: true })).status, "draft");
+  assert.equal(await code(s.cms.get(admin, "guide", "c", { draft: true })), "not_found");
+
+  // "Keep what is there" skips a document that exists.
+  await user.selectOptions(screen.getByLabelText("When the address exists"), "db-wins");
+  await user.upload(screen.getByLabelText("Choose a file"), new File([files[0].text.replace("two", "three")], "a.md", { type: "text/markdown" }));
+  await screen.findByText("Unknown collection: a.md");
+  await user.selectOptions(screen.getByLabelText("Collection"), "guide");
+  await waitFor(() => assert.match(within(screen.getByRole("table")).getByText("a.md").closest("tr")!.textContent ?? "", /Skipped/));
+  assert.equal((screen.getByRole("button", { name: "Import" }) as HTMLButtonElement).disabled, true);
+
+  // A file that is not an export.
+  await user.upload(screen.getByLabelText("Choose a file"), new File(["{\"nope\":1}"], "x.json", { type: "application/json" }));
+  await screen.findByText("This file cannot be read.");
+
+  await user.click(screen.getByRole("radio", { name: "Export" }));
+  const link = screen.getByRole("link", { name: "Export" });
+  assert.equal(link.getAttribute("href"), "http://localhost/api/cms/export?download=1&collections=guide&drafts=1");
+  await user.selectOptions(screen.getByLabelText("Collection"), "");
+  await user.click(screen.getByRole("checkbox", { name: "Include drafts" }));
+  assert.equal(screen.getByRole("link", { name: "Export" }).getAttribute("href"), "http://localhost/api/cms/export?download=1");
+});

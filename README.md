@@ -171,7 +171,7 @@ they go and how imports are written) and talk to the CMS through
 
 ```
 npx @mainsoft/agent-cms add --list
-npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media cms-files cms-trash cms-releases cms-webhooks
+npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-media cms-files cms-trash cms-releases cms-webhooks cms-dashboard cms-automations cms-roles cms-transfer
 npx @mainsoft/agent-cms add --diff      # what a new release would change in your copies
 npx @mainsoft/agent-cms add --update    # update files you did not edit; yours get a .new copy
 ```
@@ -671,6 +671,51 @@ createCms({ /* … */, plugins: [stats] });
 `ctx.secrets` seals values the plugin keeps in the database (null without `secretsKey`).
 
 **Telemetry.** `createCms({ onEvent })` gets every request (`method`, `path`, `status`, `ms`, `actor`, `via`), every event, every job run, every cron call and every error the CMS reports. Connect it to your tracing; it is never awaited.
+
+## Automations, roles, dashboard
+
+From 0.13.0 (schema version 7). Coming from 0.12: [UPGRADE-0.13.md](./UPGRADE-0.13.md).
+
+**Automations** are rules made on a screen (`cms-automations`): when a document is created, updated, published, unpublished or deleted, a review is asked for, a file is uploaded, or on a daily or weekly schedule; if the category, the author (person or agent), the title or a field matches; then send a webhook, add a keyword, set a field, put the document into a release, or call a function you named:
+
+```ts
+createCms({
+  cronSecret: process.env.CRON_SECRET,
+  automations: {
+    actions: {
+      notifySales: async ({ automation, doc }) => { /* … */ },
+    },
+  },
+});
+```
+
+The work is a background job: it runs on the next `POST /_cron`, is written into history as "automation: <name>", and what it changes never starts another automation. `POST /automations/:id/test` (the "Try it" box) says what would happen to one document and changes nothing.
+
+**Roles** (`cms-roles`) say who may write, publish and delete in each collection. People are put into a role by the id your `resolveUser` returns; `createCms({ users: { search, get } })` lets the screen find them by name. A collection's own `access` functions are asked first and show as "Set in code". Without any role the CMS behaves as before.
+
+**The dashboard** (`cms-dashboard`, `GET /_stats?days=7|14|30`) shows documents by state, changes per day by people and by agents, the most read documents and recent activity, for the collections the caller may read.
+
+## Export, import, OpenAPI
+
+```
+npx @mainsoft/agent-cms export ./content --drafts --with-files   # collection/slug.md, _meta.json, _assets/
+npx @mainsoft/agent-cms import ./content --dry-run --diff        # says what would change
+npx @mainsoft/agent-cms import ./content --on-conflict newest    # file-wins (default) | db-wins | newest
+npx @mainsoft/agent-cms import ./wordpress.xml --from wordpress --collection posts --publish
+npx @mainsoft/agent-cms import ./rows.csv --from csv --collection guide
+npx @mainsoft/agent-cms openapi > openapi.json
+```
+
+An import never deletes and makes drafts (a document at the same address gets a new version); `--publish` publishes what was public where it came from. With `_assets/` in the folder the files are uploaded first and `asset:` references follow them. The admin screen `cms-transfer` moves the same files as one bundle. WordPress posts and pages come over with their HTML turned into markdown and their categories and tags as keywords.
+
+`GET /api/cms/openapi.json` is the REST API as an OpenAPI 3.1 document, with a typed schema per collection the caller may read. Use it with a client generator, an API explorer, or as the action list of an agent that speaks OpenAPI.
+
+For servers that speak Node's `(req, res)`:
+
+```ts
+import { toNodeHandler } from "@mainsoft/agent-cms/adapters/node";
+app.use("/api/cms", toNodeHandler(createCmsHandler({ cms, resolveUser })));   // Express
+```
 
 ## Agents
 

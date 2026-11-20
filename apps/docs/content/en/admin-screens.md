@@ -20,6 +20,8 @@ Or with the agent-cms CLI:
 npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
 npx @mainsoft/agent-cms add cms-media cms-files   # with a media library (0.10.0 and later)
 npx @mainsoft/agent-cms add cms-trash cms-releases cms-preview-comments   # trash, releases, comments on preview links (0.10.0 and later)
+npx @mainsoft/agent-cms add cms-webhooks                                # webhooks (0.12.0 and later)
+npx @mainsoft/agent-cms add cms-dashboard cms-automations cms-roles cms-transfer   # dashboard, automations, roles, import and export (0.13.0 and later)
 ```
 
 Files go to `<components>/cms/`. The shadcn parts and the screens an item needs come along. Browse every screen with a live demo in [Components](/components).

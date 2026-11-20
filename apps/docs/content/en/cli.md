@@ -41,6 +41,20 @@ tags: [launch]
 Body in **markdown**.
 ```
 
+## Export, import, OpenAPI
+
+From 0.13.0.
+
+```sh
+npx @mainsoft/agent-cms export ./content --drafts --with-files
+npx @mainsoft/agent-cms import ./content --dry-run --diff
+npx @mainsoft/agent-cms import ./wordpress.xml --from wordpress --collection posts
+npx @mainsoft/agent-cms put guide ./guide
+npx @mainsoft/agent-cms openapi > openapi.json
+```
+
+`export` writes one markdown file per document; `import` reads them back as drafts and says what it would do with `--dry-run`. `--from json|csv|wordpress` reads content from somewhere else. See [Export and import](/docs/import-export). `openapi` prints the REST API as an OpenAPI 3.1 document for what the key may read.
+
 ## Local commands
 
 `init`, `doctor`, `migrate check | print | apply` and `add` work on your project, without a server. See [Install](/docs/install) and [Admin screens](/docs/admin-screens).

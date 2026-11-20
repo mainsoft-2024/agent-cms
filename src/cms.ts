@@ -301,7 +301,7 @@ export type CmsTelemetry =
   | { type: "error"; where: string; message: string };
 
 /** First path segments the CMS uses itself. A plugin cannot take one of these names. */
-export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "_stats", "_me", "_cron"]);
+export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "_stats", "_me", "_cron"]);
 
 /** Audit actions that are also events (webhooks, plugin listeners). */
 const EVENT_OF: Partial<Record<AuditAction, WebhookEvent>> = {

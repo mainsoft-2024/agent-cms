@@ -39,6 +39,7 @@
  *   POST   /mcp                                       MCP (official SDK, streamable HTTP, stateless)
  *   GET    /export?collections=a,b&drafts=1&download=1  documents as markdown files: {files: [{path, text}], documents}
  *   POST   /import {files, dryRun?, diff?, onConflict?, publish?, collection?, only?}  → {items, applied}
+ *   GET    /openapi.json                              this API as an OpenAPI 3.1 document (what the caller may read)
  *   GET    /_stats?days=7|14|30                       the dashboard's numbers (signed in)
  *   GET    /automations | POST {name, trigger, conditions, actions} | PATCH, DELETE /automations/:id
  *   GET    /automations/:id/runs | POST /automations/:id/test {collection, slug}
@@ -100,6 +101,7 @@ import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "
 import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
+import { openApiDocument } from "./openapi";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
 export interface CmsHandlerOptions {
@@ -316,6 +318,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             .filter((c) => core.can(actor, c.slug, "read"))
             .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish") })),
         });
+      }
+
+      if (seg[0] === "openapi.json" && seg.length === 1 && m === "GET") {
+        // The address people open, not the one the server listens on (see sameSite).
+        const host = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || req.headers.get("host");
+        const proto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(":", "");
+        return json(openApiDocument(core, { basePath: base, origin: host ? `${proto}://${host}` : url.origin, actor }), 200, { "cache-control": "private, max-age=60" });
       }
 
       if (seg[0] === "search" && m === "GET") {

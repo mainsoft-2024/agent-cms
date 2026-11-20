@@ -69,6 +69,17 @@ function make() {
     secretsKey: process.env.CMS_SECRETS_KEY ?? "example-secrets-key-at-least-32-characters",
     // Only for trying the receiver in app/api/hook on localhost. Never set this in production.
     webhooks: { allowInsecure: process.env.CMS_WEBHOOKS_INSECURE === "1" },
+    // The people the roles screen can find. Use your own user table here.
+    users: {
+      search: (q) => demoUsers.filter((u) => u.label.toLowerCase().includes(q.toLowerCase())),
+      get: (id) => demoUsers.find((u) => u.id === id) ?? null,
+    },
+    // Functions an automation can call ("Call an app function" on the automations screen).
+    automations: {
+      actions: {
+        log: ({ automation, doc }) => console.log(`[automation] ${automation.name}: ${doc ? `${doc.collection}/${doc.slug}` : "schedule"}`),
+      },
+    },
     // The app keeps search misses in its own table (see UPGRADE-0.6.md).
     onSearchMiss: async (e) => {
       for (const c of e.collections) {
@@ -78,6 +89,12 @@ function make() {
     },
   });
 }
+
+const demoUsers = [
+  { id: "demo", label: "Demo admin" },
+  { id: "u-park", label: "Park Jiwoo" },
+  { id: "u-lee", label: "Lee Minho" },
+];
 
 export const cms = (g.__exampleCms ??= make());
 

@@ -111,7 +111,7 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
   return (
     <form className="flex max-w-3xl flex-col gap-5" onSubmit={(e) => (e.preventDefault(), void run(async () => (await client.updateAutomation(auto.id, input()), t("automation_saved"))))}>
       <div className="flex flex-wrap items-end gap-3">
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex min-w-0 flex-1 basis-full flex-col gap-1.5 sm:basis-0">
           <Label htmlFor="cms-auto-name">{t("automation_name")}</Label>
           <Input id="cms-auto-name" value={name} onChange={(e) => setName(e.target.value)} required maxLength={80} className="max-w-sm" />
         </div>
@@ -238,9 +238,15 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
         </div>
       </section>
       <section className="flex flex-col gap-1.5" aria-labelledby="cms-auto-runs">
-        <h2 id="cms-auto-runs" className="text-xs font-medium text-muted-foreground">
-          {t("automation_runs")}
-        </h2>
+        <div className="flex items-center gap-2">
+          <h2 id="cms-auto-runs" className="text-xs font-medium text-muted-foreground">
+            {t("automation_runs")}
+          </h2>
+          {/* Runs happen on a cron call, not while this screen is open: a person asks for the new ones. */}
+          <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => (runs.reload(), onChanged())}>
+            {t("automation_refresh")}
+          </Button>
+        </div>
         <StatusText className="text-xs">{runs.data && !runs.data.length ? t("automation_runs_empty") : ""}</StatusText>
         <ul className="flex flex-col divide-y" aria-label={t("automation_runs")}>
           {(runs.data ?? []).map((r) => (

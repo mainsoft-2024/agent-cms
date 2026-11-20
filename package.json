@@ -1,6 +1,6 @@
 {
   "name": "@mainsoft/agent-cms",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (MCP, REST, CLI) together.",
   "license": "MIT",
   "type": "module",
@@ -102,6 +102,16 @@
       "require": {
         "types": "./dist/webhooks.d.cts",
         "default": "./dist/webhooks.cjs"
+      }
+    },
+    "./adapters/node": {
+      "import": {
+        "types": "./dist/adapters/node.d.ts",
+        "default": "./dist/adapters/node.js"
+      },
+      "require": {
+        "types": "./dist/adapters/node.d.cts",
+        "default": "./dist/adapters/node.cjs"
       }
     },
     "./storage-s3": {

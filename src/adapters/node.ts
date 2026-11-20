@@ -1,0 +1,92 @@
+/**
+ * For servers that speak Node's `(req, res)` instead of the web `Request`/`Response`:
+ * Express, Fastify (through middie or a raw route), Koa's `ctx.req`, or plain `node:http`.
+ *
+ *   import { toNodeHandler } from "@mainsoft/agent-cms/adapters/node";
+ *   const handler = createCmsHandler({ cms, resolveUser, basePath: "/api/cms" });
+ *   app.use("/api/cms", toNodeHandler(handler));          // Express
+ *   http.createServer(toNodeHandler(handler)).listen(3000);
+ *
+ * Frameworks that already hand out a web `Request` (Hono, Remix, SvelteKit, Astro, Nitro, Bun,
+ * Deno) need no adapter: pass their request straight to the handler.
+ */
+import type { IncomingMessage, ServerResponse } from "node:http";
+
+export interface NodeHandlerOptions {
+  /** The address people open, e.g. "https://cms.example.com". Default: from `X-Forwarded-Proto` / `Host`. */
+  origin?: string;
+  /** Largest request body read into memory, in bytes. Default 8MB (an import bundle is at most 4MB). */
+  maxBodyBytes?: number;
+}
+
+type Req = IncomingMessage & { originalUrl?: string; body?: unknown };
+
+/** The web `Request` a Node request stands for. Use it in `resolveUser` code shared with other hosts. */
+export async function toWebRequest(req: Req, o: NodeHandlerOptions = {}): Promise<Request> {
+  const forwarded = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim();
+  const proto = forwarded || ((req.socket as { encrypted?: boolean } | undefined)?.encrypted ? "https" : "http");
+  // Express removes the mount path from `url`; `originalUrl` still has it.
+  const url = new URL(req.originalUrl ?? req.url ?? "/", o.origin ?? `${proto}://${req.headers.host ?? "localhost"}`);
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (Array.isArray(v)) for (const x of v) headers.append(k, x);
+    else if (v !== undefined) headers.set(k, v);
+  }
+  const method = (req.method ?? "GET").toUpperCase();
+  if (method === "GET" || method === "HEAD") return new Request(url, { method, headers });
+  const max = o.maxBodyBytes ?? 8 * 1024 * 1024;
+  let body: Uint8Array | string;
+  if (req.body !== undefined && req.readableEnded) {
+    // A body parser ran before us (express.json()): send what it read on.
+    body = req.body instanceof Uint8Array ? req.body : typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+  } else {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for await (const c of req) {
+      const chunk = typeof c === "string" ? new TextEncoder().encode(c) : (c as Uint8Array);
+      size += chunk.length;
+      if (size > max) throw Object.assign(new Error("request body too large"), { status: 413 });
+      chunks.push(chunk);
+    }
+    body = new Uint8Array(size);
+    let at = 0;
+    for (const c of chunks) {
+      body.set(c, at);
+      at += c.length;
+    }
+  }
+  headers.delete("content-length");
+  return new Request(url, { method, headers, body: body as BodyInit });
+}
+
+/** Write a web `Response` to a Node response. */
+export async function sendWebResponse(res: ServerResponse, response: Response): Promise<void> {
+  res.statusCode = response.status;
+  const cookies = (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
+  response.headers.forEach((v, k) => {
+    if (k.toLowerCase() !== "set-cookie") res.setHeader(k, v);
+  });
+  if (cookies.length) res.setHeader("set-cookie", cookies);
+  if (!response.body) return void res.end();
+  res.end(new Uint8Array(await response.arrayBuffer()));
+}
+
+/** A `(req, res, next?)` function around a web handler such as `createCmsHandler(...)`. */
+export function toNodeHandler(handler: (req: Request) => Response | Promise<Response>, o: NodeHandlerOptions = {}) {
+  return async function nodeHandler(req: Req, res: ServerResponse, next?: (err?: unknown) => void): Promise<void> {
+    try {
+      await sendWebResponse(res, await handler(await toWebRequest(req, o)));
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      if (status === 413) {
+        res.statusCode = 413;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        return void res.end(JSON.stringify({ error: "body_too_large", kind: "invalid", message: "The request body is too large.", params: {} }));
+      }
+      if (next) return next(err);
+      console.error("[agent-cms] request failed:", err);
+      if (!res.headersSent) res.statusCode = 500;
+      res.end();
+    }
+  };
+}

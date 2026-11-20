@@ -46,6 +46,7 @@ export const ko: Messages = {
   schema_outdated: "DB 스키마가 v{found}이고 이 버전은 v{expected}가 필요해요. 실행: {command}",
   conflict_version: "v{expected}를 읽은 뒤 다른 곳에서 v{current}로 저장했어요. 다시 불러오거나 합친 뒤 저장해 주세요",
   slug_taken: "이미 쓰는 주소예요: {slug}",
+  name_taken: "이미 쓰는 이름이에요: {name}",
   asset_not_found: "파일을 찾을 수 없어요",
   unknown_store: "없는 저장소예요: {store}",
   forbidden_media: "이 저장소의 파일에 그 작업을 할 권한이 없어요",

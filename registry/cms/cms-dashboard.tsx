@@ -41,8 +41,8 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
           <>
             <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               {cards.map(([key, n]) => (
-                <div key={key} className="rounded-lg border px-4 py-3">
-                  <dt className="text-xs text-muted-foreground">{t(key)}</dt>
+                <div key={key} className="min-w-0 rounded-lg border px-4 py-3">
+                  <dt className="truncate text-xs text-muted-foreground">{t(key)}</dt>
                   <dd className="mt-1 text-2xl font-semibold tabular-nums">{n}</dd>
                 </div>
               ))}
@@ -75,8 +75,8 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
                 <span>{formatDate(s.changes[s.changes.length - 1].day, locale)}</span>
               </div>
             </section>
-            <div className="grid gap-6 lg:grid-cols-2">
-              <section aria-labelledby="cms-dash-top">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <section aria-labelledby="cms-dash-top" className="min-w-0">
                 <h2 id="cms-dash-top" className="mb-2 text-sm font-medium">
                   {t("dash_top")}
                 </h2>
@@ -92,7 +92,7 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
                   ))}
                 </ol>
               </section>
-              <section aria-labelledby="cms-dash-recent">
+              <section aria-labelledby="cms-dash-recent" className="min-w-0">
                 <h2 id="cms-dash-recent" className="mb-2 text-sm font-medium">
                   {t("dash_recent")}
                 </h2>

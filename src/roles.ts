@@ -103,6 +103,11 @@ export function createRoles(ctx: RolesContext) {
     }
     return { name, admin: i.admin ?? cur?.admin ?? false, permissions, members: cur?.members ?? [] };
   }
+  /** Two roles with one name cannot be told apart on the screen. */
+  async function unique(name: string, except?: string) {
+    await load(true);
+    if (cache.some((r) => r.id !== except && r.name.toLowerCase() === name.toLowerCase())) throw fail("name_taken", { name });
+  }
   /** The app's admins and API keys are outside the roles, so the last member of an admin role may only leave when someone else still is an admin. */
   async function save(id: string, data: RoleData) {
     const r = await repo.updateRecord(KIND, id, { data: data as unknown as Record<string, unknown>, at: iso() });
@@ -134,6 +139,7 @@ export function createRoles(ctx: RolesContext) {
       admin(actor);
       await ctx.ready();
       const data = clean(input);
+      await unique(data.name);
       const r = await repo.insertRecord({ kind: KIND, data: data as unknown as Record<string, unknown>, at: iso() });
       await load(true);
       ctx.audit(actor, "role.create", { detail: { id: r.id, name: data.name } });
@@ -144,6 +150,7 @@ export function createRoles(ctx: RolesContext) {
       await ctx.ready();
       const cur = await found(id);
       const data = clean(input, cur);
+      if (data.name !== cur.name) await unique(data.name, id);
       // Taking "admin" off the role that makes you an admin would lock you out of this screen.
       if (cur.admin && !data.admin && !ctx.baseAdmin(actor) && actor.kind === "user" && !cache.some((r) => r.id !== id && r.admin && r.members.some((m) => m.id === actor.id))) throw fail("role_last_admin");
       const role = await save(id, data);
