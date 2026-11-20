@@ -104,6 +104,12 @@ export interface CmsHandlerOptions {
   /** Refuse PATCH and DELETE of a document without If-Match / expectedVersion (428). Default false. */
   requireIfMatch?: boolean;
   /**
+   * Other addresses whose pages may write with a person's session, e.g.
+   * `["https://admin.example.com"]`. The app's own address needs no entry:
+   * it is read from the request (`Host`, `X-Forwarded-Host`).
+   */
+  trustedOrigins?: readonly string[];
+  /**
    * MCP options. `anonymous: "read"` lets requests without a key use the MCP
    * endpoint with read tools only (published documents of collections anyone
    * can read). Default: a key is required (401).
@@ -153,7 +159,25 @@ export function errorResponse(err: unknown, cms?: CmsLike): Response {
 /** Largest request body accepted (bytes). Documents cap at 60k chars. */
 const MAX_BODY_BYTES = 512 * 1024;
 
-export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsHandlerOptions["resolveUser"]): Promise<Actor> {
+/**
+ * Is this write from a page of the app itself? Browsers put the page's
+ * address in `Origin`; a page elsewhere cannot change it, nor `Host`, nor
+ * add `X-Forwarded-Host`. Behind a proxy (and under `next start`) `req.url`
+ * holds the address the server listens on, not the one people open, so the
+ * address is also read from those two headers.
+ */
+export function sameSite(req: Request, trusted: readonly string[] = []): boolean {
+  const origin = req.headers.get("origin");
+  const from = origin ? safeHost(origin) : null;
+  if (from && trusted.some((o) => safeHost(o) === from || o === from)) return true;
+  if (req.headers.get("sec-fetch-site") === "cross-site") return false;
+  if (!origin) return true; // not a browser page: nothing rides along by itself
+  if (!from) return false; // "null" (a sandboxed frame) or not an address
+  const own = [safeHost(req.url), req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || null, req.headers.get("host")];
+  return own.some((h) => !!h && h.toLowerCase() === from.toLowerCase());
+}
+
+export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsHandlerOptions["resolveUser"], trustedOrigins?: readonly string[]): Promise<Actor> {
   const core = coreOf(cms);
   // Only a header that carries an `sgk_` key is a key login; anything else
   // (another auth scheme from a proxy) falls through to the session.
@@ -167,9 +191,7 @@ export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsH
   const user = await resolveUser(req);
   if (user && !["GET", "HEAD"].includes(req.method.toUpperCase())) {
     // Cookie sessions: refuse cross-site writes.
-    const site = req.headers.get("sec-fetch-site");
-    const origin = req.headers.get("origin");
-    if (site === "cross-site" || (origin && new URL(req.url).host !== safeHost(origin))) throw new CmsError("cross_site", {}, { messages: core.messages });
+    if (!sameSite(req, trustedOrigins)) throw new CmsError("cross_site", {}, { messages: core.messages });
   }
   if (!user) return { kind: "anonymous" };
   // "An agent acting for this person" can only be said by code in the app
@@ -242,7 +264,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         return json(await core.runScheduled());
       }
       const client = req.headers.get("x-agent-cms-client");
-      const who = await resolveActor(core, req, opts.resolveUser);
+      const who = await resolveActor(core, req, opts.resolveUser, opts.trustedOrigins);
       const actor: Actor = { ...who, via: seg[0] === "mcp" ? (client === "cli" ? "cli" : "mcp") : client === "cli" ? "cli" : "rest" };
       const q = url.searchParams;
       /** expectedVersion from If-Match, else from the body. */

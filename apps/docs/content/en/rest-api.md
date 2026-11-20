@@ -6,6 +6,8 @@ order: 1
 ---
 Auth: an `Authorization: Bearer sgk_…` key, else your session user (`resolveUser`), else anonymous (published reads only).
 
+A write that uses the session must come from a page of the app itself. The handler compares the browser's `Origin` with the address of the request (`Host`, or `X-Forwarded-Host` behind a proxy) and answers 403 `cross_site` when they differ. Requests with a key are not checked. If the admin is served from another address, list it: `createCmsHandler({ cms, resolveUser, trustedOrigins: ["https://admin.example.com"] })`.
+
 ## Documents
 
 ```text

@@ -17,7 +17,7 @@ REST, MCP, 도구(`callTool`), CLI 모두 같은 모양으로 돌려줘요.
 
 - `not_found`: `not_found`, `version_not_found`, `key_not_found`, `route_not_found`
 - `unauthorized`: `unauthorized`, `invalid_key`, `key_expired`, `preview_invalid`, `preview_expired`
-- `forbidden`: `forbidden_read`, `forbidden_write`, `forbidden_publish`, `forbidden_keys`, `key_too_wide` 등
+- `forbidden`: `forbidden_read`, `forbidden_write`, `forbidden_publish`, `forbidden_keys`, `key_too_wide`, `cross_site` 등
 - `invalid`: `invalid_slug`, `invalid_title`, `invalid_field`, `slug_locked`, `schema_outdated` 등
 - `conflict`: `conflict_version`, `slug_taken`
 - `precondition`: `precondition_required` (`requireIfMatch`를 켰을 때 428)

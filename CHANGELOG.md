@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.2
+
+- **Fix (REST):** a signed-in person's writes were refused with `cross_site` ("Cross-site request refused") whenever the app was reached through an address other than the one the server listens on: behind a reverse proxy or a preview tunnel, in a container, or simply by opening a `next start` server as `127.0.0.1` instead of `localhost`. The check compared the page's `Origin` only with `req.url`, which under `next start` holds the listening address. It now also reads the address from `Host` and `X-Forwarded-Host`, the way Next.js does for Server Actions. A page on another site still cannot change any of the three, so the protection is the same. Apps on Vercel were not affected.
+- **New:** `createCmsHandler({ trustedOrigins: ["https://admin.example.com"] })` lets pages at other addresses write with a person's session, for an admin served from its own domain. The app's own address needs no entry.
+
 ## 0.10.1
 
 - **Fix (cms-doc-editor):** saving or publishing a new document lost its confirmation line ("Saved v1", "Published v1") when the app answered `onCreated` by moving to the document's own address, which is what the examples do. The line now waits for the editor that opens next and shows there once. Update the copy with `npx agent-cms add cms-doc-editor --update`.
