@@ -60,6 +60,13 @@ export async function publicVersions(doc: CmsDoc) {
   return all.filter((v) => doc.publishedVersion !== null && v.version <= doc.publishedVersion);
 }
 
+/** Newest release note first: by date, then by version number (several releases can share a day). */
+export function newestFirst(a: { slug: string; fields: unknown }, b: { slug: string; fields: unknown }) {
+  const da = String((a.fields as { date?: string }).date ?? "");
+  const db = String((b.fields as { date?: string }).date ?? "");
+  return db.localeCompare(da) || b.slug.localeCompare(a.slug, undefined, { numeric: true });
+}
+
 export async function listPublished(collection: "components" | "changelog") {
   const cms = await getCms();
   return cms.list(anonymous, collection);

@@ -4,8 +4,9 @@ summary: The ./ai entry is gone, the schema is version 3, agents can act for a p
 category: Upgrade
 order: 2
 ---
-0.8 is not released yet. This file grows as its parts land; what is here is
-already on `main`.
+0.8.0 was not published to npm on its own. It is part of 0.10.0, the first
+release after 0.7.0: coming from 0.7.0, do this page first, then
+[Upgrade to 0.10](/docs/upgrade-0-10).
 
 ## 1. `./ai` is gone: the package no longer calls into a model library
 

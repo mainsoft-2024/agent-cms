@@ -1,6 +1,6 @@
 # Upgrading to 0.10
 
-0.10 is not released yet. This file grows as its parts land.
+0.10.0 is the first npm release after 0.7.0 and contains 0.8.0 and 0.9.0. Coming from 0.7.0, do [UPGRADE-0.8.md](./UPGRADE-0.8.md) first. 0.9.0 needs nothing.
 
 ## 1. Schema version 4
 
@@ -29,7 +29,7 @@ POST /api/cms/_cron
 Authorization: Bearer <cronSecret>
 ```
 
-Without `cronSecret` the route answers 404. On Vercel, a cron job with `CRON_SECRET` sends exactly this header. Calling it from two places at once is safe.
+`GET` works too. Without `cronSecret` the route answers 404. On Vercel, a cron job with `CRON_SECRET` sends exactly this header. Calling it from two places at once is safe.
 
 ## 4. Type changes
 

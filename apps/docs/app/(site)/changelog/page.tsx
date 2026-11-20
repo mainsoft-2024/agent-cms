@@ -1,15 +1,11 @@
 import type { Metadata } from "next";
 import { Markdown } from "@/components/site/markdown";
-import { listPublished } from "@/lib/content";
+import { listPublished, newestFirst } from "@/lib/content";
 
 export const metadata: Metadata = { title: "Changelog", description: "Every agent-cms release, newest first." };
 
 export default async function Changelog() {
-  const notes = (await listPublished("changelog")).sort((a, b) => {
-    const da = String((a.fields as { date?: string }).date ?? "");
-    const db = String((b.fields as { date?: string }).date ?? "");
-    return db.localeCompare(da) || b.slug.localeCompare(a.slug, undefined, { numeric: true });
-  });
+  const notes = (await listPublished("changelog")).sort(newestFirst);
   return (
     <div className="mx-auto max-w-[880px] px-5 pt-6 pb-20 md:px-10">
       <h1 className="display d48 mb-2">Changelog</h1>
