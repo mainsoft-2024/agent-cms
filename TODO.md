@@ -57,8 +57,8 @@
 23. **[P0] 공식 MCP SDK로 교체.** 지금은 손으로 짠 JSON-RPC다. `@modelcontextprotocol/sdk`로 바꾸고 resources(문서를 리소스로)와 prompts도 노출한다. [완료 0.6.0]
 24. **[P1] `agent-cms add <component>` 레지스트리.** shadcn처럼 어드민 UI 컴포넌트를 앱으로 복사해 넣는다(문서 목록, 편집기, 버전 기록, 키 관리). [완료 0.6.0]
 25. **[P1] 마이그레이션 생성기.** `agent-cms ddl`이 버전별 증분 SQL을 내보내고, 앱의 마이그레이션 체계(drizzle-kit, 직접 작성한 guarded step)에 붙인다. [완료 0.6.0: migrate print, check, apply]
-26. **[P1] 가져오기와 내보내기.** 폴더의 md(frontmatter)와 DB를 서로 옮기는 CLI(`agent-cms export ./content`, `import`). 백업과 초기 시드, 로컬 편집에 쓴다.
-27. **[P2] Next 이외 어댑터.** Hono, Express, Remix용 핸들러(지금 핸들러는 fetch `Request`/`Response`라 얇게 감쌀 수 있다).
+26. **[P1] 가져오기와 내보내기.** 폴더의 md(frontmatter)와 DB를 서로 옮기는 CLI(`agent-cms export ./content`, `import`). 백업과 초기 시드, 로컬 편집에 쓴다. (0.13.0에서 만듦: CLI `export`·`import`, REST, 화면 `cms-transfer`, `--with-files`)
+27. **[P2] Next 이외 어댑터.** Hono, Express, Remix용 핸들러(지금 핸들러는 fetch `Request`/`Response`라 얇게 감쌀 수 있다). (0.13.0에서 일부: `./adapters/node`. 웹 Request를 쓰는 프레임워크는 어댑터가 필요 없음. 프레임워크별 예제는 아직)
 28. **[P1] 예제 앱과 문서 사이트.** 문서 사이트 자체를 agent-cms로 만든다.
 
 ## 2. 편집 경험과 콘텐츠 모델 (A)
@@ -119,7 +119,7 @@
 76. **[P1] 게시본 읽기 캐시 어댑터.** `CacheAdapter`(메모리, Redis, Next `unstable_cache`), 키에 `publishedVersion`, 무효화는 `onChange`와 75번.
 77. **[P1] 페이지네이션과 컬럼 프로젝션.** 목록은 본문 없이, 버전 목록은 스냅샷 없이 요약 모드와 `limit/cursor`. 지금은 버전 100개의 전체 스냅샷을 한 번에 보낸다. [0.6.0에서 일부]
 78. **[P1] 인덱스 추가와 N+1 제거.** `cms_hits(day)` 인덱스. 목록과 검색 색인 빌드의 일괄 조회.
-79. **[P1] CLI 확장.** `put`에 폴더 단위 일괄 처리(`put <collection> ./dir`), `--dry-run`, `diff`(파일과 현재 초안 비교), 출력 형식 `--format table`.
+79. **[P1] CLI 확장.** `put`에 폴더 단위 일괄 처리(`put <collection> ./dir`), `--dry-run`, `diff`(파일과 현재 초안 비교), 출력 형식 `--format table`. (0.13.0에서 `put <collection> <dir>`와 `--dry-run`, `--diff`를 만듦. `--format table`은 아직)
 80. **[P1] 구조화 이벤트와 지표 훅.** `onEvent(e)`로 요청(라우트, actor 종류, 상태, ms), 검색(hit 수, ms), 색인 빌드, 훅 실패를 내보내 OTel/Prometheus에 연결한다. (0.12.0에서 일부: 요청, 이벤트, 작업, cron, 오류)
 81. **[P1] 보존 정책과 주체 삭제.** `retention: { hitsDays, revokedKeysDays }`, `purgeActor(id)`, `exportActor(id)`, `agent-cms retention --dry-run`.
 82. **[P1] 스키마 버전 핀과 `doctor`.** `cms_meta.schema_version`을 부팅 때 비교해 명확히 실패하고, `doctor`가 테이블과 인덱스, 게시 버전 정합성, 고아 행, DDL 드리프트를 검사한다. 복구 절차(Neon PITR + 버전 스냅샷)를 문서화한다. [0.6.0에서 일부]
@@ -138,7 +138,7 @@
 92. **[P1] 플러그인 시스템.** `definePlugin({ name, setup(ctx) })`로 훅, 컬렉션 확장, 라우트, 테이블 추가. 감사 로그, 웹훅, rate limit이 코어 수정 없이 붙는다. (Better Auth registry, Payload plugins) (0.12.0에서 일부: 이벤트, 라우트, 도구, 작업, `_me`, 메뉴. 표 마이그레이션과 컬렉션 확장은 아직)
 93. **[P1] 전체 라이프사이클 훅.** `beforeValidate`, `beforeChange`(변형 가능), `afterChange`, `before/afterPublish`, `afterDelete`, `afterRead`와 `{ actor, previous, operation, abort }` 컨텍스트. (Payload hooks) (0.12.0에서 일부: `beforeChange`, `beforePublish`, `beforeDelete`)
 94. **[P1] 타입드 클라이언트와 TanStack Query 어댑터.** `createCmsClient()`의 `client.guide.update(slug, doc, { expectedVersion })`, `useDoc`, `useUpdateDoc`(409면 재조회).
-95. **[P1] OpenAPI 3.1 출력.** `agent-cms openapi`와 `GET /api/cms/openapi.json`. TypeScript 밖(Python, Zapier, GPT action)의 공식 계약.
+95. **[P1] OpenAPI 3.1 출력.** `agent-cms openapi`와 `GET /api/cms/openapi.json`. TypeScript 밖(Python, Zapier, GPT action)의 공식 계약. (0.13.0에서 만듦)
 96. **[P1] `agent-cms types` 코드젠.** `.agent-cms/types.d.ts`(컬렉션 유니온, `Fields<"guide">`, `LinkKey`), `--check`로 CI에서 낡음 감지. (Fumadocs postinstall)
 97. **[P1] 복사형 UI 소유권 추적과 3-way 업그레이드.** `agent-cms.json`에 복사한 파일의 버전과 해시를 남기고 `add --diff`, `add --update`(안 고친 파일만). shadcn 스키마의 `registry.json`도 빌드한다. [완료 0.6.0]
 98. **[P1] 업그레이드 규율.** changesets, `@next` 프리릴리스, `agent-cms codemod v0.x`(ts-morph), 제거 예정 API의 1회 경고. (`@next/codemod`)
@@ -148,7 +148,7 @@
 102. **[P1] 호환성 매트릭스 CI.** Next 14/15/16, React 18/19, zod 3/4 조합에 tarball을 설치해 스모크 테스트하고 지원표를 자동 갱신한다.
 103. **[P1] 에이전트용 라이브러리 문서.** 문서 사이트의 `llms.txt`, MCP 리소스 `cms://docs/*`, subpath별 TypeDoc. 코딩 에이전트에게 "agent-cms로 어드민 붙여 줘"가 첫 사용 경로가 된다.
 104. **[P2] Edge 런타임.** `node:crypto` 대신 `crypto.subtle`, `doctor --runtime=edge`.
-105. **[P2] `import --dry-run --diff`.** 폴더 md와 DB의 차이를 문서별로 보여 주고 `db-wins | file-wins | newest`를 고른다.
+105. **[P2] `import --dry-run --diff`.** 폴더 md와 DB의 차이를 문서별로 보여 주고 `db-wins | file-wins | newest`를 고른다. (0.13.0에서 만듦)
 106. **[P2] `agent-cms bench`.** 검색 p95, 색인 빌드 시간, 1만 문서 목록 쿼리를 CI에서 회귀 감시.
 
 ## 6. 이번 PR에서 고친 것 (리뷰 에이전트가 찾음)
@@ -194,15 +194,15 @@
 110. **[P2] 선택형 서버 이미지 변환 모듈.** sharp를 쓰는 앱만 켠다. 미리 정한 크기 목록, 크기 상한, 결과 캐시, 자르기와 초점 지정. (Payload, Directus, Sanity) [0.9.0] → 0.11.0에서 완료 (`./image-sharp`, `?size=`, 초점). 자르기 편집기는 만들지 않는다.
 111. **[P1] 릴리스.** 여러 문서의 게시와 게시 취소를 묶어 한 번에, 또는 예약해서 실행한다. 하나라도 문제가 있으면 전부 하지 않는다. (Strapi, Sanity) **상태:** 0.10.0에서 완료 (되돌리기 없음).
 112. **[P1] 단일 문서.** 사이트 설정이나 메뉴처럼 하나만 있는 문서(`defineSingle`).
-113. **[P1] 역할 관리 화면.** 역할마다 컬렉션과 미디어와 폼의 읽기, 쓰기, 게시, 삭제를 정하고 사람을 넣는다. 지금은 권한을 코드 함수로만 정한다. (Strapi, Directus)
+113. **[P1] 역할 관리 화면.** 역할마다 컬렉션과 미디어와 폼의 읽기, 쓰기, 게시, 삭제를 정하고 사람을 넣는다. 지금은 권한을 코드 함수로만 정한다. (Strapi, Directus) (0.13.0에서 만듦: 컬렉션별 쓰기·게시·삭제. 미디어와 필드 단위 권한은 아직)
 114. **[이 패키지에서는 하지 않음] AI 보조.** 편집기에서 요약, 검색어, 대체 텍스트, 번역 초안을 만드는 기능 (Sanity AI Assist). 모델을 부르는 기능이라 이 패키지에 넣지 않는다. 확장 패키지가 134번의 자리에 붙인다.
 115. **[P1] 단독 서버.** `agent-cms serve`로 호스트 앱 없이 어드민, REST, MCP를 띄워 다른 언어의 앱이 REST와 OpenAPI로 쓴다(101번 확장). Docker 이미지 포함.
 116. **[P2] 다른 화면 프레임워크의 어드민.** Vue, Svelte용 복사형 부품.
 117. **[P1] 공개 npm 배포와 커뮤니티 문서.** CONTRIBUTING, 행동 강령, 보안 신고 안내, 이슈 템플릿, 영어 로드맵. [npm 공개 배포는 0.6.1에서 완료. 커뮤니티 문서가 남음]
 118. **[P1] 갤러리 필드.** 이미지 여러 장과 순서(`assetIds()`).
 119. **[P1] 실시간 공동 편집.** 같은 문서를 연 사람과 에이전트의 표시와 커서, 겹치지 않는 변경의 자동 병합. 1단계는 서버리스에서도 도는 방식, 2단계는 WebSocket 선택 모듈. (Sanity, Directus) **상태:** 0.10.0에서 1단계 완료 (표시, 커서, 겹치지 않는 저장의 자동 병합. 글자 단위 실시간 모듈은 아직).
-120. **[P1] 자동화 흐름.** "문서가 게시되면, 분류가 News이면, 태그를 붙이고 웹훅을 보낸다" 같은 규칙을 화면에서 만든다. 실행 기록과 시험 실행. 플러그인이 동작을 더할 수 있다. (Directus Flows)
-121. **[P1] 대시보드.** 문서 수와 상태, 사람과 에이전트의 변경 추이, 많이 본 문서, 최근 활동. (Directus Insights)
+120. **[P1] 자동화 흐름.** "문서가 게시되면, 분류가 News이면, 태그를 붙이고 웹훅을 보낸다" 같은 규칙을 화면에서 만든다. 실행 기록과 시험 실행. 플러그인이 동작을 더할 수 있다. (Directus Flows) (0.13.0에서 만듦)
+121. **[P1] 대시보드.** 문서 수와 상태, 사람과 에이전트의 변경 추이, 많이 본 문서, 최근 활동. (Directus Insights) (0.13.0에서 만듦)
 122. **[P1] 단독 서버용 로그인.** 이메일과 비밀번호, OIDC 방식의 SSO, 세션, 사용자 관리. 호스트 앱에 얹을 때는 지금처럼 앱의 로그인을 쓴다.
 123. **[P1] 폼 빌더.** 문의 같은 폼을 화면에서 만들고 제출을 모은다. 스팸 방지, 파일 첨부, CSV 내보내기, 웹훅. (Payload form-builder)
 124. **[P1] SEO 도구.** 문서마다 검색 제목, 설명, 공유 이미지, 대표 주소, 노출 여부. 검색 결과 미리보기와 길이 경고, 사이트맵. (Payload seo)
@@ -212,7 +212,7 @@
 128. **[P2] 저장된 필터.** 문서 목록의 검색과 필터 조합에 이름을 붙여 다시 쓴다. (Payload query presets) **상태:** 0.10.0에서 완료.
 129. **[P1] 목록 필드.** 메뉴 항목처럼 여러 값을 한 묶음으로 반복해 넣고 순서를 바꾸는 입력(`z.array(z.object())`의 위젯).
 130. **[P2] 미디어 후속.** 어드민에서 URL로 가져오기, 새로 고친 뒤 올리기 이어 하기, 사진 위치 정보 지우기, 같은 주소로 파일 교체, 바이러스 검사 연결구. **상태:** URL 가져오기와 검사 연결구는 0.9.0, 나머지 셋은 0.11.0에서 완료.
-131. **[P2] 다른 CMS에서 가져오기.** WordPress 내보내기 파일, CSV, JSON.
+131. **[P2] 다른 CMS에서 가져오기.** WordPress 내보내기 파일, CSV, JSON. (0.13.0에서 만듦: JSON, CSV, WordPress. Notion 등은 아직)
 132. **[P0] `./ai` 입구 제거.** 이 패키지는 모델을 부르지 않는다. `./ai`(`cmsTools`, `remoteCmsTools`)와 `ai` 의존성을 빼고, `./tools`에 `callTool`을 넣어 어떤 에이전트 틀에서든 `toolsFor`와 `callTool`로 도구를 붙이게 한다. 모델 호출 라이브러리를 불러오지 않는다는 것을 테스트로 지킨다. [0.8.0]
 133. **[P0] 사람을 대신한 에이전트 표시.** 로그인한 사람의 권한으로 움직이는 에이전트가 고친 버전을 구분해 기록한다(`actor.agent`). 권한은 그 사람과 같고, "에이전트 변경" 표시와 감사 로그에 에이전트의 이름이 남는다. [0.8.0]
 134. **[P1] 어드민 확장 자리.** 편집기 머리글, 편집기 옆 패널, 필드 이름 옆, 미디어 정보 패널에 앱이나 플러그인이 버튼과 패널을 꽂는다(`CmsProvider`의 `slots`). 비어 있으면 아무것도 보이지 않는다. [미디어 자리는 0.8.0, 나머지는 92번과 함께] (0.12.0에서 일부: 사이드바 메뉴와 `_me.plugins`)
@@ -224,7 +224,7 @@
 
 1. 미디어와 파일 저장소 (0.8.0, 0.9.0, 나머지는 0.11.0): 132, 133, 107, 108, 109, 110, 130 **[끝남]**
 2. 편집과 게시 흐름 (0.10.0, 나머지는 0.11.0): 7, 19, 8, 9, 119, 34, 111, 46, 35, 36, 37, 45, 48, 128 **[끝남. 119번의 2단계(글자 단위 실시간)만 남음]**
-3. 연동과 운영 (0.12.0, **다음**): 126, 20, 120, 95, 26, 105, 131, 79, 27, 113, 101, 115, 122, 121, 93, 92, 134, 80, 18, 81, 83, 73, 21, 75, 76, 77, 78, 82, 90, 104, 106, 127
-4. 콘텐츠 모델 (0.13.0): 2, 118, 129, 4, 5, 112, 41, 42, 3, 38, 39, 125, 124, 123
-5. 검색과 AI (0.14.0): 74, 58, 59, 60, 57, 63, 13, 61, 135, 62, 15, 64, 16, 67, 68, 55, 56, 54, 40, 65, 100, 43, 66
+3. 연동과 운영 (0.12.0, 0.13.0, **이어서**): 126, 20, 120, 95, 26, 105, 131, 79, 27, 113, 101, 115, 122, 121, 93, 92, 134, 80, 18, 81, 83, 73, 21, 75, 76, 77, 78, 82, 90, 104, 106, 127 **[0.12.0: 126, 20과 93·92·134·80의 일부. 0.13.0: 120, 95, 26, 105, 79, 113, 121과 131·27의 일부. 남은 것은 `docs/roadmap/3-integrations-and-ops.md`의 "묶음 3에서 아직 안 한 것"]**
+4. 콘텐츠 모델 (0.14.0): 2, 118, 129, 4, 5, 112, 41, 42, 3, 38, 39, 125, 124, 123
+5. 검색과 AI (0.15.0): 74, 58, 59, 60, 57, 63, 13, 61, 135, 62, 15, 64, 16, 67, 68, 55, 56, 54, 40, 65, 100, 43, 66
 6. 오픈소스 공개 준비 (1.0.0): 117, 28, 103, 102, 91, 94, 96, 98, 99, 116

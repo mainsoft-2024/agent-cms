@@ -32,6 +32,14 @@
  *   agent-cms publish <collection> <slug>
  *   agent-cms upload <files...> [--store name] [--folder path] [--alt "text"] [--tag a,b]
  *       put files into the media library (large files go up in parts)
+ *   agent-cms export <dir> [--collection a,b] [--drafts] [--with-files]
+ *       every document as a markdown file: <dir>/<collection>/<slug>.md
+ *   agent-cms import <dir> [--dry-run] [--diff] [--on-conflict file-wins|db-wins|newest] [--publish] [--collection c]
+ *       read them back (drafts; same address: a new version). `put <collection> <dir>` does the same for one folder.
+ *       With `_assets/` in the folder (export --with-files) the files are uploaded too.
+ *   agent-cms import <file> --from json|csv|wordpress --collection c [--types post,page] [--dry-run] [--publish]
+ *       content from somewhere else: a JSON list, a CSV sheet, a WordPress export file
+ *   agent-cms openapi                    this app's REST API as an OpenAPI 3.1 document
  *   agent-cms call <tool> '<json args>'
  *
  * Env: AGENT_CMS_URL (https://app/api/cms) and AGENT_CMS_KEY (sgk_…), or
@@ -39,14 +47,15 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
 import { humanSize, type MediaOptions } from "./assets";
 import { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
 import { createCmsCore } from "./cms";
 import { loadConfig } from "./config";
 import { DrizzleRepo, type DoctorReport } from "./drizzle-repo";
 import { docFromMarkdown } from "./frontmatter";
+import { filesFromSource, IMPORT_SOURCES, type ImportSource } from "./import-sources";
 import { imageSize } from "./net-guard";
 import { DEFAULT_ACCEPT, DEFAULT_MAX_FILE_SIZE } from "./storage";
 import { addItems, loadRegistry, type Registry } from "./registry";
@@ -74,7 +83,7 @@ export interface CliIo {
   run?: (cmd: string, args: string[], cwd: string) => number;
 }
 
-const WITH_VALUE = new Set(["--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin"]);
+const WITH_VALUE = new Set(["--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every"]);
 
 function flag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -109,7 +118,7 @@ export function parseEnvFile(text: string): Record<string, string> {
 
 const USAGE = `agent-cms ${VERSION}
 in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync>
-with a key:    tools | collections | list | get | search | put | patch | publish | upload | call
+with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import | openapi
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
 const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage"]);
@@ -213,8 +222,63 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
       print(await api.call("patch_document", { collection: args[0], slug: args[1], ops: Array.isArray(ops) ? ops : [ops], expectedVersion: expectedVersion(), dryRun: argv.includes("--dry-run") }));
       return 0;
     }
+    case "openapi": {
+      // What this key may read, as an OpenAPI 3.1 document: `openapi > openapi.json`.
+      const res = await (io.fetch ?? fetch)(`${env.AGENT_CMS_URL.replace(/\/$/, "")}/openapi.json`, { headers: { authorization: `Bearer ${env.AGENT_CMS_KEY}`, "x-agent-cms-client": "cli" } });
+      if (!res.ok) throw new CmsRemoteError(`the app answered ${res.status} for /openapi.json${res.status === 404 ? " (it runs a version before 0.13.0)" : ""}`, "http");
+      print(await res.json());
+      return 0;
+    }
+    case "export": {
+      need(1);
+      const auth = { authorization: `Bearer ${env.AGENT_CMS_KEY}`, "x-agent-cms-client": "cli" };
+      const rest = createRestClient({ url: env.AGENT_CMS_URL, fetch: io.fetch, headers: auth });
+      const r = await rest.exportDocs({ collections: flag(argv, "collection")?.split(",").filter(Boolean), drafts: argv.includes("--drafts") });
+      const safe = (path: string) => !path.split("/").some((p) => p === ".." || p === "" || p.includes("\\"));
+      for (const f of r.files) {
+        if (!safe(f.path)) continue;
+        const p = join(args[0], f.path);
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, f.text);
+      }
+      let saved = 0;
+      const missed: string[] = [];
+      if (argv.includes("--with-files")) {
+        // The files the documents use, next to the manifest: _assets/<id>/<name>.
+        const manifest = r.files.find((f) => f.path === "_assets/manifest.json");
+        const assets = manifest ? (JSON.parse(manifest.text) as { assets: { id: string; name: string }[] }).assets : [];
+        for (const a of assets) {
+          if (!safe(`${a.id}/${a.name}`)) continue;
+          const res = await (io.fetch ?? fetch)(`${env.AGENT_CMS_URL.replace(/\/$/, "")}/files/${encodeURIComponent(a.id)}/${encodeURIComponent(a.name)}?download=1`, { headers: auth }).catch(() => null);
+          if (!res?.ok) {
+            missed.push(a.name);
+            continue;
+          }
+          const p = join(args[0], "_assets", a.id, a.name);
+          mkdirSync(dirname(p), { recursive: true });
+          writeFileSync(p, new Uint8Array(await res.arrayBuffer()));
+          saved++;
+        }
+      }
+      print({ documents: r.documents, files: r.files.length, ...(argv.includes("--with-files") ? { assets: saved, ...(missed.length ? { missed } : {}) } : {}), dir: args[0] });
+      return missed.length ? 1 : 0;
+    }
+    case "import": {
+      need(1);
+      const from = flag(argv, "from");
+      if (from) {
+        // Content from somewhere else: a JSON list, a CSV sheet or a WordPress export file.
+        if (!(IMPORT_SOURCES as readonly string[]).includes(from)) throw new CmsRemoteError(`--from must be one of: ${IMPORT_SOURCES.join(", ")}`, "usage");
+        const collection = flag(argv, "collection");
+        const files = filesFromSource(from as ImportSource, read(args[0]), { collection, types: flag(argv, "types")?.split(",").map((t) => t.trim()).filter(Boolean) });
+        if (!collection && files.some((f) => !f.path.includes("/"))) throw new CmsRemoteError("say where the documents go: --collection <name>", "usage");
+        return importFiles(files, null, undefined, argv, env.AGENT_CMS_URL, env.AGENT_CMS_KEY, { ...io, out, err });
+      }
+      return importDir(args[0], undefined, argv, env.AGENT_CMS_URL, env.AGENT_CMS_KEY, { ...io, out, err });
+    }
     case "put": {
       need(2);
+      if (existsSync(args[1]) && statSync(args[1]).isDirectory()) return importDir(args[1], args[0], argv, env.AGENT_CMS_URL, env.AGENT_CMS_KEY, { ...io, out, err });
       const [collection, file] = args;
       const doc = docFromMarkdown(read(file), basename(file).replace(/\.(md|markdown)$/i, ""));
       const publish = argv.includes("--publish");
@@ -267,6 +331,60 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
       err(`unknown command: ${cmd}\n${USAGE}`);
       return 1;
   }
+}
+
+/** Send a folder of markdown files to `/import`, 100 at a time. Exit 1 when a file could not be read in. */
+async function importDir(dir: string, collection: string | undefined, argv: string[], url: string, key: string, io: CliIo & { out: (l: string) => void; err: (l: string) => void }): Promise<number> {
+  const walk = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
+  const files = walk(dir)
+    .map((p) => ({ path: relative(dir, p).split("\\").join("/"), full: p }))
+    .filter((f) => /\.(md|markdown)$/i.test(f.path) && !f.path.startsWith("_"))
+    .map((f) => ({ path: f.path, text: readFileSync(f.full, "utf8") }));
+  return importFiles(files, dir, collection, argv, url, key, io);
+}
+
+/** Send files to `/import` in batches and print one line per file. `dir` is where `_assets/` may be. */
+async function importFiles(files: { path: string; text: string }[], dir: string | null, collection: string | undefined, argv: string[], url: string, key: string, io: CliIo & { out: (l: string) => void; err: (l: string) => void }): Promise<number> {
+  const rest = createRestClient({ url, fetch: io.fetch, headers: { authorization: `Bearer ${key}`, "x-agent-cms-client": "cli" } });
+  const dryRun = argv.includes("--dry-run");
+  const onConflict = flag(argv, "on-conflict") as "file-wins" | "db-wins" | "newest" | undefined;
+  // Files exported with --with-files: upload the ones this CMS does not have and point the documents at the new ids.
+  const assetMap: Record<string, string> = {};
+  const manifestPath = dir ? join(dir, "_assets", "manifest.json") : null;
+  if (manifestPath && existsSync(manifestPath) && !dryRun) {
+    const { assets } = JSON.parse(readFileSync(manifestPath, "utf8")) as { assets: { id: string; name: string; key: string; store?: string; alt?: string; tags?: string[] }[] };
+    const used = new Set(files.flatMap((f) => [...f.text.matchAll(/asset:([a-z0-9]{12})/g)].map((m) => m[1])));
+    for (const a of assets) {
+      const local = join(dir!, "_assets", a.id, a.name);
+      if (!used.has(a.id) || !existsSync(local)) continue;
+      const there = await rest.asset(a.id).then(() => true, () => false);
+      if (there) continue;
+      const folder = a.key.includes("/") ? a.key.slice(0, a.key.lastIndexOf("/")) : undefined;
+      // Imported before (a second run, or a run that stopped half way): the same name and size in the same folder is that file.
+      const size = statSync(local).size;
+      const same = (await rest.assets({ folder, q: a.name, limit: 50 }).catch(() => ({ assets: [] as { id: string; name: string; size: number }[] }))).assets.find((x) => x.name === a.name && x.size === size);
+      if (same) {
+        assetMap[a.id] = same.id;
+        continue;
+      }
+      const made = (await uploadFile(rest, local, { folder, alt: a.alt, tags: a.tags }, io)) as { id: string };
+      assetMap[a.id] = made.id;
+      io.out(`${`_assets/${a.id}/${a.name}`.padEnd(40)} uploaded as ${made.id}`);
+    }
+  }
+  const items = [];
+  for (let i = 0; i < files.length; i += 100) {
+    const r = await rest.importDocs(files.slice(i, i + 100), { dryRun, diff: argv.includes("--diff"), publish: argv.includes("--publish"), onConflict, collection: collection ?? flag(argv, "collection"), ...(Object.keys(assetMap).length ? { assetMap } : {}) });
+    items.push(...r.items);
+  }
+  for (const it of items) {
+    const what = it.change === "new" ? "new" : it.change === "update" ? `v${it.fromVersion} -> v${it.toVersion}` : it.change === "same" ? "same" : it.change === "skip" ? `skip (${it.reason})` : `ERROR ${it.reason}`;
+    io.out(`${it.path.padEnd(40)} ${what}${it.diagnostics.filter((d) => d.severity === "warning").length ? `  (${it.diagnostics.filter((d) => d.severity === "warning").length} warning(s))` : ""}`);
+    if (it.diff) io.out(it.diff);
+  }
+  const bad = items.filter((i) => i.change === "error").length;
+  io.out(`[agent-cms] ${dryRun ? "would import" : "imported"} ${items.filter((i) => i.change === "new" || i.change === "update").length} of ${items.length} file(s)${bad ? `, ${bad} with errors` : ""}.`);
+  return bad ? 1 : 0;
 }
 
 // ── local ───────────────────────────────────────────────────────────────────
@@ -358,7 +476,7 @@ export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTable
   const current = r.schemaVersion ?? 0;
   if (!r.missingTables.length && !r.missingColumns.length && current >= SCHEMA_VERSION) return null;
   // Missing tables: the whole idempotent DDL (creates only what is missing).
-  if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence|jobs|webhooks|webhook_deliveries)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
+  if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence|jobs|webhooks|webhook_deliveries|records)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
   // Steps are idempotent: re-run them all when columns are missing, else only the newer ones.
   const steps = upgradeSteps(tables).filter((s) => s.version > current || r.missingColumns.length > 0 || r.missingTables.length > 0);
   const meta = r.missingTables.some((t) => t.endsWith("meta"))
@@ -566,7 +684,7 @@ export default defineConfig({
     [
       `${appDir}lib/cms-schema.ts`,
       `// Re-export the agent-cms tables from your Drizzle schema so drizzle-kit sees them.
-export { cmsApiKeys, cmsAssetRefs, cmsAssets, cmsAudit, cmsComments, cmsDocuments, cmsHits, cmsJobs, cmsMeta, cmsPresence, cmsReleases, cmsSavedFilters, cmsVersions, cmsWebhookDeliveries, cmsWebhooks } from "@mainsoft/agent-cms/tables";
+export { cmsApiKeys, cmsAssetRefs, cmsAssets, cmsAudit, cmsComments, cmsDocuments, cmsHits, cmsJobs, cmsMeta, cmsPresence, cmsRecords, cmsReleases, cmsSavedFilters, cmsVersions, cmsWebhookDeliveries, cmsWebhooks } from "@mainsoft/agent-cms/tables";
 `,
     ],
     [

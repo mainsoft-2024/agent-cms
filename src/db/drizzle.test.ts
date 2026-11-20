@@ -210,7 +210,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_comments", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
+      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_comments", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -245,10 +245,11 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_jobs", "cms_presence", "cms_releases", "cms_saved_filters", "cms_webhook_deliveries", "cms_webhooks"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 4], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.10\.0/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.11\.0/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.13\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -411,6 +412,50 @@ test("db: jobs are taken once by callers at the same moment; webhooks and delive
     await cms.webhooks.remove(admin, webhook.id);
     assert.deepEqual(await rows(db, "select id from cms_webhook_deliveries"), [], "deliveries go with their webhook");
     assert.equal(await repo.findWebhook("not-a-uuid"), null);
+  } finally {
+    await close();
+  }
+});
+
+test("db: schema 6 → 7 adds cms_records; automations, runs and roles work on a real database", async () => {
+  const { db, close } = await freshDb();
+  try {
+    // A 0.12.0 database: everything but the records table.
+    await run(db, cmsDdl());
+    await run(db, `DROP TABLE cms_records; UPDATE cms_meta SET value = '6'::jsonb WHERE key = 'schema_version';`);
+    const repo = new DrizzleRepo(db);
+    const cms = createCms({ repo, collections: [guide], cronSecret: "c".repeat(32) });
+    await assert.rejects(cms.get(anon, "guide", "x"), (e: unknown) => isCmsError(e) && e.code === "schema_outdated");
+    const before = await repo.inspect();
+    assert.deepEqual([before.schemaVersion, before.missingTables], [6, ["cms_records"]]);
+    const pending = migrationSql(before, cmsTables())!;
+    assert.match(pending.steps[pending.steps.length - 1], /0\.13\.0/);
+    await run(db, pending.sql);
+    await run(db, pending.sql); // safe to run again
+    assert.deepEqual([(await repo.inspect()).schemaVersion, (await repo.inspect()).missingTables], [SCHEMA_VERSION, []]);
+
+    // Automations: made, run by cron, the run is kept, deleting takes the runs along.
+    const made = await cms.automations.create(admin, { name: "Tag", enabled: true, trigger: { event: "doc.published", collection: "guide" }, conditions: [{ field: "title", op: "contains", value: "Hello" }], actions: [{ type: "add_keyword", name: "new" }] });
+    await cms.create(admin, "guide", { slug: "a", title: "Hello" }, { publish: true });
+    await cms.create(admin, "guide", { slug: "b", title: "Other" }, { publish: true });
+    await new Promise((r) => setTimeout(r, 50));
+    await cms.cron();
+    assert.deepEqual((await cms.get(admin, "guide", "a", { draft: true })).keywords, ["new"]);
+    const runs = await cms.automations.runs(admin, made.id);
+    assert.deepEqual(runs.map((r) => r.state).sort(), ["ok", "skipped"]);
+    assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from cms_records where kind = 'automation_run'"))[0].n, 2);
+    await cms.automations.remove(admin, made.id);
+    assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from cms_records"))[0].n, 0);
+
+    // Roles: a writer may save and not publish; the same name twice is refused by the database.
+    const writer: Actor = { kind: "user", id: "u7", label: "Park", isAdmin: false };
+    const role = await cms.roles.create(admin, { name: "Writers", permissions: { guide: { write: true } } });
+    await assert.rejects(cms.roles.create(admin, { name: "writers" }), (e: unknown) => isCmsError(e) && e.code === "name_taken");
+    await cms.roles.addMember(admin, role.id, { id: "u7", label: "Park" });
+    await cms.update(writer, "guide", "b", { title: "Other 2" });
+    await assert.rejects(cms.publish(writer, "guide", "b"), (e: unknown) => isCmsError(e) && e.code === "forbidden_publish");
+    await cms.roles.remove(admin, role.id);
+    await assert.rejects(cms.update(writer, "guide", "b", { title: "Other 3" }), (e: unknown) => isCmsError(e) && e.code === "forbidden_write");
   } finally {
     await close();
   }

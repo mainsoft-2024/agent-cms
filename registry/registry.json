@@ -440,6 +440,97 @@
           "type": "registry:component"
         }
       ]
+    },
+    {
+      "name": "cms-dashboard",
+      "type": "registry:component",
+      "title": "Dashboard",
+      "description": "Documents by state, changes per day by people and by agents, the most read documents and the latest activity.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-dashboard.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-automations",
+      "type": "registry:component",
+      "title": "Automations",
+      "description": "When this happens, if these hold, do that: the list, the form, a dry test against one document and the run history.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "checkbox",
+        "input",
+        "label",
+        "dialog",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-automations.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-roles",
+      "type": "registry:component",
+      "title": "Roles",
+      "description": "Roles with what they may do per collection (write, publish, delete) and the people in them.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "checkbox",
+        "input",
+        "label",
+        "table",
+        "dialog",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-roles.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-transfer",
+      "type": "registry:component",
+      "title": "Import and export",
+      "description": "Import an export file or markdown files after seeing what each would change; export every document as markdown.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "checkbox",
+        "label",
+        "table",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-transfer.tsx",
+          "type": "registry:component"
+        }
+      ]
     }
   ]
 }

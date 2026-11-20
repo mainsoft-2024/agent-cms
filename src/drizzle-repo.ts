@@ -3,10 +3,10 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
-import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch } from "./repo";
+import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
-import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsJob, CmsRelease, CmsWebhook, WebhookDelivery, WebhookEvent, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
+import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsJob, CmsRecord, CmsRelease, CmsWebhook, WebhookDelivery, WebhookEvent, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PgDatabase<any, any, any>;
@@ -678,6 +678,49 @@ export class DrizzleRepo implements CmsRepo {
     return (await this.db.delete(D).where(lt(D.at, new Date(before))).returning({ id: D.id })).length;
   }
 
+  private toRecord(r: typeof this.t.records.$inferSelect): CmsRecord {
+    return { id: r.id, kind: r.kind, scope: r.scope, key: r.key, data: r.data, createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() };
+  }
+  async insertRecord(r: NewRecord) {
+    const at = new Date(r.at);
+    const [row] = await this.db.insert(this.t.records).values({ kind: r.kind, scope: r.scope ?? "", key: r.key ?? null, data: r.data, createdAt: at, updatedAt: at }).returning();
+    return this.toRecord(row);
+  }
+  async findRecord(kind: string, id: string) {
+    const R = this.t.records;
+    if (!this.uuidLike(id)) return null;
+    const [r] = await this.db.select().from(R).where(and(eq(R.kind, kind), eq(R.id, id))).limit(1);
+    return r ? this.toRecord(r) : null;
+  }
+  async findRecordByKey(kind: string, key: string) {
+    const R = this.t.records;
+    const [r] = await this.db.select().from(R).where(and(eq(R.kind, kind), eq(R.key, key))).limit(1);
+    return r ? this.toRecord(r) : null;
+  }
+  async listRecords(q: RecordQuery) {
+    const R = this.t.records;
+    const where = [eq(R.kind, q.kind), ...(q.scope !== undefined ? [eq(R.scope, q.scope)] : []), ...(q.before ? [lt(R.createdAt, new Date(q.before))] : [])];
+    const rows = await this.db.select().from(R).where(and(...where)).orderBy(...(q.order === "asc" ? [asc(R.createdAt), asc(R.id)] : [desc(R.createdAt), desc(R.id)])).limit(q.limit ?? 200);
+    return rows.map((r) => this.toRecord(r));
+  }
+  async updateRecord(kind: string, id: string, patch: RecordPatch) {
+    const R = this.t.records;
+    if (!this.uuidLike(id)) return null;
+    const [r] = await this.db.update(R).set({ ...(patch.data !== undefined ? { data: patch.data } : {}), ...(patch.key !== undefined ? { key: patch.key } : {}), updatedAt: new Date(patch.at) }).where(and(eq(R.kind, kind), eq(R.id, id))).returning();
+    return r ? this.toRecord(r) : null;
+  }
+  async deleteRecords(q: { kind: string; id?: string; scope?: string; before?: string }) {
+    const R = this.t.records;
+    if (q.id !== undefined && !this.uuidLike(q.id)) return 0;
+    const where = [eq(R.kind, q.kind), ...(q.id !== undefined ? [eq(R.id, q.id)] : []), ...(q.scope !== undefined ? [eq(R.scope, q.scope)] : []), ...(q.before !== undefined ? [lt(R.createdAt, new Date(q.before))] : [])];
+    return (await this.db.delete(R).where(and(...where)).returning({ id: R.id })).length;
+  }
+  async versionsSince(since: string, limit: number): Promise<VersionStamp[]> {
+    const V = this.t.versions;
+    const rows = await this.db.select({ documentId: V.documentId, version: V.version, createdAt: V.createdAt, authorKind: V.authorKind, authorLabel: V.authorLabel, authorAgent: V.authorAgent }).from(V).where(gte(V.createdAt, new Date(since))).orderBy(desc(V.createdAt)).limit(limit);
+    return rows.map((r) => ({ ...r, authorKind: r.authorKind as VersionStamp["authorKind"], authorAgent: r.authorAgent ?? null, createdAt: r.createdAt.toISOString() }));
+  }
+
   async inspect(): Promise<DoctorReport> {
     const { prefix, schema } = this.t.options;
     const sch = schema ?? null;
@@ -690,7 +733,7 @@ export class DrizzleRepo implements CmsRepo {
       have.get(c.table_name)!.add(c.column_name);
     }
     const expected: Record<string, string[]> = {};
-    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries })) {
+    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries, records: this.t.records })) {
       expected[prefix + key] = Object.values(tbl).filter((c) => c && typeof c === "object" && "name" in c && "columnType" in c).map((c) => (c as { name: string }).name);
     }
     const missingTables = Object.keys(expected).filter((t) => !have.has(t));

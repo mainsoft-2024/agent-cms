@@ -232,6 +232,13 @@ export function createOutbox(ctx: OutboxContext) {
         return 0;
       }
     },
+    /** Queue one event for one webhook, whatever its own event filter says (automations). False when it is gone or off. */
+    async send(webhookId: string, e: OutEvent): Promise<boolean> {
+      const w = ctx.sealer ? await repo.findWebhook(webhookId) : null;
+      if (!w || !w.enabled) return false;
+      await queue(w, { id: randomUUID(), at: iso(), ...e });
+      return true;
+    },
     prune: () => repo.pruneDeliveries(new Date(ctx.now().getTime() - WEBHOOK_KEEP_DAYS * 86_400_000).toISOString()),
   };
 }

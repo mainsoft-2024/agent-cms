@@ -342,7 +342,22 @@ export function cmsTables(o: CmsTablesOptions = {}) {
     (t) => ({ hookIdx: index(n("webhook_deliveries_hook_idx")).on(t.webhookId, t.at) })
   );
 
-  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, options: { prefix, schema: o.schema ?? null } };
+  /** Small objects the CMS keeps for itself: automations and their runs, roles. One table, so a new kind needs no migration. */
+  const records = table(
+    n("records"),
+    {
+      id: uuid("id").primaryKey().defaultRandom(),
+      kind: text("kind").notNull(),
+      scope: text("scope").notNull().default(""),
+      key: text("key"),
+      data: jsonb("data").$type<Record<string, unknown>>().notNull().default({}),
+      createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+      updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => ({ keyIdx: uniqueIndex(n("records_key_idx")).on(t.kind, t.key), scopeIdx: index(n("records_scope_idx")).on(t.kind, t.scope, t.createdAt) })
+  );
+
+  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, records, options: { prefix, schema: o.schema ?? null } };
 }
 
 export type CmsTables = ReturnType<typeof cmsTables>;
@@ -364,6 +379,7 @@ export const cmsPresence = defaultTables.presence;
 export const cmsJobs = defaultTables.jobs;
 export const cmsWebhooks = defaultTables.webhooks;
 export const cmsWebhookDeliveries = defaultTables.webhookDeliveries;
+export const cmsRecords = defaultTables.records;
 
 function names(t?: CmsTables | CmsTablesOptions) {
   const o = t && "options" in t ? t.options : ((t as CmsTablesOptions | undefined) ?? {});
@@ -587,6 +603,22 @@ CREATE TABLE IF NOT EXISTS ${tbl("webhook_deliveries")} (
   "at" timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ${idx("webhook_deliveries_hook_idx")} ON ${tbl("webhook_deliveries")} ("webhook_id", "at");`.trim(),
+    },
+    {
+      version: 7,
+      name: "agent-cms 0.13.0: records (automations and their runs, roles)",
+      sql: `
+CREATE TABLE IF NOT EXISTS ${tbl("records")} (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "kind" text NOT NULL,
+  "scope" text NOT NULL DEFAULT '',
+  "key" text,
+  "data" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ${idx("records_key_idx")} ON ${tbl("records")} ("kind", "key");
+CREATE INDEX IF NOT EXISTS ${idx("records_scope_idx")} ON ${tbl("records")} ("kind", "scope", "created_at");`.trim(),
     },
   ];
 }

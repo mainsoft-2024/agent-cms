@@ -42,6 +42,20 @@ tags: [launch]
 Body in **markdown**.
 ```
 
+## 내보내기, 가져오기, OpenAPI
+
+0.13.0부터.
+
+```sh
+npx @mainsoft/agent-cms export ./content --drafts --with-files
+npx @mainsoft/agent-cms import ./content --dry-run --diff
+npx @mainsoft/agent-cms import ./wordpress.xml --from wordpress --collection posts
+npx @mainsoft/agent-cms put guide ./guide
+npx @mainsoft/agent-cms openapi > openapi.json
+```
+
+`export`는 문서마다 마크다운 파일 하나를 쓰고, `import`는 그것을 초안으로 다시 읽으며 `--dry-run`으로 무엇을 할지 먼저 알려 줍니다. `--from json|csv|wordpress`는 다른 곳의 콘텐츠를 읽습니다. [내보내기와 가져오기](/docs/import-export)를 보세요. `openapi`는 키가 읽을 수 있는 범위의 REST API를 OpenAPI 3.1 문서로 출력합니다.
+
 ## 로컬 명령
 
 `init`, `doctor`, `migrate check | print | apply`, `add`는 서버 없이 프로젝트에서 돌아가요. [설치](/docs/install)와 [어드민 화면](/docs/admin-screens)을 보세요.

@@ -84,6 +84,26 @@ POST   /_cron                              Bearer cronSecret: 예약, 때가 된
 ANY    /<plugin name>/…                    플러그인이 추가한 라우트
 ```
 
+## 자동화, 역할, 대시보드, 내보내기
+
+0.13.0부터. 따로 적지 않으면 관리자(또는 `admin` 범위의 키)만.
+
+| 메서드와 경로 | 하는 일 |
+|---|---|
+| `GET /automations` | 자동화 목록과 고를 수 있는 트리거, 동작 |
+| `POST /automations`, `PATCH /automations/:id`, `DELETE /automations/:id` | 만들기, 바꾸기, 지우기 |
+| `GET /automations/:id/runs` | 실행 기록 (30일) |
+| `POST /automations/:id/test` `{collection, slug}` | 문서 하나에 무슨 일이 생길지. 아무것도 바뀌지 않음 |
+| `GET /roles`, `POST /roles`, `PATCH /roles/:id`, `DELETE /roles/:id` | 역할과 허용하는 것 |
+| `POST /roles/:id/members` `{id, label?}`, `DELETE /roles/:id/members/:userId` | 역할의 사람 |
+| `GET /roles/_users?q=` | 사람 찾기 (`createCms({ users })`에서) |
+| `GET /_stats?days=7\|14\|30` | 대시보드의 숫자. 로그인한 누구나, 읽을 수 있는 것만 |
+| `GET /export?collections=&drafts=1&download=1` | 문서를 마크다운 파일로. 읽을 수 있는 누구나 |
+| `POST /import` `{files, dryRun?, diff?, publish?, onConflict?, collection?, only?, assetMap?}` | 파일을 초안으로 읽기. 쓰기 권한 필요 |
+| `GET /openapi.json` | 이 API의 OpenAPI 3.1 문서. 누구나, 읽을 수 있는 것만 |
+
+[자동화, 역할, 대시보드](/docs/automations), [내보내기와 가져오기](/docs/import-export), [OpenAPI와 다른 서버](/docs/openapi)를 보세요.
+
 ## 파일
 
 [미디어 라이브러리](/ko/docs/media-library)가 있을 때만 동작해요. 없으면 `media_disabled`로 답해요.

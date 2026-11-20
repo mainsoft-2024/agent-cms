@@ -83,6 +83,26 @@ POST   /_cron                              Bearer cronSecret: schedules, due job
 ANY    /<plugin name>/…                    routes a plugin added
 ```
 
+## Automations, roles, dashboard, export
+
+From 0.13.0. Admins (or a key with the `admin` scope) unless noted.
+
+| Method and path | What it does |
+|---|---|
+| `GET /automations` | Automations, with the triggers and actions that can be picked |
+| `POST /automations`, `PATCH /automations/:id`, `DELETE /automations/:id` | Make, change, delete |
+| `GET /automations/:id/runs` | Run history (30 days) |
+| `POST /automations/:id/test` `{collection, slug}` | What would happen to one document; nothing is changed |
+| `GET /roles`, `POST /roles`, `PATCH /roles/:id`, `DELETE /roles/:id` | Roles and what they allow |
+| `POST /roles/:id/members` `{id, label?}`, `DELETE /roles/:id/members/:userId` | People in a role |
+| `GET /roles/_users?q=` | Find people (from `createCms({ users })`) |
+| `GET /_stats?days=7\|14\|30` | The dashboard's numbers. Anyone signed in, for what they may read |
+| `GET /export?collections=&drafts=1&download=1` | Documents as markdown files. Anyone who may read |
+| `POST /import` `{files, dryRun?, diff?, publish?, onConflict?, collection?, only?, assetMap?}` | Read files into drafts. Needs write |
+| `GET /openapi.json` | This API as an OpenAPI 3.1 document. Anyone, for what they may read |
+
+See [Automations, roles and the dashboard](/docs/automations), [Export and import](/docs/import-export) and [OpenAPI and other servers](/docs/openapi).
+
 ## Files
 
 Only with a [media library](/docs/media-library); without one these answer `media_disabled`.

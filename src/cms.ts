@@ -9,6 +9,10 @@
  * the app decides what to keep.
  */
 
+import { createAutomations, type AutomationOptions } from "./automations";
+import { createRoles, type UsersOptions } from "./roles";
+import { createStats } from "./stats";
+import { createTransfer } from "./transfer";
 import { createAssets, type MediaOptions } from "./assets";
 import { createFlow, type ScheduledRun } from "./flow";
 import { createJobs, type JobsRun } from "./jobs";
@@ -170,6 +174,10 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
    * your tracing or metrics. Must not throw; it is never awaited.
    */
   onEvent?: (e: CmsTelemetry) => void;
+  /** Functions automations can call by name. Automations themselves are made on the admin screen. */
+  automations?: AutomationOptions;
+  /** The people of your app, for the roles screen (search by name, look up by id). Without it members are added by id. */
+  users?: UsersOptions;
 }
 
 /** Second argument of `afterChange` hooks and `onChange` listeners. */
@@ -293,7 +301,7 @@ export type CmsTelemetry =
   | { type: "error"; where: string; message: string };
 
 /** First path segments the CMS uses itself. A plugin cannot take one of these names. */
-export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins"]);
+export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "_stats", "_me", "_cron"]);
 
 /** Audit actions that are also events (webhooks, plugin listeners). */
 const EVENT_OF: Partial<Record<AuditAction, WebhookEvent>> = {
@@ -339,6 +347,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   function emitEvent(e: OutEvent) {
     telemetry({ type: "event", ...e });
     void outbox.emit(e);
+    void automations.onEvent(e);
     for (const l of eventListeners) {
       if (l.event !== "*" && l.event !== e.event) continue;
       Promise.resolve()
@@ -386,7 +395,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   let schemaReady: Promise<void> | null = null;
   function ensureSchema(): Promise<void> | void {
-    if (opts.schemaCheck === false) return;
+    if (opts.schemaCheck === false) return roles.load().catch((e) => report(e, "roles"));
+    const loadRoles = () => roles.load().catch((e) => report(e, "roles"));
     schemaReady ??= (async () => {
       const raw = await repo.getMeta("schema_version");
       const found = raw == null ? null : Number(raw);
@@ -397,7 +407,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       schemaReady = null; // try again on the next call (after the migration ran)
       throw e;
     });
-    return schemaReady;
+    return schemaReady.then(loadRoles);
   }
 
   // ── audit ─────────────────────────────────────────────────────────────────
@@ -441,13 +451,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return !actor.collections || actor.collections.includes(col);
   }
 
-  function can(actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null): boolean {
+  function can(actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null): boolean {
     const c = collection(col);
     if (actor.kind === "system") return true;
     if (c.managed && what !== "read") return false;
     if (actor.kind === "key") {
       if (!keyCovers(actor, col)) return false;
-      return actor.scopes.includes(what) || actor.scopes.includes("admin") || (what === "read" && (actor.scopes.includes("write") || actor.scopes.includes("publish")));
+      const scope = what === "delete" ? "publish" : what;
+      return actor.scopes.includes(scope) || actor.scopes.includes("admin") || (what === "read" && (actor.scopes.includes("write") || actor.scopes.includes("publish")));
     }
     if (what === "read") {
       if (c.access?.read) return c.access.read({ actor, collection: col, doc });
@@ -455,14 +466,16 @@ export function createCmsCore(opts: CreateCmsOptions) {
     }
     const fn = what === "write" ? c.access?.write : c.access?.publish;
     if (fn) return fn({ actor, collection: col, doc });
-    return actor.kind === "user" && actor.isAdmin;
+    if (actor.kind !== "user") return false;
+    // The app's admins first, then what the roles say; people in no role get the default (admins only).
+    return actor.isAdmin || (roles.allows(actor, col, what) ?? false);
   }
 
-  function assert(actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) {
+  function assert(actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null) {
     if (can(actor, col, what, doc)) return;
     if (actor.kind !== "anonymous" && what !== "read") audit(actor, "access.denied", { collection: col, slug: doc?.slug ?? null, outcome: "denied", detail: { need: what } });
     if (actor.kind === "anonymous") throw fail("unauthorized");
-    throw fail(what === "publish" ? "forbidden_publish" : what === "write" ? "forbidden_write" : "forbidden_read", { collection: col });
+    throw fail(what === "publish" || what === "delete" ? "forbidden_publish" : what === "write" ? "forbidden_write" : "forbidden_read", { collection: col });
   }
 
   /** Who to record as the author. `agent` is the agent acting for a person, when there is one. */
@@ -1093,7 +1106,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await ensureSchema();
     const cur = await repo.findDoc(col, slug);
     if (!cur) throw fail("not_found", { collection: col, slug });
-    assert(actor, col, "publish", cur);
+    assert(actor, col, "delete", cur);
     if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
     await gate("beforeDelete", actor, cur, contentOf(cur));
     // With a trash the row stays (and keeps its address) until it is restored or purged.
@@ -1332,7 +1345,19 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // ── keys ──────────────────────────────────────────────────────────────────
 
-  const isAdmin = (actor: Actor) => actor.kind === "system" || (actor.kind === "user" && actor.isAdmin) || (actor.kind === "key" && actor.scopes.includes("admin"));
+  const baseAdmin = (actor: Actor) => actor.kind === "system" || (actor.kind === "user" && actor.isAdmin) || (actor.kind === "key" && actor.scopes.includes("admin"));
+  const roles = createRoles({
+    repo,
+    now,
+    fail,
+    audit,
+    baseAdmin,
+    ready: ensureSchema,
+    users: opts.users,
+    targets: () => [...collections.values()].map((c) => ({ slug: c.slug, label: c.label, coded: [...(c.access?.write ? (["write"] as const) : []), ...(c.access?.publish ? (["publish", "delete"] as const) : []), ...(c.managed ? (["write", "publish", "delete"] as const) : [])] })),
+  });
+  /** An admin by the app's word, by a key's scope, or through a role marked "admin". */
+  const isAdmin = (actor: Actor) => roles.isAdmin(actor);
 
   function assertKeyAdmin(actor: Actor) {
     if (!isAdmin(actor)) throw fail(actor.kind === "anonymous" ? "unauthorized" : "forbidden_keys");
@@ -1491,6 +1516,48 @@ export function createCmsCore(opts: CreateCmsOptions) {
     previewPayload,
   });
 
+  // ── automations, the dashboard ──
+
+  const automations = createAutomations({
+    repo,
+    now,
+    today: () => dayIn(timeZone, now()),
+    fail,
+    audit,
+    isAdmin,
+    ready: ensureSchema,
+    report,
+    jobs,
+    collections: () => [...collections.keys()],
+    findDoc: (col, slug) => repo.findDoc(col, slug),
+    update: (actor, col, slug, input) => update(actor, col, slug, input),
+    addToRelease: (actor, id, item) => flow.releases.add(actor, id, [item]),
+    sendWebhook: (id, e) => outbox.send(id, e),
+    options: opts.automations ?? {},
+  });
+  const stats = createStats({ repo, now, dayOf: (d) => dayIn(timeZone, d), ready: ensureSchema, collections: () => [...collections.keys()], can, counts, isAdmin });
+
+  const transfer = createTransfer({
+    repo,
+    now,
+    fail,
+    audit,
+    ready: ensureSchema,
+    message,
+    collections: () => [...collections.keys()],
+    can,
+    list,
+    diagnose,
+    create,
+    update,
+    publish,
+    assetsOf: async (_actor, docs) => {
+      if (!opts.media) return [];
+      const ids = [...new Set(docs.flatMap((d) => [...(d.body + JSON.stringify(d.fields)).matchAll(/asset:([a-z0-9]{12})/g)].map((m) => m[1])))];
+      return (await repo.findAssets(ids)).map((a) => ({ id: a.id, store: a.store, key: a.key, name: a.name, alt: a.alt, tags: a.tags }));
+    },
+  });
+
   // ── plugins (plugin.ts) ───────────────────────────────────────────────────
 
   const plugins = {
@@ -1559,6 +1626,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     async cron(o: { budgetMs?: number } = {}): Promise<ScheduledRun & { jobs: JobsRun }> {
       const t0 = Date.now();
       const scheduled = await flow.runScheduled();
+      await automations.tick().catch((e) => report(e, "automations"));
       const ran = await jobs.run(o);
       await Promise.all([jobs.prune(), outbox.prune()]).catch((e) => report(e, "cron housekeeping"));
       telemetry({ type: "cron", ms: Date.now() - t0, jobs: ran });
@@ -1568,6 +1636,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
     jobs,
     /** Webhooks: `list`, `create`, `update`, `remove`, `secret`, `test`, `deliveries`, `retry`. Admins only. */
     webhooks: outbox,
+    /** Automations: `list`, `create`, `update`, `remove`, `runs`, `test`, `addAction`. Admins only. */
+    automations,
+    /** Roles: `list`, `create`, `update`, `remove`, `addMember`, `removeMember`, `searchUsers`. Admins only. */
+    roles,
+    /** `export(actor, { collections, drafts })` and `import(actor, files, { dryRun, onConflict, publish })`: documents as markdown files. */
+    transfer,
+    /** The dashboard's numbers for the last 7, 14 or 30 days. */
+    stats,
     /** Seal and open values kept in the database (null without `secretsKey`). */
     secrets: sealer,
     telemetry,

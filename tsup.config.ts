@@ -22,6 +22,7 @@ export default defineConfig([
       diff: "src/diff.ts",
       errors: "src/errors.ts",
       config: "src/config.ts",
+      "adapters/node": "src/adapters/node.ts",
       "messages/en": "src/messages/en.ts",
       "messages/ko": "src/messages/ko.ts",
     },

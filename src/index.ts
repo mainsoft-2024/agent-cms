@@ -103,3 +103,7 @@ export { createSealer, type Sealer } from "./secrets";
 export { signWebhook, verifyWebhook, WebhookVerifyError, type WebhookPayload } from "./webhooks";
 export { cmsJobs, cmsWebhookDeliveries, cmsWebhooks } from "./tables";
 export type { CmsTelemetry } from "./cms";
+
+// 0.13.0: OpenAPI, import sources
+export { API_ROUTES, openApiDocument, type ApiRoute, type OpenApiOptions } from "./openapi";
+export { docsFromCsv, docsFromJson, docsFromWordpress, filesFromDocs, filesFromSource, htmlToMarkdown, IMPORT_SOURCES, parseCsv, slugify, type ImportSource, type SourceDoc } from "./import-sources";

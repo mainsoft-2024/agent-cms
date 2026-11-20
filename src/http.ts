@@ -37,6 +37,14 @@
  *   GET    /keys | POST /keys {name, scopes, collections?, expiresAt?} | DELETE /keys/:id
  *   GET    /audit?cursor=&action=&outcome=&actorKind= (also /_audit)
  *   POST   /mcp                                       MCP (official SDK, streamable HTTP, stateless)
+ *   GET    /export?collections=a,b&drafts=1&download=1  documents as markdown files: {files: [{path, text}], documents}
+ *   POST   /import {files, dryRun?, diff?, onConflict?, publish?, collection?, only?}  → {items, applied}
+ *   GET    /openapi.json                              this API as an OpenAPI 3.1 document (what the caller may read)
+ *   GET    /_stats?days=7|14|30                       the dashboard's numbers (signed in)
+ *   GET    /automations | POST {name, trigger, conditions, actions} | PATCH, DELETE /automations/:id
+ *   GET    /automations/:id/runs | POST /automations/:id/test {collection, slug}
+ *   GET    /roles | POST {name, admin?, permissions} | PATCH, DELETE /roles/:id | GET /roles/_users?q=
+ *   POST   /roles/:id/members {id, label?} | DELETE /roles/:id/members/:userId
  *
  * Media library (only with `createCms({ media })`):
  *
@@ -93,6 +101,7 @@ import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "
 import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
+import { openApiDocument } from "./openapi";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
 export interface CmsHandlerOptions {
@@ -158,6 +167,8 @@ export function errorResponse(err: unknown, cms?: CmsLike): Response {
 
 /** Largest request body accepted (bytes). Documents cap at 60k chars. */
 const MAX_BODY_BYTES = 512 * 1024;
+/** An import bundle may be larger: 4MB. Bigger sets go through the CLI, which sends them in parts. */
+const IMPORT_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * Is this write from a page of the app itself? Browsers put the page's
@@ -296,6 +307,10 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           media: core.assets.describe(actor),
           /** True when webhooks can be made (a `secretsKey` is set) and this caller may manage them. */
           webhooks: core.webhooks.enabled() && core.isAdmin(actor),
+          /** The dashboard, automations and roles screens exist in this version. */
+          dashboard: actor.kind !== "anonymous",
+          automations: core.isAdmin(actor),
+          roles: core.isAdmin(actor),
           nav: core.plugins.nav.filter((n) => !n.admin || core.isAdmin(actor)).map(({ label, href, plugin }) => ({ label, href, plugin })),
           plugins: Object.fromEntries(await Promise.all(core.plugins.names.map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
           collections: core
@@ -303,6 +318,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             .filter((c) => core.can(actor, c.slug, "read"))
             .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish") })),
         });
+      }
+
+      if (seg[0] === "openapi.json" && seg.length === 1 && m === "GET") {
+        // The address people open, not the one the server listens on (see sameSite).
+        const host = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || req.headers.get("host");
+        const proto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(":", "");
+        return json(openApiDocument(core, { basePath: base, origin: host ? `${proto}://${host}` : url.origin, actor }), 200, { "cache-control": "private, max-age=60" });
       }
 
       if (seg[0] === "search" && m === "GET") {
@@ -668,6 +690,74 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json({ doc: wire(doc) }, 200, { etag: etag(doc) });
           }
         }
+      }
+
+      if (seg[0] === "_stats" && seg.length === 1 && m === "GET") {
+        if (actor.kind === "anonymous") throw new CmsError("unauthorized", {}, { messages: core.messages });
+        return json(await core.stats(actor, { days: Number(q.get("days")) || undefined }));
+      }
+
+      if (seg[0] === "export" && seg.length === 1 && m === "GET") {
+        const r = await core.transfer.export(actor, { collections: (q.get("collections") ?? "").split(",").filter(Boolean), drafts: q.get("drafts") === "1" });
+        return json(r, 200, q.get("download") === "1" ? { "content-disposition": `attachment; filename="cms-export-${new Date().toISOString().slice(0, 10)}.json"` } : {});
+      }
+      if (seg[0] === "import" && seg.length === 1 && m === "POST") {
+        const text = await req.text();
+        if (text.length > IMPORT_MAX_BYTES) throw new CmsError("body_too_large", {}, { status: 413 });
+        let raw: unknown;
+        try {
+          raw = JSON.parse(text);
+        } catch {
+          throw new CmsError("invalid_json");
+        }
+        const b = z
+          .object({
+            files: z.array(z.object({ path: z.string().max(400), text: z.string() })).max(2000),
+            dryRun: z.boolean().optional(),
+            diff: z.boolean().optional(),
+            publish: z.boolean().optional(),
+            onConflict: z.enum(["file-wins", "db-wins", "newest"]).optional(),
+            collection: z.string().optional(),
+            only: z.array(z.string()).optional(),
+            assetMap: z.record(z.string()).optional(),
+          })
+          .parse(raw);
+        return json(await core.transfer.import(actor, b.files, b));
+      }
+
+      // ── automations and roles (admins) ──
+      if (seg[0] === "automations") {
+        const a = core.automations;
+        const input = z.object({
+          name: z.string().optional(),
+          enabled: z.boolean().optional(),
+          trigger: z.object({ event: z.string(), collection: z.string().nullable() }).optional(),
+          conditions: z.array(z.object({ field: z.string(), op: z.enum(["is", "is_not", "contains", "empty", "not_empty"]), value: z.string().optional() })).max(10).optional(),
+          actions: z.array(z.object({ type: z.string(), target: z.string().optional(), name: z.string().optional(), value: z.string().optional() })).max(10).optional(),
+        });
+        if (seg.length === 1 && m === "GET") return json(await a.list(actor));
+        if (seg.length === 1 && m === "POST") return json({ automation: await a.create(actor, (await body(req, input)) as never) }, 201);
+        if (seg.length === 2 && m === "PATCH") return json({ automation: await a.update(actor, seg[1], (await body(req, input)) as never) });
+        if (seg.length === 2 && m === "DELETE") {
+          await a.remove(actor, seg[1]);
+          return json({ ok: true });
+        }
+        if (seg.length === 3 && seg[2] === "runs" && m === "GET") return json({ runs: await a.runs(actor, seg[1], { limit: Number(q.get("limit")) || undefined }) });
+        if (seg.length === 3 && seg[2] === "test" && m === "POST") return json(await a.test(actor, seg[1], await body(req, z.object({ collection: z.string(), slug: z.string() }))));
+      }
+      if (seg[0] === "roles") {
+        const r = core.roles;
+        const input = z.object({ name: z.string().optional(), admin: z.boolean().optional(), permissions: z.record(z.record(z.boolean())).optional() });
+        if (seg.length === 1 && m === "GET") return json(await r.list(actor));
+        if (seg.length === 1 && m === "POST") return json({ role: await r.create(actor, await body(req, input)) }, 201);
+        if (seg.length === 2 && seg[1] === "_users" && m === "GET") return json({ users: await r.searchUsers(actor, q.get("q") ?? "") });
+        if (seg.length === 2 && m === "PATCH") return json({ role: await r.update(actor, seg[1], await body(req, input)) });
+        if (seg.length === 2 && m === "DELETE") {
+          await r.remove(actor, seg[1]);
+          return json({ ok: true });
+        }
+        if (seg.length === 3 && seg[2] === "members" && m === "POST") return json({ role: await r.addMember(actor, seg[1], await body(req, z.object({ id: z.string().min(1).max(200), label: z.string().max(120).optional() }))) });
+        if (seg.length === 4 && seg[2] === "members" && m === "DELETE") return json({ role: await r.removeMember(actor, seg[1], seg[3]) });
       }
 
       // ── webhooks and jobs (admins) ──
