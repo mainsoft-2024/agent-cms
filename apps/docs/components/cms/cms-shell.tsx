@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { BookOpen, HardDrive, Image as ImageIcon, KeyRound, Layers, ScrollText, Search, FileText, Trash2 } from "lucide-react";
+import { BookOpen, FileText, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { ShellNavContext, useCms } from "./use-cms";
@@ -31,7 +31,7 @@ export interface CmsLinkProps {
   onClick?: () => void;
 }
 
-export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" };
+export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" };
 
 export interface CmsShellProps {
   children?: React.ReactNode;
@@ -238,6 +238,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
               [
                 { kind: "keys", label: t("nav_keys"), Icon: KeyRound },
                 { kind: "audit", label: t("nav_audit"), Icon: ScrollText },
+                ...(me.webhooks ? [{ kind: "webhooks", label: t("nav_webhooks"), Icon: Webhook } as const] : []),
               ] as const
             ).map(({ kind, label, Icon }) => {
               const h = href({ kind });
@@ -261,6 +262,27 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
             })}
           </ul>
         </>
+      ) : null}
+      {/* What plugins add (`ctx.nav()`), after the CMS's own entries. */}
+      {me?.nav?.length ? (
+        <ul className="flex flex-col gap-0.5 pt-4" aria-label={t("nav_plugins")}>
+          {me.nav.map((n) => (
+            <li key={n.plugin + n.href}>
+              {link({
+                href: n.href,
+                className: navClass(activeHref === n.href),
+                "aria-current": activeHref === n.href ? "page" : undefined,
+                onClick: close,
+                children: (
+                  <>
+                    <Puzzle aria-hidden className="h-4 w-4 shrink-0" />
+                    <span className="flex-1 truncate">{n.label}</span>
+                  </>
+                ),
+              })}
+            </li>
+          ))}
+        </ul>
       ) : null}
       {(extraNav ?? []).map((g, gi) => (
         <div key={gi} data-cms-extra-nav="">

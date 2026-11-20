@@ -31,7 +31,7 @@ export interface FlowContext {
   conflict: (cur: CmsDoc, expected: number, actor: Actor, col: string) => Error;
   publishIn: (r: CmsRepo, actor: Actor, doc: CmsDoc, n: number) => Promise<CmsDoc>;
   unpublishIn: (r: CmsRepo, actor: Actor, doc: CmsDoc) => Promise<CmsDoc>;
-  changed: (prev: CmsDoc | null, doc: CmsDoc | null) => void;
+  changed: (prev: CmsDoc | null, doc: CmsDoc | null, o?: { quiet?: boolean }) => void;
   /** Everything wrong with this content of `doc` (errors and warnings). */
   problems: (doc: CmsDoc, c: DocContent, r: CmsRepo) => Promise<Diagnostic[]>;
   needsReview: (actor: Actor, col: string) => boolean;
@@ -276,7 +276,7 @@ export function createFlow(ctx: FlowContext) {
         assert(actor, d.collection, "publish", d);
         const doc = (await repo.updateDoc(d.id, { deletedAt: null, deletedBy: null, updatedAt: nowIso() }))!;
         audit(actor, "doc.undelete", { collection: d.collection, slug: d.slug, version: d.version });
-        ctx.changed(null, doc);
+        ctx.changed(null, doc, { quiet: true }); // told as doc.restored, not as a new document
       }
       restored++;
     }

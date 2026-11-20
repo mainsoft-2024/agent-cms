@@ -13,6 +13,9 @@
  *       try every file store for real (upload, signed addresses, large-file parts, CORS)
  *       and print what each store accepts. Needs `media` in agent-cms.config.ts.
  *   agent-cms storage cleanup              remove uploads that were started and never finished
+ *   agent-cms cron [--watch] [--every 30]  call the app's /_cron once (or keep calling): scheduled publishing, webhook deliveries, jobs
+ *                                          needs AGENT_CMS_URL and AGENT_CMS_CRON_SECRET (or CRON_SECRET)
+ *   agent-cms webhooks list | test <id>    registered webhooks; send a ping (admin key)
  *   agent-cms storage sync [--store name] [--folder path]
  *       make every file of a bucket known to the CMS (files that got there some other way),
  *       and list files the CMS knows that are gone from the bucket
@@ -140,6 +143,29 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
   const { out, err, read } = io;
   const envFile = flag(argv, "env");
   const env = { ...(io.env ?? process.env), ...(envFile ? parseEnvFile(read(envFile)) : {}) };
+  if (cmd === "cron") {
+    const secret = env.AGENT_CMS_CRON_SECRET ?? env.CRON_SECRET;
+    if (!env.AGENT_CMS_URL || !secret) {
+      err("[agent-cms] set AGENT_CMS_URL and AGENT_CMS_CRON_SECRET (the app's `cronSecret`), or pass --env <file>.");
+      return 1;
+    }
+    const every = Math.max(5, Number(flag(argv, "every")) || 30);
+    const once = async (): Promise<number> => {
+      const res = await (io.fetch ?? fetch)(`${env.AGENT_CMS_URL!.replace(/\/$/, "")}/_cron`, { method: "POST", headers: { authorization: `Bearer ${secret}` } });
+      const text = await res.text();
+      if (!res.ok) {
+        err(`[agent-cms] cron: the app answered ${res.status}${res.status === 404 ? " (no `cronSecret` in createCms?)" : res.status === 401 ? " (the secret does not match)" : ""}`);
+        return 1;
+      }
+      out(text);
+      return 0;
+    };
+    if (!argv.includes("--watch")) return once();
+    for (;;) {
+      await once().catch((e) => err(`[agent-cms] cron: ${e instanceof Error ? e.message : e}`));
+      await new Promise((r) => setTimeout(r, every * 1000));
+    }
+  }
   if (!env.AGENT_CMS_URL || !env.AGENT_CMS_KEY) {
     err("[agent-cms] set AGENT_CMS_URL and AGENT_CMS_KEY (or pass --env <file>).");
     return 1;
@@ -207,6 +233,20 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
         ? await api.call("update_document", { collection, slug: doc.slug, doc, expectedVersion: expected ?? current.version, publish, note })
         : await api.call("create_document", { collection, doc, publish, note });
       print(result);
+      return 0;
+    }
+    case "webhooks": {
+      const rest = createRestClient({ url: env.AGENT_CMS_URL, fetch: io.fetch, headers: { authorization: `Bearer ${env.AGENT_CMS_KEY}`, "x-agent-cms-client": "cli" } });
+      if (args[0] === "test") {
+        if (!args[1]) {
+          err("[agent-cms] usage: agent-cms webhooks test <id>");
+          return 1;
+        }
+        const d = await rest.testWebhook(args[1]);
+        print(d);
+        return d.ok ? 0 : 1;
+      }
+      print((await rest.webhooks()).webhooks);
       return 0;
     }
     case "upload": {
@@ -284,7 +324,8 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
     const report = await repo.inspect();
     let stale = 0;
     if (!report.missingTables.length && !report.missingColumns.length) stale = (await repo.listAssets({ status: "pending", createdBefore: new Date(Date.now() - 24 * 3600 * 1000).toISOString(), limit: 500 })).length;
-    return doctor(report, tables.options, io, stale);
+    const failedJobs = report.missingTables.length ? 0 : (await repo.countJobs()).failed;
+    return doctor(report, tables.options, io, stale, failedJobs);
   }
   if (cmd === "migrate") {
     const sub = args[0] ?? "check";
@@ -317,7 +358,7 @@ export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTable
   const current = r.schemaVersion ?? 0;
   if (!r.missingTables.length && !r.missingColumns.length && current >= SCHEMA_VERSION) return null;
   // Missing tables: the whole idempotent DDL (creates only what is missing).
-  if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
+  if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence|jobs|webhooks|webhook_deliveries)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
   // Steps are idempotent: re-run them all when columns are missing, else only the newer ones.
   const steps = upgradeSteps(tables).filter((s) => s.version > current || r.missingColumns.length > 0 || r.missingTables.length > 0);
   const meta = r.missingTables.some((t) => t.endsWith("meta"))
@@ -326,7 +367,7 @@ export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTable
   return { sql: `${meta}${steps.map((s) => `-- ${s.name}\n${s.sql}`).join("\n\n")}\n${schemaVersionSql(tables)}`, steps: steps.map((s) => s.name) };
 }
 
-function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, io: LocalIo, staleUploads = 0): number {
+function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, io: LocalIo, staleUploads = 0, failedJobs = 0): number {
   const lines: string[] = [];
   let bad = false;
   const ok = (m: string) => lines.push(`ok    ${m}`);
@@ -344,6 +385,7 @@ function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, i
   if (r.badPublished) fail(`${r.badPublished} document(s) point at a published version that is missing`);
   if (r.orphanVersions) warn(`${r.orphanVersions} version row(s) without a document`);
   if (staleUploads) warn(`${staleUploads === 500 ? "500+" : staleUploads} upload(s) started more than a day ago and never finished (npx @mainsoft/agent-cms storage cleanup)`);
+  if (failedJobs) warn(`${failedJobs} background job(s) failed for good (GET /api/cms/jobs?state=failed shows why; POST /api/cms/jobs/<id>/retry tries again)`);
   if (r.legacyColumns.length) {
     warn(`old columns nothing reads any more: ${r.legacyColumns.join(", ")}. To drop them:`);
     const t = (name: string) => (o.schema ? `"${o.schema}"."${name}"` : `"${name}"`);
@@ -524,7 +566,7 @@ export default defineConfig({
     [
       `${appDir}lib/cms-schema.ts`,
       `// Re-export the agent-cms tables from your Drizzle schema so drizzle-kit sees them.
-export { cmsApiKeys, cmsAssetRefs, cmsAssets, cmsAudit, cmsComments, cmsDocuments, cmsHits, cmsMeta, cmsPresence, cmsReleases, cmsSavedFilters, cmsVersions } from "@mainsoft/agent-cms/tables";
+export { cmsApiKeys, cmsAssetRefs, cmsAssets, cmsAudit, cmsComments, cmsDocuments, cmsHits, cmsJobs, cmsMeta, cmsPresence, cmsReleases, cmsSavedFilters, cmsVersions, cmsWebhookDeliveries, cmsWebhooks } from "@mainsoft/agent-cms/tables";
 `,
     ],
     [

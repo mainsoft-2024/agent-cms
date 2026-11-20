@@ -65,6 +65,24 @@ GET    /_cron                             run what is due (Authorization: Bearer
 
 See [Publishing flow](/docs/publishing-flow).
 
+## Webhooks and jobs
+
+Admins and keys with the `admin` scope.
+
+```text
+GET    /webhooks                           {webhooks, events, enabled}
+POST   /webhooks                           {name, url, events?, collections?, enabled?} → {webhook, secret}
+PATCH  /webhooks/:id                       the same fields | DELETE
+GET    /webhooks/:id/secret                the signing secret
+POST   /webhooks/:id/test                  send a ping now → {delivery}
+GET    /webhooks/:id/deliveries?limit=     the last 30 days, newest first
+POST   /webhooks/deliveries/:id/retry      queue the same event again
+GET    /jobs?state=waiting|failed|done&kind=   {waiting, failed, jobs}
+POST   /jobs/:id/retry                     give a failed job another round
+POST   /_cron                              Bearer cronSecret: schedules, due jobs, housekeeping → {published, …, jobs}
+ANY    /<plugin name>/…                    routes a plugin added
+```
+
 ## Files
 
 Only with a [media library](/docs/media-library); without one these answer `media_disabled`.

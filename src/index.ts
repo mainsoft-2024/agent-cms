@@ -94,3 +94,12 @@ export type { CmsClient, CmsClientOptions, RestClient, RestClientOptions } from 
 export { docFromMarkdown, parseFrontmatter } from "./frontmatter";
 export { VERSION } from "./version";
 export * from "./types";
+
+// 0.12.0: background jobs, webhooks, plugins, telemetry
+export { JOB_LOCK_MS, type CmsJobs, type JobKind, type JobsRun } from "./jobs";
+export { WEBHOOK_MAX_FAILURES, WEBHOOK_RETRY, type CmsOutbox, type OutEvent, type WebhookInput, type WebhookOptions, type WebhookView } from "./outbox";
+export { definePlugin, type CmsEvent, type CmsPlugin, type PluginContext, type PluginNav, type PluginRouteArgs, type PluginTool } from "./plugin";
+export { createSealer, type Sealer } from "./secrets";
+export { signWebhook, verifyWebhook, WebhookVerifyError, type WebhookPayload } from "./webhooks";
+export { cmsJobs, cmsWebhookDeliveries, cmsWebhooks } from "./tables";
+export type { CmsTelemetry } from "./cms";

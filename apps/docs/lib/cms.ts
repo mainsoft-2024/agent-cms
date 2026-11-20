@@ -44,6 +44,9 @@ function make(d: Awaited<ReturnType<typeof db>>) {
     // `Authorization: Bearer $CRON_SECRET`: Vercel's cron once a day (vercel.json; the Hobby plan allows no more)
     // and a GitHub schedule every ten minutes (.github/workflows/docs-cron.yml). Without the variable the route answers 404.
     cronSecret: process.env.CRON_SECRET || undefined,
+    // Webhooks (the menu appears once this is set): their signing secrets are stored encrypted with it.
+    // The same cron call sends the deliveries.
+    secretsKey: process.env.CMS_SECRETS_KEY || undefined,
     previewSecret: process.env.CMS_PREVIEW_SECRET || (process.env.NODE_ENV === "production" ? undefined : "local-preview-secret-for-development-only"),
     // The site keeps searches that found nothing in its own table.
     onSearchMiss: async (e) => {

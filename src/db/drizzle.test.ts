@@ -210,7 +210,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_comments", "blog_documents", "blog_hits", "blog_meta", "blog_presence", "blog_releases", "blog_saved_filters", "blog_versions"]
+      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_comments", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -231,7 +231,7 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     await run(db, cmsDdl());
     await run(
       db,
-      `DROP TABLE cms_asset_refs; DROP TABLE cms_assets; DROP TABLE cms_comments; DROP TABLE cms_presence; DROP TABLE cms_releases; DROP TABLE cms_saved_filters;
+      `DROP TABLE cms_webhook_deliveries; DROP TABLE cms_webhooks; DROP TABLE cms_jobs; DROP TABLE cms_asset_refs; DROP TABLE cms_assets; DROP TABLE cms_comments; DROP TABLE cms_presence; DROP TABLE cms_releases; DROP TABLE cms_saved_filters;
        ALTER TABLE cms_documents DROP COLUMN deleted_at, DROP COLUMN deleted_by, DROP COLUMN schedule, DROP COLUMN due_at, DROP COLUMN review;
        ALTER TABLE cms_versions DROP COLUMN label, DROP COLUMN pinned, DROP COLUMN approved_by, DROP COLUMN approved_at;
        ALTER TABLE cms_documents DROP COLUMN updated_by_agent; ALTER TABLE cms_versions DROP COLUMN author_agent; ALTER TABLE cms_audit DROP COLUMN actor_agent;
@@ -242,12 +242,13 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     await assert.rejects(cms.get(anon, "guide", "x"), (e: unknown) => isCmsError(e) && e.code === "schema_outdated");
     const before = await repo.inspect();
     assert.equal(before.schemaVersion, 2);
-    assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_presence", "cms_releases", "cms_saved_filters"]);
+    assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_jobs", "cms_presence", "cms_releases", "cms_saved_filters", "cms_webhook_deliveries", "cms_webhooks"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 3], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.10\.0/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.12\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -368,6 +369,48 @@ test("db: the media library on a real database (uses follow saves, publishes and
     assert.equal((await rows(db, "SELECT 1 FROM cms_asset_refs")).length, 0);
     assert.equal((await cms.assets.cleanup({ olderThanMs: -1000 })).removed, 1, "the upload that never finished");
     assert.equal((await rows(db, "SELECT 1 FROM cms_assets")).length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("db: jobs are taken once by callers at the same moment; webhooks and deliveries round-trip", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const repo = new DrizzleRepo(db);
+    const sent: string[] = [];
+    const cms = createCms({
+      repo,
+      collections: [guide],
+      secretsKey: "k".repeat(40),
+      webhooks: { resolveHost: async () => ["93.184.216.34"], fetch: (async (_u: RequestInfo | URL, init?: RequestInit) => (sent.push(String(init?.body)), new Response(null, { status: sent.length === 1 ? 500 : 200 }))) as typeof fetch },
+    });
+    let runs = 0;
+    cms.jobs.define("t.count", { run: () => void runs++ });
+    for (let i = 0; i < 12; i++) await cms.jobs.enqueue("t.count", { i });
+    const [a, b] = await Promise.all([cms.jobs.run(), cms.jobs.run()]);
+    assert.deepEqual([runs, a.ran + b.ran], [12, 12]);
+    assert.deepEqual(await cms.jobs.stats(), { waiting: 0, failed: 0 });
+    assert.equal((await cms.jobs.list({ state: "done" })).length, 12);
+
+    const { webhook, secret } = await cms.webhooks.create(admin, { name: "Site", url: "https://hooks.test/x", events: ["doc.published"], collections: ["guide"] });
+    assert.equal((await cms.webhooks.secret(admin, webhook.id)).secret, secret);
+    const [row] = await rows<{ secret_enc: string }>(db, "select secret_enc from cms_webhooks");
+    assert.ok(row.secret_enc.startsWith("v1.") && !row.secret_enc.includes(secret), "the secret is stored sealed");
+    await cms.create(admin, "guide", { slug: "w", title: "W" }, { publish: true });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await cms.cron()).jobs.retried, 1);
+    assert.equal((await cms.webhooks.list(admin))[0].failures, 1);
+    await run(db, "update cms_jobs set run_at = now() - interval '1 second' where done_at is null");
+    assert.equal((await cms.cron()).jobs.ok, 1);
+    const ds = await cms.webhooks.deliveries(admin, webhook.id);
+    assert.deepEqual(ds.map((d) => [d.attempt, d.ok, d.status]).sort(), [[1, false, 500], [2, true, 200]]);
+    assert.equal((await cms.webhooks.list(admin))[0].failures, 0);
+    assert.equal((await cms.webhooks.update(admin, webhook.id, { enabled: false, name: "Off" })).name, "Off");
+    await cms.webhooks.remove(admin, webhook.id);
+    assert.deepEqual(await rows(db, "select id from cms_webhook_deliveries"), [], "deliveries go with their webhook");
+    assert.equal(await repo.findWebhook("not-a-uuid"), null);
   } finally {
     await close();
   }

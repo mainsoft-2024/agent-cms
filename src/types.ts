@@ -264,6 +264,10 @@ export interface CmsKey {
 export const AUDIT_ACTIONS = [
   "key.create",
   "key.revoke",
+  "webhook.create",
+  "webhook.update",
+  "webhook.delete",
+  "webhook.disable",
   "doc.publish",
   "doc.unpublish",
   "doc.archive",
@@ -460,6 +464,16 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
   review?: { agents?: "required"; everyone?: "required" };
   hooks?: {
     /**
+     * Before a save that makes a version (create, update, patch, restore; not autosave). Return
+     * fields to change them (`{ keywords: [...] }`); the result is validated again. Throw to refuse:
+     * the caller gets `hook_rejected` with your message.
+     */
+    beforeChange?: Array<(change: HookChange) => void | Partial<DocContent> | Promise<void | Partial<DocContent>>>;
+    /** Before a version goes public (publish, a schedule, a release, an approval). Throw to refuse. */
+    beforePublish?: Array<(doc: HookDoc) => void | Promise<void>>;
+    /** Before a document is deleted (moved to the trash). Throw to refuse. */
+    beforeDelete?: Array<(doc: HookDoc) => void | Promise<void>>;
+    /**
      * After every write. `info.contentChanged` is false when only the draft
      * changed (the public copy is the same), e.g. to skip ISR revalidation.
      */
@@ -515,4 +529,92 @@ export interface DocCounts {
   archived: number;
   scheduled: number;
   review: number;
+}
+
+/** Work written down to run later, outside a request (`cms.jobs`). */
+export interface CmsJob {
+  id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  runAt: string;
+  /** How many times it has been started. */
+  attempts: number;
+  maxAttempts: number;
+  lockedUntil: string | null;
+  lastError: string | null;
+  doneAt: string | null;
+  /** Set when the last allowed attempt failed. */
+  failedAt: string | null;
+  createdAt: string;
+}
+
+export const WEBHOOK_EVENTS = [
+  "doc.created",
+  "doc.updated",
+  "doc.published",
+  "doc.unpublished",
+  "doc.archived",
+  "doc.deleted",
+  "doc.restored",
+  "review.requested",
+  "review.approved",
+  "review.rejected",
+  "asset.uploaded",
+  "asset.moved",
+  "asset.deleted",
+  "release.published",
+  "comment.created",
+] as const;
+export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
+
+export interface CmsWebhook {
+  id: string;
+  name: string;
+  url: string;
+  /** Empty = every event. */
+  events: WebhookEvent[];
+  /** Empty = every collection. Events without a collection (files, releases) always pass. */
+  collections: string[];
+  /** The signing secret, sealed with `secretsKey`. Never leaves the server as is. */
+  secretEnc: string;
+  enabled: boolean;
+  /** Failed deliveries in a row. */
+  failures: number;
+  /** Why it was switched off by the CMS, when it was. */
+  disabledReason: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  webhookId: string;
+  event: string;
+  payload: Record<string, unknown>;
+  /** HTTP status, or null when no answer came. */
+  status: number | null;
+  ok: boolean;
+  responseMs: number | null;
+  attempt: number;
+  error: string | null;
+  at: string;
+}
+
+/** What a `beforeChange` hook gets. */
+export interface HookChange {
+  collection: string;
+  slug: string;
+  content: DocContent;
+  /** The document as it is now; null when it is being created. */
+  prev: CmsDoc | null;
+  actor: Actor;
+}
+/** What `beforePublish` and `beforeDelete` hooks get. */
+export interface HookDoc {
+  collection: string;
+  slug: string;
+  content: DocContent;
+  version: number;
+  actor: Actor;
 }

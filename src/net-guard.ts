@@ -62,6 +62,27 @@ export interface GuardedFetchOptions {
 }
 
 /** GET `url` and return its bytes, or throw a `FetchGuardError`. */
+/** The check `guardedFetch` does before each request, on its own: https, no credentials, a public address. */
+export async function assertPublicUrl(url: string, o: { resolveHost?: ResolveHost } = {}): Promise<URL> {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new FetchGuardError("blocked", "not a URL");
+  }
+  if (u.protocol !== "https:" || u.username || u.password) throw new FetchGuardError("blocked", "only https addresses without credentials");
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  const literal = /^[\d.]+$/.test(host) || host.includes(":");
+  let addrs: string[];
+  try {
+    addrs = literal ? [host] : await (o.resolveHost ?? defaultResolve)(host);
+  } catch {
+    throw new FetchGuardError("failed", "the host name does not resolve");
+  }
+  if (!addrs.length || !addrs.every(isPublicAddress)) throw new FetchGuardError("blocked", "the address is not on the public internet");
+  return u;
+}
+
 export async function guardedFetch(url: string, o: GuardedFetchOptions): Promise<{ bytes: Uint8Array; mime: string | null; url: string }> {
   const doFetch = o.fetch ?? fetch;
   const resolve = o.resolveHost ?? defaultResolve;

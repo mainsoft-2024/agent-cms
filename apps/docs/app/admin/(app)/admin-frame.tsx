@@ -20,7 +20,7 @@ export function AdminFrame({ children, user }: { children: ReactNode; user: stri
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const collection = /^\/admin\/([^/]+)/.exec(path)?.[1];
-  const known = collection && !["keys", "audit", "misses", "login", "media", "files", "releases", "trash"].includes(collection) ? collection : undefined;
+  const known = collection && !["keys", "audit", "misses", "login", "media", "files", "releases", "trash", "webhooks"].includes(collection) ? collection : undefined;
   const lang = useSearchParams().get("lang") === "ko" ? ko : undefined;
   return (
     <CmsProvider baseUrl="/api/cms" messages={lang}>

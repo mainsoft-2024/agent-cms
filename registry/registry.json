@@ -372,6 +372,32 @@
       ]
     },
     {
+      "name": "cms-webhooks",
+      "type": "registry:component",
+      "title": "Webhooks",
+      "description": "Webhooks with their events and state; a test delivery, the signing secret, the delivery history with send again, edit and delete.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "badge",
+        "button",
+        "checkbox",
+        "dialog",
+        "input",
+        "label",
+        "table",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-webhooks.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
       "name": "cms-audit",
       "type": "registry:component",
       "title": "Audit log",

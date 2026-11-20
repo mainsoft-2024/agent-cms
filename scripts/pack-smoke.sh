@@ -16,7 +16,7 @@ cd "$WORK"
 npm init -y >/dev/null
 npm i --no-audit --no-fund "$TARBALL" drizzle-orm@0.45 zod@3.25 >/dev/null
 
-ENTRIES="index http mcp client tools storage storage-s3 storage-vercel-blob image-sharp agent markdown frontmatter types tables cli diff errors config messages/en messages/ko"
+ENTRIES="index http mcp client tools webhooks storage storage-s3 storage-vercel-blob image-sharp agent markdown frontmatter types tables cli diff errors config messages/en messages/ko"
 
 cat > esm.mjs <<EOF
 const entries = "$ENTRIES".split(" ");

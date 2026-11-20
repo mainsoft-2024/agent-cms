@@ -3,10 +3,10 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
-import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, NewFilter, NewRelease, NewVersion, ReleasePatch, StoredVersion, VersionPatch } from "./repo";
+import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
-import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsRelease, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
+import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsJob, CmsRelease, CmsWebhook, WebhookDelivery, WebhookEvent, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PgDatabase<any, any, any>;
@@ -576,6 +576,108 @@ export class DrizzleRepo implements CmsRepo {
   }
 
   /** What `agent-cms doctor` checks. Read-only. */
+  private iso = (d: Date | null) => (d ? d.toISOString() : null);
+  private uuidLike = (id: string) => /^[0-9a-f-]{36}$/i.test(id);
+  private toJob(r: typeof this.t.jobs.$inferSelect): CmsJob {
+    return { id: r.id, kind: r.kind, payload: r.payload, runAt: r.runAt.toISOString(), attempts: r.attempts, maxAttempts: r.maxAttempts, lockedUntil: this.iso(r.lockedUntil), lastError: r.lastError, doneAt: this.iso(r.doneAt), failedAt: this.iso(r.failedAt), createdAt: r.createdAt.toISOString() };
+  }
+  private toWebhook(r: typeof this.t.webhooks.$inferSelect): CmsWebhook {
+    return { ...r, events: r.events as WebhookEvent[], createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() };
+  }
+  private toDelivery(r: typeof this.t.webhookDeliveries.$inferSelect): WebhookDelivery {
+    return { ...r, at: r.at.toISOString() };
+  }
+
+  async insertJob(j: NewJob) {
+    const [r] = await this.db.insert(this.t.jobs).values({ kind: j.kind, payload: j.payload, runAt: new Date(j.runAt), maxAttempts: j.maxAttempts, createdAt: new Date(j.createdAt) }).returning();
+    return this.toJob(r);
+  }
+  async claimJobs(now: string, lockUntil: string, limit: number) {
+    const J = this.t.jobs;
+    const at = new Date(now);
+    // One statement: the inner select skips rows another caller holds, the update takes the rest.
+    const due = this.db
+      .select({ id: J.id })
+      .from(J)
+      .where(and(isNull(J.doneAt), isNull(J.failedAt), lte(J.runAt, at), or(isNull(J.lockedUntil), lt(J.lockedUntil, at))))
+      .orderBy(asc(J.runAt))
+      .limit(limit)
+      .for("update", { skipLocked: true });
+    const rows = await this.db.update(J).set({ lockedUntil: new Date(lockUntil), attempts: sql`${J.attempts} + 1` }).where(inArray(J.id, due)).returning();
+    return rows.map((r) => this.toJob(r)).sort((a, b) => a.runAt.localeCompare(b.runAt));
+  }
+  async updateJob(id: string, patch: JobPatch) {
+    const d = (v: string | null | undefined) => (v === undefined ? undefined : v === null ? null : new Date(v));
+    await this.db
+      .update(this.t.jobs)
+      .set({ runAt: patch.runAt === undefined ? undefined : new Date(patch.runAt), lockedUntil: d(patch.lockedUntil), lastError: patch.lastError, doneAt: d(patch.doneAt), failedAt: d(patch.failedAt) })
+      .where(eq(this.t.jobs.id, id));
+  }
+  async listJobs(q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number }) {
+    const J = this.t.jobs;
+    const w: (SQL | undefined)[] = [q.kind ? eq(J.kind, q.kind) : undefined];
+    if (q.state === "done") w.push(isNotNull(J.doneAt));
+    if (q.state === "failed") w.push(isNotNull(J.failedAt));
+    if (q.state === "waiting") w.push(isNull(J.doneAt), isNull(J.failedAt));
+    return (await this.db.select().from(J).where(and(...w)).orderBy(desc(J.createdAt)).limit(q.limit ?? 100)).map((r) => this.toJob(r));
+  }
+  async countJobs() {
+    const J = this.t.jobs;
+    const [r] = await this.db
+      .select({ waiting: sql<number>`count(*) filter (where ${J.doneAt} is null and ${J.failedAt} is null)::int`, failed: sql<number>`count(*) filter (where ${J.failedAt} is not null)::int` })
+      .from(J);
+    return { waiting: Number(r?.waiting ?? 0), failed: Number(r?.failed ?? 0) };
+  }
+  async pruneJobs(doneBefore: string) {
+    const J = this.t.jobs;
+    return (await this.db.delete(J).where(lt(J.doneAt, new Date(doneBefore))).returning({ id: J.id })).length;
+  }
+
+  async insertWebhook(w: NewWebhook) {
+    const [r] = await this.db.insert(this.t.webhooks).values({ ...w, createdAt: new Date(w.createdAt), updatedAt: new Date(w.updatedAt) }).returning();
+    return this.toWebhook(r);
+  }
+  async findWebhook(id: string) {
+    if (!this.uuidLike(id)) return null;
+    const [r] = await this.db.select().from(this.t.webhooks).where(eq(this.t.webhooks.id, id)).limit(1);
+    return r ? this.toWebhook(r) : null;
+  }
+  async listWebhooks() {
+    return (await this.db.select().from(this.t.webhooks).orderBy(asc(this.t.webhooks.createdAt))).map((r) => this.toWebhook(r));
+  }
+  async updateWebhook(id: string, patch: WebhookPatch) {
+    if (!this.uuidLike(id)) return null;
+    const { updatedAt, ...rest } = patch;
+    const [r] = await this.db.update(this.t.webhooks).set({ ...rest, ...(updatedAt ? { updatedAt: new Date(updatedAt) } : {}) }).where(eq(this.t.webhooks.id, id)).returning();
+    return r ? this.toWebhook(r) : null;
+  }
+  async failWebhook(id: string) {
+    const W = this.t.webhooks;
+    const [r] = await this.db.update(W).set({ failures: sql`${W.failures} + 1` }).where(eq(W.id, id)).returning({ failures: W.failures });
+    return r?.failures ?? 0;
+  }
+  async deleteWebhook(id: string) {
+    if (this.uuidLike(id)) await this.db.delete(this.t.webhooks).where(eq(this.t.webhooks.id, id));
+  }
+  async insertDelivery(d: Omit<WebhookDelivery, "id">) {
+    const [r] = await this.db.insert(this.t.webhookDeliveries).values({ ...d, at: new Date(d.at) }).returning();
+    return this.toDelivery(r);
+  }
+  async findDelivery(id: string) {
+    if (!this.uuidLike(id)) return null;
+    const [r] = await this.db.select().from(this.t.webhookDeliveries).where(eq(this.t.webhookDeliveries.id, id)).limit(1);
+    return r ? this.toDelivery(r) : null;
+  }
+  async listDeliveries(webhookId: string, limit: number) {
+    const D = this.t.webhookDeliveries;
+    if (!this.uuidLike(webhookId)) return [];
+    return (await this.db.select().from(D).where(eq(D.webhookId, webhookId)).orderBy(desc(D.at)).limit(limit)).map((r) => this.toDelivery(r));
+  }
+  async pruneDeliveries(before: string) {
+    const D = this.t.webhookDeliveries;
+    return (await this.db.delete(D).where(lt(D.at, new Date(before))).returning({ id: D.id })).length;
+  }
+
   async inspect(): Promise<DoctorReport> {
     const { prefix, schema } = this.t.options;
     const sch = schema ?? null;
@@ -588,7 +690,7 @@ export class DrizzleRepo implements CmsRepo {
       have.get(c.table_name)!.add(c.column_name);
     }
     const expected: Record<string, string[]> = {};
-    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence })) {
+    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries })) {
       expected[prefix + key] = Object.values(tbl).filter((c) => c && typeof c === "object" && "name" in c && "columnType" in c).map((c) => (c as { name: string }).name);
     }
     const missingTables = Object.keys(expected).filter((t) => !have.has(t));

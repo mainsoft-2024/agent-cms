@@ -481,7 +481,16 @@ export function toolsFor(cms: CmsLike, actor: Actor, only?: readonly string[]): 
   const core = coreOf(cms);
   const cols = core.collections().map((c) => c.slug);
   const stores = core.assets.enabled ? core.assets.stores().map((s) => s.name) : [];
-  return CMS_TOOLS.filter((t) => (!only || only.includes(t.name)) && (!t.needs || cols.some((c) => core.can(actor, c, t.needs!))) && (!t.media || stores.some((s) => core.assets.can(actor, s, t.media!))));
+  const own = CMS_TOOLS.filter((t) => (!only || only.includes(t.name)) && (!t.needs || cols.some((c) => core.can(actor, c, t.needs!))) && (!t.media || stores.some((s) => core.assets.can(actor, s, t.media!))));
+  // Tools plugins add. `read` is open to whoever may read something; the others follow the same rule as ours; `admin` is for admins.
+  const added = core.plugins.tools
+    .filter((t) => !only || only.includes(t.name))
+    .filter((t) => {
+      const scope = t.scope ?? "read";
+      return scope === "admin" ? core.isAdmin(actor) : cols.some((c) => core.can(actor, c, scope));
+    })
+    .map((t): CmsToolDef => ({ name: t.name, description: t.description, input: t.input as z.ZodObject<z.ZodRawShape>, run: async (c, a, args) => t.run(a, args, c) }));
+  return [...own, ...added.filter((t) => !own.some((o) => o.name === t.name))];
 }
 
 /** What a failed tool call returns: the same shape as a REST error body. */

@@ -93,7 +93,7 @@ import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "
 import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
-import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, type Actor, type AssetKind, type CmsDoc } from "./types";
+import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
 export interface CmsHandlerOptions {
   cms: CmsLike;
@@ -244,6 +244,14 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
   const base = (opts.basePath ?? "/api/cms").replace(/\/$/, "");
 
   return async function handler(req: Request): Promise<Response> {
+    const t0 = Date.now();
+    let seen: { kind: string; via: string | null } = { kind: "anonymous", via: null };
+    const res = await handle(req, (a) => (seen = a));
+    core.telemetry({ type: "request", method: req.method.toUpperCase(), path: new URL(req.url).pathname.slice(base.length) || "/", status: res.status, ms: Date.now() - t0, actor: seen.kind, via: seen.via });
+    return res;
+  };
+
+  async function handle(req: Request, note: (a: { kind: string; via: string | null }) => void): Promise<Response> {
     try {
       const url = new URL(req.url);
       if (url.pathname !== base && !url.pathname.startsWith(base + "/")) throw new CmsError("route_not_found");
@@ -261,11 +269,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const given = Buffer.from((req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, ""));
         const want = Buffer.from(core.cronSecret);
         if (given.length !== want.length || !timingSafeEqual(given, want)) throw new CmsError("unauthorized", {}, { messages: core.messages });
-        return json(await core.runScheduled());
+        note({ kind: "cron", via: null });
+        return json(await core.cron());
       }
       const client = req.headers.get("x-agent-cms-client");
       const who = await resolveActor(core, req, opts.resolveUser, opts.trustedOrigins);
       const actor: Actor = { ...who, via: seg[0] === "mcp" ? (client === "cli" ? "cli" : "mcp") : client === "cli" ? "cli" : "rest" };
+      note({ kind: actor.kind, via: actor.via ?? null });
       const q = url.searchParams;
       /** expectedVersion from If-Match, else from the body. */
       const expected = (fromBody?: number) => versionFromIfMatch(req.headers.get("if-match")) ?? fromBody;
@@ -284,6 +294,10 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           trashDays: core.trash.days,
           timeZone: core.timeZone,
           media: core.assets.describe(actor),
+          /** True when webhooks can be made (a `secretsKey` is set) and this caller may manage them. */
+          webhooks: core.webhooks.enabled() && core.isAdmin(actor),
+          nav: core.plugins.nav.filter((n) => !n.admin || core.isAdmin(actor)).map(({ label, href, plugin }) => ({ label, href, plugin })),
+          plugins: Object.fromEntries(await Promise.all(core.plugins.names.map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
           collections: core
             .collections()
             .filter((c) => core.can(actor, c.slug, "read"))
@@ -656,9 +670,43 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         }
       }
 
+      // ── webhooks and jobs (admins) ──
+      if (seg[0] === "webhooks") {
+        const input = z.object({ name: z.string(), url: z.string(), events: z.array(z.enum(WEBHOOK_EVENTS)).optional(), collections: z.array(z.string()).optional(), enabled: z.boolean().optional() });
+        if (seg.length === 1 && m === "GET") return json({ webhooks: await core.webhooks.list(actor), events: WEBHOOK_EVENTS, enabled: core.webhooks.enabled() });
+        if (seg.length === 1 && m === "POST") return json(await core.webhooks.create(actor, await body(req, input)), 201);
+        if (seg[1] === "deliveries" && seg.length === 4 && seg[3] === "retry" && m === "POST") return json(await core.webhooks.retry(actor, seg[2]), 202);
+        if (seg.length === 2 && m === "PATCH") return json({ webhook: await core.webhooks.update(actor, seg[1], await body(req, input.partial())) });
+        if (seg.length === 2 && m === "DELETE") {
+          await core.webhooks.remove(actor, seg[1]);
+          return json({ ok: true });
+        }
+        if (seg.length === 3 && seg[2] === "secret" && m === "GET") return json(await core.webhooks.secret(actor, seg[1]), 200, { "cache-control": "no-store" });
+        if (seg.length === 3 && seg[2] === "test" && m === "POST") return json({ delivery: await core.webhooks.test(actor, seg[1]) });
+        if (seg.length === 3 && seg[2] === "deliveries" && m === "GET") return json({ deliveries: await core.webhooks.deliveries(actor, seg[1], { limit: Number(q.get("limit")) || undefined }) });
+      }
+      if (seg[0] === "jobs") {
+        if (!core.isAdmin(actor)) throw new CmsError(actor.kind === "anonymous" ? "unauthorized" : "forbidden", {}, { messages: core.messages });
+        const state = q.get("state");
+        if (seg.length === 1 && m === "GET") return json({ ...(await core.jobs.stats()), jobs: await core.jobs.list({ state: state === "failed" || state === "done" || state === "waiting" ? state : undefined, kind: q.get("kind") ?? undefined, limit: Number(q.get("limit")) || 50 }) });
+        if (seg.length === 3 && seg[2] === "retry" && m === "POST") {
+          if (!(await core.jobs.retry(seg[1]))) throw new CmsError("not_found", {}, { messages: core.messages });
+          return json({ ok: true });
+        }
+      }
+
+      // ── plugin routes: /<plugin name>/… ──
+      if (seg[0] && core.plugins.names.includes(seg[0])) {
+        const rest = seg.slice(1);
+        const route = core.plugins.routes
+          .filter((r) => r.plugin === seg[0] && r.method === m && r.path.length <= rest.length && r.path.every((p, i) => p === rest[i]))
+          .sort((a, b) => b.path.length - a.path.length)[0];
+        if (route) return await route.handler({ req, actor, path: rest.slice(route.path.length), url, cms: core });
+      }
+
       throw new CmsError("route_not_found");
     } catch (err) {
       return errorResponse(err, core);
     }
-  };
+  }
 }

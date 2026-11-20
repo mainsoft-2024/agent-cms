@@ -19,5 +19,6 @@ export const LIVE = new Set(["cms-shell", "cms-empty", "cms-doc-list", "cms-doc-
 export const NOT_LIVE: Record<string, string> = {
   "cms-merge": "This screen appears inside the editor when someone else saved first. Open the same document in two tabs of the editor demo, save in one, then save in the other.",
   "cms-media-picker": "This dialog opens from the editor. In the editor demo, press \"Insert media\" above the markdown.",
+  "cms-webhooks": "No live demo: a webhook makes this server call an address of your choice, and the demo is shared by every visitor. To try it, add the screen to your app and register the receiver from the example app (examples/next/app/api/hook).",
   "cms-preview-comments": "This box goes on your public page. In the editor demo, make a preview link with \"Allow comments\": the page behind that link is yours, so the demo has none.",
 };

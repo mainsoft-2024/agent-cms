@@ -5,7 +5,7 @@
  */
 
 import { SCHEMA_VERSION } from "./schema-version";
-import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
+import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter, CmsJob, CmsWebhook, WebhookDelivery } from "./types";
 
 export type DocPatch = Partial<Omit<CmsDoc, "id" | "collection" | "createdAt">>;
 type DocFlow = "deletedAt" | "deletedBy" | "schedule" | "dueAt" | "review";
@@ -168,6 +168,33 @@ export interface CmsRepo {
   /** Remove rows last seen before `before`. */
   prunePresence(before: string): Promise<void>;
 
+  // jobs
+  insertJob(j: NewJob): Promise<CmsJob>;
+  /**
+   * Take up to `limit` jobs whose time has come and that nobody holds: sets their lock and counts
+   * the attempt in one statement, so two callers never get the same job.
+   */
+  claimJobs(now: string, lockUntil: string, limit: number): Promise<CmsJob[]>;
+  updateJob(id: string, patch: JobPatch): Promise<void>;
+  listJobs(q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number }): Promise<CmsJob[]>;
+  countJobs(): Promise<{ waiting: number; failed: number }>;
+  /** Drop finished jobs older than `doneBefore`. */
+  pruneJobs(doneBefore: string): Promise<number>;
+
+  // webhooks
+  insertWebhook(w: NewWebhook): Promise<CmsWebhook>;
+  findWebhook(id: string): Promise<CmsWebhook | null>;
+  listWebhooks(): Promise<CmsWebhook[]>;
+  updateWebhook(id: string, patch: WebhookPatch): Promise<CmsWebhook | null>;
+  deleteWebhook(id: string): Promise<void>;
+  /** Count one more failed delivery and return the new count. One statement: deliveries run side by side. */
+  failWebhook(id: string): Promise<number>;
+  insertDelivery(d: Omit<WebhookDelivery, "id">): Promise<WebhookDelivery>;
+  findDelivery(id: string): Promise<WebhookDelivery | null>;
+  /** Newest first. */
+  listDeliveries(webhookId: string, limit: number): Promise<WebhookDelivery[]>;
+  pruneDeliveries(before: string): Promise<number>;
+
   /** Changes whenever any document changes (for cross-process index refresh). */
   changeStamp(): Promise<string>;
 
@@ -176,6 +203,11 @@ export interface CmsRepo {
 }
 
 /** In-memory repo for tests and examples. Starts at the current schema version. */
+export type NewJob = Pick<CmsJob, "kind" | "payload" | "runAt" | "maxAttempts" | "createdAt">;
+export type JobPatch = Partial<Pick<CmsJob, "runAt" | "lockedUntil" | "lastError" | "doneAt" | "failedAt">>;
+export type NewWebhook = Omit<CmsWebhook, "id" | "failures" | "disabledReason">;
+export type WebhookPatch = Partial<Omit<CmsWebhook, "id" | "createdAt" | "createdBy">>;
+
 export class MemoryRepo implements CmsRepo {
   docs = new Map<string, CmsDoc>();
   versions: StoredVersion[] = [];
@@ -188,6 +220,9 @@ export class MemoryRepo implements CmsRepo {
   releases: CmsRelease[] = [];
   filters: SavedFilter[] = [];
   presence: Presence[] = [];
+  jobs: CmsJob[] = [];
+  webhooks: CmsWebhook[] = [];
+  deliveries: WebhookDelivery[] = [];
   meta = new Map<string, unknown>([["schema_version", SCHEMA_VERSION]]);
   private seq = 0;
   private id = () => `00000000-0000-4000-8000-${String(++this.seq).padStart(12, "0")}`;
@@ -482,6 +517,87 @@ export class MemoryRepo implements CmsRepo {
   }
   async prunePresence(before: string) {
     this.presence = this.presence.filter((p) => p.seenAt >= before);
+  }
+
+  async insertJob(j: NewJob) {
+    const row: CmsJob = { ...structuredClone(j), id: this.id(), attempts: 0, lockedUntil: null, lastError: null, doneAt: null, failedAt: null };
+    this.jobs.push(row);
+    return structuredClone(row);
+  }
+  async claimJobs(now: string, lockUntil: string, limit: number) {
+    const due = this.jobs
+      .filter((j) => !j.doneAt && !j.failedAt && j.runAt <= now && (!j.lockedUntil || j.lockedUntil < now))
+      .sort((a, b) => a.runAt.localeCompare(b.runAt))
+      .slice(0, limit);
+    for (const j of due) {
+      j.lockedUntil = lockUntil;
+      j.attempts += 1;
+    }
+    return due.map((j) => structuredClone(j));
+  }
+  async updateJob(id: string, patch: JobPatch) {
+    const j = this.jobs.find((x) => x.id === id);
+    if (j) Object.assign(j, patch);
+  }
+  async listJobs(q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number }) {
+    const state = (j: CmsJob) => (j.doneAt ? "done" : j.failedAt ? "failed" : "waiting");
+    return this.jobs
+      .filter((j) => (!q.state || state(j) === q.state) && (!q.kind || j.kind === q.kind))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, q.limit ?? 100)
+      .map((j) => structuredClone(j));
+  }
+  async countJobs() {
+    return { waiting: this.jobs.filter((j) => !j.doneAt && !j.failedAt).length, failed: this.jobs.filter((j) => j.failedAt).length };
+  }
+  async pruneJobs(doneBefore: string) {
+    const n = this.jobs.length;
+    this.jobs = this.jobs.filter((j) => !(j.doneAt && j.doneAt < doneBefore));
+    return n - this.jobs.length;
+  }
+
+  async insertWebhook(w: NewWebhook) {
+    const row: CmsWebhook = { ...structuredClone(w), id: this.id(), failures: 0, disabledReason: null };
+    this.webhooks.push(row);
+    return structuredClone(row);
+  }
+  async findWebhook(id: string) {
+    const w = this.webhooks.find((x) => x.id === id);
+    return w ? structuredClone(w) : null;
+  }
+  async listWebhooks() {
+    return this.webhooks.map((w) => structuredClone(w)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  async updateWebhook(id: string, patch: WebhookPatch) {
+    const w = this.webhooks.find((x) => x.id === id);
+    if (!w) return null;
+    Object.assign(w, structuredClone(patch));
+    return structuredClone(w);
+  }
+  async failWebhook(id: string) {
+    const w = this.webhooks.find((x) => x.id === id);
+    return w ? ++w.failures : 0;
+  }
+  async deleteWebhook(id: string) {
+    this.webhooks = this.webhooks.filter((w) => w.id !== id);
+    this.deliveries = this.deliveries.filter((d) => d.webhookId !== id);
+  }
+  async insertDelivery(d: Omit<WebhookDelivery, "id">) {
+    const row = { ...structuredClone(d), id: this.id() };
+    this.deliveries.push(row);
+    return structuredClone(row);
+  }
+  async findDelivery(id: string) {
+    const d = this.deliveries.find((x) => x.id === id);
+    return d ? structuredClone(d) : null;
+  }
+  async listDeliveries(webhookId: string, limit: number) {
+    return this.deliveries.filter((d) => d.webhookId === webhookId).sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit).map((d) => structuredClone(d));
+  }
+  async pruneDeliveries(before: string) {
+    const n = this.deliveries.length;
+    this.deliveries = this.deliveries.filter((d) => d.at >= before);
+    return n - this.deliveries.length;
   }
   async changeStamp() {
     let max = "";

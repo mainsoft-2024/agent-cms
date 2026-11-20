@@ -291,7 +291,58 @@ export function cmsTables(o: CmsTablesOptions = {}) {
     (t) => ({ pk: primaryKey({ columns: [t.documentId, t.actorId] }), seenIdx: index(n("presence_seen_idx")).on(t.seenAt) })
   );
 
-  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, options: { prefix, schema: o.schema ?? null } };
+  /** Work to run later: webhook deliveries, plugin jobs. Taken with a lock so two callers never run the same row. */
+  const jobs = table(
+    n("jobs"),
+    {
+      id: uuid("id").primaryKey().defaultRandom(),
+      kind: text("kind").notNull(),
+      payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+      runAt: timestamp("run_at", { withTimezone: true }).notNull().defaultNow(),
+      attempts: integer("attempts").notNull().default(0),
+      maxAttempts: integer("max_attempts").notNull().default(1),
+      lockedUntil: timestamp("locked_until", { withTimezone: true }),
+      lastError: text("last_error"),
+      doneAt: timestamp("done_at", { withTimezone: true }),
+      failedAt: timestamp("failed_at", { withTimezone: true }),
+      createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => ({ dueIdx: index(n("jobs_due_idx")).on(t.runAt) })
+  );
+
+  const webhooks = table(n("webhooks"), {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    url: text("url").notNull(),
+    events: jsonb("events").$type<string[]>().notNull().default([]),
+    collections: jsonb("collections").$type<string[]>().notNull().default([]),
+    secretEnc: text("secret_enc").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    failures: integer("failures").notNull().default(0),
+    disabledReason: text("disabled_reason"),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  });
+
+  const webhookDeliveries = table(
+    n("webhook_deliveries"),
+    {
+      id: uuid("id").primaryKey().defaultRandom(),
+      webhookId: uuid("webhook_id").notNull().references(() => webhooks.id, { onDelete: "cascade" }),
+      event: text("event").notNull(),
+      payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+      status: integer("status"),
+      ok: boolean("ok").notNull().default(false),
+      responseMs: integer("response_ms"),
+      attempt: integer("attempt").notNull().default(1),
+      error: text("error"),
+      at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => ({ hookIdx: index(n("webhook_deliveries_hook_idx")).on(t.webhookId, t.at) })
+  );
+
+  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, options: { prefix, schema: o.schema ?? null } };
 }
 
 export type CmsTables = ReturnType<typeof cmsTables>;
@@ -310,6 +361,9 @@ export const cmsComments = defaultTables.comments;
 export const cmsReleases = defaultTables.releases;
 export const cmsSavedFilters = defaultTables.savedFilters;
 export const cmsPresence = defaultTables.presence;
+export const cmsJobs = defaultTables.jobs;
+export const cmsWebhooks = defaultTables.webhooks;
+export const cmsWebhookDeliveries = defaultTables.webhookDeliveries;
 
 function names(t?: CmsTables | CmsTablesOptions) {
   const o = t && "options" in t ? t.options : ((t as CmsTablesOptions | undefined) ?? {});
@@ -487,6 +541,52 @@ CREATE INDEX IF NOT EXISTS ${idx("presence_seen_idx")} ON ${tbl("presence")} ("s
 ALTER TABLE ${tbl("assets")} ADD COLUMN IF NOT EXISTS "focal_x" real;
 ALTER TABLE ${tbl("assets")} ADD COLUMN IF NOT EXISTS "focal_y" real;
 ALTER TABLE ${tbl("assets")} ADD COLUMN IF NOT EXISTS "rev" integer NOT NULL DEFAULT 0;`.trim(),
+    },
+    {
+      version: 6,
+      name: "agent-cms 0.12.0: background jobs, webhooks and their deliveries",
+      sql: `
+CREATE TABLE IF NOT EXISTS ${tbl("jobs")} (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "kind" text NOT NULL,
+  "payload" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "run_at" timestamptz NOT NULL DEFAULT now(),
+  "attempts" integer NOT NULL DEFAULT 0,
+  "max_attempts" integer NOT NULL DEFAULT 1,
+  "locked_until" timestamptz,
+  "last_error" text,
+  "done_at" timestamptz,
+  "failed_at" timestamptz,
+  "created_at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ${idx("jobs_due_idx")} ON ${tbl("jobs")} ("run_at");
+CREATE TABLE IF NOT EXISTS ${tbl("webhooks")} (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "name" text NOT NULL,
+  "url" text NOT NULL,
+  "events" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "collections" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "secret_enc" text NOT NULL,
+  "enabled" boolean NOT NULL DEFAULT true,
+  "failures" integer NOT NULL DEFAULT 0,
+  "disabled_reason" text,
+  "created_by" text,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ${tbl("webhook_deliveries")} (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "webhook_id" uuid NOT NULL REFERENCES ${tbl("webhooks")}("id") ON DELETE CASCADE,
+  "event" text NOT NULL,
+  "payload" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "status" integer,
+  "ok" boolean NOT NULL DEFAULT false,
+  "response_ms" integer,
+  "attempt" integer NOT NULL DEFAULT 1,
+  "error" text,
+  "at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ${idx("webhook_deliveries_hook_idx")} ON ${tbl("webhook_deliveries")} ("webhook_id", "at");`.trim(),
     },
   ];
 }

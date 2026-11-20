@@ -273,3 +273,21 @@ export/
 - `agent-cms dev`가 DB 없이 뜨고, Docker 예제로 로그인부터 게시까지 된다
 - OIDC 로그인이 시험용 공급자(CI에서 띄우는 가짜 서버)로 통과한다
 - 실제 화면을 시안 6개와 같은 크기로 찍어 비교한다
+
+## 구현 결과 (0.12.0, 1차)
+
+묶음 3의 첫 배포분이다. 나머지 항목은 0.12.x에서 이어 간다.
+
+| 항목 | 상태 | 계획과 다른 점 |
+|---|---|---|
+| 126 작업 실행기 | 만듦 | `cms_jobs` 표, `cms.jobs`, `/_cron`이 작업까지 실행(호출당 약 20초, 5개씩), `agent-cms cron [--watch]`, doctor 경고. dev 서버가 1분마다 스스로 실행하는 것은 넣지 않고 `cron --watch`로 대신했다. 예약 게시와 휴지통 비우기는 작업 표로 옮기지 않고 cron 호출 안에서 전처럼 직접 실행한다 |
+| 20 웹훅 | 만듦 | 이벤트가 계획의 10개보다 많은 15개다(`doc.created`, `doc.updated`, `doc.archived`, `doc.restored`, `asset.moved`, `comment.created` 추가). 화면은 시안 2번의 목록과 전송 기록을 한 화면(목록 + 옆 패널)으로 만들었다 |
+| secretsKey | 만듦 | AES-256-GCM, `createSealer` |
+| 93 훅 | 일부 | `beforeChange`, `beforePublish`, `beforeDelete`를 만들었다. `beforeValidate`, `beforeRead`, `afterRead`, 필드 단위 훅은 아직. `afterPublish`와 `afterDelete`는 이벤트(`ctx.on`)로 받는다 |
+| 92 플러그인 | 일부 | `definePlugin`: 이벤트, 라우트, 도구, 작업, `_me`, 메뉴, 암호화. 플러그인의 표는 `cms.plugins.sql`로 모으기만 하고 `migrate`가 실행하지는 않는다. 컬렉션 확장은 아직 |
+| 134 어드민 확장 자리 | 일부 | 사이드바 메뉴(`ctx.nav`)와 `_me.plugins`만. 편집기 머리글, 옆 패널, 필드 옆 자리는 아직 |
+| 80 onEvent | 일부 | 요청, 이벤트, 작업, cron, 오류. 검색과 색인 지표는 아직 |
+
+시안에 없던 문구: "정상", "실패 {n}", "꺼짐", "시험 전송", "서명 키", "보기", "전송 기록", "다시 보내기", "켜기", "자동으로 꺼졌어요: {이유}", "아무것도 고르지 않으면 모든 이벤트예요.", "대기열에 넣었어요. 다음 cron 호출 때 나가요."
+
+확인하지 못한 것: 실제 Slack이나 Vercel 재검증 주소로 보내는 것(예제 앱의 수신 경로와 가짜 주소로만 확인), 운영 DB에서 수천 개 작업이 쌓였을 때의 속도, Edge 런타임에서 `verifyWebhook` 실행(Node와 브라우저 공용 API만 쓰는 것은 빌드 결과로 확인).
