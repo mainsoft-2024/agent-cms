@@ -35,9 +35,9 @@ test("s3: put, head, read the start, signed GET, copy, delete, list", opts, asyn
   const dl = await fetch(await s.presignGet(key, { expires: 60, download: "표지.png" }));
   assert.match(dl.headers.get("content-disposition") ?? "", /attachment/);
   await dl.arrayBuffer();
-  // Without a signature the bucket says no.
+  // Without a signature the bucket says no (403 on AWS and most servers, 400 on Cloudflare R2).
   const bare = await fetch((await s.presignGet(key, { expires: 60 })).split("?")[0]);
-  assert.ok(bare.status === 403 || bare.status === 401, `unsigned read: ${bare.status}`);
+  assert.ok(bare.status >= 400 && bare.status < 500, `unsigned read: ${bare.status}`);
   await bare.arrayBuffer();
 
   await s.copy(key, `${run}/moved/hero.png`);

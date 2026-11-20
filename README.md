@@ -318,6 +318,17 @@ other S3-compatible server. It signs requests itself (`aws4fetch`), so there
 is no AWS SDK to install. Another kind of storage is a `StorageAdapter`
 (`./storage`).
 
+**Cloudflare R2**, checked against a real bucket on 2026-11-20 (the same
+contract test CI runs against an S3-compatible server): single and multipart
+uploads from a browser, signed links, copy, list and the CORS rule all work.
+Three things to know. Make the R2 key an **Object Read & Write** token limited
+to that bucket. A public store needs the bucket's public address as
+`publicUrl`: the `pub-….r2.dev` address or a custom domain (the S3 endpoint
+itself never serves files without a signature). And set the CORS rule in the
+dashboard (R2, the bucket, Settings, CORS policy) or with Cloudflare's API:
+your site's origin and the methods `GET`, `HEAD`, `PUT`. `storage check`
+tells you if it is missing.
+
 **Vercel Blob** works the same way with its own adapter
 (`npm install @vercel/blob`):
 
