@@ -111,6 +111,10 @@ test("phone: menu and hero fit @mobile", async ({ page }) => {
   expect(box && box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   const lines = await h1.locator(".ln").count();
   expect(lines).toBe(3);
+  // The headline lines don't wrap, so also check nothing spills past the screen.
+  const widest = await h1.locator(".ln").evaluateAll((els) => Math.max(...els.map((e) => e.scrollWidth)));
+  expect(widest).toBeLessThanOrEqual(page.viewportSize()!.width - 32);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
   await page.getByRole("button", { name: "Open menu" }).click();
   // The menu fills the screen under the header (it used to be as short as the header).
   const menu = await page.locator("#site-menu").boundingBox();

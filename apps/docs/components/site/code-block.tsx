@@ -8,7 +8,7 @@ export function CopyButton({ text, label = "Copy", className = "" }: { text: str
   return (
     <button
       type="button"
-      className={`inline-flex items-center gap-1 rounded-[4px] px-2 py-0.5 text-[12px] text-[var(--pencil-gray)] hover:text-black ${className}`}
+      className={`inline-flex items-center gap-1 rounded-[4px] px-2 py-0.5 text-[12px] text-[var(--color-warm-gray)] hover:text-[var(--color-ink)] ${className}`}
       onClick={async () => {
         await navigator.clipboard.writeText(text).catch(() => undefined);
         setDone(true);
@@ -48,11 +48,33 @@ function convert(cmd: string, to: Manager): string {
     .join("\n");
 }
 
+/** Shell lines with the command word in teal, as on a terminal. Comments and blank lines stay plain. */
+function ShellLines({ code }: { code: string }) {
+  return code.split("\n").map((line, i, all) => {
+    const m = /^(\s*)([^\s#]\S*)(.*)$/.exec(line);
+    return (
+      <span key={i}>
+        {m ? (
+          <>
+            {m[1]}
+            <span className="cmd">{m[2]}</span>
+            {m[3]}
+          </>
+        ) : (
+          line
+        )}
+        {i < all.length - 1 ? "\n" : null}
+      </span>
+    );
+  });
+}
+
 /** Shell commands that start with npm/npx get package-manager tabs. */
 export function CodeBlock({ code, lang }: { code: string; lang: string }) {
   const managed = (lang === "sh" || lang === "bash" || lang === "") && /^(npm|npx) /m.test(code) && code.split("\n").every((l) => !l.trim() || /^(npm|npx) /.test(l.trim()));
   const [pm, setPm] = useState<Manager>("npm");
   const shown = managed ? convert(code, pm) : code;
+  const shell = managed || lang === "sh" || lang === "bash";
   return (
     <div className="code">
       <div className="code-bar">
@@ -70,7 +92,7 @@ export function CodeBlock({ code, lang }: { code: string; lang: string }) {
         <CopyButton text={shown} className="ml-auto" />
       </div>
       <pre tabIndex={0}>
-        <code>{shown}</code>
+        <code>{shell ? <ShellLines code={shown} /> : shown}</code>
       </pre>
     </div>
   );

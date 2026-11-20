@@ -4,6 +4,7 @@ import { Menu, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { LogoMark } from "./logo-mark";
 import { SearchButton } from "./search-dialog";
 
 /** GitHub mark (lucide dropped brand icons). */
@@ -26,10 +27,10 @@ const NAV = [
 
 export function Logo() {
   return (
-    <Link href="/" className="flex items-center gap-2 text-[15px] font-semibold text-black">
-      <span aria-hidden className="mono grid size-[22px] place-items-center rounded-[4px] border-[1.5px] border-black text-[10px] font-medium tracking-[-0.04em]">
-        ac
-      </span>
+    // Wordmark in the display serif. derived: 26px (the system's 40px is for a taller bar);
+    // a low optical size keeps the hairlines, and the hyphen, visible at this size.
+    <Link href="/" className="flex items-center gap-2 font-[family-name:var(--site-display)] text-[26px] leading-none text-[var(--color-ink)] [font-variation-settings:'opsz'_18]">
+      <LogoMark className="size-[26px] shrink-0" />
       agent-cms
     </Link>
   );
@@ -39,6 +40,20 @@ export function Logo() {
 function swapLang(path: string, to: "en" | "ko") {
   if (to === "ko") return path.startsWith("/docs") ? `/ko${path}` : "/ko/docs";
   return path.startsWith("/ko/") ? path.slice(3) : path;
+}
+
+/** EN / KO as a segmented control (60px pill, deep graphite active segment). */
+function LangSwitch({ path, lang, className = "" }: { path: string; lang: "en" | "ko"; className?: string }) {
+  return (
+    <div className={`seg ${className}`} role="group" aria-label="Language">
+      <Link href={swapLang(path, "en")} aria-current={lang === "en" ? "true" : undefined}>
+        EN
+      </Link>
+      <Link href={swapLang(path, "ko")} aria-current={lang === "ko" ? "true" : undefined}>
+        KO
+      </Link>
+    </div>
+  );
 }
 
 export function SiteHeader() {
@@ -63,12 +78,12 @@ export function SiteHeader() {
 
   return (
     <>
-    <header className="sticky top-0 z-30 bg-[var(--drafting-gray)]/95 backdrop-blur">
-      <div className="mx-auto flex max-w-[1440px] items-center gap-7 px-5 py-4 md:px-10">
+    <header className="sticky top-0 z-30 border-b border-[var(--color-rule-gray)] bg-[var(--color-paper)]/95 backdrop-blur">
+      <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-7 px-5 md:h-[72px] md:px-10">
         <Logo />
-        <nav aria-label="Main" className="hidden gap-[22px] text-[var(--pencil-gray)] md:flex">
+        <nav aria-label="Main" className="hidden gap-5 text-[14px] leading-[16.8px] font-medium text-[var(--color-warm-gray)] md:flex">
           {NAV.map((n) => (
-            <Link key={n.href} href={lang === "ko" ? n.ko : n.href} aria-current={isOn(n.href) ? "page" : undefined} className={isOn(n.href) ? "font-medium text-black" : "hover:text-black"}>
+            <Link key={n.href} href={lang === "ko" ? n.ko : n.href} aria-current={isOn(n.href) ? "page" : undefined} className={isOn(n.href) ? "text-[var(--color-ink)]" : "hover:text-[var(--color-ink)]"}>
               {lang === "ko" ? n.labelKo : n.label}
             </Link>
           ))}
@@ -77,15 +92,8 @@ export function SiteHeader() {
         <div className="hidden md:block">
           <SearchButton lang={lang} />
         </div>
-        <div className="hidden gap-0.5 rounded-[6px] bg-white p-0.5 text-[13px] shadow-[var(--hair)] md:flex" role="group" aria-label="Language">
-          <Link href={swapLang(path, "en")} aria-current={lang === "en" ? "true" : undefined} className={`rounded-[4px] px-2 py-0.5 ${lang === "en" ? "bg-black text-white" : "text-[var(--pencil-gray)]"}`}>
-            EN
-          </Link>
-          <Link href={swapLang(path, "ko")} aria-current={lang === "ko" ? "true" : undefined} className={`rounded-[4px] px-2 py-0.5 ${lang === "ko" ? "bg-black text-white" : "text-[var(--pencil-gray)]"}`}>
-            KO
-          </Link>
-        </div>
-        <a href={GITHUB_URL} className="hidden size-8 place-items-center text-[var(--pencil-gray)] hover:text-black md:grid" aria-label="GitHub">
+        <LangSwitch path={path} lang={lang} className="hidden md:inline-flex" />
+        <a href={GITHUB_URL} className="hidden size-8 place-items-center text-[var(--color-ink)] hover:text-[var(--color-deep-teal)] md:grid" aria-label="GitHub">
           <Github className="size-5" aria-hidden />
         </a>
         <div className="flex items-center md:hidden">
@@ -104,23 +112,16 @@ export function SiteHeader() {
 
 function MobileMenu({ lang, path }: { lang: "en" | "ko"; path: string }) {
   return (
-    <div id="site-menu" className="fixed inset-x-0 top-[64px] z-40 h-[calc(100dvh-64px)] overflow-y-auto overscroll-contain bg-[var(--drafting-gray)] px-5 pb-[calc(40px+env(safe-area-inset-bottom))] md:hidden">
+    <div id="site-menu" className="fixed inset-x-0 top-[65px] z-40 h-[calc(100dvh-65px)] overflow-y-auto overscroll-contain bg-[var(--color-paper)] px-5 pb-[calc(40px+env(safe-area-inset-bottom))] md:hidden">
       <nav aria-label="Menu" className="flex flex-col">
         {NAV.map((n) => (
-          <Link key={n.href} href={lang === "ko" ? n.ko : n.href} className="display d32 border-b border-[var(--line)] py-4">
+          <Link key={n.href} href={lang === "ko" ? n.ko : n.href} className="display d32 border-b border-[var(--color-rule-gray)] py-4">
             {lang === "ko" ? n.labelKo : n.label}
           </Link>
         ))}
       </nav>
       <div className="mt-6 flex items-center gap-3">
-        <div className="flex gap-0.5 rounded-[6px] bg-white p-0.5 text-[13px] shadow-[var(--hair)]">
-          <Link href={swapLang(path, "en")} className={`rounded-[4px] px-3 py-1 ${lang === "en" ? "bg-black text-white" : "text-[var(--pencil-gray)]"}`}>
-            EN
-          </Link>
-          <Link href={swapLang(path, "ko")} className={`rounded-[4px] px-3 py-1 ${lang === "ko" ? "bg-black text-white" : "text-[var(--pencil-gray)]"}`}>
-            KO
-          </Link>
-        </div>
+        <LangSwitch path={path} lang={lang} />
         <a href={GITHUB_URL} className="btn btn-outline">
           <Github className="size-4" aria-hidden /> GitHub
         </a>
@@ -131,16 +132,16 @@ function MobileMenu({ lang, path }: { lang: "en" | "ko"; path: string }) {
 
 export function SiteFooter() {
   return (
-    <footer className="mt-auto border-t border-[var(--line)]">
-      <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-6 gap-y-2 px-5 py-6 text-[13px] text-[var(--pencil-gray)] md:px-10">
+    <footer className="mt-auto border-t border-[var(--color-rule-gray)]">
+      <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-6 gap-y-2 px-5 py-6 text-[13px] text-[var(--color-warm-gray)] md:px-10">
         <span>agent-cms, MIT license</span>
-        <a href="https://www.npmjs.com/package/@mainsoft/agent-cms" className="hover:text-black">
+        <a href="https://www.npmjs.com/package/@mainsoft/agent-cms" className="hover:text-[var(--color-ink)]">
           npm
         </a>
-        <a href={GITHUB_URL} className="hover:text-black">
+        <a href={GITHUB_URL} className="hover:text-[var(--color-ink)]">
           GitHub
         </a>
-        <Link href="/llms.txt" className="hover:text-black">
+        <Link href="/llms.txt" className="hover:text-[var(--color-ink)]">
           llms.txt
         </Link>
         <span className="flex-1" />

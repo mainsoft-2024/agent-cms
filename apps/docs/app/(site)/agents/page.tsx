@@ -12,7 +12,7 @@ export default function Agents() {
   return (
     <div className="mx-auto max-w-[880px] px-5 pt-6 pb-20 md:px-10">
       <h1 className="display d48 mb-2">Read the docs with an agent</h1>
-      <p className="mb-8 max-w-[640px] text-[16px] text-[var(--pencil-gray)]">
+      <p className="mb-8 max-w-[640px] text-[16px] text-[var(--color-warm-gray)]">
         These docs are served by agent-cms, so a coding agent can search and read them over MCP. No key is needed to read: anonymous callers get the read tools and published pages only.
       </p>
 
@@ -30,7 +30,7 @@ export default function Agents() {
           <CodeBlock lang="json" code={json} />
         </div>
       </div>
-      <p className="mb-10 text-[var(--pencil-gray)]">
+      <p className="mb-10 text-[var(--color-warm-gray)]">
         Tools: <code className="inline-code">search_documents</code>, <code className="inline-code">read_for_answer</code> (sections with citation ids), <code className="inline-code">get_document</code>, <code className="inline-code">list_documents</code>, <code className="inline-code">list_collections</code>.
       </p>
 

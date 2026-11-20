@@ -97,32 +97,31 @@ export function LiveDemo({ item }: { item: string }) {
   const [width, setWidth] = useState<"full" | "phone">("full");
   const [view, setView] = useState<View>({ v: "list" });
   const [cmd, setCmd] = useState(false);
-  const seg = (on: boolean) => `rounded-[4px] px-2.5 py-1 ${on ? "bg-black text-white" : "text-[var(--pencil-gray)]"}`;
-  return (
+    return (
     <section aria-label="Live demo" className="site-card overflow-hidden">
-      <div className="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-2.5 text-[13px]">
+      <div className="flex flex-wrap items-center gap-3 border-b border-[var(--color-rule-gray)] px-4 py-2.5 text-[13px]">
         <span className="label-mono">Live demo</span>
-        <div role="group" aria-label="Theme" className="flex gap-0.5 rounded-[6px] bg-[var(--drafting-gray)] p-0.5">
-          <button type="button" aria-pressed={theme === "site"} className={seg(theme === "site")} onClick={() => setTheme("site")}>
+        <div role="group" aria-label="Theme" className="seg">
+          <button type="button" aria-pressed={theme === "site"} onClick={() => setTheme("site")}>
             This site
           </button>
-          <button type="button" aria-pressed={theme === "shadcn"} className={seg(theme === "shadcn")} onClick={() => setTheme("shadcn")}>
+          <button type="button" aria-pressed={theme === "shadcn"} onClick={() => setTheme("shadcn")}>
             shadcn default
           </button>
         </div>
-        <div role="group" aria-label="Width" className="flex gap-0.5 rounded-[6px] bg-[var(--drafting-gray)] p-0.5">
-          <button type="button" aria-pressed={width === "full"} className={seg(width === "full")} onClick={() => setWidth("full")}>
+        <div role="group" aria-label="Width" className="seg">
+          <button type="button" aria-pressed={width === "full"} onClick={() => setWidth("full")}>
             Desktop
           </button>
-          <button type="button" aria-pressed={width === "phone"} className={seg(width === "phone")} onClick={() => setWidth("phone")}>
+          <button type="button" aria-pressed={width === "phone"} onClick={() => setWidth("phone")}>
             Phone
           </button>
         </div>
         <span className="flex-1" />
-        <span className="text-[12px] text-[var(--pencil-gray)]">Runs on a demo database that resets every 30 minutes.</span>
+        <span className="text-[12px] text-[var(--color-warm-gray)]">Runs on a demo database that resets every 30 minutes.</span>
       </div>
-      <div className="bg-[var(--drafting-gray)] p-3">
-        <div className={`${theme === "shadcn" ? "theme-shadcn" : ""} mx-auto h-[640px] overflow-auto rounded-[8px] bg-background text-foreground shadow-[var(--hair)] ${width === "phone" ? "max-w-[390px]" : ""}`} style={{ containerType: "inline-size" }}>
+      <div className="bg-[var(--color-paper)] p-3">
+        <div className={`${theme === "shadcn" ? "theme-shadcn" : ""} mx-auto h-[640px] overflow-auto rounded-[8px] bg-background text-foreground border border-[var(--color-rule-gray)] ${width === "phone" ? "max-w-[390px]" : ""}`} style={{ containerType: "inline-size" }}>
           <CmsProvider baseUrl="/api/demo">
             {item === "cms-command" ? (
               <div className="grid h-full place-items-center">

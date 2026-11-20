@@ -7,6 +7,7 @@ import { CmsCommand } from "@/components/cms/cms-command";
 import { ko } from "@/components/cms/cms-messages";
 import { CmsShell } from "@/components/cms/cms-shell";
 import { CmsProvider } from "@/components/cms/use-cms";
+import { LogoMark } from "@/components/site/logo-mark";
 
 /**
  * The admin: the copied screens as they are, themed only by the site's CSS
@@ -25,11 +26,7 @@ export function AdminFrame({ children, user }: { children: ReactNode; user: stri
     <CmsProvider baseUrl="/api/cms" messages={lang}>
       <CmsShell
         title="agent-cms docs"
-        logo={
-          <span aria-hidden className="mono grid size-[22px] place-items-center rounded-[4px] border-[1.5px] border-current text-[10px] font-medium">
-            ac
-          </span>
-        }
+        logo={<LogoMark className="size-[22px] shrink-0" />}
         activeCollection={known}
         activeHref={path}
         LinkComponent={Link}

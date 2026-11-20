@@ -1,11 +1,12 @@
 import { ArrowRight, ChevronRight, GitMerge, PanelsTopLeft, Plug } from "lucide-react";
 import Link from "next/link";
 import { CopyButton } from "@/components/site/code-block";
+import { GITHUB_URL } from "@/components/site/header";
 import { listPublished, newestFirst } from "@/lib/content";
 
 const INSTALL = "npm i @mainsoft/agent-cms";
 
-/** The headline: rotating first word, "Serverless" in ink gradient, typed "agents", highlighted "humans". */
+/** The headline: rotating first word, "Serverless" in ink-to-teal, typed "agents", highlighted "humans". */
 function Headline() {
   return (
     <div className="hero-grid mt-11 mb-6">
@@ -15,7 +16,7 @@ function Headline() {
         <i />
         <i />
       </span>
-      <h1 className="display d48 hl hero-title" aria-label="Lightweight, feature-rich, all-in-one serverless CMS for agents and humans">
+      <h1 className="display d60 hl hero-title lg:text-[82px] lg:tracking-[-0.82px]" aria-label="Lightweight, feature-rich, all-in-one serverless CMS for agents and humans">
         <span aria-hidden>
           <span className="ln rot">
             <span className="rot-track">
@@ -46,7 +47,7 @@ function EditorShot({ compact = false }: { compact?: boolean }) {
     <div className="site-card overflow-hidden text-[13px]" role="img" aria-label="The agent-cms editor: a block written by docs-bot waits for Accept or Revert">
       <div className={compact ? "flex flex-col" : "grid h-[430px] grid-cols-[180px_1fr]"}>
         {compact ? null : (
-          <div className="flex flex-col gap-0.5 bg-[var(--drafting-gray)] px-2.5 py-3.5">
+          <div className="flex flex-col gap-0.5 bg-[var(--color-paper)] px-2.5 py-3.5">
             <div className="mb-2 flex px-2 py-1 font-semibold">Docs admin</div>
             {[
               ["Docs", "24", true],
@@ -55,16 +56,16 @@ function EditorShot({ compact = false }: { compact?: boolean }) {
               ["API keys", "", false],
               ["Audit log", "", false],
             ].map(([l, n, on]) => (
-              <div key={String(l)} className={`flex rounded-[6px] px-2 py-1.5 ${on ? "bg-white font-medium shadow-[var(--hair)]" : "text-[var(--graphite)]"}`}>
+              <div key={String(l)} className={`nav-item flex rounded-[8px] px-2 py-1.5 ${on ? "nav-item-on" : ""}`}>
                 {l}
-                <span className="mono ml-auto text-[11px] text-[var(--charcoal-trace)]">{n}</span>
+                <span className="mono ml-auto text-[11px] text-[var(--color-warm-gray)]">{n}</span>
               </div>
             ))}
           </div>
         )}
         <div className="flex min-w-0 flex-col">
-          <div className="flex flex-wrap items-center gap-2.5 border-b border-[var(--line)] px-4 py-3">
-            <span className="text-[var(--pencil-gray)]">Get started /</span>
+          <div className="flex flex-wrap items-center gap-2.5 border-b border-[var(--color-rule-gray)] px-4 py-3">
+            <span className="text-[var(--color-warm-gray)]">Get started /</span>
             <b>Install</b>
             <span className="pill pill-white">
               <span className="dot" />
@@ -82,7 +83,7 @@ function EditorShot({ compact = false }: { compact?: boolean }) {
             )}
           </div>
           <div className={compact ? "" : "grid flex-1 grid-cols-2"}>
-            <div className={`mono px-4 py-4 text-[12.5px] leading-[1.75] text-[var(--graphite)] ${compact ? "" : "border-r border-[var(--line)]"}`}>
+            <div className={`mono px-4 py-4 text-[12.5px] leading-[1.75] text-[var(--color-ink)] ${compact ? "" : "border-r border-[var(--color-rule-gray)]"}`}>
               ## Install
               <br />
               <br />
@@ -99,7 +100,7 @@ function EditorShot({ compact = false }: { compact?: boolean }) {
                     docs-bot, 2 min ago
                   </span>
                   <span className="btn btn-outline !px-3 !py-0.5 text-[12px]">Accept</span>
-                  <span className="px-1 text-[12px] text-[var(--pencil-gray)]">Revert</span>
+                  <span className="px-1 text-[12px] text-[var(--color-warm-gray)]">Revert</span>
                 </div>
               </div>
               {compact ? null : (
@@ -112,16 +113,16 @@ function EditorShot({ compact = false }: { compact?: boolean }) {
             </div>
             {compact ? null : (
               <div className="px-5 py-4">
-                <p className="mb-1.5 text-[18px] font-semibold">Install</p>
-                <p className="text-[var(--graphite)]">
+                <p className="display mb-2 text-[28px] leading-none">Install</p>
+                <p className="text-[var(--color-ink)]">
                   Run <code className="inline-code">npx agent-cms init</code>. It writes the config, the route and a schema re-export.
                 </p>
                 <p className="mt-3.5 mb-1 font-semibold">Peer dependencies</p>
-                <p className="text-[var(--graphite)]">
+                <p className="text-[var(--color-ink)]">
                   <mark className="hit">drizzle-orm, zod (^3.25 or ^4)</mark>, and ai for ./ai.
                 </p>
                 <p className="mt-3.5 mb-1 font-semibold">Tables</p>
-                <p className="text-[var(--pencil-gray)]">migrate check prints what is missing as SQL.</p>
+                <p className="text-[var(--color-warm-gray)]">migrate check prints what is missing as SQL.</p>
               </div>
             )}
           </div>
@@ -135,25 +136,29 @@ export default async function Home() {
   const latest = (await listPublished("changelog")).sort(newestFirst)[0];
   return (
     <>
-      <section className="px-5 pt-10 text-center md:px-10">
+      {/* overflow-x-clip: the hero's dot texture reaches past the headline and must not widen the page on phones */}
+      <section className="overflow-x-clip px-5 pt-10 text-center md:px-10">
         {latest ? (
-          <Link href={`/changelog#${latest.slug}`} className="inline-flex items-center gap-2 rounded-[6px] bg-black px-3 py-1.5 text-[13px] font-medium text-white">
+          <Link href={`/changelog#${latest.slug}`} className="inline-flex items-center gap-1.5 rounded-[var(--radius-badges)] bg-white px-3 py-1 text-[13px] font-medium text-[var(--color-deep-teal)] shadow-[inset_0_0_0_1px_var(--color-outline-aqua)] hover:shadow-[inset_0_0_0_1px_var(--color-butler-teal)]">
             {latest.title}
             <ChevronRight className="size-3.5" aria-hidden />
           </Link>
         ) : null}
         <Headline />
-        <p className="mx-auto mb-7 max-w-[560px] text-[16px] text-[var(--pencil-gray)]">
+        <p className="mx-auto mb-7 max-w-[560px] text-[16px] text-[var(--color-warm-gray)]">
           Add it to your Next.js app and Postgres. People edit in the admin screens; agents edit the same documents through MCP, the CLI and REST, or the same tools inside your own agent.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-2.5">
-          <span className="mono inline-flex items-center gap-2 rounded-[6px] bg-white py-1.5 pr-1.5 pl-3.5 text-[13px] shadow-[var(--hair)]">
-            <span className="text-[var(--charcoal-trace)]">$</span> {INSTALL}
+          <span className="mono inline-flex items-center gap-2 rounded-[8px] bg-[var(--color-charcoal)] py-2 pr-1.5 pl-4 text-[14px] text-white [&_button]:text-[var(--color-steel)] [&_button:hover]:text-white">
+            <span className="text-[var(--color-butler-teal)]">$</span> {INSTALL}
             <CopyButton text={INSTALL} label="Copy" />
           </span>
           <Link href="/docs" className="btn btn-primary">
             Get started <ArrowRight className="size-4" aria-hidden />
           </Link>
+          <a href={GITHUB_URL} className="btn btn-outline">
+            GitHub
+          </a>
         </div>
       </section>
 
@@ -178,36 +183,36 @@ export default async function Home() {
         </div>
       </div>
 
-      <section className="mx-auto mt-20 grid max-w-[1040px] gap-4 px-5 pb-20 md:grid-cols-3 lg:px-0" aria-label="Features">
-        <div className="site-card p-6">
-          <Plug className="size-5 text-[var(--indigo-ink)]" aria-hidden />
-          <h2 className="mt-3 mb-1.5 text-[16px] font-semibold">Four ways in for agents</h2>
-          <p className="text-[var(--pencil-gray)]">One tool list, scoped by API key.</p>
+      <section className="mx-auto mt-20 mb-20 grid max-w-[1040px] overflow-hidden rounded-[8px] border border-[var(--color-rule-gray)] max-md:mx-5 md:grid-cols-3" aria-label="Features">
+        <div className="border-[var(--color-rule-gray)] p-5 not-last:border-b md:not-last:border-r md:not-last:border-b-0">
+          <Plug className="size-5 text-[var(--color-ink)]" aria-hidden />
+          <h2 className="mt-3 mb-1.5 text-[18px] leading-[1.2] font-semibold">Four ways in for agents</h2>
+          <p className="text-[var(--color-warm-gray)]">One tool list, scoped by API key.</p>
           <div className="mono mt-3.5 grid grid-cols-2 gap-1.5 text-[12px]">
             {["MCP", "CLI", "REST", "Tools"].map((w) => (
-              <span key={w} className="rounded-[6px] bg-[var(--drafting-gray)] px-2 py-1.5">
+              <span key={w} className="rounded-[8px] border border-[var(--color-rule-gray)] bg-white px-2 py-1.5">
                 {w}
               </span>
             ))}
           </div>
         </div>
-        <div className="site-card p-6">
-          <PanelsTopLeft className="size-5 text-[var(--indigo-ink)]" aria-hidden />
-          <h2 className="mt-3 mb-1.5 text-[16px] font-semibold">Admin screens you own</h2>
-          <p className="text-[var(--pencil-gray)]">Copy the screens into your app with shadcn, then change anything.</p>
+        <div className="border-[var(--color-rule-gray)] p-5 not-last:border-b md:not-last:border-r md:not-last:border-b-0">
+          <PanelsTopLeft className="size-5 text-[var(--color-ink)]" aria-hidden />
+          <h2 className="mt-3 mb-1.5 text-[18px] leading-[1.2] font-semibold">Admin screens you own</h2>
+          <p className="text-[var(--color-warm-gray)]">Copy the screens into your app with shadcn, then change anything.</p>
           <div className="mono mt-3.5 text-[12px]">
-            <Link href="/components" className="block rounded-[6px] bg-[var(--drafting-gray)] px-2 py-1.5">
+            <Link href="/components" className="block rounded-[8px] border border-[var(--color-rule-gray)] bg-white px-2 py-1.5">
               npx shadcn add …/r/cms-shell.json
             </Link>
           </div>
         </div>
-        <div className="site-card p-6">
-          <GitMerge className="size-5 text-[var(--indigo-ink)]" aria-hidden />
-          <h2 className="mt-3 mb-1.5 text-[16px] font-semibold">No lost edits</h2>
-          <p className="text-[var(--pencil-gray)]">Versions, line-by-line merge, autosave and draft preview links.</p>
+        <div className="border-[var(--color-rule-gray)] p-5 not-last:border-b md:not-last:border-r md:not-last:border-b-0">
+          <GitMerge className="size-5 text-[var(--color-ink)]" aria-hidden />
+          <h2 className="mt-3 mb-1.5 text-[18px] leading-[1.2] font-semibold">No lost edits</h2>
+          <p className="text-[var(--color-warm-gray)]">Versions, line-by-line merge, autosave and draft preview links.</p>
           <div className="mono mt-3.5 grid grid-cols-2 gap-1.5 text-[12px]">
             {["If-Match", "merge3"].map((w) => (
-              <span key={w} className="rounded-[6px] bg-[var(--drafting-gray)] px-2 py-1.5">
+              <span key={w} className="rounded-[8px] border border-[var(--color-rule-gray)] bg-white px-2 py-1.5">
                 {w}
               </span>
             ))}
