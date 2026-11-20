@@ -219,3 +219,26 @@ test("editor: new document creates and calls onCreated", async () => {
   await user.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => assert.deepEqual(created, ["hello"]));
 });
+
+test("editor: a new document's saved line survives the move to its own address", async () => {
+  window.sessionStorage.clear();
+  const s = makeServer();
+  let at: string | null = null;
+  const first = renderWith(s, <CmsDocEditor collection="guide" onCreated={(_c, slug) => (at = slug)} />);
+  const user = userEvent.setup();
+  fireEvent.change(await screen.findByLabelText(/^Title/), { target: { value: "Kept" } });
+  fireEvent.change(screen.getByLabelText(/^Slug/), { target: { value: "kept" } });
+  fireEvent.change(screen.getByLabelText("Markdown"), { target: { value: "Body" } });
+  await user.click(screen.getByRole("button", { name: "Publish" }));
+  await waitFor(() => assert.equal(at, "kept"));
+  // The app answers onCreated with a new page: a new editor, with nothing of the old one's state.
+  first.unmount();
+  renderWith(s, <CmsDocEditor collection="guide" slug="kept" />);
+  assert.ok(await screen.findByText("Published v1"));
+  assert.equal(window.sessionStorage.length, 0);
+  // Shown once: opening the document again does not repeat it.
+  cleanup();
+  renderWith(s, <CmsDocEditor collection="guide" slug="kept" />);
+  await screen.findByDisplayValue("Kept");
+  assert.equal(screen.queryByText("Published v1"), null);
+});
