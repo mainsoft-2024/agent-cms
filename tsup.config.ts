@@ -9,6 +9,7 @@ export default defineConfig([
       client: "src/client.ts",
       tools: "src/tools.ts",
       storage: "src/storage.ts",
+      webhooks: "src/webhooks.ts",
       "storage-s3": "src/storage-s3.ts",
       "image-sharp": "src/image-sharp.ts",
       "storage-vercel-blob": "src/storage-vercel-blob.ts",

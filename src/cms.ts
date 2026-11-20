@@ -10,7 +10,11 @@
  */
 
 import { createAssets, type MediaOptions } from "./assets";
-import { createFlow } from "./flow";
+import { createFlow, type ScheduledRun } from "./flow";
+import { createJobs, type JobsRun } from "./jobs";
+import { createOutbox, type OutEvent, type WebhookOptions } from "./outbox";
+import { PLUGIN_NAME, type CmsPlugin, type PluginNav, type PluginRoute, type PluginTool } from "./plugin";
+import { createSealer } from "./secrets";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { z, ZodTypeAny } from "zod";
 import { fieldChanges, hunks, splitLines, unifiedDiff, type FieldChange, type Hunk } from "./diff";
@@ -24,6 +28,7 @@ import { normalizeQuery, SearchIndex, unitsOf, type SearchHit } from "./search";
 import {
   docState,
   type Actor,
+  type WebhookEvent,
   type AuditAction,
   type AuditEntry,
   type CmsDoc,
@@ -151,6 +156,20 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
    * runs scheduled publishes and empties the trash. The route is off without it.
    */
   cronSecret?: string;
+  /**
+   * Key for values the CMS keeps encrypted in the database (webhook signing secrets, what plugins
+   * seal). At least 32 characters. Without it webhooks cannot be created. Changing it makes the
+   * stored values unreadable.
+   */
+  secretsKey?: string;
+  webhooks?: WebhookOptions;
+  /** Additions made with `definePlugin`. */
+  plugins?: readonly CmsPlugin[];
+  /**
+   * Everything worth measuring, as it happens: requests, events, job runs, errors. Connect it to
+   * your tracing or metrics. Must not throw; it is never awaited.
+   */
+  onEvent?: (e: CmsTelemetry) => void;
 }
 
 /** Second argument of `afterChange` hooks and `onChange` listeners. */
@@ -266,6 +285,32 @@ function contentOf(doc: DocContent): DocContent {
 }
 
 /** The untyped CMS (what the transports use). `createCms` returns it with typed overloads on top. */
+export type CmsTelemetry =
+  | { type: "request"; method: string; path: string; status: number; ms: number; actor: string; via: string | null }
+  | ({ type: "event" } & OutEvent)
+  | { type: "job"; kind: string; id: string; ok: boolean; attempt: number; ms: number; error?: string }
+  | { type: "cron"; ms: number; jobs: JobsRun }
+  | { type: "error"; where: string; message: string };
+
+/** First path segments the CMS uses itself. A plugin cannot take one of these names. */
+export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins"]);
+
+/** Audit actions that are also events (webhooks, plugin listeners). */
+const EVENT_OF: Partial<Record<AuditAction, WebhookEvent>> = {
+  "doc.publish": "doc.published",
+  "doc.unpublish": "doc.unpublished",
+  "doc.archive": "doc.archived",
+  "doc.delete": "doc.deleted",
+  "doc.undelete": "doc.restored",
+  "review.request": "review.requested",
+  "review.approve": "review.approved",
+  "review.reject": "review.rejected",
+  "asset.upload": "asset.uploaded",
+  "asset.move": "asset.moved",
+  "asset.delete": "asset.deleted",
+  "release.publish": "release.published",
+};
+
 export function createCmsCore(opts: CreateCmsOptions) {
   const repo = opts.repo;
   const now = opts.now ?? (() => new Date());
@@ -274,7 +319,40 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const minCoverage = opts.minCoverage ?? 0.5;
   const refreshMs = opts.searchRefreshMs ?? 60_000;
   const messages = opts.messages;
-  const report = opts.onError ?? ((err: unknown, where: string) => console.warn(`[agent-cms] ${where}:`, err));
+  const telemetry = (e: CmsTelemetry) => {
+    try {
+      opts.onEvent?.(e);
+    } catch {
+      // a broken listener must not break the CMS
+    }
+  };
+  const reportTo = opts.onError ?? ((err: unknown, where: string) => console.warn(`[agent-cms] ${where}:`, err));
+  const report = (err: unknown, where: string) => {
+    telemetry({ type: "error", where, message: err instanceof Error ? err.message : String(err) });
+    reportTo(err, where);
+  };
+
+  // ── events: webhooks and plugin listeners ─────────────────────────────────
+
+  const eventListeners: { event: WebhookEvent | "*"; fn: (e: OutEvent) => void | Promise<void>; plugin: string }[] = [];
+  /** Tell the outside what happened. Never throws, never awaited by the write that caused it. */
+  function emitEvent(e: OutEvent) {
+    telemetry({ type: "event", ...e });
+    void outbox.emit(e);
+    for (const l of eventListeners) {
+      if (l.event !== "*" && l.event !== e.event) continue;
+      Promise.resolve()
+        .then(() => l.fn(e))
+        .catch((err) => report(err, `plugin ${l.plugin}: ${e.event}`));
+    }
+  }
+  function urlOf(col: string | null | undefined, slug: string | null | undefined): string | null {
+    try {
+      return col && slug ? (collections.get(col)?.url?.({ slug }) ?? null) : null;
+    } catch {
+      return null;
+    }
+  }
   const warned = new Set<string>();
   const warnOnce = (key: string, msg: string) => {
     if (warned.has(key)) return;
@@ -344,6 +422,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
         detail: o.detail ?? {},
       })
       .catch((e) => report(e, "audit"));
+    const event = EVENT_OF[action];
+    if (event && (o.outcome ?? "ok") === "ok" && actor.kind !== "anonymous") {
+      const doc = event.startsWith("doc.") || event.startsWith("review.");
+      emitEvent({ event, actor: actorRef(actor), collection: o.collection ?? null, slug: o.slug ?? null, version: o.version ?? null, url: urlOf(o.collection, o.slug), ...(doc ? {} : { detail: o.detail ?? {} }) });
+    }
   }
 
   // ── access ────────────────────────────────────────────────────────────────
@@ -439,6 +522,28 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (bad.length) add("body", "unknown_link", { keys: bad });
     }
     return { content: out, diagnostics: diags };
+  }
+
+  /** Run a hook; what it throws becomes `hook_rejected` (a CmsError passes as it is). */
+  async function hook<A, T>(fn: (a: A) => T | Promise<T>, arg: A): Promise<T> {
+    try {
+      return await fn(arg);
+    } catch (e) {
+      if (isCmsError(e)) throw e;
+      throw fail("hook_rejected", { reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  /** `beforeChange` hooks, one after another: each sees what the one before returned. */
+  async function hooked(actor: Actor, col: string, prev: CmsDoc | null, content: DocContent): Promise<DocContent> {
+    let cur = content;
+    for (const fn of collection(col).hooks?.beforeChange ?? []) {
+      const patch = await hook(fn, { collection: col, slug: cur.slug, content: cur, prev, actor });
+      if (patch && typeof patch === "object") cur = validate(col, { ...cur, ...patch });
+    }
+    return cur;
+  }
+  async function gate(which: "beforePublish" | "beforeDelete", actor: Actor, doc: { collection: string; slug: string; version: number }, content: DocContent) {
+    for (const fn of collection(doc.collection).hooks?.[which] ?? []) await hook(fn, { collection: doc.collection, slug: doc.slug, content, version: doc.version, actor });
   }
 
   function validate(col: string, c: DocContent): DocContent {
@@ -624,11 +729,15 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   /** `prev` is the row before the write (null for a create); `doc` after (null for a delete). */
-  function changed(prev: CmsDoc | null, doc: CmsDoc | null) {
+  function changed(prev: CmsDoc | null, doc: CmsDoc | null, o: { quiet?: boolean } = {}) {
     const target = doc ?? prev;
     if (!target) return;
     const info: ChangeInfo = { contentChanged: publicSig(prev) !== publicSig(doc) };
     if (info.contentChanged) index.dirty = true;
+    if (doc && !o.quiet && !doc.deletedAt && (!prev || doc.version !== prev.version)) {
+      const by = doc.updatedByKind ? { kind: doc.updatedByKind, id: null, label: doc.updatedBy ?? "", agent: doc.updatedByAgent ?? null } : null;
+      emitEvent({ event: prev ? "doc.updated" : "doc.created", actor: by, collection: doc.collection, slug: doc.slug, version: doc.version, url: urlOf(doc.collection, doc.slug) });
+    }
     for (const l of listeners) {
       try {
         l(target, info);
@@ -697,7 +806,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (o.publish && needsReview(actor, col)) throw reviewRequired(actor, col, input.slug ?? null);
     const who = actorRef(actor);
     const cfg = collection(col);
-    const content = validate(col, {
+    const content = await hooked(actor, col, null, validate(col, {
       slug: input.slug ?? "",
       title: input.title ?? "",
       summary: input.summary ?? "",
@@ -705,13 +814,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
       category: input.category ?? cfg.categories?.[0] ?? null,
       keywords: input.keywords ?? [],
       fields: (input.fields as Record<string, unknown>) ?? {},
-    });
+    }));
     await assets.assertDoc(cfg, content);
     const at = nowIso();
     const doc = await repo.tx(async (r) => {
       const other = await r.findDoc(col, content.slug, { trashed: true });
       if (other) throw slugTaken(other);
       const publish = !!o.publish;
+      if (publish) await gate("beforePublish", actor, { collection: col, slug: content.slug, version: 1 }, content);
       const row = await r.insertDoc({
         collection: col,
         ...content,
@@ -741,6 +851,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const cfg = collection(doc.collection);
     const at = nowIso();
     const v = doc.version + 1;
+    next = await hooked(actor, doc.collection, doc, next);
     if (next.slug !== doc.slug && doc.publishedVersion !== null) throw fail("slug_locked");
     const other = next.slug !== doc.slug ? await r.findDoc(doc.collection, next.slug, { trashed: true }) : null;
     if (other) throw slugTaken(other);
@@ -749,6 +860,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const publish = !!o.publish || inPlace;
     // A new version is one nobody approved yet.
     if (publish && needsReview(actor, doc.collection)) throw reviewRequired(actor, doc.collection, doc.slug);
+    if (publish) await gate("beforePublish", actor, { collection: doc.collection, slug: next.slug, version: v }, next);
     const wasPublic = doc.publishedVersion !== null && doc.status !== "archived";
     let patch: DocPatch = { ...next, version: v, updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent, updatedAt: at, autosave: null };
     if (publish) {
@@ -876,6 +988,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function publishIn(r: CmsRepo, actor: Actor, doc: CmsDoc, n: number): Promise<CmsDoc> {
     const v = n === doc.version ? { snapshot: contentOf(doc) } : await r.getVersion(doc.id, n);
     if (!v) throw fail("version_not_found", { version: n });
+    await gate("beforePublish", actor, { collection: doc.collection, slug: doc.slug, version: n }, v.snapshot);
     const at = nowIso();
     const wasPublic = doc.publishedVersion !== null && doc.status !== "archived";
     const updated = await r.updateDoc(doc.id, {
@@ -982,6 +1095,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!cur) throw fail("not_found", { collection: col, slug });
     assert(actor, col, "publish", cur);
     if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
+    await gate("beforeDelete", actor, cur, contentOf(cur));
     // With a trash the row stays (and keeps its address) until it is restored or purged.
     if (trashDays > 0) await repo.updateDoc(cur.id, { deletedAt: nowIso(), deletedBy: actorRef(actor).label, schedule: null, dueAt: null, updatedAt: nowIso() });
     else await repo.deleteDoc(cur.id);
@@ -1325,6 +1439,24 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return formatMessage(messages, "internal");
   }
 
+  // ── background jobs, webhooks (jobs.ts, outbox.ts) ─────────────────────────
+
+  const sealer = opts.secretsKey ? createSealer(opts.secretsKey) : null;
+  const jobs = createJobs({ repo, now, report, event: telemetry });
+  const outbox = createOutbox({
+    repo,
+    now,
+    fail,
+    audit,
+    isAdmin,
+    ready: ensureSchema,
+    report,
+    sealer,
+    jobs,
+    collections: () => [...collections.keys()],
+    options: opts.webhooks ?? {},
+  });
+
   // ── schedules, trash, reviews, comments, releases (flow.ts) ───────────────
 
   const flow = createFlow({
@@ -1359,7 +1491,19 @@ export function createCmsCore(opts: CreateCmsOptions) {
     previewPayload,
   });
 
-  return {
+  // ── plugins (plugin.ts) ───────────────────────────────────────────────────
+
+  const plugins = {
+    names: [] as string[],
+    routes: [] as PluginRoute[],
+    tools: [] as (PluginTool<any> & { plugin: string })[],
+    nav: [] as (PluginNav & { plugin: string })[],
+    me: [] as { plugin: string; fn: (actor: Actor) => Record<string, unknown> | Promise<Record<string, unknown>> }[],
+    /** The SQL the plugins' tables need (run it with your migrations; every statement is safe to repeat). */
+    sql: [] as string[],
+  };
+
+  const api = {
     collections: () => [...collections.values()],
     collection,
     can,
@@ -1408,6 +1552,26 @@ export function createCmsCore(opts: CreateCmsOptions) {
     unschedule: flow.unschedule,
     /** Run everything whose time has come (the `/_cron` route calls this). */
     runScheduled: flow.runScheduled,
+    /**
+     * Everything a cron call does: what is scheduled, then the jobs that are due (webhook
+     * deliveries, plugin jobs), then housekeeping. `/_cron` and `agent-cms cron` call this.
+     */
+    async cron(o: { budgetMs?: number } = {}): Promise<ScheduledRun & { jobs: JobsRun }> {
+      const t0 = Date.now();
+      const scheduled = await flow.runScheduled();
+      const ran = await jobs.run(o);
+      await Promise.all([jobs.prune(), outbox.prune()]).catch((e) => report(e, "cron housekeeping"));
+      telemetry({ type: "cron", ms: Date.now() - t0, jobs: ran });
+      return { ...scheduled, jobs: ran };
+    },
+    /** Background jobs: `enqueue`, `run`, `stats`, `list`, `retry`, `define`. */
+    jobs,
+    /** Webhooks: `list`, `create`, `update`, `remove`, `secret`, `test`, `deliveries`, `retry`. Admins only. */
+    webhooks: outbox,
+    /** Seal and open values kept in the database (null without `secretsKey`). */
+    secrets: sealer,
+    telemetry,
+    plugins,
     cronSecret: opts.cronSecret ?? null,
     /** Deleted documents and files: `list`, `restore`, `purge`. */
     trash: { ...flow.trash, days: trashDays },
@@ -1416,7 +1580,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
     rejectReview: flow.rejectReview,
     reviewRequests: flow.reviewRequests,
     comments: flow.comments,
-    addComment: flow.addComment,
+    async addComment(...a: Parameters<typeof flow.addComment>) {
+      const c = await flow.addComment(...a);
+      if (a[0].kind !== "anonymous") emitEvent({ event: "comment.created", actor: actorRef(a[0]), collection: a[1], slug: a[2], version: null, url: urlOf(a[1], a[2]) });
+      return c;
+    },
     resolveComment: flow.resolveComment,
     previewComments: flow.previewComments,
     addPreviewComment: flow.addPreviewComment,
@@ -1450,6 +1618,29 @@ export function createCmsCore(opts: CreateCmsOptions) {
     },
     repo,
   };
+
+  for (const p of opts.plugins ?? []) {
+    if (!PLUGIN_NAME.test(p.name)) throw new Error(`[agent-cms] plugin name "${p.name}" must be lowercase letters, digits and dashes`);
+    if (plugins.names.includes(p.name)) throw new Error(`[agent-cms] plugin "${p.name}" is given twice`);
+    if (RESERVED_ROUTES.has(p.name) || collections.has(p.name)) throw new Error(`[agent-cms] plugin name "${p.name}" is taken by a route of the CMS`);
+    plugins.names.push(p.name);
+    plugins.sql.push(...(p.sql ?? []));
+    p.setup({
+      cms: api,
+      secrets: sealer,
+      on: (event, fn) => void eventListeners.push({ event, fn, plugin: p.name }),
+      route: (method, path, handler) => void plugins.routes.push({ plugin: p.name, method, path: path.split("/").filter(Boolean), handler }),
+      tool: (tool) => {
+        if (!/^[a-z][a-z0-9_]{2,63}$/.test(tool.name)) throw new Error(`[agent-cms] plugin ${p.name}: tool name "${tool.name}" must be snake_case`);
+        plugins.tools.push({ ...tool, plugin: p.name });
+      },
+      job: (kind, def) => jobs.define(`${p.name}.${kind}`, def),
+      enqueue: (kind, payload, o) => jobs.enqueue(`${p.name}.${kind}`, payload, o),
+      me: (fn) => void plugins.me.push({ plugin: p.name, fn }),
+      nav: (item) => void plugins.nav.push({ ...item, plugin: p.name }),
+    });
+  }
+  return api;
 }
 
 export type CmsCore = ReturnType<typeof createCmsCore>;

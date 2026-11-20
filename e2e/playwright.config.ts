@@ -18,5 +18,7 @@ export default defineConfig({
     url: `http://localhost:${PORT}/api/cms/_me`,
     timeout: 240_000,
     reuseExistingServer: !process.env.CI,
+    // The cron route needs a secret; the webhook test sends to the example's own receiver on localhost.
+    env: { CMS_CRON_SECRET: process.env.CMS_CRON_SECRET ?? "e2e-cron-secret-e2e-cron-secret", CMS_WEBHOOKS_INSECURE: "1" },
   },
 });

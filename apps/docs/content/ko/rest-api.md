@@ -66,6 +66,24 @@ GET    /_cron                             때가 된 것을 실행 (Authorizatio
 
 [게시 흐름](/ko/docs/publishing-flow)을 보세요.
 
+## 웹훅과 작업
+
+관리자와 `admin` 스코프 키만 쓸 수 있어요.
+
+```text
+GET    /webhooks                           {webhooks, events, enabled}
+POST   /webhooks                           {name, url, events?, collections?, enabled?} → {webhook, secret}
+PATCH  /webhooks/:id                       같은 필드 | DELETE
+GET    /webhooks/:id/secret                서명 키
+POST   /webhooks/:id/test                  시험 전송을 바로 보냄 → {delivery}
+GET    /webhooks/:id/deliveries?limit=     최근 30일, 최신순
+POST   /webhooks/deliveries/:id/retry      같은 이벤트를 다시 대기열에
+GET    /jobs?state=waiting|failed|done&kind=   {waiting, failed, jobs}
+POST   /jobs/:id/retry                     실패한 작업을 다시 시도
+POST   /_cron                              Bearer cronSecret: 예약, 때가 된 작업, 정리 → {published, …, jobs}
+ANY    /<plugin name>/…                    플러그인이 추가한 라우트
+```
+
 ## 파일
 
 [미디어 라이브러리](/ko/docs/media-library)가 있을 때만 동작해요. 없으면 `media_disabled`로 답해요.

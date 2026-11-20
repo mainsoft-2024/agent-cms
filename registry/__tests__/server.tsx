@@ -24,9 +24,11 @@ function tinyPng(): Uint8Array {
 
 export const editor2: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u2", label: "Park", isAdmin: true };
 
-export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean } = {}) {
+export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean; webhooks?: boolean; plugins?: Parameters<typeof createCms>[0]["plugins"] } = {}) {
   /** Who the browser is signed in as (tests switch it). */
   const session = { user: admin };
+  /** What the outside address answers to a webhook (tests change it), and what it was sent. */
+  const hooks = { answer: 200 as number, sent: [] as { url: string; event: string | null }[] };
   const stores = { public: new MemoryStorage({ name: "public", publicUrl: "https://cdn.example.com" }), private: new MemoryStorage({ name: "private" }) };
   const guide = defineCollection({
     slug: "guide",
@@ -53,6 +55,15 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     warn: () => {},
     schemaCheck: false,
     timeZone: o.timeZone,
+    secretsKey: o.webhooks ? "s".repeat(40) : undefined,
+    plugins: o.plugins,
+    webhooks: {
+      resolveHost: async (host: string) => (host === "intranet.example" ? ["10.0.0.5"] : ["93.184.216.34"]),
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        hooks.sent.push({ url: String(input), event: new Headers(init?.headers).get("x-cms-event") });
+        return new Response(null, { status: hooks.answer });
+      }) as typeof fetch,
+    },
     trash: o.trashDays === undefined ? undefined : { days: o.trashDays },
     media: o.media
       ? {
@@ -80,7 +91,7 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     requests.push({ method: init?.method ?? "GET", path: url.slice(BASE.length), body });
     return handler(new Request(url, init));
   }) as typeof fetch;
-  return { cms, fetch: fetchFn, requests, stores, addFile, session };
+  return { cms, hooks, fetch: fetchFn, requests, stores, addFile, session };
 }
 
 export type Server = ReturnType<typeof makeServer>;

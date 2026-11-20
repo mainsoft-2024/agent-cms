@@ -64,6 +64,11 @@ function make() {
     timeZone: "Asia/Seoul",
     // Scheduled publishing runs when a cron job calls POST /api/cms/_cron with this secret.
     cronSecret: process.env.CMS_CRON_SECRET,
+    // Webhooks: signing secrets are stored encrypted with this key (use your own: openssl rand -base64 32).
+    // Deliveries go out with the cron call above, or with `npx @mainsoft/agent-cms cron --watch` in development.
+    secretsKey: process.env.CMS_SECRETS_KEY ?? "example-secrets-key-at-least-32-characters",
+    // Only for trying the receiver in app/api/hook on localhost. Never set this in production.
+    webhooks: { allowInsecure: process.env.CMS_WEBHOOKS_INSECURE === "1" },
     // The app keeps search misses in its own table (see UPGRADE-0.6.md).
     onSearchMiss: async (e) => {
       for (const c of e.collections) {

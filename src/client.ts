@@ -8,6 +8,8 @@
  *   cookie. This is what the copied admin screens use.
  */
 
+import type { WebhookInput, WebhookView } from "./outbox";
+import type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
 import type { AssetListOptions, AssetUsage, AssetView, UploadInstructions, UploadRequest } from "./assets";
 import type { AgentChange, BulkAction, BulkResult, DocDiff, PreviewLink, PreviewTtl } from "./cms";
 import type { Diagnostic, ErrorParams } from "./errors";
@@ -17,6 +19,8 @@ import type { Block, TocItem } from "./markdown";
 import type { AuditEntry, AutosaveState, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocCounts, DocInputWire, DocSummary, KeyScope, Presence, SavedFilter, VersionSummary } from "./wire";
 
 export type { BlockedItem, CommentThread, ReleaseView, ScheduledRun, TrashItem, TrashRef } from "./flow";
+export type { WebhookInput, WebhookView } from "./outbox";
+export type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
 
 /** What `POST /collections/:c/_preview` answers: the document as it would be, nothing saved. */
 export interface DocPreview {
@@ -160,6 +164,12 @@ export interface RestClientOptions {
 }
 
 export interface Me {
+  /** Webhooks can be made and this caller may manage them. */
+  webhooks?: boolean;
+  /** Menu entries plugins add. */
+  nav?: { label: string; href: string; plugin: string }[];
+  /** What plugins put into `_me`, by plugin name. */
+  plugins?: Record<string, Record<string, unknown>>;
   actor: { kind: string; label?: string; id?: string | null };
   isAdmin: boolean;
   previewLinks: boolean;
@@ -358,6 +368,17 @@ export function createRestClient(opts: RestClientOptions) {
     removeFromRelease: (id: string, documentId: string) => req<{ release: ReleaseView }>("DELETE", `/releases/${enc(id)}/items/${enc(documentId)}`).then((r) => r.release),
     publishRelease: (id: string) => req<{ release: CmsRelease }>("POST", `/releases/${enc(id)}/publish`, { body: {} }).then((r) => r.release),
     scheduleRelease: (id: string, publishAt: string | null) => req<{ release: ReleaseView }>("POST", `/releases/${enc(id)}/schedule`, { body: { publishAt } }).then((r) => r.release),
+    webhooks: () => req<{ webhooks: WebhookView[]; events: WebhookEvent[]; enabled: boolean }>("GET", "/webhooks"),
+    /** The signing secret comes back here and from `webhookSecret` only. */
+    createWebhook: (w: WebhookInput) => req<{ webhook: WebhookView; secret: string }>("POST", "/webhooks", { body: w }),
+    updateWebhook: (id: string, w: Partial<WebhookInput>) => req<{ webhook: WebhookView }>("PATCH", `/webhooks/${enc(id)}`, { body: w }).then((r) => r.webhook),
+    removeWebhook: (id: string) => req<{ ok: true }>("DELETE", `/webhooks/${enc(id)}`),
+    webhookSecret: (id: string) => req<{ secret: string }>("GET", `/webhooks/${enc(id)}/secret`).then((r) => r.secret),
+    testWebhook: (id: string) => req<{ delivery: WebhookDelivery }>("POST", `/webhooks/${enc(id)}/test`).then((r) => r.delivery),
+    webhookDeliveries: (id: string, limit?: number) => req<{ deliveries: WebhookDelivery[] }>("GET", `/webhooks/${enc(id)}/deliveries`, { query: { limit } }).then((r) => r.deliveries),
+    retryDelivery: (deliveryId: string) => req<{ queued: true }>("POST", `/webhooks/deliveries/${enc(deliveryId)}/retry`),
+    jobs: (q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number } = {}) => req<{ waiting: number; failed: number; jobs: CmsJob[] }>("GET", "/jobs", { query: q }),
+    retryJob: (id: string) => req<{ ok: true }>("POST", `/jobs/${enc(id)}/retry`),
     search: (q: string, collections?: string[]) => req<{ empty: boolean; hits: { collection: string; slug: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(",") } }),
     keys: () => req<{ keys: CmsKey[] }>("GET", "/keys").then((r) => r.keys),
     createKey: (k: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null }) => req<{ key: CmsKey; secret: string }>("POST", "/keys", { body: k }),
