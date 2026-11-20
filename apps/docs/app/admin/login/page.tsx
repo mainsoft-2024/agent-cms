@@ -38,15 +38,15 @@ export default async function Login({ searchParams }: PageProps<"/admin/login">)
         </div>
         <div className="site-card p-8">
           <h1 className="display d32 mb-2">Edit the docs</h1>
-          <p className="mb-6 text-[var(--pencil-gray)]">
-            People who can push to <b className="text-black">{DOCS_REPO}</b> on GitHub can edit and publish these pages. Agents use an API key instead.
+          <p className="mb-6 text-[var(--color-warm-gray)]">
+            People who can push to <b className="text-[var(--color-ink)]">{DOCS_REPO}</b> on GitHub can edit and publish these pages. Agents use an API key instead.
           </p>
           {usesTestLogin ? (
             <form action={test} className="space-y-3">
               <label className="block text-[12px] font-medium" htmlFor="user">
                 Test user (member or outsider)
               </label>
-              <input id="user" name="user" defaultValue="member" className="w-full rounded-[6px] bg-white px-3 py-2 shadow-[inset_0_0_0_1px_var(--line)]" />
+              <input id="user" name="user" defaultValue="member" className="w-full rounded-[8px] bg-white px-3 py-2 shadow-[inset_0_0_0_1px_var(--color-rule-gray)]" />
               <button type="submit" className="btn btn-primary w-full justify-center">
                 Sign in (test)
               </button>
@@ -59,11 +59,10 @@ export default async function Login({ searchParams }: PageProps<"/admin/login">)
             </form>
           )}
           {denied ? (
-            <div role="alert" className="callout mt-5 !mb-0">
-              <span className="callout-bar" aria-hidden />
+            <div role="alert" className="callout callout-status mt-5 !mb-0">
               <div>
                 <p className="!mb-1 font-medium">This account can't push to {DOCS_REPO}.</p>
-                <p className="!mb-2 text-[var(--pencil-gray)]">Ask the owner to add you as a collaborator, or sign in with another account.</p>
+                <p className="!mb-2 text-[var(--color-warm-gray)]">Ask the owner to add you as a collaborator, or sign in with another account.</p>
                 <form action={other}>
                   <button type="submit" className="link text-[13px]">
                     Use another account
@@ -78,7 +77,7 @@ export default async function Login({ searchParams }: PageProps<"/admin/login">)
             </p>
           ) : null}
         </div>
-        <p className="mt-6 text-center text-[13px] text-[var(--pencil-gray)]">
+        <p className="mt-6 text-center text-[13px] text-[var(--color-warm-gray)]">
           Reading only? The docs are public, and agents can read them over MCP without a key.
         </p>
       </div>

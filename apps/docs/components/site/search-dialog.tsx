@@ -86,7 +86,7 @@ export function SearchButton({ lang, compact = false }: { lang: "en" | "ko"; com
         onClick={() => setOpen(true)}
         aria-label={compact ? t.button : undefined}
         aria-keyshortcuts="Control+K Meta+K"
-        className={compact ? "grid size-8 place-items-center text-[var(--pencil-gray)]" : "flex w-60 items-center gap-2 rounded-[6px] bg-white px-2.5 py-1.5 text-left text-[var(--charcoal-trace)] shadow-[var(--hair)]"}
+        className={compact ? "grid size-8 place-items-center text-[var(--color-ink)]" : "flex w-60 items-center gap-2 rounded-[var(--radius-pills)] border border-[var(--color-rule-gray)] py-[7px] pr-2.5 pl-3.5 text-left text-[14px] text-[var(--color-warm-gray)] hover:border-[var(--color-warm-gray)]"}
       >
         <Search className="size-4" aria-hidden />
         {compact ? null : (
@@ -99,8 +99,8 @@ export function SearchButton({ lang, compact = false }: { lang: "en" | "ko"; com
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent showCloseButton={false} className="top-[15%] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-xl">
           <DialogTitle className="sr-only">{t.button}</DialogTitle>
-          <div className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-3">
-            <Search className="size-4 text-[var(--pencil-gray)]" aria-hidden />
+          <div className="flex items-center gap-2 border-b border-[var(--color-rule-gray)] px-4 py-3">
+            <Search className="size-4 text-[var(--color-warm-gray)]" aria-hidden />
             <input
               autoFocus
               value={q}
@@ -122,9 +122,9 @@ export function SearchButton({ lang, compact = false }: { lang: "en" | "ko"; com
           </div>
           <div id="search-results" role="listbox" className="max-h-[60vh] overflow-y-auto p-2">
             {hits === null ? (
-              <p className="px-3 py-6 text-center text-[var(--pencil-gray)]">{t.hint}</p>
+              <p className="px-3 py-6 text-center text-[var(--color-warm-gray)]">{t.hint}</p>
             ) : hits.length === 0 ? (
-              <p className="px-3 py-6 text-center text-[var(--pencil-gray)]">{t.empty}</p>
+              <p className="px-3 py-6 text-center text-[var(--color-warm-gray)]">{t.empty}</p>
             ) : (
               hits.map((h, i) => (
                 <button
@@ -133,19 +133,19 @@ export function SearchButton({ lang, compact = false }: { lang: "en" | "ko"; com
                   aria-selected={i === active}
                   onMouseEnter={() => setActive(i)}
                   onClick={() => go(h)}
-                  className={`flex w-full items-start gap-3 rounded-[6px] px-3 py-2.5 text-left ${i === active ? "bg-[var(--drafting-gray)]" : ""}`}
+                  className={`flex w-full items-start gap-3 rounded-[8px] px-3 py-2.5 text-left ${i === active ? "bg-[var(--color-aqua-mist)]" : ""}`}
                 >
-                  {h.anchor ? <Hash className="mt-0.5 size-4 shrink-0 text-[var(--charcoal-trace)]" aria-hidden /> : <FileText className="mt-0.5 size-4 shrink-0 text-[var(--charcoal-trace)]" aria-hidden />}
+                  {h.anchor ? <Hash className="mt-0.5 size-4 shrink-0 text-[var(--color-warm-gray)]" aria-hidden /> : <FileText className="mt-0.5 size-4 shrink-0 text-[var(--color-warm-gray)]" aria-hidden />}
                   <span className="min-w-0 flex-1">
                     <span className="block font-medium">
                       <Marked text={h.heading && h.heading !== h.title ? `${h.title} › ${h.heading}` : h.title} q={q} />
                     </span>
                     {h.summary ? (
-                      <span className="block truncate text-[13px] text-[var(--pencil-gray)]">
+                      <span className="block truncate text-[13px] text-[var(--color-warm-gray)]">
                         <Marked text={h.summary} q={q} />
                       </span>
                     ) : null}
-                    <span className="mono mt-0.5 block text-[11px] text-[var(--charcoal-trace)]">
+                    <span className="mono mt-0.5 block text-[11px] text-[var(--color-warm-gray)]">
                       cms://{h.collection}/{h.slug}
                       {h.anchor ? `#${h.anchor}` : ""}
                     </span>
@@ -154,7 +154,7 @@ export function SearchButton({ lang, compact = false }: { lang: "en" | "ko"; com
               ))
             )}
           </div>
-          <div className="flex gap-4 border-t border-[var(--line)] px-4 py-2 text-[12px] text-[var(--pencil-gray)]">
+          <div className="flex gap-4 border-t border-[var(--color-rule-gray)] px-4 py-2 text-[12px] text-[var(--color-warm-gray)]">
             <span>
               <span className="kbd">↵</span> {t.open}
             </span>

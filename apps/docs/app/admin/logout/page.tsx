@@ -20,7 +20,7 @@ export default async function Logout() {
         </div>
         <div className="site-card p-8">
           <h1 className="display d32 mb-2">Sign out</h1>
-          <p className="mb-6 text-[var(--pencil-gray)]">
+          <p className="mb-6 text-[var(--color-warm-gray)]">
             {session?.user ? `Signed in as ${session.login ?? session.user.name ?? "a member"}.` : "You are not signed in."}
           </p>
           {session?.user ? (

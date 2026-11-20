@@ -21,14 +21,14 @@ export default async function ComponentPage({ params }: PageProps<"/components/[
   const url = `${siteUrl()}/r/${item}.json`;
   return (
     <div className="mx-auto max-w-[1200px] px-5 pt-6 pb-20 md:px-10">
-      <p className="mono mb-3 text-[12px] text-[var(--charcoal-trace)]">
-        <Link href="/components" className="hover:text-black">
+      <p className="mono mb-3 text-[12px] text-[var(--color-warm-gray)]">
+        <Link href="/components" className="hover:text-[var(--color-ink)]">
           Components
         </Link>{" "}
         / {item}
       </p>
       <h1 className="display d32 mb-2">{it.title}</h1>
-      <p className="mb-6 max-w-[720px] text-[16px] text-[var(--pencil-gray)]">{it.description}</p>
+      <p className="mb-6 max-w-[720px] text-[16px] text-[var(--color-warm-gray)]">{it.description}</p>
 
       <div className="mb-8 grid gap-3 md:grid-cols-2">
         <div>
@@ -44,8 +44,7 @@ export default async function ComponentPage({ params }: PageProps<"/components/[
       {LIVE.has(item) ? (
         <LiveDemo item={item} />
       ) : NOT_LIVE[item] ? (
-        <div className="callout">
-          <span className="callout-bar" aria-hidden />
+        <div className="callout callout-status">
           <p className="!mb-0">
             {NOT_LIVE[item]}{" "}
             <Link href="/components/cms-doc-editor" className="link">

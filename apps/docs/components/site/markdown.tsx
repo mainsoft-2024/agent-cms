@@ -21,7 +21,7 @@ function MediaView({ b, files }: { b: Extract<Block, { t: "media" }>; files: Fil
   else if (kind === "audio") body = <audio src={src} controls preload="metadata" aria-label={alt || undefined} className="w-full" />;
   else if (kind === "image")
     // eslint-disable-next-line @next/next/no-img-element
-    body = <img src={src} alt={alt} width={f?.width ?? undefined} height={f?.height ?? undefined} loading="lazy" decoding="async" className="h-auto max-w-full rounded-[8px] shadow-[var(--hair)]" />;
+    body = <img src={src} alt={alt} width={f?.width ?? undefined} height={f?.height ?? undefined} loading="lazy" decoding="async" className="h-auto max-w-full rounded-[8px] border border-[var(--color-rule-gray)]" />;
   else
     body = (
       <a href={`${src}${src.includes("?") ? "&" : "?"}download=1`} className="site-card flex items-center gap-3 px-4 py-3 no-underline">
@@ -32,7 +32,7 @@ function MediaView({ b, files }: { b: Extract<Block, { t: "media" }>; files: Fil
   return (
     <figure className="my-5">
       {body}
-      {b.caption ? <figcaption className="mt-2 text-[13px] text-[var(--pencil-gray)]">{b.caption}</figcaption> : null}
+      {b.caption ? <figcaption className="mt-2 text-[13px] text-[var(--color-warm-gray)]">{b.caption}</figcaption> : null}
     </figure>
   );
 }
@@ -89,7 +89,7 @@ function BlockView({ b, lang, files }: { b: Block; lang: "en" | "ko"; files: Fil
       return (
         <H id={b.id} className="group">
           <Inlines items={b.inline} lang={lang} files={files} />
-          <a href={`#${b.id}`} aria-label={`Link to ${b.text}`} className="ml-2 text-[var(--faint-gray)] opacity-0 group-hover:opacity-100">
+          <a href={`#${b.id}`} aria-label={`Link to ${b.text}`} className="ml-2 text-[var(--color-steel)] opacity-0 group-hover:opacity-100">
             #
           </a>
         </H>
@@ -116,7 +116,6 @@ function BlockView({ b, lang, files }: { b: Block; lang: "en" | "ko"; files: Fil
     case "quote":
       return (
         <div className="callout" role={b.callout ? "note" : undefined}>
-          <span className="callout-bar" aria-hidden />
           <div className="min-w-0">
             {b.callout ? <p className="label-mono !mb-1">{b.callout}</p> : null}
             {b.blocks.map((x, i) => (

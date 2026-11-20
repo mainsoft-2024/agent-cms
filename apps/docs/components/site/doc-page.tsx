@@ -7,6 +7,7 @@ import { CmsPreviewComments } from "@/components/cms/cms-preview-comments";
 import { ko as cmsKo } from "@/components/cms/cms-messages";
 import { CopyButton } from "./code-block";
 import { Markdown } from "./markdown";
+import { TocList } from "./toc-list";
 import { collectionFor, docHref, docsNav, previewDoc, publicVersions, publishedDoc, type Lang, type NavGroup, filesOf } from "@/lib/content";
 
 const T = {
@@ -36,7 +37,7 @@ function SideNav({ nav, lang, current }: { nav: NavGroup[]; lang: Lang; current:
               key={it.slug}
               href={docHref(lang, it.slug)}
               aria-current={it.slug === current ? "page" : undefined}
-              className={`-ml-2.5 block rounded-[6px] px-2.5 py-1 ${it.slug === current ? "bg-white font-medium text-black shadow-[var(--hair)]" : "text-[var(--graphite)] hover:text-black"}`}
+              className={`nav-item -ml-2.5 block rounded-[8px] px-2.5 py-[5px] leading-[1.2] ${it.slug === current ? "nav-item-on" : ""}`}
             >
               {it.title}
             </Link>
@@ -47,7 +48,7 @@ function SideNav({ nav, lang, current }: { nav: NavGroup[]; lang: Lang; current:
   );
 }
 
-/** Who wrote the latest public version. Agents (API keys) get the violet pill. */
+/** Who wrote the latest public version. Agents (API keys) get the teal pill. */
 function Editor({ doc, lang }: { doc: CmsDoc; lang: Lang }) {
   if (!doc.updatedBy) return null;
   if (doc.updatedByKind === "key")
@@ -85,7 +86,7 @@ export async function DocPage({ lang, slug, preview }: { lang: Lang; slug: strin
   return (
     <div className="mx-auto grid max-w-[1440px] grid-cols-1 lg:grid-cols-[248px_minmax(0,1fr)] xl:grid-cols-[248px_minmax(0,1fr)_208px]">
       <aside aria-label={t.docs} className="hidden px-10 pt-2 pb-6 lg:block">
-        <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto pr-4 pb-6">
+        <div className="sticky top-20 -ml-2.5 max-h-[calc(100vh-6rem)] overflow-y-auto pr-4 pb-6 pl-2.5">
           <SideNav nav={nav} lang={lang} current={slug} />
         </div>
       </aside>
@@ -100,15 +101,14 @@ export async function DocPage({ lang, slug, preview }: { lang: Lang; slug: strin
           </div>
         </details>
 
-        <p className="mono mb-3 text-[12px] text-[var(--charcoal-trace)]">
+        <p className="mono mb-3 text-[12px] text-[var(--color-warm-gray)]">
           {doc.category ? sectionLabel(doc.category, lang) : t.docs} / {slug}
         </p>
-        <h1 className="display d32 mb-2">{doc.title}</h1>
-        {doc.summary ? <p className="mb-5 max-w-[620px] text-[16px] text-[var(--pencil-gray)]">{doc.summary}</p> : null}
+        <h1 className="display d48 mb-4 max-md:text-[40px]">{doc.title}</h1>
+        {doc.summary ? <p className="mb-5 max-w-[620px] text-[16px] text-[var(--color-warm-gray)] md:text-[18px]">{doc.summary}</p> : null}
 
         {draft ? (
-          <div className="callout max-w-[640px]" role="status">
-            <span className="callout-bar" aria-hidden />
+          <div className="callout callout-status max-w-[640px]" role="status">
             <p className="!mb-0">
               <strong>{t.draft}.</strong> {t.draftNote.replace("{v}", String(doc.version)).replace("{until}", fmtDateTime(draft.expiresAt, lang))}
             </p>
@@ -116,8 +116,7 @@ export async function DocPage({ lang, slug, preview }: { lang: Lang; slug: strin
         ) : null}
 
         {stale ? (
-          <div className="callout max-w-[640px]" role="note">
-            <span className="callout-bar" aria-hidden />
+          <div className="callout callout-status max-w-[640px]" role="note">
             <p className="!mb-0">
               영어 문서가 더 최신이에요 (영어 v{english.publishedVersion}, 이 번역은 v{sourceVersion} 기준).{" "}
               <Link href={`/docs/${slug}`} className="link">
@@ -127,13 +126,13 @@ export async function DocPage({ lang, slug, preview }: { lang: Lang; slug: strin
           </div>
         ) : null}
 
-        <div className="mb-5 flex flex-wrap items-center gap-3 border-b border-[var(--line)] pt-2.5 pb-4 text-[12px] text-[var(--pencil-gray)]">
+        <div className="mb-6 flex flex-wrap items-center gap-3 border-b border-[var(--color-rule-gray)] pt-2.5 pb-4 text-[13px] text-[var(--color-warm-gray)]">
           <span>
             {t.updated} {fmtDate(doc.updatedAt, lang)}
           </span>
-          <span className="h-3 w-px bg-[var(--line)]" aria-hidden />
+          <span className="h-3 w-px bg-[var(--color-rule-gray)]" aria-hidden />
           <Editor doc={doc} lang={lang} />
-          <span className="h-3 w-px bg-[var(--line)]" aria-hidden />
+          <span className="h-3 w-px bg-[var(--color-rule-gray)]" aria-hidden />
           <span className="mono">
             {t.version} {draft ? doc.version : doc.publishedVersion}
           </span>
@@ -145,7 +144,7 @@ export async function DocPage({ lang, slug, preview }: { lang: Lang; slug: strin
             <ul className="mt-2 space-y-1 pb-1">
               {toc.map((h) => (
                 <li key={h.id} className={h.level === 3 ? "pl-3" : ""}>
-                  <a href={`#${h.id}`} className="text-[var(--pencil-gray)] hover:text-black">
+                  <a href={`#${h.id}`} className="text-[var(--color-warm-gray)] hover:text-[var(--color-ink)]">
                     {h.text}
                   </a>
                 </li>
@@ -159,7 +158,7 @@ export async function DocPage({ lang, slug, preview }: { lang: Lang; slug: strin
         </div>
 
         {draft?.comments && preview ? (
-          <section aria-label={t.comments} className="mt-12 max-w-[720px] border-t border-[var(--line)] pt-6">
+          <section aria-label={t.comments} className="mt-12 max-w-[720px] border-t border-[var(--color-rule-gray)] pt-6">
             <CmsPreviewComments token={preview} messages={lang === "ko" ? cmsKo : undefined} />
           </section>
         ) : null}
@@ -170,24 +169,16 @@ export async function DocPage({ lang, slug, preview }: { lang: Lang; slug: strin
           {toc.length ? (
             <>
               <p className="label-mono mb-2.5">{t.onThisPage}</p>
-              <ul>
-                {toc.map((h) => (
-                  <li key={h.id}>
-                    <a href={`#${h.id}`} className={`block border-l border-[var(--line)] py-[3px] text-[var(--pencil-gray)] hover:text-black ${h.level === 3 ? "pl-6" : "pl-3"}`}>
-                      {h.text}
-                    </a>
-                  </li>
-                ))}
-              </ul>
+              <TocList items={toc.map((h) => ({ id: h.id, text: h.text, level: h.level }))} />
             </>
           ) : null}
-          <div className="mt-6 flex flex-col items-start gap-2 text-[var(--pencil-gray)]">
+          <div className="mt-6 flex flex-col items-start gap-2 text-[var(--color-warm-gray)]">
             <CopyButton text={md} label={t.copyMd} className="!px-0" />
-            <a href={mdHref} className="inline-flex items-center gap-1 text-[12px] hover:text-black">
+            <a href={mdHref} className="inline-flex items-center gap-1 text-[12px] hover:text-[var(--color-ink)]">
               <FileCode2 className="size-3.5" aria-hidden /> {t.viewMd}
             </a>
             <details className="text-[12px]">
-              <summary className="inline-flex cursor-pointer items-center gap-1 hover:text-black">
+              <summary className="inline-flex cursor-pointer items-center gap-1 hover:text-[var(--color-ink)]">
                 <History className="size-3.5" aria-hidden /> {t.history}
               </summary>
               <ul className="mt-2 space-y-1">
