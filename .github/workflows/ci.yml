@@ -107,7 +107,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc -p registry/tsconfig.json --noEmit
+      # A memory cap and a time limit: a runaway test then fails with a readable Node error
+      # instead of taking the runner down with it (which leaves no log of what happened).
       - run: npm run test:ui
+        timeout-minutes: 10
+        env:
+          NODE_OPTIONS: --max-old-space-size=2048
 
   e2e:
     runs-on: ubuntu-latest

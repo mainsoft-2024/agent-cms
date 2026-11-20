@@ -119,9 +119,9 @@ test("media: folders, tiles, a file's details, alt text, tags, the extension slo
   assert.ok(within(dialog).getByText("이 파일을 쓰는 문서 1개"));
   assert.ok(within(dialog).getByRole("link", { name: "Hello, world" }));
   await user.click(within(dialog).getByRole("button", { name: "삭제" }));
-  await waitFor(() => assert.equal(screen.queryByRole("button", { name: "launch-hero.png" }), null));
+  await waitFor(() => assert.ok(screen.queryByRole("button", { name: "launch-hero.png" }) === null));
   await assert.rejects(s.cms.assets.get(admin, hero.id));
-  assert.equal(await screen.findByText("파일이 없어요."), screen.getByText("파일이 없어요."));
+  await screen.findByText("파일이 없어요.");
 
   // A new folder becomes the place uploads go.
   await user.click(screen.getByRole("button", { name: "새 폴더" }));
@@ -145,7 +145,7 @@ test("media: the list view, and the menu item only when the app has a library", 
   unmount();
   renderWith(makeServer(), <CmsShell title="App"><p>x</p></CmsShell>);
   await screen.findByRole("link", { name: "Guide" });
-  assert.equal(screen.queryByRole("link", { name: "Media" }), null);
+  assert.ok(screen.queryByRole("link", { name: "Media" }) === null);
 });
 
 test("editor: an image field and 'Insert media' use the picker; the preview shows the file", async () => {
@@ -304,7 +304,7 @@ test("media: the focal point by keyboard, and replacing a file asks first", asyn
   const panel = await screen.findByRole("complementary", { name: "logo.png" });
 
   // No point yet: nothing is drawn until someone sets one.
-  assert.equal(within(panel).queryByRole("button", { name: /^초점:/ }), null);
+  assert.ok(within(panel).queryByRole("button", { name: /^초점:/ }) === null);
   const toggle = within(panel).getByRole("button", { name: "초점" });
   assert.equal(toggle.getAttribute("aria-pressed"), "false");
   await user.click(toggle);
@@ -336,5 +336,5 @@ test("media: the focal point by keyboard, and replacing a file asks first", asyn
   assert.equal(s.requests.some((r) => r.path === "/assets/uploads"), false, "nothing is sent before the answer");
   await user.click(within(dialog).getByRole("button", { name: "바꾸기" }));
   await waitFor(() => assert.deepEqual(s.requests.find((r) => r.method === "POST" && r.path === "/assets/uploads")?.body, { name: "logo-2026.png", mime: "image/png", size: 1500, replace: logo.id }));
-  assert.equal(screen.queryByRole("dialog", { name: /내용을 바꿀까요/ }), null);
+  assert.ok(screen.queryByRole("dialog", { name: /내용을 바꿀까요/ }) === null);
 });

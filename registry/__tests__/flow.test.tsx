@@ -66,7 +66,7 @@ test("flow: schedule a document from the publish button, see it in the list, can
   assert.ok(within(panel).getByText("Pick a time later than now"));
   fireEvent.change(within(panel).getByLabelText("Publish at: Date"), { target: { value: "2099-11-24" } });
   await user.click(within(panel).getByRole("button", { name: "Schedule" }));
-  await waitFor(() => assert.equal(screen.queryByRole("dialog", { name: "Schedule publishing" }), null));
+  await waitFor(() => assert.ok(screen.queryByRole("dialog", { name: "Schedule publishing" }) === null));
   const doc = (await s.cms.get(admin, "guide", "slack", { draft: true }))!;
   assert.equal(doc.schedule?.publishAt, "2099-11-24T00:00:00.000Z");
   assert.equal(doc.schedule?.version, 1);
@@ -123,8 +123,8 @@ test("flow: where everyone needs a review, the author asks and someone else appr
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Request review" }));
   await screen.findByText("Admin asked for a review of v1");
-  assert.equal(screen.queryByRole("button", { name: "Publish" }), null);
-  assert.equal(screen.queryByRole("button", { name: "Approve and publish" }), null, "the one who asked cannot approve");
+  assert.ok(screen.queryByRole("button", { name: "Publish" }) === null);
+  assert.ok(screen.queryByRole("button", { name: "Approve and publish" }) === null, "the one who asked cannot approve");
   cleanup();
 
   s.session.user = editor2;
@@ -170,7 +170,7 @@ test("flow: comments sit on quoted text, take replies, get resolved, and lose th
   const first = within(panel).getByText("Is this still the button name?").closest("li")!;
   await user.click(within(first).getByRole("button", { name: "Resolve" }));
   await within(panel).findByRole("radio", { name: "Resolved 1" });
-  assert.equal(within(panel).queryByText("Is this still the button name?"), null);
+  assert.ok(within(panel).queryByText("Is this still the button name?") === null);
   await user.click(within(panel).getByRole("radio", { name: "Resolved 1" }));
   assert.ok(await within(panel).findByRole("button", { name: "Reopen" }));
 });
@@ -261,7 +261,7 @@ test("flow: a release is made, filled, shows what changes, and publishes all of 
   await user.click(screen.getByRole("button", { name: "Add documents" }));
   dlg = await screen.findByRole("dialog");
   await user.click(within(dlg).getByRole("radio", { name: "Unpublish" }));
-  assert.equal(within(dlg).queryByRole("checkbox", { name: /Launch post/ }), null, "already inside, and not public");
+  assert.ok(within(dlg).queryByRole("checkbox", { name: /Launch post/ }) === null, "already inside, and not public");
   await user.click(await within(dlg).findByRole("checkbox", { name: /Old pricing/ }));
   await user.click(within(dlg).getByRole("button", { name: "Add documents" }));
   const oldRow = await screen.findByRole("row", { name: /Old pricing/ });
@@ -276,14 +276,14 @@ test("flow: a release is made, filled, shows what changes, and publishes all of 
   renderWith(s, <CmsRelease id={opened} />);
   await screen.findByText("v1 → v2");
   await user.click(screen.getByRole("button", { name: "Launch post: Switch to v2" }));
-  await waitFor(() => assert.equal(screen.queryByText("v1 → v2"), null));
+  await waitFor(() => assert.ok(screen.queryByText("v1 → v2") === null));
 
   await user.click(screen.getByRole("button", { name: "Publish" }));
   await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Publish" }));
   await screen.findByText("Published the release");
   assert.equal((await s.cms.get(admin, "guide", "launch", { draft: true }))!.publishedVersion, 2);
   assert.equal((await s.cms.get(admin, "guide", "old", { draft: true }))!.publishedVersion, null);
-  assert.equal(screen.queryByRole("button", { name: "Add documents" }), null, "a published release is a record");
+  assert.ok(screen.queryByRole("button", { name: "Add documents" }) === null, "a published release is a record");
 });
 
 test("flow: saved filters keep a tab and a search; versions take a name and a pin", async () => {

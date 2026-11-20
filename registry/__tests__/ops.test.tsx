@@ -67,9 +67,9 @@ test("keys: list with expired badge; create shows the secret once with MCP and C
 
   // Closing hides the secret for good.
   await user.click(within(done).getAllByRole("button", { name: "Close" })[0]);
-  await waitFor(() => assert.equal(screen.queryByText(secret), null));
+  await waitFor(() => assert.ok(screen.queryByText(secret) === null));
   await screen.findByText("release-bot");
-  assert.equal(screen.queryByText(secret), null);
+  assert.ok(screen.queryByText(secret) === null);
 });
 
 test("keys: expired badge, revoke with confirm", async () => {
@@ -147,7 +147,7 @@ test("versions: mobile is unified only", async () => {
   await s.cms.update(admin, "guide", "slack", { body: "a\nc" }, { expectedVersion: 1 });
   renderWith(s, <CmsVersions collection="guide" slug="slack" onBack={() => {}} />);
   await waitFor(() => assert.ok(document.querySelector("ins")));
-  assert.equal(screen.queryByRole("radiogroup", { name: "Diff view" }), null);
+  assert.ok(screen.queryByRole("radiogroup", { name: "Diff view" }) === null);
   assert.ok(screen.getByRole("button", { name: "Publish v2" }));
   assert.deepEqual(await axeViolations(), []);
 });
@@ -166,11 +166,11 @@ test("command: Ctrl+K opens, finds drafts across collections, opens a document",
   const user = userEvent.setup();
   await user.type(within(dialog).getByRole("combobox"), "slack");
   await within(dialog).findByText("news", { exact: false });
-  await waitFor(() => assert.equal(within(dialog).queryByText("Calendar"), null));
+  await waitFor(() => assert.ok(within(dialog).queryByText("Calendar") === null));
   assert.ok(within(dialog).getByText("Draft v1"));
   assert.ok(within(dialog).getByText("New document in Guide"));
   assert.deepEqual(await axeViolations(), []);
   await user.click(within(dialog).getByText("news", { exact: false }));
   assert.deepEqual(opened, ["notices/slack-news"]);
-  await waitFor(() => assert.equal(screen.queryByRole("dialog"), null));
+  await waitFor(() => assert.ok(screen.queryByRole("dialog") === null));
 });

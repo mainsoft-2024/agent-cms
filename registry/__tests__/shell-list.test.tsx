@@ -89,7 +89,7 @@ test("list: tabs with counts, rows, views column, 0 axe violations", async () =>
 
   const user = userEvent.setup();
   await user.click(within(tabs).getByRole("radio", { name: "Draft 1" }));
-  await waitFor(() => assert.equal(screen.queryByText("Connect Slack"), null));
+  await waitFor(() => assert.ok(screen.queryByText("Connect Slack") === null));
   assert.ok(screen.getByText("Billing plans"));
 });
 

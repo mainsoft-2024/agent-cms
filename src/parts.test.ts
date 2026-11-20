@@ -173,6 +173,21 @@ test("tools: a remote client calls the app over MCP with a key, and its errors b
   assert.equal((missing as { kind: string }).kind, "not_found");
 });
 
+test("screen tests never hand a DOM node to assert.equal", () => {
+  // When such a check fails (inside waitFor that is normal: it is tried again), Node builds the message
+  // by printing the node, and a node React drew leads to the whole app. The process then eats memory
+  // until it is killed: CI lost its runner twice to `assert.equal(screen.queryByText(…), null)`.
+  // Write `assert.ok(screen.queryByText(…) === null)`.
+  const dir = join(process.cwd(), "registry", "__tests__");
+  const node = /assert\.(?:equal|strictEqual|deepEqual|notEqual)\((?:await\s+)?[^;]*?\b(?:queryBy\w+|getBy\w+|findBy\w+|querySelector|closest)\((?:[^()]|\([^()]*\))*\)\)?,\s*(?:null|undefined)\b/;
+  const bad: string[] = [];
+  for (const f of readdirSync(dir).filter((n) => /\.tsx?$/.test(n)))
+    readFileSync(join(dir, f), "utf8").split("\n").forEach((line, i) => node.test(line) && bad.push(`${f}:${i + 1}`));
+  assert.deepEqual(bad, []);
+  assert.ok(node.test('  await waitFor(() => assert.equal(screen.queryByText("v1 → v2"), null));'), "the pattern still catches the line that did it");
+  assert.ok(node.test('  assert.equal(within(dlg).queryByRole("checkbox", { name: /Launch post/ }), null, "why");'));
+});
+
 test("commands are written with the full package name", () => {
   // `agent-cms` without the scope is another project's package on npm: outside a folder where this
   // package is installed, `npx agent-cms` downloads that one and stops with "could not determine

@@ -50,7 +50,7 @@ test("preview: blocks say their lines, a click reports them, links keep their ow
 
   // Without the handler the markup is what it always was.
   const plain = render(<MarkdownPreview body={"## One\n\ntext"} />);
-  assert.equal(plain.container.querySelector("[data-line]"), null);
+  assert.ok(plain.container.querySelector("[data-line]") === null);
   cleanup();
 
   const custom = render(
@@ -108,7 +108,7 @@ test("editor: section cards change the order, by button and from the title back 
   // A title goes back to the text with that heading selected.
   await user.click(within(screen.getByRole("list", { name: "Section order" })).getByRole("button", { name: "Connect" }));
   await waitFor(() => assert.equal(picked(), "## Connect"));
-  assert.equal(screen.queryByRole("list", { name: "Section order" }), null);
+  assert.ok(screen.queryByRole("list", { name: "Section order" }) === null);
   assert.equal(screen.getByRole("button", { name: "Section order" }).getAttribute("aria-pressed"), "false");
 
   // Saving keeps the new order.
@@ -122,7 +122,7 @@ test("editor: one section or a reader: no order button; on a phone the preview c
   await s.cms.create(admin, "guide", { slug: "two", title: "Two", body: "## First\n\nalpha\n\n## Second\n\nbeta" });
   renderWith(s, <CmsDocEditor collection="guide" slug="one" presenceMs={0} />);
   await screen.findByDisplayValue("One");
-  assert.equal(screen.queryByRole("button", { name: "Section order" }), null);
+  assert.ok(screen.queryByRole("button", { name: "Section order" }) === null);
   cleanup();
 
   setMobile(true);
