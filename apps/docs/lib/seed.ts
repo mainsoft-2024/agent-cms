@@ -31,7 +31,15 @@ const system = { kind: "system", label: SEED } as const;
  *
  * `site_starter_pages` remembers the hash of each file it has handled, so a
  * start with nothing new costs one query.
+ *
+ * A Korean page is stamped with the English page's version at the time its
+ * file is handled (`sourceVersion`): the two files are written together, so
+ * a Korean file that changed is a translation of the English page as it is
+ * now. When only the English file changes later, the stamp stays behind and
+ * the Korean page says that the English one is newer, which is then true.
  */
+/** Bump to have every Korean page handled once more (the stamp used to stay at the file's `sourceVersion: 1`). */
+const KO_STAMP = "ko-stamp-2";
 export async function syncStarter(cms: SiteCms, root = contentRoot()): Promise<{ created: number; updated: number; kept: number }> {
   const d = await db();
   const seen = new Map<string, string>();
@@ -46,18 +54,26 @@ export async function syncStarter(cms: SiteCms, root = contentRoot()): Promise<{
     }
     for (const f of files) {
       const text = await readFile(/*turbopackIgnore: true*/ path.join(root, dir, f), "utf8");
-      const hash = createHash("sha256").update(text).digest("hex").slice(0, 32);
+      const hash = createHash("sha256").update(collection === "docs-ko" ? `${text}\n${KO_STAMP}` : text).digest("hex").slice(0, 32);
       const input = docFromMarkdown(text, f.replace(/\.md$/, ""));
       const slug = String(input.slug);
       if (seen.get(`${collection}/${slug}`) === hash) continue;
       try {
         const cur = await cms.get(system, collection, slug, { draft: true }).catch(() => null);
+        let stamped = false;
+        if (collection === "docs-ko") {
+          const english = await cms.get(system, "docs", slug).catch(() => null);
+          if (english?.publishedVersion) {
+            input.fields = { ...(input.fields ?? {}), sourceVersion: english.publishedVersion };
+            stamped = Number((cur?.fields as { sourceVersion?: number } | undefined)?.sourceVersion ?? 0) !== english.publishedVersion;
+          }
+        }
         if (!cur) {
           await cms.create(system, collection, input as never, { publish: true, note: "starter content" });
           out.created++;
         } else if (cur.updatedBy !== SEED) {
           out.kept++; // edited in the CMS: that version wins
-        } else if (cur.title !== (input.title ?? cur.title) || cur.body.trim() !== String(input.body ?? "").trim() || cur.summary !== (input.summary ?? "") || (input.category ?? null) !== cur.category) {
+        } else if (stamped || cur.title !== (input.title ?? cur.title) || cur.body.trim() !== String(input.body ?? "").trim() || cur.summary !== (input.summary ?? "") || (input.category ?? null) !== cur.category) {
           await cms.update(system, collection, slug, input as never, { publish: true, note: "starter content updated" });
           out.updated++;
         }

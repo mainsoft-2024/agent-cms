@@ -45,8 +45,14 @@ export interface StorageList {
 }
 
 export interface StorageAdapter {
-  /** A URL the browser can PUT the whole file to. */
-  presignPut(key: string, o: PutOptions & { expires: number }): Promise<SignedRequest>;
+  /**
+   * `false`: this storage takes a file in one request only, whatever its
+   * size. The CMS then never asks for parts, and a failed upload starts again
+   * instead of carrying on. Leave out when parts work (S3-compatible storage).
+   */
+  readonly multipart?: boolean;
+  /** A URL the browser can PUT the whole file to. `size`: the size the uploader declared, for storage that can hold it to that. */
+  presignPut(key: string, o: PutOptions & { expires: number; size?: number }): Promise<SignedRequest>;
   /** Server-side upload (small files: thumbnails, imports, folder markers). */
   put(key: string, body: Uint8Array, o: PutOptions): Promise<void>;
   createMultipart(key: string, o: PutOptions): Promise<string>;
@@ -62,6 +68,12 @@ export interface StorageAdapter {
   /** The object's public address, when the bucket is public. */
   publicUrl(key: string): string | null;
   copy(from: string, to: string): Promise<void>;
+  /**
+   * Called once for a file a browser uploaded, after it passed the checks and
+   * before it joins the library. For storage that has to finish something
+   * from the server (leave out otherwise).
+   */
+  settle?(key: string, o: PutOptions): Promise<void>;
   delete(key: string): Promise<void>;
   list(o: { prefix?: string; delimiter?: string; cursor?: string | null; limit?: number }): Promise<StorageList>;
 }
@@ -134,6 +146,73 @@ export const DEFAULT_MAX_FILE_SIZE = 5 * 1024 ** 3;
 export const PART_SIZE = 16 * 1024 * 1024;
 export const THUMB_PREFIX = "_cms/thumbs/";
 export const RESERVED_FOLDER = "_cms";
+/** Resized copies of images (`media.transforms`): `_cms/derived/<id>/<size>-<stamp>.<ext>`. */
+export const DERIVED_PREFIX = "_cms/derived/";
+/** New content on its way to replace a file: `_cms/replace/<id>/<upload id>.<ext>`. */
+export const REPLACE_PREFIX = "_cms/replace/";
+
+/**
+ * A JPEG without what cameras and phones write into it: where and when it
+ * was taken, the device, comments, editing history (Exif, XMP, IPTC). The
+ * picture itself, its colour profile and its orientation stay. Returns the
+ * same array when there is nothing to remove or the bytes are not a JPEG.
+ */
+export function stripJpegMetadata(b: Uint8Array): Uint8Array {
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return b;
+  const keep: [number, number][] = [];
+  let orientation = 1;
+  let dropped = false;
+  let i = 2;
+  while (i + 4 <= b.length && b[i] === 0xff) {
+    const m = b[i + 1];
+    if (m === 0xda || m === 0xd9) break; // the picture starts here
+    if (m === 0xff) {
+      i++; // padding
+      continue;
+    }
+    if ((m >= 0xd0 && m <= 0xd7) || m === 0x01) {
+      keep.push([i, i + 2]);
+      i += 2;
+      continue;
+    }
+    const end = i + 2 + ((b[i + 2] << 8) | b[i + 3]);
+    if (end < i + 4 || end > b.length) return b; // not a file to take apart
+    // APP1 holds Exif and XMP, APP13 IPTC and Photoshop data, COM a comment.
+    if (m === 0xe1 || m === 0xed || m === 0xfe) {
+      dropped = true;
+      if (m === 0xe1 && end - i >= 18 && b[i + 4] === 0x45 && b[i + 5] === 0x78 && b[i + 6] === 0x69 && b[i + 7] === 0x66) orientation = exifOrientation(b.subarray(i + 10, end)) ?? orientation;
+    } else keep.push([i, end]);
+    i = end;
+  }
+  if (!dropped) return b;
+  // Without its orientation a photo taken sideways would lie on its side: keep that one value.
+  const turn = orientation >= 2 && orientation <= 8 ? Uint8Array.of(0xff, 0xe1, 0, 34, 0x45, 0x78, 0x69, 0x66, 0, 0, 0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, orientation, 0, 0, 0, 0, 0, 0) : new Uint8Array();
+  const out = new Uint8Array(2 + turn.length + keep.reduce((n, [a, z]) => n + z - a, 0) + b.length - i);
+  out.set(b.subarray(0, 2));
+  out.set(turn, 2);
+  let at = 2 + turn.length;
+  for (const [a, z] of keep) {
+    out.set(b.subarray(a, z), at);
+    at += z - a;
+  }
+  out.set(b.subarray(i), at);
+  return out;
+}
+
+/** The Orientation tag (1..8) of a TIFF block, or null. */
+function exifOrientation(t: Uint8Array): number | null {
+  if (t.length < 14) return null;
+  const le = t[0] === 0x49;
+  const u16 = (o: number) => (le ? t[o] | (t[o + 1] << 8) : (t[o] << 8) | t[o + 1]);
+  const ifd = le ? t[4] | (t[5] << 8) | (t[6] << 16) | (t[7] << 24) : ((t[4] << 24) | (t[5] << 16) | (t[6] << 8) | t[7]) >>> 0;
+  if (ifd < 8 || ifd + 2 > t.length) return null;
+  const n = u16(ifd);
+  for (let k = 0; k < n && ifd + 2 + (k + 1) * 12 <= t.length; k++) {
+    const e = ifd + 2 + k * 12;
+    if (u16(e) === 0x0112) return u16(e + 8);
+  }
+  return null;
+}
 
 export const extOf = (name: string) => {
   const m = /\.([a-z0-9]{1,10})$/i.exec(name);
@@ -319,6 +398,7 @@ interface MemObject {
   body: Uint8Array;
   mime: string;
   disposition: string | null;
+  cacheControl?: string | null;
   at: string;
 }
 
@@ -337,7 +417,7 @@ export class MemoryStorage implements StorageAdapter {
     return `memory://${this.o.name ?? "store"}/`;
   }
   private store(key: string, body: Uint8Array, o: PutOptions) {
-    this.objects.set(key, { body, mime: o.mime, disposition: o.disposition ?? null, at: new Date().toISOString() });
+    this.objects.set(key, { body, mime: o.mime, disposition: o.disposition ?? null, cacheControl: o.cacheControl ?? null, at: new Date().toISOString() });
   }
   private meta(key: string, v: MemObject): StoredObject {
     return { key, size: v.body.length, mime: v.mime, etag: `"m${v.body.length}"`, lastModified: v.at };

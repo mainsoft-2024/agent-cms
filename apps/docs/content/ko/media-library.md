@@ -36,6 +36,33 @@ export const cms = createCms({
 
 `s3Storage`는 AWS S3(`endpoint`는 빼고 `region`을 넣어요), Cloudflare R2(`region: "auto"`와 계정의 S3 endpoint), MinIO를 비롯한 S3 호환 서버에서 동작해요. 요청 서명을 직접 하므로(`aws4fetch`) AWS SDK를 설치하지 않아요. 다른 종류의 저장소는 `StorageAdapter`(`./storage`)를 구현해 연결해요.
 
+## Vercel Blob
+
+0.11.0부터 쓸 수 있어요. `@vercel/blob`을 설치하고 저장소에 Blob 어댑터를 주세요.
+
+```ts
+import { vercelBlobStorage } from "@mainsoft/agent-cms/storage-vercel-blob";
+
+stores: {
+  public: { visibility: "public", adapter: vercelBlobStorage({ token: process.env.BLOB_READ_WRITE_TOKEN!, access: "public" }) },
+  private: { visibility: "private", adapter: vercelBlobStorage({ token: process.env.BLOB_PRIVATE_READ_WRITE_TOKEN!, access: "private" }) },
+}
+```
+
+`access`는 Blob 저장소를 만들 때 고른 값이에요. 비공개 저장소의 파일은 서명된 링크로만 열려요. `prefix`를 주면 모든 파일이 저장소의 그 폴더 아래에 들어가요.
+
+| | S3 호환 | Vercel Blob |
+|---|---|---|
+| 브라우저가 저장소로 바로 올리기 | 돼요 | 돼요 |
+| 큰 파일 | 16MB 조각을 네 개씩 | 파일 하나를 요청 하나로 |
+| 실패한 조각만 다시 보내기 | 돼요 | 이 저장소에서는 지원하지 않아요. 파일을 처음부터 다시 올려요 |
+| 새로 고친 뒤 이어 올리기 | 돼요 | 이 저장소에서는 지원하지 않아요 |
+| CORS 규칙 | 직접 설정해요 | 설정할 것이 없어요 |
+| 저장되는 형식 | CMS가 서명한 값 | Blob이 확장자에서 읽어요 |
+| 파일 관리자, 공유 링크, 바꾸기, 이미지 크기 | 돼요 | 돼요 |
+
+서명된 주소는 올리기 전에 밝힌 크기까지만 받아요. 공유 링크는 길어야 7일이에요. 150MB 파일을 요청 하나로 올려 봤고 올라갔어요. Vercel은 100MB가 넘으면 조각으로 올리라고 권하는데 이 어댑터는 조각을 쓰지 못하니, 저장소의 `maxFileSize`를 정해 두는 편이 좋아요. 2026-11-20에 실제 공개 저장소와 비공개 저장소로 확인했어요(`@vercel/blob` 2.9.0).
+
 ## CORS
 
 버킷에는 사이트가 `PUT`할 수 있게 하는 CORS 규칙이 있어야 해요. `agent-cms.config.ts`에 같은 `media` 객체를 넣고 실행하세요.
@@ -102,7 +129,38 @@ const cover = files[doc.fields.cover];
 <img src={cms.imageUrl(cover, { width: 1200 })} width={cover.width} height={cover.height} alt={cover.alt} />
 ```
 
-`parseMarkdown`은 `{ t: "media", asset, alt, caption }` 블록을 줘요. `asset`을 `files`에서 찾으세요. CMS는 원본만 보관해요. 크기 바꾸기는 `media.imageUrl`을 통해 프레임워크나 CDN이 맡아요.
+`parseMarkdown`은 `{ t: "media", asset, alt, caption }` 블록을 줘요. `asset`을 `files`에서 찾으세요. 기본으로는 CMS가 원본만 보관하고, 크기 바꾸기는 `media.imageUrl`을 통해 프레임워크나 CDN이 맡아요.
+
+## 이미지 크기
+
+0.11.0부터는 CMS가 직접 만들 수도 있어요. 선택 모듈이에요. `sharp`를 설치하고 크기에 이름을 붙이세요. Node 런타임에서만 돌아가요. Edge 런타임이면 앱이 시작할 때 이유와 함께 멈춰요.
+
+```ts
+import { sharpTransforms } from "@mainsoft/agent-cms/image-sharp";
+
+media: {
+  stores: { … },
+  transforms: sharpTransforms({
+    presets: { thumb: { width: 480 }, card: { width: 800, height: 450, fit: "cover" }, full: { width: 1600 } },
+    formats: ["webp"], // webp(기본), avif, jpeg, png
+  }),
+}
+```
+
+```tsx
+<img
+  src={cms.imageUrl(cover, { size: "card" })}
+  style={{ objectPosition: cover.focal ? `${cover.focal.x * 100}% ${cover.focal.y * 100}%` : undefined }}
+  alt={cover.alt}
+/>
+```
+
+- 이름을 붙인 크기만 있어요. 주소는 `/api/cms/files/<id>/<이름>?size=card`예요. 없는 이름은 404(`unknown_image_size`)예요.
+- 처음 요청받을 때 만들어서 같은 저장소의 `_cms/derived/` 아래에 둬요. 그다음부터는 만들어 둔 파일로 넘겨요. 원본을 지우거나 바꾸면 함께 지워요.
+- 한도: 긴 쪽 4096px, 동시에 4개, 한 건에 10초, 입력 40MB. 한도를 넘거나 sharp가 실패하면 원본을 내보내요. SVG와 GIF는 그대로 내보내요. 원본보다 크게 만들지 않아요.
+- 모듈을 켜면 에이전트가 가져온 이미지와 CLI로 올린 이미지의 목록용 썸네일을 서버가 만들어요.
+
+**초점.** 파일 패널의 "초점"을 누르고 사진에서 꼭 보여야 하는 곳을 찍어요. 화살표 키로도 옮겨요. `fit: "cover"`인 크기는 그 점을 중심으로 잘리고, `assetsFor`가 `focal: { x, y }`(0에서 1)로 돌려줘요. 에이전트는 `update_asset`으로 정해요. 자르기 편집기는 없어요. 원본은 바뀌지 않아요.
 
 ## 누가 무엇을 할 수 있나
 
@@ -123,7 +181,7 @@ export default function MediaPage() {
 }
 ```
 
-브라우저는 파일을 저장소로 바로 보내요. 큰 파일은 조각 네 개씩 보내고, 실패한 조각은 세 번까지 다시 시도해요. "다시 시도"는 아직 못 보낸 조각만 보내요. 이미지와 영상은 라이브러리에 쓸 작은 그림(480px, WebP)도 만들고, 너비와 높이와 길이를 읽어요. "URL에서 가져오기"는 공개 https 주소의 파일을 열려 있는 폴더로 가져와요(내부망 주소는 에이전트와 똑같이 거부해요). 파일 패널의 연필은 이름을 바꿔요. 확장자는 그대로라서 형식이 바뀌지 않아요. 자세한 것은 [미디어 화면](/components/cms-media)에 있어요.
+브라우저는 파일을 저장소로 바로 보내요. 큰 파일은 조각 네 개씩 보내고, 실패한 조각은 세 번까지 다시 시도해요. "다시 시도"는 아직 못 보낸 조각만 보내요. 이미지와 영상은 라이브러리에 쓸 작은 그림(480px, WebP)도 만들고, 너비와 높이와 길이를 읽어요. "URL에서 가져오기"는 공개 https 주소의 파일을 열려 있는 폴더로 가져와요(내부망 주소는 에이전트와 똑같이 거부해요). 파일 패널의 연필은 이름을 바꿔요. 확장자는 그대로라서 형식이 바뀌지 않아요. 자세한 것은 [미디어 화면](/components/cms-media)에 있어요. "바꾸기"는 파일의 주소를 그대로 둔 채 내용만 새 파일로 바꾸고, `media.stripMetadata`는 사진을 보내기 전에 카메라 정보를 지워요.
 
 ## 에이전트와 CLI
 

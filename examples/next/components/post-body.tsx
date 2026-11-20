@@ -21,7 +21,8 @@ function inlines(items: Inline[], files: Files): ReactNode[] {
   });
 }
 
-export function PostBody({ body, files }: { body: string; files: Files }) {
+/** `imageSrc`: the address to show a picture of the library at (a named size, your CDN). Default: the file itself. */
+export function PostBody({ body, files, imageSrc }: { body: string; files: Files; imageSrc?: (file: AssetInfo) => string }) {
   const draw = (blocks: Block[]): ReactNode[] =>
     blocks.map((b, n) => {
       switch (b.t) {
@@ -53,7 +54,7 @@ export function PostBody({ body, files }: { body: string; files: Files }) {
                 <a href={f.url} className="block rounded border px-3 py-2 underline">{alt || f.name}</a>
               ) : (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={f?.url ?? b.src ?? ""} alt={alt} width={f?.width ?? undefined} height={f?.height ?? undefined} className="h-auto w-full rounded" />
+                <img src={(f && imageSrc ? imageSrc(f) : f?.url) ?? b.src ?? ""} alt={alt} width={f?.width ?? undefined} height={f?.height ?? undefined} className="h-auto w-full rounded" />
               )}
               {b.caption ? <figcaption className="mt-1 text-center text-sm text-muted-foreground">{b.caption}</figcaption> : null}
             </figure>

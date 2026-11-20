@@ -28,7 +28,7 @@ function viewOf(href: string): View {
 /** The screens wired to the demo CMS (/api/demo), with a small in-frame router. */
 function Screens({ item, view, go }: { item: string; view: View; go: (v: View) => void }) {
   const list = <CmsDocList collection="posts" onOpenDocument={(_c, s) => go({ v: "edit", slug: s })} onNewDocument={() => go({ v: "edit" })} />;
-  const editor = (slug?: string) => <CmsDocEditor collection="posts" slug={slug} onBack={() => go({ v: "list" })} onCreated={(_c, s) => go({ v: "edit", slug: s })} onOpenRelease={(id) => go({ v: "release", id })} onOpenVersions={(_c, s) => go({ v: "versions", slug: s })} publicUrlFor={() => ""} />;
+  const editor = (slug?: string) => <CmsDocEditor className="md:h-[640px]" collection="posts" slug={slug} onBack={() => go({ v: "list" })} onCreated={(_c, s) => go({ v: "edit", slug: s })} onOpenRelease={(id) => go({ v: "release", id })} onOpenVersions={(_c, s) => go({ v: "versions", slug: s })} publicUrlFor={() => ""} />;
   const releases = <CmsReleases onOpenRelease={(id) => go({ v: "release", id })} />;
   const release = (id: string) => <CmsRelease id={id} onBack={() => go({ v: "releases" })} onOpenDocument={(_c, s) => go({ v: "edit", slug: s })} />;
   const routed = () => {

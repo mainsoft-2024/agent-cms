@@ -22,6 +22,13 @@ REST, MCP, 도구(`callTool`), CLI 모두 같은 모양으로 돌려줘요.
 - `conflict`: `conflict_version`, `slug_taken`
 - `precondition`: `precondition_required` (`requireIfMatch`를 켰을 때 428)
 
+[미디어 라이브러리](/ko/docs/media-library)가 있으면 파일 오류가 더해져요.
+
+- `not_found`: `asset_not_found`, `unknown_store`, `unknown_image_size`
+- `forbidden`: `forbidden_media`
+- `invalid`: `asset_type_not_allowed`, `asset_type_mismatch`(내용이 확장자와 달라요), `asset_too_large`(413), `upload_incomplete`, `asset_rejected`(`media.scan`이 거절했어요), `asset_replace_type`(같은 형식의 파일로만 바꿀 수 있어요), `import_blocked`, `import_failed`, `invalid_folder`, `media_disabled`
+- `conflict`: `asset_in_use`(`current`에 문서 목록이 와요), `folder_not_empty`
+
 전체 목록은 `@mainsoft/agent-cms/errors`의 `ERROR_CODES`에 있어요.
 
 ## 문구

@@ -21,8 +21,8 @@ export default async function Post({ params, searchParams }: { params: { slug: s
         <h1 className="text-3xl font-semibold">{doc.title}</h1>
         {doc.summary ? <p className="text-muted-foreground">{doc.summary}</p> : null}
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        {cover ? <img src={cms.imageUrl(cover, { width: 1200 })} alt={cover.alt} width={cover.width ?? undefined} height={cover.height ?? undefined} className="h-auto w-full rounded" /> : null}
-        <PostBody body={doc.body} files={files} />
+        {cover ? <img data-cover="" src={cms.imageUrl(cover, { size: "card" })} alt={cover.alt} width={800} height={450} className="aspect-video h-auto w-full rounded object-cover" style={cover.focal ? { objectPosition: `${cover.focal.x * 100}% ${cover.focal.y * 100}%` } : undefined} /> : null}
+        <PostBody body={doc.body} files={files} imageSrc={(f) => cms.imageUrl(f, { size: "full" })} />
         {/* A preview link made with "Allow comments" lets the reader comment without an account. */}
         {token && preview?.comments ? <CmsPreviewComments token={token} /> : null}
       </main>

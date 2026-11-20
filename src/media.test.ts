@@ -238,7 +238,7 @@ test("media: edit, move, rename and delete; a file in use says where before it g
   assert.equal(await pub.head("blog/hero.png"), null);
   assert.ok(await pub.head("brand/2026/launch-hero.png"));
   const files = await cms.assetsFor(await cms.get(anon, "blog", "launch"));
-  assert.deepEqual(files[hero.id], { id: hero.id, name: "launch-hero.png", kind: "image", mime: "image/png", size: 200, width: 640, height: 480, duration: null, alt: "Launch screen", url: "https://cdn.example.com/brand/2026/launch-hero.png", visibility: "public" });
+  assert.deepEqual(files[hero.id], { id: hero.id, name: "launch-hero.png", kind: "image", mime: "image/png", size: 200, width: 640, height: 480, duration: null, alt: "Launch screen", url: "https://cdn.example.com/brand/2026/launch-hero.png", visibility: "public", focal: null });
   assert.equal(cms.imageUrl(files[hero.id], { width: 800 }), "https://cdn.example.com/brand/2026/launch-hero.png?w=800");
 
   // The member cannot read `notes`, so that use is counted but not named.

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.11.0
+
+What was left of the media library and the editor. **Schema version 5** (three columns on `cms_assets`; `npx agent-cms migrate apply`). See [UPGRADE-0.11.md](./UPGRADE-0.11.md).
+
+- **New: Vercel Blob.** `vercelBlobStorage({ token, access })` from `@mainsoft/agent-cms/storage-vercel-blob` (`@vercel/blob` is an optional peer dependency). Browsers upload straight to Blob with a signed address that holds the file to its declared size; private stores are read through signed links. On this kind of store a file goes up in one request whatever its size, so there is no per-part retry and no carrying on after a reload; `storage check` and `_me.media.stores[].parts` say so. Checked against real public and private stores with `@vercel/blob` 2.9.0.
+- **New: image sizes.** `media.transforms: sharpTransforms({ presets })` from `@mainsoft/agent-cms/image-sharp` (`sharp` is an optional peer dependency, Node only). Named sizes only, at `/files/<id>/<name>?size=card`, made on first request and kept under `_cms/derived/`; limits on side, input size, time and how many at once, with the original as the fallback. `cms.imageUrl(asset, { size })`. Pictures the server stores itself get a list thumbnail.
+- **New: focal point.** Set on a picture in the file panel (mouse or arrow keys), through `PATCH /assets/:id { focal }` or the `update_asset` tool. `fit: "cover"` sizes are cropped around it and `assetsFor` returns `focal`.
+- **New: replace a file at its address.** "Replace" in the file panel, `cms.assets.replace()`, or an upload request with `replace: <id>`. Same id and path, same type, checked before it takes the old content's place; `rev` counts replacements and the addresses the CMS hands out carry `?v=<rev>`. Audit action `asset.replace`.
+- **New: `media.stripMetadata`.** JPEG photos lose their location, time and device data in the browser before they are sent (and on the server for imports). The picture, colour profile and orientation are kept.
+- **New: uploads carry on after a reload.** Choosing the same file again within a day sends only the missing parts.
+- **New (cms-doc-editor): section order.** Cards for the `##` sections, moved by dragging or with arrow buttons. New file `cms-body-tools.tsx` in the `cms-doc-editor` item.
+- **New (cms-doc-editor): the preview follows the text** in both directions, and a click on a block in the preview selects its lines in the text. `MarkdownPreview` gained `components` and `onPickLines`; `cms-parts` exports `renderBlocks(blocks, components)`.
+- **Changed (cms-doc-editor):** on wide screens the editor fills the window's height and scrolls inside itself (header and problems line stay in view). Pass `className` with the height that is left if your app has its own top bar.
+- **Changed (`StorageAdapter`):** optional members `multipart` (set `false` when the storage has no parts), `settle(key, options)` (called once after a browser upload passed its checks) and `size` in the `presignPut` options. Existing adapters need no change.
+- New errors: `asset_replace_type` (422), `unknown_image_size` (404).
+
 ## 0.10.2
 
 - **Fix (REST):** a signed-in person's writes were refused with `cross_site` ("Cross-site request refused") whenever the app was reached through an address other than the one the server listens on: behind a reverse proxy or a preview tunnel, in a container, or simply by opening a `next start` server as `127.0.0.1` instead of `localhost`. The check compared the page's `Origin` only with `req.url`, which under `next start` holds the listening address. It now also reads the address from `Host` and `X-Forwarded-Host`, the way Next.js does for Server Actions. A page on another site still cannot change any of the three, so the protection is the same. Apps on Vercel were not affected.

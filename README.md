@@ -218,6 +218,23 @@ UI text is English by default; a Korean catalog ships with the screens.
   "unarchive" | "delete", items)` runs each document on its own and returns
   `{ slug, ok, error? }` for each.
 
+### Long documents: section order, a preview that follows
+
+- **Section order.** Above the text, "Section order" swaps the text box for
+  one card per `##` section. Drag a card or use its arrows to move the whole
+  section; the text before the first heading stays where it is. A card's
+  title jumps back to that section in the text.
+- **The preview follows the text.** Scrolling either side moves the other to
+  the same block, and the block under the caret is brought into view.
+- **Click the preview to find the line.** A click on a block in the preview
+  selects its lines in the text (not on links, players or while selecting
+  text). `MarkdownPreview` takes `onPickLines(line, endLine)` if you render
+  the preview yourself, and `renderBlocks(blocks, components)` from
+  `cms-parts` renders a block tree with your own components.
+- The editor now fills the window's height and scrolls inside itself, so its
+  header and its problems line stay in view. An app with its own top bar
+  passes the height that is left: `<CmsDocEditor className="md:h-[calc(100dvh-4rem)]" />`.
+
 ### Scheduling, review, comments, releases, trash
 
 The editor, the list and two more screens (`cms-trash`, `cms-releases`) cover
@@ -301,6 +318,29 @@ other S3-compatible server. It signs requests itself (`aws4fetch`), so there
 is no AWS SDK to install. Another kind of storage is a `StorageAdapter`
 (`./storage`).
 
+**Vercel Blob** works the same way with its own adapter
+(`npm install @vercel/blob`):
+
+```ts
+import { vercelBlobStorage } from "@mainsoft/agent-cms/storage-vercel-blob";
+
+stores: {
+  // `access` is how the Blob store was created. A private store is read through signed links only.
+  public: { visibility: "public", adapter: vercelBlobStorage({ token: process.env.BLOB_READ_WRITE_TOKEN!, access: "public" }) },
+  private: { visibility: "private", adapter: vercelBlobStorage({ token: process.env.BLOB_PRIVATE_READ_WRITE_TOKEN!, access: "private" }) },
+}
+```
+
+The browser still sends the file straight to the storage, with a signed
+address that holds it to the size it declared. What is different on Blob: a
+file goes up in **one request** whatever its size, so there are no parts to
+retry one by one and nothing to carry on after a reload (a failed upload
+starts again; Vercel's own advice is parts above 100MB, and a 150MB file went
+up in one request when we measured). Blob decides the stored type from the
+file's extension, and there is no CORS rule to set. `storage check` says
+"not supported on this store" for the parts step. Checked against real public
+and private Blob stores with `@vercel/blob` 2.9.0.
+
 **The bucket needs a CORS rule** that lets your site `PUT` to it. Add `media`
 (the same object) to `agent-cms.config.ts` and run:
 
@@ -382,8 +422,43 @@ const cover = files[doc.fields.cover];
 ```
 
 `parseMarkdown` gives `{ t: "media", asset, alt, caption }` blocks; look the
-`asset` up in `files`. The CMS stores originals only. Resizing is your
-framework's or CDN's job, through `media.imageUrl`.
+`asset` up in `files`. By default the CMS stores originals only and resizing
+is your framework's or CDN's job, through `media.imageUrl`.
+
+**Image sizes made by the CMS** are an optional module (`npm install sharp`,
+Node runtime only; on the Edge runtime it fails when the app starts, with the
+reason):
+
+```ts
+import { sharpTransforms } from "@mainsoft/agent-cms/image-sharp";
+
+media: {
+  stores: { … },
+  transforms: sharpTransforms({
+    presets: { thumb: { width: 480 }, card: { width: 800, height: 450, fit: "cover" }, full: { width: 1600 } },
+    formats: ["webp"],            // webp (default), avif, jpeg, png
+  }),
+}
+
+<img src={cms.imageUrl(cover, { size: "card" })} style={{ objectPosition: cover.focal ? `${cover.focal.x * 100}% ${cover.focal.y * 100}%` : undefined }} />
+```
+
+- Only the sizes you name exist: `/api/cms/files/<id>/<name>?size=card`.
+  Another name answers 404 (`unknown_image_size`), so nobody can make your
+  server resize to arbitrary numbers.
+- A size is made the first time it is asked for and stored in the same store
+  under `_cms/derived/`; after that the route redirects to the stored copy.
+  Copies are deleted with the original and when it is replaced.
+- Limits: 4096px on the long side, four at a time, ten seconds each, 40MB of
+  input. Past a limit, or when sharp fails, the original is served instead.
+  SVG and GIF are always served as they are. Nothing is enlarged.
+- **Focal point.** In a file's panel, "Focal point" lets an editor click the
+  part of a picture that must stay in view (arrow keys work too). `fit:
+  "cover"` sizes are cropped around it, and `assetsFor` returns it as `focal:
+  { x, y }` (0 to 1) for your own `object-position`. There is no crop editor:
+  the original is never changed.
+- With the module on, pictures an agent imports or the CLI uploads get their
+  list thumbnail from the server (a browser makes its own).
 
 **Who may do what.** Listing files and opening private ones: signed-in
 people and keys. Uploading, importing, alt text, tags, new folders: admins
@@ -419,6 +494,20 @@ what is still missing. It also makes a small picture of each image and video
 in a file's panel renames it; the extension stays, so the type cannot change.
 `<CmsProvider slots={{ assetAlt }}>` lets an extension package put its own
 control next to a file's alt text field.
+
+- **Replace.** "Replace" in a file's panel puts new content at the same
+  address: same id, same path, so documents need no edit. The new file must
+  be the same type; it is checked like any upload before it takes the old
+  one's place, and the old content cannot be brought back. Addresses the CMS
+  hands out get `?v=<n>` so browsers fetch the new content; a CDN in front of
+  a public bucket caches by its own rules. Needs the right to delete.
+- **Camera data.** `media: { stripMetadata: true }` removes location, time
+  and device data (Exif, XMP, IPTC, comments) from JPEG photos in the browser
+  before they are sent, and on the server for imports. The picture itself,
+  its colour profile and its orientation are kept. Off by default.
+- **Carrying on after a reload.** A large upload is remembered in the
+  browser's storage. Choosing the same file again within a day sends only the
+  parts that are still missing. (Not on Vercel Blob, which has no parts.)
 
 Agents get six more tools when the app has a media library: `list_assets`,
 `get_asset` (read), `import_asset` (fetch an https address into the library;

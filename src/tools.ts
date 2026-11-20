@@ -422,9 +422,14 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "update_asset",
     media: "write",
-    description: "Change a file's alt text or tags. Documents that use the file without their own alt text show the new one.",
-    input: z.object({ id: assetId, alt: z.string().optional(), tags: z.array(z.string()).optional() }),
-    run: async (cms, actor, a) => assetOut(await cms.assets.update(actor, a.id as string, { alt: a.alt as string | undefined, tags: a.tags as string[] | undefined })),
+    description: "Change a file's alt text, tags or focal point. Documents that use the file without their own alt text show the new one.",
+    input: z.object({
+      id: assetId,
+      alt: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      focal: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }).nullable().optional().describe("Images: the point that stays in view when the picture is cropped, from the left and from the top (0..1). null clears it."),
+    }),
+    run: async (cms, actor, a) => assetOut(await cms.assets.update(actor, a.id as string, { alt: a.alt as string | undefined, tags: a.tags as string[] | undefined, focal: a.focal as { x: number; y: number } | null | undefined })),
   },
   {
     name: "move_asset",

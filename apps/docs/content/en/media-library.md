@@ -43,6 +43,33 @@ other S3-compatible server. It signs requests itself (`aws4fetch`), so there
 is no AWS SDK to install. Another kind of storage is a `StorageAdapter`
 (`./storage`).
 
+## Vercel Blob
+
+From 0.11.0. Install `@vercel/blob` and give a store the Blob adapter:
+
+```ts
+import { vercelBlobStorage } from "@mainsoft/agent-cms/storage-vercel-blob";
+
+stores: {
+  public: { visibility: "public", adapter: vercelBlobStorage({ token: process.env.BLOB_READ_WRITE_TOKEN!, access: "public" }) },
+  private: { visibility: "private", adapter: vercelBlobStorage({ token: process.env.BLOB_PRIVATE_READ_WRITE_TOKEN!, access: "private" }) },
+}
+```
+
+`access` is how the Blob store was created. A private store is read through signed links only. `prefix` puts every key under one folder of the store.
+
+| | S3-compatible | Vercel Blob |
+|---|---|---|
+| Browser uploads straight to the storage | yes | yes |
+| Large files | 16MB parts, four at a time | one request per file |
+| A failed part is retried by itself | yes | not supported on this store: the file starts again |
+| Carry on after a reload | yes | not supported on this store |
+| CORS rule | yours to set | nothing to set |
+| Stored type | what the CMS signed | read from the extension by Blob |
+| File manager, share links, replace, image sizes | yes | yes |
+
+The signed address holds an upload to the size it declared. Share links last at most seven days. A 150MB file went up in one request when we measured; Vercel's own advice is to use parts above 100MB, which this adapter cannot do, so think about `maxFileSize` for the store. Checked against real public and private Blob stores with `@vercel/blob` 2.9.0 on 2026-11-20.
+
 ## CORS
 
 The bucket needs a CORS rule that lets your site `PUT` to it. Add `media`
@@ -134,8 +161,39 @@ const cover = files[doc.fields.cover];
 ```
 
 `parseMarkdown` gives `{ t: "media", asset, alt, caption }` blocks; look the
-`asset` up in `files`. The CMS stores originals only. Resizing is your
+`asset` up in `files`. By default the CMS stores originals only, and resizing is your
 framework's or CDN's job, through `media.imageUrl`.
+
+## Image sizes
+
+From 0.11.0, the CMS can make the sizes itself. It is an optional module: install `sharp` and name the sizes. Node runtime only; on the Edge runtime the app fails at start with the reason.
+
+```ts
+import { sharpTransforms } from "@mainsoft/agent-cms/image-sharp";
+
+media: {
+  stores: { … },
+  transforms: sharpTransforms({
+    presets: { thumb: { width: 480 }, card: { width: 800, height: 450, fit: "cover" }, full: { width: 1600 } },
+    formats: ["webp"], // webp (default), avif, jpeg, png
+  }),
+}
+```
+
+```tsx
+<img
+  src={cms.imageUrl(cover, { size: "card" })}
+  style={{ objectPosition: cover.focal ? `${cover.focal.x * 100}% ${cover.focal.y * 100}%` : undefined }}
+  alt={cover.alt}
+/>
+```
+
+- Only the sizes you name exist: `/api/cms/files/<id>/<name>?size=card`. Another name answers 404 (`unknown_image_size`).
+- A size is made the first time it is asked for and kept in the same store under `_cms/derived/`. After that the route redirects to the stored copy. Copies are deleted with the original and when it is replaced.
+- Limits: 4096px on the long side, four at a time, ten seconds each, 40MB of input. Past a limit, or when sharp fails, the original is served. SVG and GIF are served as they are. Nothing is enlarged.
+- With the module on, pictures an agent imports or the CLI uploads get their list thumbnail from the server.
+
+**Focal point.** In a file's panel, "Focal point" lets an editor click the part of a picture that must stay in view; the arrow keys move it too. Sizes with `fit: "cover"` are cropped around it, and `assetsFor` returns it as `focal: { x, y }` (0 to 1). Agents set it with `update_asset`. There is no crop editor: the original is never changed.
 
 ## Who may do what
 
@@ -173,7 +231,7 @@ what is still missing. It also makes a small picture of each image and video
 "Import from URL" fetches a public https address into the open folder
 (addresses inside your network are refused, as for agents), and the pencil
 in a file's panel renames it; the extension stays, so the type cannot change.
-The [media library screen](/components/cms-media) has the details. `<CmsProvider slots={{ assetAlt }}>` lets an extension package put its own
+"Replace" puts new content at a file's address, and `media.stripMetadata` removes camera data from photos before they are sent. The [media library screen](/components/cms-media) has the details. `<CmsProvider slots={{ assetAlt }}>` lets an extension package put its own
 control next to a file's alt text field.
 
 ## Agents and the CLI

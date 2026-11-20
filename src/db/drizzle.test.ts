@@ -245,8 +245,9 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_presence", "cms_releases", "cms_saved_filters"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 2], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.11\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -295,6 +296,11 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
       ]
     );
     const moved = await repo.updateAsset("aaaaaaaaaaaa", { key: "brand/Hero.png", folder: "brand", alt: "A hero", tags: ["a", "b"] });
+    // 0.11.0: a new file has no focal point and revision 0; both are stored.
+    assert.deepEqual([one.focalX, one.focalY, one.rev], [null, null, 0]);
+    const pointed = (await repo.updateAsset("aaaaaaaaaaaa", { focalX: 0.25, focalY: 0.8, rev: 1 }))!;
+    assert.deepEqual([pointed.focalX, pointed.focalY, pointed.rev], [0.25, 0.8, 1]);
+    assert.equal((await repo.updateAsset("aaaaaaaaaaaa", { focalX: null, focalY: null }))!.focalX, null);
     assert.deepEqual([moved?.key, moved?.folder, moved?.alt, moved?.tags], ["brand/Hero.png", "brand", "A hero", ["a", "b"]]);
 
     await repo.setAssetRefs(d.id, [

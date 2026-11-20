@@ -187,6 +187,10 @@
           "type": "registry:component"
         },
         {
+          "path": "registry/cms/cms-body-tools.tsx",
+          "type": "registry:component"
+        },
+        {
           "path": "registry/cms/cms-paste.ts",
           "type": "registry:lib"
         }
