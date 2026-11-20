@@ -1,90 +1,115 @@
 {
-  "version": "0.8.0",
+  "version": "0.10.0",
   "files": {
     "components/cms/use-cms.ts": {
       "item": "cms-lib",
-      "version": "0.8.0",
-      "hash": "48ecbf1cab565ae73af2fa5eb8d4f7a8931a5f3274b8dea9ede9ed66b4a8af02"
+      "version": "0.10.0",
+      "hash": "8c894cf854e02ca94872a6cb3423b8c411de41db1be1329cfff66a318185f063"
     },
     "components/cms/cms-messages.ts": {
       "item": "cms-lib",
-      "version": "0.8.0",
-      "hash": "ad9504f7533be856a312f5dd10ca95342bf367ebee418318f1ba859dec1a4175"
+      "version": "0.10.0",
+      "hash": "1b8daea095241bf674da35816e649b35cacd714f21e1dfebfd5bd9d2c8b88441"
     },
     "components/cms/cms-parts.tsx": {
       "item": "cms-lib",
-      "version": "0.8.0",
-      "hash": "fe796707f3a2705235ca4f4926da0c7e81a85a054ec5b83ac9e28f960f27f80e"
+      "version": "0.10.0",
+      "hash": "a8baf8a3305b30c9ea213d13acd9cf79a3a0c4f9cce1f7632ebda28446d21c19"
     },
     "components/cms/cms-shell.tsx": {
       "item": "cms-shell",
-      "version": "0.8.0",
-      "hash": "cafe1d7a986217f94004322f9ad72f399e3517332092be1b9bcc635d43fd14be"
+      "version": "0.10.0",
+      "hash": "936831ca6b2d6485bebbbde7ebdcecea9c5b2610e0e7b0f8fb9ebc1ce180437e"
     },
     "components/cms/cms-empty.tsx": {
       "item": "cms-empty",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "571d6711ff7807a3c4a72bae54cd78c9525d7dbecf33a6265e7b0522789ec5b1"
     },
     "components/cms/cms-doc-list.tsx": {
       "item": "cms-doc-list",
-      "version": "0.8.0",
-      "hash": "b13cc7f8fad74176b03992438f4f886b4c44783f213bcc5ebf40229066a388d5"
+      "version": "0.10.0",
+      "hash": "9a8df0259ec14045cfe0e5468d8f48032bee77ddcf7e4c59d74aa86ab51174ba"
     },
     "components/cms/cms-merge.tsx": {
       "item": "cms-merge",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "b580964d77b29dc89bea76b4bcf28da0b2ab75a9488bbf2a27df2e310d472742"
     },
     "components/cms/cms-doc-editor.tsx": {
       "item": "cms-doc-editor",
-      "version": "0.8.0",
-      "hash": "759b71db2025c7ffa7008591b6232d22d642c6875b146ecc5659f20dbba53932"
+      "version": "0.10.0",
+      "hash": "9a57bbb0d31bb17025047b0e04a47c31720730987fdb3c96463edc26b8542998"
     },
     "components/cms/cms-field-form.tsx": {
       "item": "cms-doc-editor",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "7156c7542aaef8e16a6bd6a418a3092382e4ce345e797f94c7d14c35ff0c25ae"
     },
     "components/cms/cms-versions.tsx": {
       "item": "cms-versions",
-      "version": "0.8.0",
-      "hash": "2c9b32f900959a2abc718763f74221a96b0033b38e3f14681c1c8d88228a4dc2"
+      "version": "0.10.0",
+      "hash": "e3f900319408ead6bc6f40c03ded6240243d368a0be71d8107c190cde245b0c9"
     },
     "components/cms/cms-keys.tsx": {
       "item": "cms-keys",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "1a5c1e8a0f6a200aa01309e2f6419db1687d41361b76abab53846ba331c2912e"
     },
     "components/cms/cms-audit.tsx": {
       "item": "cms-audit",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "2ec1212f2795c844d1d043c88b0526abcf45b3d8c04b011babe7eb83dee25a53"
     },
     "components/cms/cms-command.tsx": {
       "item": "cms-command",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "a5f798051a9d99b86b54ebdcf652b0b655a88fd921ae8be56c3d1fe29ef53dc9"
     },
     "components/cms/cms-upload.ts": {
       "item": "cms-media-picker",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "86eab248be51370d9a08419f31ad9095c4f2d7aca3f94dd8eb201836f3290470"
     },
     "components/cms/cms-media-picker.tsx": {
       "item": "cms-media-picker",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "70ca7efc84fe5b8413ca78c8234ab2c60400fac71411c8a2781b9449b8f363e6"
     },
     "components/cms/cms-media.tsx": {
       "item": "cms-media",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "a8657289e327bbb68c7b2bd50fea7946d505103234da9c6b37110aebb0c77017"
     },
     "components/cms/cms-files.tsx": {
       "item": "cms-files",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "hash": "6035d5f3cf9cc7d1349032e0ca47af4815c1106abe036327e5d63988a9b30819"
+    },
+    "components/cms/cms-flow.tsx": {
+      "item": "cms-doc-editor",
+      "version": "0.10.0",
+      "hash": "cf6ebda8bc40bdc666793e9a66563d91d6b254136b6bb237cbf083615735ac6a"
+    },
+    "components/cms/cms-paste.ts": {
+      "item": "cms-doc-editor",
+      "version": "0.10.0",
+      "hash": "eda48ab00f95e08a6e5617ec61bcb282d09801177bea50812fa6abd88aff3140"
+    },
+    "components/cms/cms-trash.tsx": {
+      "item": "cms-trash",
+      "version": "0.10.0",
+      "hash": "06a243594a66c4e18c132a7e136c50c26a54789e2278b0430ddb873801e3229d"
+    },
+    "components/cms/cms-releases.tsx": {
+      "item": "cms-releases",
+      "version": "0.10.0",
+      "hash": "604b5515a1d050d8e5f5eff8b5eb030d8c176d137ed89b0edf3abc27b49118ff"
+    },
+    "components/cms/cms-preview-comments.tsx": {
+      "item": "cms-preview-comments",
+      "version": "0.10.0",
+      "hash": "fbaf60a8be6b86b2cca8a75b3f6cf38dc9f457d5dfdd4310a1513ca399a0091c"
     }
   }
 }

@@ -15,6 +15,8 @@ const posts = defineCollection({
   visibility: "public",
   categories: ["Guides", "News", "Notices"],
   url: (d) => `/posts/${d.slug}`,
+  // What an agent writes goes out only after a person approves it (the editor shows the request).
+  review: { agents: "required" },
 });
 
 /** A drawn placeholder: the demo ships no photographs. */
@@ -47,7 +49,7 @@ async function seed() {
     ids[p.name] = made.id;
   }
   await cms.create(a, "posts", { slug: "welcome", title: "Welcome to the demo", category: "Guides", summary: "Click around: nothing here is saved for long.", body: "## What this is\n\nA live copy of the agent-cms admin screens.\n\n## Try\n\n- Edit this page and publish it.\n- Open the version history.\n" }, { publish: true });
-  await cms.create(a, "posts", { slug: "release-notes", title: "Release notes", category: "News", body: "## 0.8.0\n\nA media library: pictures, video and files in your own bucket.\n\n## 0.7.0\n\nAgents can read public docs over MCP without a key.\n" }, { publish: true });
+  await cms.create(a, "posts", { slug: "release-notes", title: "Release notes", category: "News", body: "## 0.10.0\n\nScheduled publishing, review requests, comments, releases and a trash.\n\n## 0.8.0\n\nA media library: pictures, video and files in your own bucket.\n\n## 0.7.0\n\nAgents can read public docs over MCP without a key.\n" }, { publish: true });
   await cms.create(a, "posts", { slug: "maintenance", title: "Maintenance on Sunday", category: "Notices", body: "The site is read-only from 02:00 to 03:00.\n" });
   await cms.create(a, "posts", { slug: "install-guide", title: "Install guide", category: "Guides", body: `![Three install steps in a row](asset:${ids["install-steps.svg"]}/install-steps.svg "The three steps")\n\n` + "## Install\n\nRun npm i @mainsoft/agent-cms.\n\n## Tables\n\nRun npx agent-cms migrate check.\n" }, { publish: true });
   // An agent edits a published page: the editor shows its change for review.
@@ -57,14 +59,38 @@ async function seed() {
     const doc = await cms.get(a, "posts", "install-guide", { draft: true });
     await cms.update(bot, "posts", "install-guide", { body: doc.body.replace("Run npm i @mainsoft/agent-cms.", "Run npm i @mainsoft/agent-cms drizzle-orm zod.\n\nPeer dependencies: drizzle-orm and zod (^3.25 or ^4).") }, { expectedVersion: doc.version, note: "add peer dependencies" });
   }
+  const day = 24 * 60 * 60 * 1000;
+  // Review: the agent asks a person to look at its change before it goes out.
+  if (bot) await cms.requestReview(bot, "posts", "install-guide", { note: "Added the peer dependencies. Please check the versions." });
+  // Comments: one on a sentence, with a reply.
+  const thread = await cms.addComment(a, "posts", "welcome", { body: "Say how long: the demo resets every 30 minutes.", quote: "nothing here is saved for long" });
+  if (bot) await cms.addComment(bot, "posts", "welcome", { body: "I can change it to \"resets every 30 minutes\" if you like.", threadId: thread.id });
+  // A schedule, a release that goes out together, a version with a name, a saved filter, and two pages in the trash.
+  await cms.schedule(a, "posts", "maintenance", { publishAt: new Date(Date.now() + 2 * day).toISOString(), unpublishAt: new Date(Date.now() + 5 * day).toISOString() });
+  await cms.create(a, "posts", { slug: "pricing-2027", title: "Pricing in 2027", category: "News", body: "## Plans\n\nThe free plan stays free.\n\n## Changes\n\nTeams pay per editor.\n" });
+  await cms.create(a, "posts", { slug: "migration-guide", title: "Moving to the new plans", category: "Guides", body: "## Before you start\n\nCheck which plan you are on.\n" });
+  const release = await cms.releases.create(a, { name: "New pricing" });
+  await cms.releases.add(a, release.id, [
+    { collection: "posts", slug: "pricing-2027", action: "publish" },
+    { collection: "posts", slug: "migration-guide", action: "publish" },
+    { collection: "posts", slug: "release-notes", action: "unpublish" },
+  ]);
+  await cms.releases.schedule(a, release.id, { publishAt: new Date(Date.now() + 3 * day).toISOString() });
+  await cms.releases.create(a, { name: "Spring cleanup" });
+  await cms.labelVersion(a, "posts", "welcome", 1, { label: "First public version", pinned: true });
+  await cms.filters.save(a, "posts", { name: "News drafts", query: { state: "draft", category: "News" }, shared: true });
+  for (const [slug, title] of [["old-pricing", "Pricing in 2025"], ["beta-notes", "Beta notes"]] as const) {
+    await cms.create(a, "posts", { slug, title, category: "News", body: "This page is out of date.\n" }, { publish: slug === "old-pricing" });
+    await cms.remove(a, "posts", slug);
+  }
   return { cms, store };
 }
 
-const g = globalThis as unknown as { __demo2?: { at: number; made: ReturnType<typeof seed> } };
+const g = globalThis as unknown as { __demo3?: { at: number; made: ReturnType<typeof seed> } };
 
 function demo() {
-  if (!g.__demo2 || Date.now() - g.__demo2.at > RESET_MS) g.__demo2 = { at: Date.now(), made: seed() };
-  return g.__demo2.made;
+  if (!g.__demo3 || Date.now() - g.__demo3.at > RESET_MS) g.__demo3 = { at: Date.now(), made: seed() };
+  return g.__demo3.made;
 }
 
 export async function demoCms() {

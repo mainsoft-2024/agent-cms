@@ -20,6 +20,7 @@ npx shadcn add https://agent-cms-docs.vercel.app/r/cms-doc-editor.json
 ```sh
 npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
 npx agent-cms add cms-media cms-files   # 미디어 라이브러리가 있을 때 (0.10.0부터)
+npx agent-cms add cms-trash cms-releases cms-preview-comments   # 휴지통, 릴리스, 미리보기 링크의 댓글 (0.10.0부터)
 ```
 
 파일은 `<components>/cms/`에 들어가요. 필요한 shadcn 부품과 다른 화면도 함께 따라와요. 모든 화면은 [화면](/components)에서 실제로 눌러 볼 수 있어요.

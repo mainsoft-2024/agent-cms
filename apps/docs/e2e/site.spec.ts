@@ -42,7 +42,7 @@ test("search finds a section and records a miss", async ({ page }) => {
     if (!(await box.isVisible())) await page.keyboard.press("Control+k");
     await expect(box).toBeVisible({ timeout: 1000 });
   }).toPass();
-  await box.fill("preview link");
+  await box.fill("draft preview links");
   const first = page.getByRole("option").first();
   await expect(first).toContainText(/preview/i);
   await box.press("Enter");
@@ -150,4 +150,96 @@ test("media library: docs pages, the agent page without ./ai, and the read-only 
   expect(file.headers()["content-security-policy"]).toContain("sandbox");
   expect((await request.post("/api/demo/assets/uploads", { data: { name: "x.png", mime: "image/png", size: 10 } })).status()).toBe(403);
   expect((await (await request.get("/r/cms-media.json")).json()).name).toBe("cms-media");
+});
+
+test("publishing flow: a draft link with comments, a schedule run by the cron call, trash and releases", async ({ page, request }) => {
+  await page.goto("/admin/login");
+  await page.getByLabel(/Test user/).fill("member");
+  await page.getByRole("button", { name: "Sign in (test)" }).click();
+  await expect(page).toHaveURL(/\/admin\/docs$/);
+  // The sidebar has the two new screens.
+  await expect(page.getByRole("link", { name: "Releases" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /^Trash/ })).toBeVisible();
+
+  const slug = `flow-${Date.now()}`;
+  const api = page.request; // carries the session cookie
+  const made = await api.post("/api/cms/collections/docs", {
+    data: { doc: { slug, title: "Flow check", summary: "A page made by the e2e test.", category: "Guides", fields: { order: 99 }, body: "## First\n\nA sentence only the draft has.\n" } },
+  });
+  expect(made.status()).toBe(201);
+
+  // A draft is not public, a signed link shows it with the comment box, and a guest's comment reaches the editor.
+  expect((await request.get(`/docs/${slug}`)).status()).toBe(404);
+  const link = await (await api.post(`/api/cms/collections/docs/${slug}/preview`, { data: { ttl: "1h", comments: true } })).json();
+  expect(link.url).toContain(`/docs/${slug}?cms_preview=`);
+  await page.goto(link.url);
+  await expect(page.getByRole("status").filter({ hasText: "Draft preview" })).toBeVisible();
+  await expect(page.getByText("A sentence only the draft has.")).toBeVisible();
+  await page.getByLabel("Name").fill("Reviewer");
+  await page.getByLabel("Write a comment").fill("Looks right to me.");
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(page.getByText("Looks right to me.")).toBeVisible();
+  const threads = await (await api.get(`/api/cms/collections/docs/${slug}/comments`)).json();
+  expect(JSON.stringify(threads)).toContain("Looks right to me.");
+  // A link without the right to comment shows the draft and no box; a broken token shows nothing.
+  const plain = await (await api.post(`/api/cms/collections/docs/${slug}/preview`, { data: { ttl: "1h" } })).json();
+  await page.goto(plain.url);
+  await expect(page.getByRole("status").filter({ hasText: "Draft preview" })).toBeVisible();
+  await expect(page.getByLabel("Write a comment")).toHaveCount(0);
+  expect((await request.get(`/docs/${slug}?cms_preview=${plain.token.slice(0, -4)}AAAA`)).status()).toBe(404);
+
+  // The cron route: closed without the secret, and it publishes what is due.
+  expect((await request.get("/api/cms/_cron")).status()).toBe(401);
+  const at = new Date(Date.now() + 1500).toISOString();
+  expect((await api.post(`/api/cms/collections/docs/${slug}/schedule`, { data: { publishAt: at } })).status()).toBe(200);
+  await page.goto("/admin/docs");
+  await page.getByRole("radio", { name: /^Scheduled/ }).click();
+  await expect(page.getByRole("link", { name: "Flow check" })).toBeVisible();
+  await page.waitForTimeout(1800);
+  const ran = await request.get("/api/cms/_cron", { headers: { authorization: "Bearer e2e-cron-secret-e2e-cron-secret" } });
+  expect(ran.status()).toBe(200);
+  expect((await ran.json()).published).toEqual([`docs/${slug}`]);
+  await page.goto(`/docs/${slug}`);
+  await expect(page.getByRole("heading", { level: 1, name: "Flow check" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Draft preview" })).toHaveCount(0);
+
+  // A release from the screen, with the page in it.
+  await page.goto("/admin/releases");
+  await page.getByRole("button", { name: "New release" }).click();
+  await page.getByRole("dialog").getByRole("textbox").fill("E2E release");
+  await page.getByRole("dialog").getByRole("button", { name: /Create|Save|New release/ }).click();
+  await expect(page).toHaveURL(/\/admin\/releases\/[a-z0-9-]+$/);
+  await expect(page.getByRole("button", { name: "Add documents" })).toBeVisible();
+
+  // Deleting goes to the trash; restoring makes the published page public again.
+  expect((await api.delete(`/api/cms/collections/docs/${slug}`)).status()).toBeLessThan(300);
+  expect((await request.get(`/docs/${slug}`)).status()).toBe(404);
+  await page.goto("/admin/trash");
+  const row = page.getByRole("row").filter({ hasText: "Flow check" });
+  await expect(row).toBeVisible();
+  await row.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Restore", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(row).toHaveCount(0);
+  expect((await request.get(`/docs/${slug}`)).status()).toBe(200);
+  // Tidy up for good, so a re-run starts clean.
+  await api.delete(`/api/cms/collections/docs/${slug}`);
+  await api.post("/api/cms/trash/_purge", { data: { all: true } });
+});
+
+test("gallery: trash and releases have live demos, the comment box says where to see it", async ({ page }) => {
+  await page.goto("/components/cms-trash");
+  const demo = page.getByRole("region", { name: "Live demo" });
+  await expect(demo.getByRole("heading", { name: "Trash" })).toBeVisible();
+  await expect(demo.getByRole("row").filter({ hasText: "Pricing in 2025" })).toBeVisible();
+  await page.goto("/components/cms-releases");
+  await demo.getByRole("link", { name: "New pricing" }).or(demo.getByRole("button", { name: "New pricing" })).first().click();
+  await expect(demo.getByText("Moving to the new plans")).toBeVisible();
+  await page.goto("/components/cms-preview-comments");
+  await expect(page.getByText(/This box goes on your public page/)).toBeVisible();
+  await page.goto("/docs/publishing-flow");
+  await expect(page.getByRole("heading", { level: 1, name: "Publishing flow" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Preview comments" })).toHaveAttribute("href", "/components/cms-preview-comments");
+  await page.goto("/ko/docs/publishing-flow");
+  await expect(page.getByRole("heading", { level: 1, name: "게시 흐름" })).toBeVisible();
 });

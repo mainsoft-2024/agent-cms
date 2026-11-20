@@ -9,16 +9,28 @@ import { CmsEmpty } from "@/components/cms/cms-empty";
 import { CmsFiles } from "@/components/cms/cms-files";
 import { CmsKeys } from "@/components/cms/cms-keys";
 import { CmsMedia } from "@/components/cms/cms-media";
+import { CmsRelease, CmsReleases } from "@/components/cms/cms-releases";
 import { CmsShell } from "@/components/cms/cms-shell";
+import { CmsTrash } from "@/components/cms/cms-trash";
 import { CmsVersions } from "@/components/cms/cms-versions";
 import { CmsProvider } from "@/components/cms/use-cms";
 
-type View = { v: "list" } | { v: "edit"; slug?: string } | { v: "versions"; slug: string } | { v: "keys" } | { v: "audit" } | { v: "media" } | { v: "files" };
+type View = { v: "list" } | { v: "edit"; slug?: string } | { v: "versions"; slug: string } | { v: "keys" } | { v: "audit" } | { v: "media" } | { v: "files" } | { v: "trash" } | { v: "releases" } | { v: "release"; id: string };
+
+/** Where a sidebar link of the demo shell goes. */
+function viewOf(href: string): View {
+  const m = /\/releases\/([^/]+)$/.exec(href);
+  if (m) return { v: "release", id: m[1] };
+  for (const v of ["keys", "audit", "media", "files", "trash", "releases"] as const) if (href.endsWith(`/${v}`)) return { v };
+  return { v: "list" };
+}
 
 /** The screens wired to the demo CMS (/api/demo), with a small in-frame router. */
 function Screens({ item, view, go }: { item: string; view: View; go: (v: View) => void }) {
   const list = <CmsDocList collection="posts" onOpenDocument={(_c, s) => go({ v: "edit", slug: s })} onNewDocument={() => go({ v: "edit" })} />;
-  const editor = (slug?: string) => <CmsDocEditor collection="posts" slug={slug} onBack={() => go({ v: "list" })} onCreated={(_c, s) => go({ v: "edit", slug: s })} onOpenVersions={(_c, s) => go({ v: "versions", slug: s })} publicUrlFor={() => ""} />;
+  const editor = (slug?: string) => <CmsDocEditor collection="posts" slug={slug} onBack={() => go({ v: "list" })} onCreated={(_c, s) => go({ v: "edit", slug: s })} onOpenRelease={(id) => go({ v: "release", id })} onOpenVersions={(_c, s) => go({ v: "versions", slug: s })} publicUrlFor={() => ""} />;
+  const releases = <CmsReleases onOpenRelease={(id) => go({ v: "release", id })} />;
+  const release = (id: string) => <CmsRelease id={id} onBack={() => go({ v: "releases" })} onOpenDocument={(_c, s) => go({ v: "edit", slug: s })} />;
   const routed = () => {
     if (view.v === "edit") return editor(view.slug);
     if (view.v === "versions") return <CmsVersions collection="posts" slug={view.slug} onBack={() => go({ v: "edit", slug: view.slug })} />;
@@ -26,6 +38,9 @@ function Screens({ item, view, go }: { item: string; view: View; go: (v: View) =
     if (view.v === "audit") return <CmsAudit />;
     if (view.v === "media") return <CmsMedia basePath="" docHref={() => "#"} />;
     if (view.v === "files") return <CmsFiles />;
+    if (view.v === "trash") return <CmsTrash />;
+    if (view.v === "releases") return releases;
+    if (view.v === "release") return release(view.id);
     return list;
   };
   switch (item) {
@@ -34,14 +49,14 @@ function Screens({ item, view, go }: { item: string; view: View; go: (v: View) =
         <CmsShell
           title="Demo admin"
           activeCollection={view.v === "list" || view.v === "edit" || view.v === "versions" ? "posts" : undefined}
-          activeHref={view.v === "keys" || view.v === "audit" || view.v === "media" || view.v === "files" ? `/${view.v}` : "/posts"}
+          activeHref={view.v === "release" ? `/releases/${view.id}` : view.v === "list" || view.v === "edit" || view.v === "versions" ? "/posts" : `/${view.v}`}
           LinkComponent={({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
             <a
               {...rest}
               href={href}
               onClick={(e) => {
                 e.preventDefault();
-                go(href.endsWith("keys") ? { v: "keys" } : href.endsWith("audit") ? { v: "audit" } : href.endsWith("media") ? { v: "media" } : href.endsWith("files") ? { v: "files" } : { v: "list" });
+                go(viewOf(href));
               }}
             >
               {children}
@@ -68,6 +83,10 @@ function Screens({ item, view, go }: { item: string; view: View; go: (v: View) =
       return <CmsMedia basePath="" docHref={() => "#"} />;
     case "cms-files":
       return <CmsFiles />;
+    case "cms-trash":
+      return <CmsTrash />;
+    case "cms-releases":
+      return view.v === "release" ? release(view.id) : view.v === "edit" || view.v === "versions" ? routed() : releases;
     default:
       return null;
   }

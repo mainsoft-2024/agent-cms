@@ -53,6 +53,32 @@ export async function publishedDoc(collection: string, slug: string): Promise<Cm
   }
 }
 
+export interface DraftPreview {
+  doc: CmsDoc;
+  /** The link lets its holder comment (made with "Allow comments"). */
+  comments: boolean;
+  expiresAt: string;
+}
+
+/**
+ * The draft a signed preview link points at (`?cms_preview=<token>`, made in the editor),
+ * or null when the token is bad, expired, or for another page.
+ */
+export async function previewDoc(token: string | undefined, collection: string, slug: string): Promise<DraftPreview | null> {
+  if (!token) return null;
+  const cms = await getCms();
+  try {
+    const p = await cms.readPreview(token);
+    if (p.collection !== collection || p.slug !== slug) return null;
+    const live = await cms.get(system, collection as DocsCollection, slug, { draft: true });
+    // The link shows one exact version: its text comes from the token's version, the rest (dates, author) from the page.
+    return { doc: { ...live, ...p.doc, version: p.version }, comments: p.comments, expiresAt: p.expiresAt };
+  } catch (e) {
+    if (isCmsError(e)) return null;
+    throw e;
+  }
+}
+
 /** Versions up to the public one, newest first (the public "Version history"). */
 export async function publicVersions(doc: CmsDoc) {
   const cms = await getCms();

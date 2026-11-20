@@ -24,6 +24,7 @@ export default defineConfig({
       AUTH_TEST_LOGIN: "1",
       SITE_URL: `http://localhost:${PORT}`,
       CMS_PREVIEW_SECRET: "e2e-preview-secret-e2e-preview-secret",
+      CRON_SECRET: "e2e-cron-secret-e2e-cron-secret",
     },
   },
 });
