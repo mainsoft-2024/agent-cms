@@ -17,13 +17,13 @@ npm uninstall @mainsoft-2024/agent-cms
 npm i @mainsoft/agent-cms
 ```
 
-import 경로는 범위만 바뀌어요. `@mainsoft-2024/agent-cms/http`는 `@mainsoft/agent-cms/http`가 돼요. 복사한 화면은 `npx agent-cms add --update`를 실행하세요.
+import 경로는 범위만 바뀌어요. `@mainsoft-2024/agent-cms/http`는 `@mainsoft/agent-cms/http`가 돼요. 복사한 화면은 `npx @mainsoft/agent-cms add --update`를 실행하세요.
 
 ## 데이터베이스
 
 ```sh
-npx agent-cms migrate check
-npx agent-cms migrate apply
+npx @mainsoft/agent-cms migrate check
+npx @mainsoft/agent-cms migrate apply
 ```
 
 0.6은 열과 `cms_audit` 테이블을 더해요. 실행하기 전까지 CMS는 `schema_outdated`(503)로 답해요.

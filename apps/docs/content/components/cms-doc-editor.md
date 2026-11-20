@@ -34,7 +34,7 @@ To render the preview yourself, `MarkdownPreview` takes `components` and `onPick
 ## Install
 
 ```sh
-npx agent-cms add cms-doc-editor
+npx @mainsoft/agent-cms add cms-doc-editor
 ```
 
 It also needs `CmsProvider` from `cms-lib` around your admin:

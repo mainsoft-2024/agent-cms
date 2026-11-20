@@ -43,8 +43,12 @@ console.log("cjs ok");
 EOF
 node cjs.cjs
 
-npx agent-cms --version
-npx agent-cms add --list | grep -q cms-doc-list
+# The command the docs give (the full name) and the bin by its own name: both must be the copy
+# installed above, not a download.
+WANT="$(node -p "require('./node_modules/@mainsoft/agent-cms/package.json').version")"
+test "$(npx @mainsoft/agent-cms --version)" = "$WANT"
+test "$(npx agent-cms --version)" = "$WANT"
+npx @mainsoft/agent-cms add --list | grep -q cms-doc-list
 test -f node_modules/@mainsoft/agent-cms/dist/registry/registry.json
 
 # `init` + `add` into a bare shadcn-style app.
@@ -56,4 +60,18 @@ npx --prefix .. agent-cms add cms-doc-list >/dev/null
 test -f components/cms/cms-doc-list.tsx
 test -f agent-cms.json
 npx --prefix .. agent-cms migrate print | grep -q 'cms_audit'
+
+# Without the peer dependencies (yarn 1, or peers switched off): the version still prints, and a
+# command says which package is missing instead of a Node stack trace.
+# (Its own folder, not one under $WORK: Node would find the packages installed there.)
+BARE="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$TARBALL" "$BARE"' EXIT
+cd "$BARE"
+npm init -y >/dev/null
+npm i --no-audit --no-fund --legacy-peer-deps "$TARBALL" >/dev/null
+test ! -d node_modules/drizzle-orm
+test "$(./node_modules/.bin/agent-cms --version)" = "$WANT"
+if OUT="$(./node_modules/.bin/agent-cms add --list 2>&1)"; then echo "expected a failure without drizzle-orm"; exit 1; fi
+echo "$OUT" | grep -q 'is not installed. The CLI needs drizzle-orm and zod'
+if echo "$OUT" | grep -q 'node:internal'; then echo "a stack trace leaked: $OUT"; exit 1; fi
 echo "pack smoke ok"

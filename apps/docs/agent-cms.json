@@ -1,119 +1,119 @@
 {
-  "version": "0.11.0",
+  "version": "0.11.1",
   "files": {
     "components/cms/use-cms.ts": {
       "item": "cms-lib",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "8c894cf854e02ca94872a6cb3423b8c411de41db1be1329cfff66a318185f063"
     },
     "components/cms/cms-messages.ts": {
       "item": "cms-lib",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "2b2c6e8b18a98d9eee4530372d58c3dd1c16e94a2efc8db27937f4029032cff4"
     },
     "components/cms/cms-parts.tsx": {
       "item": "cms-lib",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "b1e7d5063d35fd8d23964d2c7caff3da129d2bf5badf006077257eb6ddad21c1"
     },
     "components/cms/cms-shell.tsx": {
       "item": "cms-shell",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "936831ca6b2d6485bebbbde7ebdcecea9c5b2610e0e7b0f8fb9ebc1ce180437e"
     },
     "components/cms/cms-empty.tsx": {
       "item": "cms-empty",
-      "version": "0.11.0",
-      "hash": "571d6711ff7807a3c4a72bae54cd78c9525d7dbecf33a6265e7b0522789ec5b1"
+      "version": "0.11.1",
+      "hash": "c30d3e606321d4aa7aef545c3ee9e0fecf9f8efa398b7e0ff7475285949b1a29"
     },
     "components/cms/cms-doc-list.tsx": {
       "item": "cms-doc-list",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "9a8df0259ec14045cfe0e5468d8f48032bee77ddcf7e4c59d74aa86ab51174ba"
     },
     "components/cms/cms-merge.tsx": {
       "item": "cms-merge",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "b580964d77b29dc89bea76b4bcf28da0b2ab75a9488bbf2a27df2e310d472742"
     },
     "components/cms/cms-doc-editor.tsx": {
       "item": "cms-doc-editor",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "728ea61745d1e795a2d51c618d59b66382b0cb714270090e5f7529889d3f5412"
     },
     "components/cms/cms-field-form.tsx": {
       "item": "cms-doc-editor",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "7156c7542aaef8e16a6bd6a418a3092382e4ce345e797f94c7d14c35ff0c25ae"
     },
     "components/cms/cms-versions.tsx": {
       "item": "cms-versions",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "e3f900319408ead6bc6f40c03ded6240243d368a0be71d8107c190cde245b0c9"
     },
     "components/cms/cms-keys.tsx": {
       "item": "cms-keys",
-      "version": "0.11.0",
-      "hash": "1a5c1e8a0f6a200aa01309e2f6419db1687d41361b76abab53846ba331c2912e"
+      "version": "0.11.1",
+      "hash": "0b36e1786bb798b18dcc4710d67fead4f5655a94d135bc5429908c87673181e3"
     },
     "components/cms/cms-audit.tsx": {
       "item": "cms-audit",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "2ec1212f2795c844d1d043c88b0526abcf45b3d8c04b011babe7eb83dee25a53"
     },
     "components/cms/cms-command.tsx": {
       "item": "cms-command",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "a5f798051a9d99b86b54ebdcf652b0b655a88fd921ae8be56c3d1fe29ef53dc9"
     },
     "components/cms/cms-upload.ts": {
       "item": "cms-media-picker",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "b4c7089423eefec3eba3022b4ad3cad41315723347794d906ca0d863fc1ddad2"
     },
     "components/cms/cms-media-picker.tsx": {
       "item": "cms-media-picker",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "02a40b0de68ae63574e9f7f456a344466c4f0d200e4a75ad4f7ad4c4f40187b1"
     },
     "components/cms/cms-media.tsx": {
       "item": "cms-media",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "61c830768c681b470dc9a928249a723c14481d5b8c762b43014f08464de26943"
     },
     "components/cms/cms-files.tsx": {
       "item": "cms-files",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "6035d5f3cf9cc7d1349032e0ca47af4815c1106abe036327e5d63988a9b30819"
     },
     "components/cms/cms-flow.tsx": {
       "item": "cms-doc-editor",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "cf6ebda8bc40bdc666793e9a66563d91d6b254136b6bb237cbf083615735ac6a"
     },
     "components/cms/cms-paste.ts": {
       "item": "cms-doc-editor",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "eda48ab00f95e08a6e5617ec61bcb282d09801177bea50812fa6abd88aff3140"
     },
     "components/cms/cms-trash.tsx": {
       "item": "cms-trash",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "06a243594a66c4e18c132a7e136c50c26a54789e2278b0430ddb873801e3229d"
     },
     "components/cms/cms-releases.tsx": {
       "item": "cms-releases",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "604b5515a1d050d8e5f5eff8b5eb030d8c176d137ed89b0edf3abc27b49118ff"
     },
     "components/cms/cms-preview-comments.tsx": {
       "item": "cms-preview-comments",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "fbaf60a8be6b86b2cca8a75b3f6cf38dc9f457d5dfdd4310a1513ca399a0091c"
     },
     "components/cms/cms-body-tools.tsx": {
       "item": "cms-doc-editor",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "hash": "de5b315c380e101461d8213d5ad1a7fd3a9f4b258b316b9556e0a11f923ea2b6"
     }
   }

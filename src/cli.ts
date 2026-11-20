@@ -258,7 +258,7 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
     }
   }
   if (!db) {
-    io.err("[agent-cms] no database: add `db: () => yourDrizzleDb` to agent-cms.config.ts (run `npx agent-cms init` to create it).");
+    io.err("[agent-cms] no database: add `db: () => yourDrizzleDb` to agent-cms.config.ts (run `npx @mainsoft/agent-cms init` to create it).");
     return 1;
   }
   const repo = new DrizzleRepo(db, { tables });
@@ -303,7 +303,7 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
       }
       if (flag(argv, "format") === "step") for (const s of pending.steps) io.out(`- ${s}`);
       else io.out(pending.sql);
-      io.err(`[agent-cms] the database needs a migration (v${r.schemaVersion ?? "none"} -> v${SCHEMA_VERSION}). Put the SQL above in a migration, or run \`npx agent-cms migrate apply\`.`);
+      io.err(`[agent-cms] the database needs a migration (v${r.schemaVersion ?? "none"} -> v${SCHEMA_VERSION}). Put the SQL above in a migration, or run \`npx @mainsoft/agent-cms migrate apply\`.`);
       return 1;
     }
     io.err(`unknown: migrate ${sub} (check | print | apply)`);
@@ -335,15 +335,15 @@ function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, i
     bad = true;
     lines.push(`FAIL  ${m}`);
   };
-  if (r.missingTables.length) fail(`missing tables: ${r.missingTables.join(", ")} (npx agent-cms migrate check)`);
+  if (r.missingTables.length) fail(`missing tables: ${r.missingTables.join(", ")} (npx @mainsoft/agent-cms migrate check)`);
   else ok("all tables exist");
-  if (r.missingColumns.length) fail(`missing columns: ${r.missingColumns.join(", ")} (npx agent-cms migrate check)`);
+  if (r.missingColumns.length) fail(`missing columns: ${r.missingColumns.join(", ")} (npx @mainsoft/agent-cms migrate check)`);
   else if (!r.missingTables.length) ok("all columns exist");
-  if (r.schemaVersion === null || r.schemaVersion < r.expectedSchemaVersion) fail(`schema version ${r.schemaVersion ?? "unknown"}, this release needs ${r.expectedSchemaVersion} (npx agent-cms migrate check)`);
+  if (r.schemaVersion === null || r.schemaVersion < r.expectedSchemaVersion) fail(`schema version ${r.schemaVersion ?? "unknown"}, this release needs ${r.expectedSchemaVersion} (npx @mainsoft/agent-cms migrate check)`);
   else ok(`schema version ${r.schemaVersion}`);
   if (r.badPublished) fail(`${r.badPublished} document(s) point at a published version that is missing`);
   if (r.orphanVersions) warn(`${r.orphanVersions} version row(s) without a document`);
-  if (staleUploads) warn(`${staleUploads === 500 ? "500+" : staleUploads} upload(s) started more than a day ago and never finished (npx agent-cms storage cleanup)`);
+  if (staleUploads) warn(`${staleUploads === 500 ? "500+" : staleUploads} upload(s) started more than a day ago and never finished (npx @mainsoft/agent-cms storage cleanup)`);
   if (r.legacyColumns.length) {
     warn(`old columns nothing reads any more: ${r.legacyColumns.join(", ")}. To drop them:`);
     const t = (name: string) => (o.schema ? `"${o.schema}"."${name}"` : `"${name}"`);
@@ -588,8 +588,8 @@ export { handler as GET, handler as POST, handler as PUT, handler as PATCH, hand
   io.out(`
 next:
   1. point ${appDir}lib/cms.ts and agent-cms.config.ts at your Drizzle db, and resolveUser at your session
-  2. npx agent-cms migrate check        (SQL for your migration, or: npx agent-cms migrate apply)
-  3. npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command`);
+  2. npx @mainsoft/agent-cms migrate check        (SQL for your migration, or: npx @mainsoft/agent-cms migrate apply)
+  3. npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command`);
   void argv;
   return 0;
 }

@@ -18,9 +18,9 @@ npx shadcn add https://agent-cms-docs.vercel.app/r/cms-doc-editor.json
 또는 agent-cms CLI로:
 
 ```sh
-npx agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
-npx agent-cms add cms-media cms-files   # 미디어 라이브러리가 있을 때 (0.10.0부터)
-npx agent-cms add cms-trash cms-releases cms-preview-comments   # 휴지통, 릴리스, 미리보기 링크의 댓글 (0.10.0부터)
+npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command
+npx @mainsoft/agent-cms add cms-media cms-files   # 미디어 라이브러리가 있을 때 (0.10.0부터)
+npx @mainsoft/agent-cms add cms-trash cms-releases cms-preview-comments   # 휴지통, 릴리스, 미리보기 링크의 댓글 (0.10.0부터)
 ```
 
 파일은 `<components>/cms/`에 들어가요. 필요한 shadcn 부품과 다른 화면도 함께 따라와요. 모든 화면은 [화면](/components)에서 실제로 눌러 볼 수 있어요.
@@ -44,8 +44,8 @@ npx agent-cms add cms-trash cms-releases cms-preview-comments   # 휴지통, 릴
 ## 업데이트
 
 ```sh
-npx agent-cms add --diff      # 새 버전이 내 복사본에서 무엇을 바꾸는지
-npx agent-cms add --update    # 안 고친 파일은 바꾸고, 고친 파일은 .new 사본을 만들어요
+npx @mainsoft/agent-cms add --diff      # 새 버전이 내 복사본에서 무엇을 바꾸는지
+npx @mainsoft/agent-cms add --update    # 안 고친 파일은 바꾸고, 고친 파일은 .new 사본을 만들어요
 ```
 
 `agent-cms.json`이 무엇을 복사했는지 기록해요. `--diff`와 `--update`는 `agent-cms add`로 복사한 파일만 알아요.

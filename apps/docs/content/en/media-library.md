@@ -87,13 +87,13 @@ The bucket needs a CORS rule that lets your site `PUT` to it. Add `media`
 (the same object) to `agent-cms.config.ts` and run:
 
 ```
-npx agent-cms storage check --origin https://your-site.example
+npx @mainsoft/agent-cms storage check --origin https://your-site.example
 ```
 
 It uploads, reads, moves and deletes a test file in every store for real
 (also in parts, also with a browser-style signed address), tests the CORS
 rule, prints the rule to paste into the bucket, and lists what each store
-accepts. `npx agent-cms storage cleanup` removes uploads that were started
+accepts. `npx @mainsoft/agent-cms storage cleanup` removes uploads that were started
 and never finished (`doctor` tells you when there are any).
 
 ## What may be uploaded
@@ -223,7 +223,7 @@ is not mounted at `/api/cms`.
 
 ## In the admin
 
-In the admin, add the screen (`npx agent-cms add cms-media`) and a page
+In the admin, add the screen (`npx @mainsoft/agent-cms add cms-media`) and a page
 for it; the sidebar shows "Media" by itself when the app has a library:
 
 ```tsx
@@ -253,7 +253,7 @@ addresses inside your network are refused), `update_asset` (write),
 `move_asset` and `delete_asset` (publish). From a terminal:
 
 ```
-npx agent-cms upload ./hero.png ./talk.mp4 --folder launch --alt "The launch screen" --tag launch
+npx @mainsoft/agent-cms upload ./hero.png ./talk.mp4 --folder launch --alt "The launch screen" --tag launch
 ```
 
 ## The whole bucket

@@ -10,8 +10,8 @@ sourceVersion: 1
 ## 1. 스키마 버전 5
 
 ```sh
-npx agent-cms migrate check
-npx agent-cms migrate apply    # 또는 `migrate print`로 SQL을 받아 직접 실행
+npx @mainsoft/agent-cms migrate check
+npx @mainsoft/agent-cms migrate apply    # 또는 `migrate print`로 SQL을 받아 직접 실행
 ```
 
 `cms_assets`에 열 세 개를 더해요. 두 번 실행해도 괜찮아요. `focal_x`, `focal_y`는 사진의 초점이고 처음에는 비어 있어요. `rev`는 파일을 바꾼 횟수이고 처음에는 0이에요. 시작할 때 표를 스스로 만드는 앱은 따로 할 일이 없어요.
@@ -21,7 +21,7 @@ npx agent-cms migrate apply    # 또는 `migrate print`로 SQL을 받아 직접 
 ## 2. 복사한 화면 갱신
 
 ```sh
-npx agent-cms add --update
+npx @mainsoft/agent-cms add --update
 ```
 
 `cms-doc-editor`에 새 파일(`cms-body-tools.tsx`)이 생겼어요. `cms-upload.ts`, `cms-media.tsx`, `cms-media-picker.tsx`, `cms-parts.tsx`, `cms-messages.ts`가 바뀌었어요.

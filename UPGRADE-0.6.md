@@ -143,9 +143,9 @@ DROP TABLE cms_gaps;
 ## 2. Database
 
 ```
-npx agent-cms migrate check     # prints the SQL (new columns, cms_audit), exit 1 when behind
-npx agent-cms migrate apply     # or run it directly
-npx agent-cms doctor
+npx @mainsoft/agent-cms migrate check     # prints the SQL (new columns, cms_audit), exit 1 when behind
+npx @mainsoft/agent-cms migrate apply     # or run it directly
+npx @mainsoft/agent-cms doctor
 ```
 
 New: `cms_documents.autosave`, `autosave_at`, `autosave_by`,
@@ -220,7 +220,7 @@ and gets no more releases.
    ```
 
    Screens copied with `agent-cms add` import the package too; the same
-   replacement covers them, or run `npx agent-cms add --update`.
+   replacement covers them, or run `npx @mainsoft/agent-cms add --update`.
 
 No other code changes.
 
@@ -231,6 +231,6 @@ No other code changes.
 - [ ] Copy `cms_gaps` to `app_search_misses` (step 1), add the table (step 3)
 - [ ] `onSearchMiss` writing to it (step 4); `logGap` → `reportMiss`
 - [ ] Unanswered-questions screen in the app, linked via `extraNav` (step 6)
-- [ ] `npx agent-cms migrate check`, put the SQL in a migration, `doctor`
+- [ ] `npx @mainsoft/agent-cms migrate check`, put the SQL in a migration, `doctor`
 - [ ] Code that reads `err.code === "invalid"` / `"conflict"`: switch to `err.kind`
 - [ ] Later, optionally: `DROP TABLE cms_gaps` (step 7)

@@ -154,7 +154,7 @@ test("editor: no preview link button when preview links are off", async () => {
   renderWith(s, <CmsDocEditor collection="guide" slug="slack" />);
   await screen.findByLabelText("Markdown");
   await new Promise((r) => setTimeout(r, 50));
-  assert.equal(screen.queryByRole("button", { name: "Preview link" }), null);
+  assert.ok(screen.queryByRole("button", { name: "Preview link" }) === null);
 });
 
 test("editor: a 409 on save opens the merge; choose and save merged", async () => {
@@ -240,5 +240,5 @@ test("editor: a new document's saved line survives the move to its own address",
   cleanup();
   renderWith(s, <CmsDocEditor collection="guide" slug="kept" />);
   await screen.findByDisplayValue("Kept");
-  assert.equal(screen.queryByText("Published v1"), null);
+  assert.ok(screen.queryByText("Published v1") === null);
 });

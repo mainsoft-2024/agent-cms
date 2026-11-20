@@ -14,7 +14,7 @@ order: 9
 ## Install
 
 ```sh
-npx agent-cms add cms-command
+npx @mainsoft/agent-cms add cms-command
 ```
 
 It also needs `CmsProvider` from `cms-lib` around your admin:

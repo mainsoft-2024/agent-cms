@@ -420,7 +420,7 @@ test("schema check: an old database is refused with the command to run", async (
   const cms = createCms({ repo, collections: [guide] });
   await rejects(cms.create(admin, "guide", slack), "schema_outdated", (e) => {
     assert.equal(e.status, 503);
-    assert.equal(e.params.command, "npx agent-cms migrate check");
+    assert.equal(e.params.command, "npx @mainsoft/agent-cms migrate check");
   });
   repo.meta.set("schema_version", SCHEMA_VERSION);
   await cms.create(admin, "guide", slack);

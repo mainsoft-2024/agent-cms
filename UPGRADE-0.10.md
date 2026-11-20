@@ -5,8 +5,8 @@
 ## 1. Schema version 4
 
 ```sh
-npx agent-cms migrate check
-npx agent-cms migrate apply    # or `migrate print` and run the SQL yourself
+npx @mainsoft/agent-cms migrate check
+npx @mainsoft/agent-cms migrate apply    # or `migrate print` and run the SQL yourself
 ```
 
 The step only adds things and is safe to run twice: columns on `cms_documents` (`deleted_at`, `deleted_by`, `schedule`, `due_at`, `review`), `cms_versions` (`label`, `pinned`, `approved_by`, `approved_at`) and `cms_assets` (`deleted_at`, `deleted_by`), and the tables `cms_comments`, `cms_releases`, `cms_saved_filters` and `cms_presence`. Re-export `cmsComments`, `cmsReleases`, `cmsSavedFilters` and `cmsPresence` from your Drizzle schema next to the other tables.

@@ -20,7 +20,7 @@ const MISSES_PER_DAY = 500;
  *   MEDIA_PUBLIC_URL    the bucket's public address; without it files open
  *                       through /api/cms/files with a short-lived signed link
  *
- * The bucket needs a CORS rule for this site: `npx agent-cms storage check --origin <site>` prints it.
+ * The bucket needs a CORS rule for this site: `npx @mainsoft/agent-cms storage check --origin <site>` prints it.
  */
 function mediaFromEnv() {
   const { MEDIA_S3_BUCKET: bucket, MEDIA_S3_KEY: accessKeyId, MEDIA_S3_SECRET: secretAccessKey } = process.env;

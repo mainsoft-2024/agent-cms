@@ -8,7 +8,7 @@ order: 7
 > On npm from 0.10.0.
 
 The [media library](/docs/media-library) shows the files the CMS knows. The file manager
-(`npx agent-cms add cms-files`, a page with `<CmsFiles />`) shows a bucket as
+(`npx @mainsoft/agent-cms add cms-files`, a page with `<CmsFiles />`) shows a bucket as
 it is, folder by folder: files another program put there appear too. The
 sidebar shows "Files" to whoever may look around a store (by default whoever
 may read it; a store's `access.browse` narrows that).
@@ -17,7 +17,7 @@ may read it; a store's `access.browse` narrows that).
 
 - A file the CMS did not know gets a row when someone opens it, tags it,
   shares it or an agent registers it. From then on it works in documents like
-  any other file. `npx agent-cms storage sync [--store name] [--folder path]`
+  any other file. `npx @mainsoft/agent-cms storage sync [--store name] [--folder path]`
   registers everything at once and lists files the CMS knows that are gone
   from the bucket (it deletes nothing).
 - Several files and whole folders can be moved or deleted at once (up to

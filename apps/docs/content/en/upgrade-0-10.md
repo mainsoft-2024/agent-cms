@@ -10,8 +10,8 @@ from 0.7.0, do [Upgrade to 0.8](/docs/upgrade-0-8) first. 0.9.0 needs nothing.
 ## 1. Schema version 4
 
 ```sh
-npx agent-cms migrate check
-npx agent-cms migrate apply    # or `migrate print` and run the SQL yourself
+npx @mainsoft/agent-cms migrate check
+npx @mainsoft/agent-cms migrate apply    # or `migrate print` and run the SQL yourself
 ```
 
 The step only adds things and is safe to run twice:
@@ -47,8 +47,8 @@ Authorization: Bearer <cronSecret>
 ## 4. Admin screens
 
 ```sh
-npx agent-cms add --update
-npx agent-cms add cms-trash cms-releases
+npx @mainsoft/agent-cms add --update
+npx @mainsoft/agent-cms add cms-trash cms-releases
 ```
 
 - `cms-doc-editor` has two more files, `cms-flow.tsx` and `cms-paste.ts`.

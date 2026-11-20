@@ -313,7 +313,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const raw = await repo.getMeta("schema_version");
       const found = raw == null ? null : Number(raw);
       if (found === null || !(found >= SCHEMA_VERSION)) {
-        throw fail("schema_outdated", { found: found ?? 1, expected: SCHEMA_VERSION, command: "npx agent-cms migrate check" }, { status: 503 });
+        throw fail("schema_outdated", { found: found ?? 1, expected: SCHEMA_VERSION, command: "npx @mainsoft/agent-cms migrate check" }, { status: 503 });
       }
     })().catch((e) => {
       schemaReady = null; // try again on the next call (after the migration ran)

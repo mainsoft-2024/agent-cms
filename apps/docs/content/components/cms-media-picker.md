@@ -19,4 +19,4 @@ The editor and the field form use it already. In your own form:
 
 `kinds` limits what can be chosen, `accept` narrows what the upload button offers, `store` shows one store only. `onPick` gets the file with its id, name, kind and addresses; a body takes `![alt](asset:ID/name)`.
 
-It comes with `cms-doc-editor`: `npx agent-cms add cms-doc-editor` brings it, also in apps without a media library (the button stays hidden there).
+It comes with `cms-doc-editor`: `npx @mainsoft/agent-cms add cms-doc-editor` brings it, also in apps without a media library (the button stays hidden there).

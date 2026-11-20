@@ -70,10 +70,10 @@ stores: {
 버킷에는 사이트가 `PUT`할 수 있게 하는 CORS 규칙이 있어야 해요. `agent-cms.config.ts`에 같은 `media` 객체를 넣고 실행하세요.
 
 ```
-npx agent-cms storage check --origin https://your-site.example
+npx @mainsoft/agent-cms storage check --origin https://your-site.example
 ```
 
-모든 저장소에 시험 파일을 실제로 올리고, 읽고, 옮기고, 지워요. 조각으로 나눠 올리기와 브라우저 방식의 서명 주소도 확인해요. CORS 규칙을 시험하고, 버킷에 붙여 넣을 규칙을 출력하고, 저장소마다 받는 형식을 보여줘요. `npx agent-cms storage cleanup`은 시작만 하고 끝내지 않은 업로드를 지워요. 그런 업로드가 있으면 `doctor`가 알려줘요.
+모든 저장소에 시험 파일을 실제로 올리고, 읽고, 옮기고, 지워요. 조각으로 나눠 올리기와 브라우저 방식의 서명 주소도 확인해요. CORS 규칙을 시험하고, 버킷에 붙여 넣을 규칙을 출력하고, 저장소마다 받는 형식을 보여줘요. `npx @mainsoft/agent-cms storage cleanup`은 시작만 하고 끝내지 않은 업로드를 지워요. 그런 업로드가 있으면 `doctor`가 알려줘요.
 
 ## 올릴 수 있는 파일
 
@@ -172,7 +172,7 @@ media: {
 
 ## 어드민에서
 
-화면을 추가하고(`npx agent-cms add cms-media`) 페이지를 만들어요. 앱에 라이브러리가 있으면 사이드바에 "미디어"가 저절로 보여요.
+화면을 추가하고(`npx @mainsoft/agent-cms add cms-media`) 페이지를 만들어요. 앱에 라이브러리가 있으면 사이드바에 "미디어"가 저절로 보여요.
 
 ```tsx
 // app/admin/media/page.tsx
@@ -190,7 +190,7 @@ export default function MediaPage() {
 앱에 미디어 라이브러리가 있으면 에이전트 도구가 여섯 개 늘어요. `list_assets`, `get_asset`(read), `import_asset`(https 주소의 파일을 라이브러리로 가져와요. 내부망 주소는 거부해요), `update_asset`(write), `move_asset`, `delete_asset`(publish)이에요. 터미널에서는 이렇게 올려요.
 
 ```
-npx agent-cms upload ./hero.png ./talk.mp4 --folder launch --alt "The launch screen" --tag launch
+npx @mainsoft/agent-cms upload ./hero.png ./talk.mp4 --folder launch --alt "The launch screen" --tag launch
 ```
 
 ## 버킷 전체

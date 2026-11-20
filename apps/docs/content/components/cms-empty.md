@@ -14,7 +14,7 @@ order: 2
 ## Install
 
 ```sh
-npx agent-cms add cms-empty
+npx @mainsoft/agent-cms add cms-empty
 ```
 
 It also needs `CmsProvider` from `cms-lib` around your admin:

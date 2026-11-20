@@ -1,4 +1,4 @@
-// What `npx agent-cms init` writes, filled in for the example.
+// What `npx @mainsoft/agent-cms init` writes, filled in for the example.
 import { assetId, createCms, defineCollection, DrizzleRepo, type Actor, type MediaOptions } from "@mainsoft/agent-cms";
 import { sharpTransforms } from "@mainsoft/agent-cms/image-sharp";
 import { s3Storage } from "@mainsoft/agent-cms/storage-s3";

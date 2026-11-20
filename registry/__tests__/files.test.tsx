@@ -51,7 +51,7 @@ test("files: a bucket folder by folder, with move, share link and delete for wha
   let dialog = await screen.findByRole("dialog", { name: "링크 만들기" });
   await within(dialog).findByText("https://cdn.example.com/contracts/2026/msa-acme.pdf");
   assert.ok(within(dialog).getByText("https://cdn.example.com/contracts/2026/logo.png"));
-  assert.equal(within(dialog).queryByRole("radiogroup"), null, "public files have no expiry to choose");
+  assert.ok(within(dialog).queryByRole("radiogroup") === null, "public files have no expiry to choose");
   assert.ok((await s.cms.assets.browse(admin, { store: "public", prefix: "contracts/2026" })).files.every((f) => f.name === "brief.docx" || f.asset));
   await user.click(within(dialog).getByRole("button", { name: "닫기" }));
 
@@ -71,7 +71,7 @@ test("files: a bucket folder by folder, with move, share link and delete for wha
   assert.equal(to.value, "contracts/2026");
   await user.type(to, "/signed");
   await user.click(within(dialog).getByRole("button", { name: "이동" }));
-  await waitFor(() => assert.equal(screen.queryByRole("button", { name: "brief.docx" }), null));
+  await waitFor(() => assert.ok(screen.queryByRole("button", { name: "brief.docx" }) === null));
   assert.ok(s.stores.public.objects.has("contracts/2026/signed/brief.docx"));
 
   // Opening a file shows the media library's panel for it.
@@ -98,5 +98,5 @@ test("files: a private store offers how long a link works; people who cannot loo
   unmount();
   renderWith(makeServer(), <CmsShell title="App"><p>x</p></CmsShell>);
   await screen.findByRole("link", { name: "Guide" });
-  assert.equal(screen.queryByRole("link", { name: "Files" }), null);
+  assert.ok(screen.queryByRole("link", { name: "Files" }) === null);
 });
