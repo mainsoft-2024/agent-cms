@@ -101,6 +101,9 @@ ANY    /<plugin name>/…                    플러그인이 추가한 라우트
 | `GET /export?collections=&drafts=1&download=1` | 문서를 마크다운 파일로. 읽을 수 있는 누구나 |
 | `POST /import` `{files, dryRun?, diff?, publish?, onConflict?, collection?, only?, assetMap?}` | 파일을 초안으로 읽기. 쓰기 권한 필요 |
 | `GET /openapi.json` | 이 API의 OpenAPI 3.1 문서. 누구나, 읽을 수 있는 것만 |
+| `POST /keys/:id/rotate` `{graceMinutes?}` | 같은 키의 새 시크릿. 기존 것은 유예 시간 동안 동작 (0.14.0) |
+| `GET /retention`, `POST /retention` `{dryRun?}` | 보존 규칙. 규칙대로 지우거나 세기만 함 (0.14.0) |
+| `GET /_events?collections=&since=` | 일어나는 일을 Server-Sent Events로. 누구나, 읽을 수 있는 것만 (0.14.0) |
 
 [자동화, 역할, 대시보드](/docs/automations), [내보내기와 가져오기](/docs/import-export), [OpenAPI와 다른 서버](/docs/openapi)를 보세요.
 

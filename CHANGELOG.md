@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.0
+
+Operations: request limits, key rotation, retention, more hooks, and a live stream of events. **No schema change.** See [UPGRADE-0.14.md](./UPGRADE-0.14.md).
+
+- **Request limits.** `createCms({ rateLimit: { perMinute, anonymousPerMinute } })` counts requests per API key and, for callers with no key and no session, per address. A key can carry its own number (`createKey({ rateLimit: 60 })`). Over the limit the answer is 429 `rate_limited` with `Retry-After`. Counts live in the process; pass `rateLimit.store` (one `hit(bucket, ttlMs)` method) to share them between servers. Signed-in people are not counted.
+- **Allowed addresses.** `createKey({ allowedIps: ["203.0.113.0/24", "2001:db8::/32"] })`: the key answers 403 `forbidden_ip` from anywhere else. `createCmsHandler({ clientIp })` says where the caller's address comes from (default: `X-Forwarded-For`, then `X-Real-IP`).
+- **Key rotation.** `POST /keys/:id/rotate` (`cms.rotateKey`) makes a new secret with the same name, scopes, collections, expiry and limits. The old secret keeps working for `graceMinutes` (default 60), then stops. `DELETE /keys/:id?reason=` keeps a note with a revoked key.
+- **Retention.** `createCms({ retention: { auditDays, hitsDays, revokedKeysDays, deliveriesDays } })`. The cron call applies it once a day. `POST /retention { dryRun: true }` and `npx @mainsoft/agent-cms retention --dry-run` count what would go and delete nothing. Documents, versions and the trash are not touched.
+- **Hooks.** `beforeValidate` (change the input before it is checked: fill a slug, trim), `afterPublish`, `afterDelete`, and `afterRead` (shape or refuse what `get` returns for a reader).
+- **Events stream.** `GET /_events` is a Server-Sent Events stream: `new EventSource("/api/cms/_events?collections=posts")`. A writer hears every save; a reader hears only what changes the public copy. A client that reconnects (`Last-Event-ID` or `?since=`) first gets one `resync` message listing what was saved while it was away. `cms.subscribe(fn)` is the same feed in code.
+- **Screens.** `cms-keys`: "Rotate" on each key, "Requests per minute" and "Allowed addresses" in the form, and a rotated key says until when its old secret works. Update with `npx @mainsoft/agent-cms add --update`.
+- **REST and CLI.** `/keys/:id/rotate`, `/retention`, `/_events`; `rateLimit` and `allowedIps` on `POST /keys`; CLI `retention [--dry-run]`. All of it is in `/openapi.json`.
+- **Not in this release** (bundle 3 continues): the standalone server and its own login (101, 115, 122), multi-site, read cache, Notion import. See `docs/roadmap/3-integrations-and-ops.md`.
+
 ## 0.13.0
 
 Integrations and operations, second part: automations, roles, a dashboard, import and export, an OpenAPI document. **Schema version 7** (one new table, `cms_records`; `npx @mainsoft/agent-cms migrate apply`). See [UPGRADE-0.13.md](./UPGRADE-0.13.md).

@@ -25,6 +25,8 @@ export type NewVersion = Omit<CmsVersion, "id" | "createdAt" | "published" | "re
   changed?: CmsVersion["changed"];
 };
 
+export type PruneTarget = "audit" | "hits" | "keys" | "deliveries";
+
 export interface KeyRow extends CmsKey {
   hash: string;
   createdBy: string | null;
@@ -111,7 +113,13 @@ export interface CmsRepo {
   listKeys(): Promise<KeyRow[]>;
   findKeyByHash(hash: string): Promise<KeyRow | null>;
   touchKey(id: string, at: string): Promise<void>;
+  /** `at` may be in the future: the key works until then (key rotation). False when it is already revoked at or before `at`. */
   revokeKey(id: string, at: string): Promise<boolean>;
+  /**
+   * Delete old rows (retention): audit entries and deliveries before an instant, hit counts before a
+   * day (`YYYY-MM-DD`), keys revoked before an instant. With `dryRun` nothing is deleted. Returns how many.
+   */
+  prune(what: PruneTarget, before: string, dryRun?: boolean): Promise<number>;
 
   addHits(documentIds: string[], day: string, source: string): Promise<void>;
   /** Hits per document since `sinceDay` (inclusive); only documents of `collection` when given. */
@@ -378,9 +386,36 @@ export class MemoryRepo implements CmsRepo {
   }
   async revokeKey(id: string, at: string) {
     const k = this.keys.find((x) => x.id === id);
-    if (!k || k.revokedAt) return false;
+    if (!k || (k.revokedAt && k.revokedAt <= at)) return false;
     k.revokedAt = at;
     return true;
+  }
+  async prune(what: PruneTarget, before: string, dryRun = false) {
+    if (what === "audit") {
+      const keep = this.audit.filter((e) => e.at >= before);
+      const n = this.audit.length - keep.length;
+      if (!dryRun) this.audit = keep;
+      return n;
+    }
+    if (what === "deliveries") {
+      const keep = this.deliveries.filter((d) => d.at >= before);
+      const n = this.deliveries.length - keep.length;
+      if (!dryRun) this.deliveries = keep;
+      return n;
+    }
+    if (what === "keys") {
+      const keep = this.keys.filter((k) => !(k.revokedAt && k.revokedAt < before));
+      const n = this.keys.length - keep.length;
+      if (!dryRun) this.keys = keep;
+      return n;
+    }
+    let n = 0;
+    for (const k of [...this.hits.keys()]) {
+      if (k.split("|")[1] >= before) continue;
+      n++;
+      if (!dryRun) this.hits.delete(k);
+    }
+    return n;
   }
   async addHits(ids: string[], day: string, source: string) {
     for (const id of ids) {

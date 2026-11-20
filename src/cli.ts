@@ -40,6 +40,7 @@
  *   agent-cms import <file> --from json|csv|wordpress --collection c [--types post,page] [--dry-run] [--publish]
  *       content from somewhere else: a JSON list, a CSV sheet, a WordPress export file
  *   agent-cms openapi                    this app's REST API as an OpenAPI 3.1 document
+ *   agent-cms retention [--dry-run]      delete what the retention rules allow (admin key); --dry-run only counts
  *   agent-cms call <tool> '<json args>'
  *
  * Env: AGENT_CMS_URL (https://app/api/cms) and AGENT_CMS_KEY (sgk_…), or
@@ -118,7 +119,7 @@ export function parseEnvFile(text: string): Record<string, string> {
 
 const USAGE = `agent-cms ${VERSION}
 in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync>
-with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import | openapi
+with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import | openapi | retention
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
 const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage"]);
@@ -227,6 +228,12 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
       const res = await (io.fetch ?? fetch)(`${env.AGENT_CMS_URL.replace(/\/$/, "")}/openapi.json`, { headers: { authorization: `Bearer ${env.AGENT_CMS_KEY}`, "x-agent-cms-client": "cli" } });
       if (!res.ok) throw new CmsRemoteError(`the app answered ${res.status} for /openapi.json${res.status === 404 ? " (it runs a version before 0.13.0)" : ""}`, "http");
       print(await res.json());
+      return 0;
+    }
+    case "retention": {
+      // What the retention rules would delete (--dry-run), or delete it now. Needs an admin key.
+      const rest = createRestClient({ url: env.AGENT_CMS_URL, fetch: io.fetch, headers: { authorization: `Bearer ${env.AGENT_CMS_KEY}`, "x-agent-cms-client": "cli" } });
+      print(await rest.runRetention({ dryRun: argv.includes("--dry-run") }));
       return 0;
     }
     case "export": {

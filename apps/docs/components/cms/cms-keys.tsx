@@ -1,4 +1,4 @@
-// agent-cms registry: cms-keys (0.11.1). Copied into your app by `npx @mainsoft/agent-cms add`; edit freely.
+// agent-cms registry: cms-keys (0.14.0). Copied into your app by `npx @mainsoft/agent-cms add`; edit freely.
 //
 // API keys for agents and scripts: list (scopes, collections, last used,
 // expiry), revoke, and create. A new key's secret is shown once, with the
@@ -37,11 +37,29 @@ export function CmsKeys({ mcpServerName = "agent-cms", className }: CmsKeysProps
   const [creating, setCreating] = React.useState(false);
   const [created, setCreated] = React.useState<{ key: CmsKey; secret: string } | null>(null);
   const [revoking, setRevoking] = React.useState<CmsKey | null>(null);
+  const [rotating, setRotating] = React.useState<CmsKey | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const colLabel = (slug: string) => me?.collections.find((c) => c.slug === slug)?.label ?? slug;
   const now = Date.now();
+
+  // A new secret for the same key. The old one keeps working for an hour, so nothing breaks while people switch.
+  const rotate = async () => {
+    if (!rotating) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await client.rotateKey(rotating.id);
+      setRotating(null);
+      setCreated(r);
+      keys.reload();
+    } catch (e) {
+      setError(errorMessage(e, t));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const revoke = async () => {
     if (!revoking) return;
@@ -90,10 +108,17 @@ export function CmsKeys({ mcpServerName = "agent-cms", className }: CmsKeysProps
             <TableBody>
               {list.map((k) => {
                 const expired = !!k.expiresAt && Date.parse(k.expiresAt) <= now;
-                const dead = expired || !!k.revokedAt;
+                // A rotated key has a revoke time in the future: it still works until then.
+                const revoked = !!k.revokedAt && Date.parse(k.revokedAt) <= now;
+                const leaving = !!k.revokedAt && !revoked;
+                const dead = expired || revoked;
+                const limits = [k.rateLimit ? t("key_per_minute", { n: k.rateLimit }) : null, ...(k.allowedIps ?? [])].filter(Boolean).join(" · ");
                 return (
                   <TableRow key={k.id} className={cn(dead && "text-muted-foreground")}>
-                    <TableCell className={cn(!dead && "font-medium")}>{k.name}</TableCell>
+                    <TableCell className={cn(!dead && "font-medium")}>
+                      {k.name}
+                      {limits ? <span className="block text-xs font-normal text-muted-foreground">{limits}</span> : null}
+                    </TableCell>
                     <TableCell className="font-mono text-xs">{k.prefix}</TableCell>
                     <TableCell>
                       <span className="flex flex-wrap gap-1">
@@ -118,14 +143,23 @@ export function CmsKeys({ mcpServerName = "agent-cms", className }: CmsKeysProps
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      {k.revokedAt ? (
-                        <Badge variant="outline" className="rounded-full border-red-200 bg-red-50 px-2 py-0 text-[11.5px] text-red-700">
-                          {t("key_revoked")}
+                      {revoked ? (
+                        <Badge variant="outline" className="rounded-full border-red-200 bg-red-50 px-2 py-0 text-[11.5px] text-red-700" title={k.revokedReason && k.revokedReason !== "rotated" ? k.revokedReason : undefined}>
+                          {k.revokedReason === "rotated" ? t("key_replaced") : t("key_revoked")}
                         </Badge>
                       ) : (
-                        <Button type="button" variant="ghost" size="sm" className="h-7 text-destructive hover:text-destructive" aria-label={`${t("revoke")}: ${k.name}`} onClick={() => setRevoking(k)}>
-                          {t("revoke")}
-                        </Button>
+                        <span className="flex items-center justify-end gap-1">
+                          {leaving ? (
+                            <span className="text-xs text-muted-foreground">{t("key_works_until", { time: new Date(k.revokedAt!).toLocaleString(locale, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) })}</span>
+                          ) : (
+                            <Button type="button" variant="ghost" size="sm" className="h-7" aria-label={`${t("key_rotate")}: ${k.name}`} onClick={() => setRotating(k)}>
+                              {t("key_rotate")}
+                            </Button>
+                          )}
+                          <Button type="button" variant="ghost" size="sm" className="h-7 text-destructive hover:text-destructive" aria-label={`${t("revoke")}: ${k.name}`} onClick={() => setRevoking(k)}>
+                            {t("revoke")}
+                          </Button>
+                        </span>
                       )}
                     </TableCell>
                   </TableRow>
@@ -149,6 +183,22 @@ export function CmsKeys({ mcpServerName = "agent-cms", className }: CmsKeysProps
       <Dialog open={!!created} onOpenChange={(o) => !o && setCreated(null)}>
         <DialogContent className="max-w-[540px]">{created ? <KeyCreated name={created.key.name} secret={created.secret} mcpServerName={mcpServerName} onClose={() => setCreated(null)} /> : null}</DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!rotating}
+        onOpenChange={(o) => {
+          if (!o) {
+            setRotating(null);
+            setError(null);
+          }
+        }}
+        title={t("key_rotate_confirm", { name: rotating?.name ?? "" })}
+        description={t("key_rotate_note")}
+        confirmLabel={t("key_rotate")}
+        busy={busy}
+        error={error}
+        onConfirm={rotate}
+      />
 
       <ConfirmDialog
         open={!!revoking}
@@ -177,6 +227,8 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
   const [cols, setCols] = React.useState<string[]>([]);
   const [expiry, setExpiry] = React.useState<Expiry>("none");
   const [date, setDate] = React.useState("");
+  const [rate, setRate] = React.useState("");
+  const [ips, setIps] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -187,6 +239,8 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
       setCols([]);
       setExpiry("none");
       setDate("");
+      setRate("");
+      setIps("");
       setError(null);
     }
   }, [open]);
@@ -202,7 +256,8 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
     setBusy(true);
     setError(null);
     try {
-      const r = await client.createKey({ name: name.trim(), scopes, collections: cols.length ? cols : null, expiresAt: expiresAt() });
+      const allowedIps = ips.split(/[\s,]+/).filter(Boolean);
+      const r = await client.createKey({ name: name.trim(), scopes, collections: cols.length ? cols : null, expiresAt: expiresAt(), ...(rate.trim() ? { rateLimit: Number(rate) } : {}), ...(allowedIps.length ? { allowedIps } : {}) });
       onCreated(r);
     } catch (err) {
       setError(errorMessage(err, t));
@@ -283,6 +338,23 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
                 <Input id="cms-key-date" type="date" required value={date} min={new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)} onChange={(e) => setDate(e.target.value)} />
               </div>
             ) : null}
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[150px_1fr]">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="cms-key-rate" className="text-xs font-medium text-muted-foreground">
+                {t("key_rate")}
+              </Label>
+              <Input id="cms-key-rate" type="number" inputMode="numeric" min={1} max={100000} step={1} placeholder={t("key_rate_hint")} value={rate} onChange={(e) => setRate(e.target.value)} />
+            </div>
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <Label htmlFor="cms-key-ips" className="text-xs font-medium text-muted-foreground">
+                {t("key_ips")}
+              </Label>
+              <Input id="cms-key-ips" placeholder="203.0.113.0/24" aria-describedby="cms-key-ips-hint" value={ips} onChange={(e) => setIps(e.target.value)} />
+            </div>
+            <p id="cms-key-ips-hint" className="text-xs text-muted-foreground sm:col-span-2">
+              {t("key_ips_hint")}
+            </p>
           </div>
           {error ? <StatusText tone="error">{error}</StatusText> : null}
           <DialogFooter>

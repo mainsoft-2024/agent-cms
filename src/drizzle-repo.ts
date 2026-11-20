@@ -3,7 +3,7 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
-import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp } from "./repo";
+import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
 import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsJob, CmsRecord, CmsRelease, CmsWebhook, WebhookDelivery, WebhookEvent, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
@@ -291,9 +291,26 @@ export class DrizzleRepo implements CmsRepo {
     const rows = await this.db
       .update(K)
       .set({ revokedAt: new Date(at) })
-      .where(and(eq(K.id, id), sql`${K.revokedAt} is null`))
+      .where(and(eq(K.id, id), sql`(${K.revokedAt} is null or ${K.revokedAt} > ${new Date(at)})`))
       .returning({ id: K.id });
     return rows.length > 0;
+  }
+  async prune(what: PruneTarget, before: string, dryRun = false) {
+    const t = this.t;
+    const [table, where] =
+      what === "audit"
+        ? ([t.audit, lt(t.audit.at, new Date(before))] as const)
+        : what === "deliveries"
+          ? ([t.webhookDeliveries, lt(t.webhookDeliveries.at, new Date(before))] as const)
+          : what === "keys"
+            ? ([t.apiKeys, lt(t.apiKeys.revokedAt, new Date(before))] as const)
+            : ([t.hits, lt(t.hits.day, before)] as const);
+    if (dryRun) {
+      const [r] = await this.db.select({ n: sql<number>`count(*)::int` }).from(table).where(where);
+      return r?.n ?? 0;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (await this.db.delete(table as any).where(where).returning({ one: sql<number>`1` })).length;
   }
   async addHits(ids: string[], day: string, source: string) {
     if (!ids.length) return;

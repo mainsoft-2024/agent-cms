@@ -47,7 +47,7 @@
 
 ### 운영과 보안
 17. **[P0] 감사 로그.** 키 생성과 폐기, 게시, 삭제, 권한 실패를 누가 언제 했는지 남긴다. 지금은 버전 기록만 있다. [완료 0.6.0]
-18. **[P1] 키 사용량 제한(rate limit)과 만료일.** 키마다 분당 요청 수와 만료일, IP 허용 목록을 둔다. [0.6.0에서 만료일만]
+18. **[P1] 키 사용량 제한(rate limit)과 만료일.** 키마다 분당 요청 수와 만료일, IP 허용 목록을 둔다. [0.6.0에서 만료일만] (0.14.0에서 만듦: 키별·주소별 분당 한도, 허용 주소)
 19. **[P1] 소프트 삭제와 휴지통.** 삭제는 30일 보관 뒤 영구 삭제한다. 지금은 바로 지운다. **상태:** 0.10.0에서 완료.
 20. **[P1] 웹훅.** 게시, 수정, 삭제 때 서명된 POST를 보낸다(재시도, 실패 기록). ISR 재검증이나 Slack 알림에 쓴다. (0.12.0에서 만듦: 15개 이벤트, 서명, 재시도, 자동 끄기, 전송 기록, verifyWebhook)
 21. **[P2] 멀티 테넌트.** `tenant` 열을 두고, 한 앱 안의 워크스페이스마다 별도 문서 세트를 둔다.
@@ -121,9 +121,9 @@
 78. **[P1] 인덱스 추가와 N+1 제거.** `cms_hits(day)` 인덱스. 목록과 검색 색인 빌드의 일괄 조회.
 79. **[P1] CLI 확장.** `put`에 폴더 단위 일괄 처리(`put <collection> ./dir`), `--dry-run`, `diff`(파일과 현재 초안 비교), 출력 형식 `--format table`. (0.13.0에서 `put <collection> <dir>`와 `--dry-run`, `--diff`를 만듦. `--format table`은 아직)
 80. **[P1] 구조화 이벤트와 지표 훅.** `onEvent(e)`로 요청(라우트, actor 종류, 상태, ms), 검색(hit 수, ms), 색인 빌드, 훅 실패를 내보내 OTel/Prometheus에 연결한다. (0.12.0에서 일부: 요청, 이벤트, 작업, cron, 오류)
-81. **[P1] 보존 정책과 주체 삭제.** `retention: { hitsDays, revokedKeysDays }`, `purgeActor(id)`, `exportActor(id)`, `agent-cms retention --dry-run`.
+81. **[P1] 보존 정책과 주체 삭제.** `retention: { hitsDays, revokedKeysDays }`, `purgeActor(id)`, `exportActor(id)`, `agent-cms retention --dry-run`. (0.14.0에서 만듦: 감사 로그, 조회 수, 폐기된 키, 웹훅 전송 기록)
 82. **[P1] 스키마 버전 핀과 `doctor`.** `cms_meta.schema_version`을 부팅 때 비교해 명확히 실패하고, `doctor`가 테이블과 인덱스, 게시 버전 정합성, 고아 행, DDL 드리프트를 검사한다. 복구 절차(Neon PITR + 버전 스냅샷)를 문서화한다. [0.6.0에서 일부]
-83. **[P2] 키 회전과 식별.** `rotateKey(id, { graceMinutes })`, 표시 접두 8자, `revoked_reason`, 선택적 `last_used_ip`. `touchKey`를 서버리스에서 유실되지 않게 `waitUntil`로.
+83. **[P2] 키 회전과 식별.** `rotateKey(id, { graceMinutes })`, 표시 접두 8자, `revoked_reason`, 선택적 `last_used_ip`. `touchKey`를 서버리스에서 유실되지 않게 `waitUntil`로. (0.14.0에서 만듦: 유예 시간이 있는 교체, 폐기 이유)
 
 ## 5. 개발 경험, 패키징, 확장 (D)
 
@@ -136,7 +136,7 @@
 90. **[P1] 드라이버 독립 어댑터.** `PgDatabase` 계열로 넓히고 neon-http(트랜잭션 없음)는 `db.batch`로 폴백. postgres.js, pglite 팩토리. [0.6.0에서 일부: 트랜잭션이 있는 드라이버와 pglite. neon-http 폴백은 남음]
 91. **[P1] `createTestCms()`와 fetch 하네스.** `agent-cms/testing`에서 `seedDoc`, `asAdmin`, `asKey(scopes)`, `createFetchMock(cms)`. (Better Auth)
 92. **[P1] 플러그인 시스템.** `definePlugin({ name, setup(ctx) })`로 훅, 컬렉션 확장, 라우트, 테이블 추가. 감사 로그, 웹훅, rate limit이 코어 수정 없이 붙는다. (Better Auth registry, Payload plugins) (0.12.0에서 일부: 이벤트, 라우트, 도구, 작업, `_me`, 메뉴. 표 마이그레이션과 컬렉션 확장은 아직)
-93. **[P1] 전체 라이프사이클 훅.** `beforeValidate`, `beforeChange`(변형 가능), `afterChange`, `before/afterPublish`, `afterDelete`, `afterRead`와 `{ actor, previous, operation, abort }` 컨텍스트. (Payload hooks) (0.12.0에서 일부: `beforeChange`, `beforePublish`, `beforeDelete`)
+93. **[P1] 전체 라이프사이클 훅.** `beforeValidate`, `beforeChange`(변형 가능), `afterChange`, `before/afterPublish`, `afterDelete`, `afterRead`와 `{ actor, previous, operation, abort }` 컨텍스트. (Payload hooks) (0.12.0에서 일부: `beforeChange`, `beforePublish`, `beforeDelete`) (0.14.0에서 `beforeValidate`, `afterPublish`, `afterDelete`, `afterRead` 추가. 필드 단위 훅은 아직)
 94. **[P1] 타입드 클라이언트와 TanStack Query 어댑터.** `createCmsClient()`의 `client.guide.update(slug, doc, { expectedVersion })`, `useDoc`, `useUpdateDoc`(409면 재조회).
 95. **[P1] OpenAPI 3.1 출력.** `agent-cms openapi`와 `GET /api/cms/openapi.json`. TypeScript 밖(Python, Zapier, GPT action)의 공식 계약. (0.13.0에서 만듦)
 96. **[P1] `agent-cms types` 코드젠.** `.agent-cms/types.d.ts`(컬렉션 유니온, `Fields<"guide">`, `LinkKey`), `--check`로 CI에서 낡음 감지. (Fumadocs postinstall)
@@ -208,7 +208,7 @@
 124. **[P1] SEO 도구.** 문서마다 검색 제목, 설명, 공유 이미지, 대표 주소, 노출 여부. 검색 결과 미리보기와 길이 경고, 사이트맵. (Payload seo)
 125. **[P1] 리다이렉트 관리.** 주소를 바꾸면 자동으로 생기는 것과 직접 만든 것을 한 화면에서 관리(39번의 `cms_redirects`를 쓴다). (Payload redirects)
 126. **[P1] 백그라운드 작업 실행기.** 예약 게시, 웹훅 재시도, 휴지통 비우기, 자동화가 함께 쓰는 작업 표와 `/_cron` 진입점. (Payload jobs) (0.12.0에서 만듦: 작업 표, `/_cron`, `cron --watch`, doctor)
-127. **[P2] 앱용 실시간 변경 알림.** 앱이 문서 변경을 SSE로 구독한다(75번 위에). (Directus realtime)
+127. **[P2] 앱용 실시간 변경 알림.** 앱이 문서 변경을 SSE로 구독한다(75번 위에). (Directus realtime) (0.14.0에서 만듦: `GET /_events`. 여러 서버 사이 전달은 아직)
 128. **[P2] 저장된 필터.** 문서 목록의 검색과 필터 조합에 이름을 붙여 다시 쓴다. (Payload query presets) **상태:** 0.10.0에서 완료.
 129. **[P1] 목록 필드.** 메뉴 항목처럼 여러 값을 한 묶음으로 반복해 넣고 순서를 바꾸는 입력(`z.array(z.object())`의 위젯).
 130. **[P2] 미디어 후속.** 어드민에서 URL로 가져오기, 새로 고친 뒤 올리기 이어 하기, 사진 위치 정보 지우기, 같은 주소로 파일 교체, 바이러스 검사 연결구. **상태:** URL 가져오기와 검사 연결구는 0.9.0, 나머지 셋은 0.11.0에서 완료.
@@ -224,7 +224,7 @@
 
 1. 미디어와 파일 저장소 (0.8.0, 0.9.0, 나머지는 0.11.0): 132, 133, 107, 108, 109, 110, 130 **[끝남]**
 2. 편집과 게시 흐름 (0.10.0, 나머지는 0.11.0): 7, 19, 8, 9, 119, 34, 111, 46, 35, 36, 37, 45, 48, 128 **[끝남. 119번의 2단계(글자 단위 실시간)만 남음]**
-3. 연동과 운영 (0.12.0, 0.13.0, **이어서**): 126, 20, 120, 95, 26, 105, 131, 79, 27, 113, 101, 115, 122, 121, 93, 92, 134, 80, 18, 81, 83, 73, 21, 75, 76, 77, 78, 82, 90, 104, 106, 127 **[0.12.0: 126, 20과 93·92·134·80의 일부. 0.13.0: 120, 95, 26, 105, 79, 113, 121과 131·27의 일부. 남은 것은 `docs/roadmap/3-integrations-and-ops.md`의 "묶음 3에서 아직 안 한 것"]**
-4. 콘텐츠 모델 (0.14.0): 2, 118, 129, 4, 5, 112, 41, 42, 3, 38, 39, 125, 124, 123
-5. 검색과 AI (0.15.0): 74, 58, 59, 60, 57, 63, 13, 61, 135, 62, 15, 64, 16, 67, 68, 55, 56, 54, 40, 65, 100, 43, 66
+3. 연동과 운영 (0.12.0, 0.13.0, 0.14.0, **이어서**): 126, 20, 120, 95, 26, 105, 131, 79, 27, 113, 101, 115, 122, 121, 93, 92, 134, 80, 18, 81, 83, 73, 21, 75, 76, 77, 78, 82, 90, 104, 106, 127 **[0.12.0: 126, 20과 93·92·134·80의 일부. 0.13.0: 120, 95, 26, 105, 79, 113, 121과 131·27의 일부. 0.14.0: 18, 81, 83, 127과 93의 일부. 남은 것은 `docs/roadmap/3-integrations-and-ops.md`의 "묶음 3에서 아직 안 한 것"]**
+4. 콘텐츠 모델 (0.15.0): 2, 118, 129, 4, 5, 112, 41, 42, 3, 38, 39, 125, 124, 123
+5. 검색과 AI (0.16.0): 74, 58, 59, 60, 57, 63, 13, 61, 135, 62, 15, 64, 16, 67, 68, 55, 56, 54, 40, 65, 100, 43, 66
 6. 오픈소스 공개 준비 (1.0.0): 117, 28, 103, 102, 91, 94, 96, 98, 99, 116

@@ -36,6 +36,11 @@ export const ERROR_CODES = {
   forbidden_media: "forbidden",
   key_too_wide: "forbidden",
   cross_site: "forbidden",
+  forbidden_ip: "forbidden",
+  forbidden_admin: "forbidden",
+  rate_limited: "forbidden",
+  invalid_ip_range: "invalid",
+  invalid_rate_limit: "invalid",
   // validation
   invalid: "invalid",
   invalid_slug: "invalid",

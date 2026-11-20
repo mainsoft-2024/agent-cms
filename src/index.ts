@@ -107,3 +107,8 @@ export type { CmsTelemetry } from "./cms";
 // 0.13.0: OpenAPI, import sources
 export { API_ROUTES, openApiDocument, type ApiRoute, type OpenApiOptions } from "./openapi";
 export { docsFromCsv, docsFromJson, docsFromWordpress, filesFromDocs, filesFromSource, htmlToMarkdown, IMPORT_SOURCES, parseCsv, slugify, type ImportSource, type SourceDoc } from "./import-sources";
+
+// 0.14.0: request limits, retention, the events stream
+export { clientIp, createLimiter, ipAllowed, MemoryRateLimitStore, type RateLimitOptions, type RateLimitStore, type RateVerdict } from "./limits";
+export { type RetentionOptions, type RetentionReport } from "./retention";
+export { eventStream, type EventStreamOptions } from "./events";
