@@ -315,7 +315,7 @@ test("plugins: routes with the checked actor, tools, jobs, _me, menu entries", a
   await tick();
   await cms.cron();
   assert.deepEqual(done, ["a@sealed"]);
-  assert.deepEqual(cms.jobs.kinds().sort(), ["stats.rollup", "webhook.deliver"]);
+  assert.deepEqual(cms.jobs.kinds().sort(), ["automation.run", "stats.rollup", "webhook.deliver"]);
 
   const twice = () => createCms({ repo: new MemoryRepo(), collections: [], plugins: [stats, stats] });
   assert.throws(twice, /given twice/);

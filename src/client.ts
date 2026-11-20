@@ -8,7 +8,11 @@
  *   cookie. This is what the copied admin screens use.
  */
 
+import type { AutomationCondition, AutomationInput, AutomationRun, CmsAutomation } from "./automations";
 import type { WebhookInput, WebhookView } from "./outbox";
+import type { CmsRole, RoleInput, RoleMember, RoleOp } from "./roles";
+import type { CmsStats } from "./stats";
+import type { ImportItem, ImportOptions, TransferFile } from "./transfer";
 import type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
 import type { AssetListOptions, AssetUsage, AssetView, UploadInstructions, UploadRequest } from "./assets";
 import type { AgentChange, BulkAction, BulkResult, DocDiff, PreviewLink, PreviewTtl } from "./cms";
@@ -21,6 +25,10 @@ import type { AuditEntry, AutosaveState, CmsComment, CmsDoc, CmsKey, CmsRelease,
 export type { BlockedItem, CommentThread, ReleaseView, ScheduledRun, TrashItem, TrashRef } from "./flow";
 export type { WebhookInput, WebhookView } from "./outbox";
 export type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
+export type { AutomationAction, AutomationCondition, AutomationInput, AutomationRun, CmsAutomation } from "./automations";
+export type { CmsRole, RoleInput, RoleMember, RoleOp, RolePermissions } from "./roles";
+export type { CmsStats } from "./stats";
+export type { ImportConflict, ImportItem, ImportOptions, TransferFile } from "./transfer";
 
 /** What `POST /collections/:c/_preview` answers: the document as it would be, nothing saved. */
 export interface DocPreview {
@@ -164,6 +172,12 @@ export interface RestClientOptions {
 }
 
 export interface Me {
+  /** Signed in: the dashboard has numbers to show. */
+  dashboard?: boolean;
+  /** This caller may manage automations. */
+  automations?: boolean;
+  /** This caller may manage roles. */
+  roles?: boolean;
   /** Webhooks can be made and this caller may manage them. */
   webhooks?: boolean;
   /** Menu entries plugins add. */
@@ -377,6 +391,26 @@ export function createRestClient(opts: RestClientOptions) {
     testWebhook: (id: string) => req<{ delivery: WebhookDelivery }>("POST", `/webhooks/${enc(id)}/test`).then((r) => r.delivery),
     webhookDeliveries: (id: string, limit?: number) => req<{ deliveries: WebhookDelivery[] }>("GET", `/webhooks/${enc(id)}/deliveries`, { query: { limit } }).then((r) => r.deliveries),
     retryDelivery: (deliveryId: string) => req<{ queued: true }>("POST", `/webhooks/deliveries/${enc(deliveryId)}/retry`),
+    exportDocs: (o: { collections?: string[]; drafts?: boolean } = {}) => req<{ files: TransferFile[]; documents: number }>("GET", "/export", { query: { collections: o.collections?.join(","), drafts: o.drafts } }),
+    /** Address of the export as a file to download. */
+    exportUrl: (o: { collections?: string[]; drafts?: boolean } = {}) => `${base}/export?download=1${o.collections?.length ? `&collections=${enc(o.collections.join(","))}` : ""}${o.drafts ? "&drafts=1" : ""}`,
+    importDocs: (files: TransferFile[], o: ImportOptions = {}) => req<{ items: ImportItem[]; applied: boolean }>("POST", "/import", { body: { files, ...o } }),
+    stats: (days?: number) => req<CmsStats>("GET", "/_stats", { query: { days } }),
+    automations: () => req<{ automations: CmsAutomation[]; triggers: string[]; actions: string[]; actionLabels: Record<string, string>; functions: string[] }>("GET", "/automations"),
+    createAutomation: (a: AutomationInput) => req<{ automation: CmsAutomation }>("POST", "/automations", { body: a }).then((r) => r.automation),
+    updateAutomation: (id: string, a: AutomationInput) => req<{ automation: CmsAutomation }>("PATCH", `/automations/${enc(id)}`, { body: a }).then((r) => r.automation),
+    removeAutomation: (id: string) => req<{ ok: true }>("DELETE", `/automations/${enc(id)}`),
+    automationRuns: (id: string, limit?: number) => req<{ runs: AutomationRun[] }>("GET", `/automations/${enc(id)}/runs`, { query: { limit } }).then((r) => r.runs),
+    /** Checks the conditions against one document and lists what would be done; nothing changes. */
+    testAutomation: (id: string, target: { collection: string; slug: string }) =>
+      req<{ matches: boolean; title: string; conditions: (AutomationCondition & { ok: boolean })[]; actions: { type: string; would: string }[] }>("POST", `/automations/${enc(id)}/test`, { body: target }),
+    roles: () => req<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[] }[]; users: boolean }>("GET", "/roles"),
+    createRole: (r: RoleInput) => req<{ role: CmsRole }>("POST", "/roles", { body: r }).then((x) => x.role),
+    updateRole: (id: string, r: RoleInput) => req<{ role: CmsRole }>("PATCH", `/roles/${enc(id)}`, { body: r }).then((x) => x.role),
+    removeRole: (id: string) => req<{ ok: true }>("DELETE", `/roles/${enc(id)}`),
+    addRoleMember: (id: string, member: { id: string; label?: string }) => req<{ role: CmsRole }>("POST", `/roles/${enc(id)}/members`, { body: member }).then((x) => x.role),
+    removeRoleMember: (id: string, userId: string) => req<{ role: CmsRole }>("DELETE", `/roles/${enc(id)}/members/${enc(userId)}`).then((x) => x.role),
+    searchUsers: (q: string) => req<{ users: RoleMember[] }>("GET", "/roles/_users", { query: { q } }).then((r) => r.users),
     jobs: (q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number } = {}) => req<{ waiting: number; failed: number; jobs: CmsJob[] }>("GET", "/jobs", { query: q }),
     retryJob: (id: string) => req<{ ok: true }>("POST", `/jobs/${enc(id)}/retry`),
     search: (q: string, collections?: string[]) => req<{ empty: boolean; hits: { collection: string; slug: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(",") } }),

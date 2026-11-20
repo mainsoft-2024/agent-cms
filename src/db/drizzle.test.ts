@@ -210,7 +210,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_comments", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
+      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_comments", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -245,10 +245,11 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_jobs", "cms_presence", "cms_releases", "cms_saved_filters", "cms_webhook_deliveries", "cms_webhooks"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 4], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.10\.0/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.11\.0/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.13\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);

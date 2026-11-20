@@ -5,7 +5,7 @@
  */
 
 import { SCHEMA_VERSION } from "./schema-version";
-import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter, CmsJob, CmsWebhook, WebhookDelivery } from "./types";
+import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter, CmsJob, CmsRecord, CmsWebhook, WebhookDelivery } from "./types";
 
 export type DocPatch = Partial<Omit<CmsDoc, "id" | "collection" | "createdAt">>;
 type DocFlow = "deletedAt" | "deletedBy" | "schedule" | "dueAt" | "review";
@@ -200,9 +200,50 @@ export interface CmsRepo {
 
   getMeta(key: string): Promise<unknown>;
   setMeta(key: string, value: unknown): Promise<void>;
+
+  /** Records (`cms_records`): small objects of the CMS itself. A second row with the same `kind` and `key` is refused. */
+  insertRecord(r: NewRecord): Promise<CmsRecord>;
+  findRecord(kind: string, id: string): Promise<CmsRecord | null>;
+  findRecordByKey(kind: string, key: string): Promise<CmsRecord | null>;
+  /** Newest first unless `order` is "asc". Default limit 200. */
+  listRecords(q: RecordQuery): Promise<CmsRecord[]>;
+  updateRecord(kind: string, id: string, patch: RecordPatch): Promise<CmsRecord | null>;
+  /** By id, by scope, older than `before`, or a whole kind. Returns how many went. */
+  deleteRecords(q: { kind: string; id?: string; scope?: string; before?: string }): Promise<number>;
+  /** Versions made since an instant, newest first, without their content. */
+  versionsSince(since: string, limit: number): Promise<VersionStamp[]>;
 }
 
 /** In-memory repo for tests and examples. Starts at the current schema version. */
+export interface NewRecord {
+  kind: string;
+  scope?: string;
+  key?: string | null;
+  data: Record<string, unknown>;
+  at: string;
+}
+export interface RecordPatch {
+  data?: Record<string, unknown>;
+  key?: string | null;
+  at: string;
+}
+export interface RecordQuery {
+  kind: string;
+  scope?: string;
+  /** Rows created before this instant (paging backwards). */
+  before?: string | null;
+  limit?: number;
+  order?: "asc" | "desc";
+}
+/** One version without its content: who made it and when (the dashboard). */
+export interface VersionStamp {
+  documentId: string;
+  version: number;
+  createdAt: string;
+  authorKind: "user" | "key" | "system";
+  authorLabel: string;
+  authorAgent: string | null;
+}
 export type NewJob = Pick<CmsJob, "kind" | "payload" | "runAt" | "maxAttempts" | "createdAt">;
 export type JobPatch = Partial<Pick<CmsJob, "runAt" | "lockedUntil" | "lastError" | "doneAt" | "failedAt">>;
 export type NewWebhook = Omit<CmsWebhook, "id" | "failures" | "disabledReason">;
@@ -609,5 +650,44 @@ export class MemoryRepo implements CmsRepo {
   }
   async setMeta(key: string, value: unknown) {
     this.meta.set(key, value);
+  }
+
+  private records: CmsRecord[] = [];
+  async insertRecord(r: NewRecord) {
+    if (r.key != null && this.records.some((x) => x.kind === r.kind && x.key === r.key)) throw new Error(`duplicate record key: ${r.kind}/${r.key}`);
+    const row: CmsRecord = { id: this.id(), kind: r.kind, scope: r.scope ?? "", key: r.key ?? null, data: structuredClone(r.data), createdAt: r.at, updatedAt: r.at };
+    this.records.push(row);
+    return structuredClone(row);
+  }
+  async findRecord(kind: string, id: string) {
+    const r = this.records.find((x) => x.kind === kind && x.id === id);
+    return r ? structuredClone(r) : null;
+  }
+  async findRecordByKey(kind: string, key: string) {
+    const r = this.records.find((x) => x.kind === kind && x.key === key);
+    return r ? structuredClone(r) : null;
+  }
+  async listRecords(q: RecordQuery) {
+    const rows = this.records.filter((x) => x.kind === q.kind && (q.scope === undefined || x.scope === q.scope) && (!q.before || x.createdAt < q.before));
+    rows.sort((a, b) => (q.order === "asc" ? a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id) : b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)));
+    return rows.slice(0, q.limit ?? 200).map((r) => structuredClone(r));
+  }
+  async updateRecord(kind: string, id: string, patch: RecordPatch) {
+    const r = this.records.find((x) => x.kind === kind && x.id === id);
+    if (!r) return null;
+    if (patch.data !== undefined) r.data = structuredClone(patch.data);
+    if (patch.key !== undefined) r.key = patch.key;
+    r.updatedAt = patch.at;
+    return structuredClone(r);
+  }
+  async deleteRecords(q: { kind: string; id?: string; scope?: string; before?: string }) {
+    const n = this.records.length;
+    this.records = this.records.filter((x) => !(x.kind === q.kind && (q.id === undefined || x.id === q.id) && (q.scope === undefined || x.scope === q.scope) && (q.before === undefined || x.createdAt < q.before)));
+    return n - this.records.length;
+  }
+  async versionsSince(since: string, limit: number) {
+    const out: VersionStamp[] = [];
+    for (const v of this.versions) if (v.createdAt >= since) out.push({ documentId: v.documentId, createdAt: v.createdAt, authorKind: v.authorKind, authorLabel: v.authorLabel, authorAgent: v.authorAgent ?? null, version: v.version });
+    return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
   }
 }

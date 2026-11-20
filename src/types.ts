@@ -26,7 +26,7 @@ export const KEY_SCOPES = ["read", "write", "publish", "admin"] as const;
 export type KeyScope = (typeof KEY_SCOPES)[number];
 
 /** How a request came in. Used for usage counts (`cms_hits.source`) and the audit log. */
-export const VIAS = ["rest", "mcp", "ai", "cli", "app"] as const;
+export const VIAS = ["rest", "mcp", "ai", "cli", "app", "automation"] as const;
 export type Via = (typeof VIAS)[number];
 
 /** Who is acting. Either an app session (user), an API key, the app itself or nobody. */
@@ -268,6 +268,15 @@ export const AUDIT_ACTIONS = [
   "webhook.update",
   "webhook.delete",
   "webhook.disable",
+  "automation.create",
+  "automation.update",
+  "automation.delete",
+  "role.create",
+  "role.update",
+  "role.delete",
+  "role.member.add",
+  "role.member.remove",
+  "import.run",
   "doc.publish",
   "doc.unpublish",
   "doc.archive",
@@ -599,6 +608,21 @@ export interface WebhookDelivery {
   attempt: number;
   error: string | null;
   at: string;
+}
+
+/**
+ * A small object the CMS keeps for itself (`cms_records`): an automation, a run of one, a role.
+ * `kind` says what it is, `scope` groups rows (the runs of one automation), `key` is unique
+ * within a kind when set.
+ */
+export interface CmsRecord<T = Record<string, unknown>> {
+  id: string;
+  kind: string;
+  scope: string;
+  key: string | null;
+  data: T;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** What a `beforeChange` hook gets. */

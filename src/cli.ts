@@ -32,6 +32,10 @@
  *   agent-cms publish <collection> <slug>
  *   agent-cms upload <files...> [--store name] [--folder path] [--alt "text"] [--tag a,b]
  *       put files into the media library (large files go up in parts)
+ *   agent-cms export <dir> [--collection a,b] [--drafts]
+ *       every document as a markdown file: <dir>/<collection>/<slug>.md
+ *   agent-cms import <dir> [--dry-run] [--diff] [--on-conflict file-wins|db-wins|newest] [--publish] [--collection c]
+ *       read them back (drafts; same address: a new version). `put <collection> <dir>` does the same for one folder.
  *   agent-cms call <tool> '<json args>'
  *
  * Env: AGENT_CMS_URL (https://app/api/cms) and AGENT_CMS_KEY (sgk_…), or
@@ -39,8 +43,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
 import { humanSize, type MediaOptions } from "./assets";
 import { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
 import { createCmsCore } from "./cms";
@@ -74,7 +78,7 @@ export interface CliIo {
   run?: (cmd: string, args: string[], cwd: string) => number;
 }
 
-const WITH_VALUE = new Set(["--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin"]);
+const WITH_VALUE = new Set(["--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin"]);
 
 function flag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -109,7 +113,7 @@ export function parseEnvFile(text: string): Record<string, string> {
 
 const USAGE = `agent-cms ${VERSION}
 in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync>
-with a key:    tools | collections | list | get | search | put | patch | publish | upload | call
+with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
 const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage"]);
@@ -213,8 +217,25 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
       print(await api.call("patch_document", { collection: args[0], slug: args[1], ops: Array.isArray(ops) ? ops : [ops], expectedVersion: expectedVersion(), dryRun: argv.includes("--dry-run") }));
       return 0;
     }
+    case "export": {
+      need(1);
+      const rest = createRestClient({ url: env.AGENT_CMS_URL, fetch: io.fetch, headers: { authorization: `Bearer ${env.AGENT_CMS_KEY}`, "x-agent-cms-client": "cli" } });
+      const r = await rest.exportDocs({ collections: flag(argv, "collection")?.split(",").filter(Boolean), drafts: argv.includes("--drafts") });
+      for (const f of r.files) {
+        if (f.path.split("/").some((p) => p === ".." || p === "")) continue;
+        const p = join(args[0], f.path);
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, f.text);
+      }
+      print({ documents: r.documents, files: r.files.length, dir: args[0] });
+      return 0;
+    }
+    case "import":
+      need(1);
+      return importDir(args[0], undefined, argv, env.AGENT_CMS_URL, env.AGENT_CMS_KEY, { ...io, out, err });
     case "put": {
       need(2);
+      if (existsSync(args[1]) && statSync(args[1]).isDirectory()) return importDir(args[1], args[0], argv, env.AGENT_CMS_URL, env.AGENT_CMS_KEY, { ...io, out, err });
       const [collection, file] = args;
       const doc = docFromMarkdown(read(file), basename(file).replace(/\.(md|markdown)$/i, ""));
       const publish = argv.includes("--publish");
@@ -267,6 +288,31 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
       err(`unknown command: ${cmd}\n${USAGE}`);
       return 1;
   }
+}
+
+/** Send a folder of markdown files to `/import`, 100 at a time. Exit 1 when a file could not be read in. */
+async function importDir(dir: string, collection: string | undefined, argv: string[], url: string, key: string, io: CliIo & { out: (l: string) => void; err: (l: string) => void }): Promise<number> {
+  const walk = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
+  const files = walk(dir)
+    .map((p) => ({ path: relative(dir, p).split("\\").join("/"), full: p }))
+    .filter((f) => /\.(md|markdown)$/i.test(f.path) && !f.path.startsWith("_"))
+    .map((f) => ({ path: f.path, text: readFileSync(f.full, "utf8") }));
+  const rest = createRestClient({ url, fetch: io.fetch, headers: { authorization: `Bearer ${key}`, "x-agent-cms-client": "cli" } });
+  const dryRun = argv.includes("--dry-run");
+  const onConflict = flag(argv, "on-conflict") as "file-wins" | "db-wins" | "newest" | undefined;
+  const items = [];
+  for (let i = 0; i < files.length; i += 100) {
+    const r = await rest.importDocs(files.slice(i, i + 100), { dryRun, diff: argv.includes("--diff"), publish: argv.includes("--publish"), onConflict, collection: collection ?? flag(argv, "collection") });
+    items.push(...r.items);
+  }
+  for (const it of items) {
+    const what = it.change === "new" ? "new" : it.change === "update" ? `v${it.fromVersion} -> v${it.toVersion}` : it.change === "same" ? "same" : it.change === "skip" ? `skip (${it.reason})` : `ERROR ${it.reason}`;
+    io.out(`${it.path.padEnd(40)} ${what}${it.diagnostics.filter((d) => d.severity === "warning").length ? `  (${it.diagnostics.filter((d) => d.severity === "warning").length} warning(s))` : ""}`);
+    if (it.diff) io.out(it.diff);
+  }
+  const bad = items.filter((i) => i.change === "error").length;
+  io.out(`[agent-cms] ${dryRun ? "would import" : "imported"} ${items.filter((i) => i.change === "new" || i.change === "update").length} of ${items.length} file(s)${bad ? `, ${bad} with errors` : ""}.`);
+  return bad ? 1 : 0;
 }
 
 // ── local ───────────────────────────────────────────────────────────────────
@@ -358,7 +404,7 @@ export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTable
   const current = r.schemaVersion ?? 0;
   if (!r.missingTables.length && !r.missingColumns.length && current >= SCHEMA_VERSION) return null;
   // Missing tables: the whole idempotent DDL (creates only what is missing).
-  if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence|jobs|webhooks|webhook_deliveries)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
+  if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence|jobs|webhooks|webhook_deliveries|records)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
   // Steps are idempotent: re-run them all when columns are missing, else only the newer ones.
   const steps = upgradeSteps(tables).filter((s) => s.version > current || r.missingColumns.length > 0 || r.missingTables.length > 0);
   const meta = r.missingTables.some((t) => t.endsWith("meta"))
@@ -566,7 +612,7 @@ export default defineConfig({
     [
       `${appDir}lib/cms-schema.ts`,
       `// Re-export the agent-cms tables from your Drizzle schema so drizzle-kit sees them.
-export { cmsApiKeys, cmsAssetRefs, cmsAssets, cmsAudit, cmsComments, cmsDocuments, cmsHits, cmsJobs, cmsMeta, cmsPresence, cmsReleases, cmsSavedFilters, cmsVersions, cmsWebhookDeliveries, cmsWebhooks } from "@mainsoft/agent-cms/tables";
+export { cmsApiKeys, cmsAssetRefs, cmsAssets, cmsAudit, cmsComments, cmsDocuments, cmsHits, cmsJobs, cmsMeta, cmsPresence, cmsRecords, cmsReleases, cmsSavedFilters, cmsVersions, cmsWebhookDeliveries, cmsWebhooks } from "@mainsoft/agent-cms/tables";
 `,
     ],
     [

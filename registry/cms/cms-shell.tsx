@@ -1,4 +1,4 @@
-// agent-cms registry: cms-shell (0.10.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-shell (0.13.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // The admin layout: a sidebar with the collections you may read, the
 // operations screens (API keys, audit log, admins only) and `extraNav`, the
@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { BookOpen, FileText, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
+import { ArrowLeftRight, BookOpen, FileText, LayoutGrid, Shield, Workflow, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { ShellNavContext, useCms } from "./use-cms";
@@ -31,7 +31,7 @@ export interface CmsLinkProps {
   onClick?: () => void;
 }
 
-export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" };
+export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" } | { kind: "dashboard" } | { kind: "automations" } | { kind: "roles" } | { kind: "transfer" };
 
 export interface CmsShellProps {
   children?: React.ReactNode;
@@ -141,6 +141,22 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
           <kbd className="rounded border border-b-2 px-1 font-mono text-[11px]">⌘K</kbd>
         </button>
       ) : null}
+      {me?.dashboard ? (
+        <div className="mb-1">
+          {link({
+            href: href({ kind: "dashboard" }),
+            className: navClass(activeHref === href({ kind: "dashboard" })),
+            "aria-current": activeHref === href({ kind: "dashboard" }) ? "page" : undefined,
+            onClick: close,
+            children: (
+              <>
+                <LayoutGrid aria-hidden className="h-4 w-4 shrink-0" />
+                <span className="flex-1 truncate">{t("nav_dashboard")}</span>
+              </>
+            ),
+          })}
+        </div>
+      ) : null}
       <h2 className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">{t("nav_collections")}</h2>
       <ul className="flex flex-col gap-0.5">
         {(me?.collections ?? []).map((c) => {
@@ -239,6 +255,9 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
                 { kind: "keys", label: t("nav_keys"), Icon: KeyRound },
                 { kind: "audit", label: t("nav_audit"), Icon: ScrollText },
                 ...(me.webhooks ? [{ kind: "webhooks", label: t("nav_webhooks"), Icon: Webhook } as const] : []),
+                ...(me.automations ? [{ kind: "automations", label: t("nav_automations"), Icon: Workflow } as const] : []),
+                ...(me.roles ? [{ kind: "roles", label: t("nav_roles"), Icon: Shield } as const] : []),
+                ...(me.automations ? [{ kind: "transfer", label: t("nav_transfer"), Icon: ArrowLeftRight } as const] : []),
               ] as const
             ).map(({ kind, label, Icon }) => {
               const h = href({ kind });
