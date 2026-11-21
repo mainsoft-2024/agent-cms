@@ -306,7 +306,7 @@ function contentOf(doc: DocContent): DocContent {
 
 /** The untyped CMS (what the transports use). `createCms` returns it with typed overloads on top. */
 export type CmsTelemetry =
-  | { type: "request"; method: string; path: string; status: number; ms: number; actor: string; via: string | null }
+  | { type: "request"; /** Also sent back as `X-Request-Id`. */ id?: string; method: string; path: string; status: number; ms: number; actor: string; via: string | null }
   | ({ type: "event" } & OutEvent)
   | { type: "job"; kind: string; id: string; ok: boolean; attempt: number; ms: number; error?: string }
   | { type: "cron"; ms: number; jobs: JobsRun }
@@ -349,7 +349,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const reportTo = opts.onError ?? ((err: unknown, where: string) => console.warn(`[agent-cms] ${where}:`, err));
   const report = (err: unknown, where: string) => {
     telemetry({ type: "error", where, message: err instanceof Error ? err.message : String(err) });
-    reportTo(err, where);
+    // The app's reporter is best effort: if it throws, say so on the console and carry on.
+    try {
+      const r = reportTo(err, where) as unknown;
+      if (r && typeof (r as Promise<unknown>).catch === "function") void (r as Promise<unknown>).catch((e) => console.warn("[agent-cms] onError failed:", e));
+    } catch (e) {
+      console.warn("[agent-cms] onError failed:", e);
+    }
   };
 
   // ── events: webhooks and plugin listeners ─────────────────────────────────
@@ -1357,7 +1363,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const token = `${payload}.${sign(payload)}`;
     const base = cfg.url({ slug: doc.slug });
     audit(actor, "preview.create", { collection: col, slug: doc.slug, version: doc.version, detail: { ttl: o.ttl ?? "24h", comments: !!o.comments } });
-    return { url: `${base}${base.includes("?") ? "&" : "?"}cms_preview=${token}`, token, version: doc.version, expiresAt: new Date(exp).toISOString() };
+    return { url: withQuery(base, "cms_preview", token), token, version: doc.version, expiresAt: new Date(exp).toISOString() };
   }
 
   /** Read the version a preview token points at (for the app's public page). */
@@ -2043,3 +2049,13 @@ export function createCms<const C extends readonly AnyCollection[]>(opts: Create
   return Object.assign(Object.create(null) as object, core, { core }) as unknown as Cms<C>;
 }
 
+/** Put `key=value` in a URL's query, before any #fragment, replacing an old value. Works for relative URLs. */
+export function withQuery(url: string, key: string, value: string): string {
+  const hash = url.indexOf("#");
+  const [head, frag] = hash >= 0 ? [url.slice(0, hash), url.slice(hash)] : [url, ""];
+  const q = head.indexOf("?");
+  const [path, query] = q >= 0 ? [head.slice(0, q), head.slice(q + 1)] : [head, ""];
+  const params = new URLSearchParams(query);
+  params.set(key, value);
+  return `${path}?${params.toString()}${frag}`;
+}

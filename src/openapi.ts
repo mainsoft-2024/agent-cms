@@ -197,7 +197,8 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "post", path: "/_cron", summary: "Same as GET", tag: "operations", auth: "cron", returns: any, needs: "cron" },
 
   // media
-  { method: "get", path: "/assets", summary: "Files in the media library", tag: "media", auth: "read", query: { store: "", folder: "", kind: "image,video,audio,document,other", q: "", tag: "", cursor: "", limit: "" }, returns: any, needs: "media" },
+  { method: "get", path: "/assets/_zip", summary: "Several files as one zip download (at most 200 files, 200MB)", tag: "media", auth: "read", query: { ids: "" }, returns: any, needs: "media" },
+  { method: "get", path: "/assets", summary: "Files in the media library", tag: "media", auth: "read", query: { store: "", folder: "", kind: "image,video,audio,document,other", q: "", tag: "", unused: "true", missingAlt: "true", sort: "new,old,name,size", cursor: "", limit: "" }, returns: any, needs: "media" },
   { method: "get", path: "/assets/_folders", summary: "Stores with their folders", tag: "media", auth: "read", returns: obj({ stores: arr(any) }), needs: "media" },
   { method: "post", path: "/assets/_folders", summary: "Make a folder", tag: "media", auth: "write", body: z.object({ store: z.string().nullable().optional(), path: z.string().min(1).max(400) }), returns: any, status: 201, needs: "media" },
   { method: "delete", path: "/assets/_folders", summary: "Delete an empty folder", tag: "media", auth: "write", query: { store: "", path: "" }, returns: OK, needs: "media" },

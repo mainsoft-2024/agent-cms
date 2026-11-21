@@ -1,5 +1,5 @@
 import { deflateSync } from "node:zlib";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 // The media library against a real S3-compatible server (`npm run s3:dev`).
 // Skipped when the example app runs without a storage.

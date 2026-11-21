@@ -81,14 +81,30 @@ function RoleForm({ role, targets, users, onChanged, onDeleted }: { role: CmsRol
   const [members, setMembers] = React.useState(role.members);
   const [person, setPerson] = React.useState("");
   const [found, setFound] = React.useState<{ id: string; label: string }[]>([]);
+  const [search, setSearch] = React.useState<"idle" | "busy" | "none" | "failed">("idle");
   const [status, setStatus] = React.useState<{ text: string; tone: "ok" | "error" | "muted" }>({ text: "", tone: "muted" });
   const [busy, setBusy] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
 
   React.useEffect(() => {
-    if (!users || person.trim().length < 1) return setFound([]);
+    // A new query clears the old answers at once, so a stale name can never be picked.
+    setFound([]);
+    if (!users || person.trim().length < 1) return setSearch("idle");
     let live = true;
-    const timer = setTimeout(() => client.searchUsers(person).then((u) => live && setFound(u.filter((x) => !members.some((m) => m.id === x.id))), () => undefined), 200);
+    setSearch("busy");
+    const timer = setTimeout(
+      () =>
+        client.searchUsers(person).then(
+          (u) => {
+            if (!live) return;
+            const left = u.filter((x) => !members.some((m) => m.id === x.id));
+            setFound(left);
+            setSearch(left.length ? "idle" : "none");
+          },
+          () => live && setSearch("failed")
+        ),
+      200
+    );
     return () => {
       live = false;
       clearTimeout(timer);
@@ -186,6 +202,11 @@ function RoleForm({ role, targets, users, onChanged, onDeleted }: { role: CmsRol
             </Button>
           )}
         </div>
+        {search === "none" || search === "failed" ? (
+          <p className={search === "failed" ? "text-xs text-destructive" : "text-xs text-muted-foreground"} role="status">
+            {search === "failed" ? t("role_search_failed") : t("role_search_none")}
+          </p>
+        ) : null}
         {found.length ? (
           <ul className="flex max-w-sm flex-col rounded-md border p-1" aria-label={t("role_person")}>
             {found.map((u) => (

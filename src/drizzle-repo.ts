@@ -420,12 +420,19 @@ export class DrizzleRepo implements CmsRepo {
       const [at, id] = q.before.split("|");
       conds.push(or(lt(A.createdAt, new Date(at)), and(eq(A.createdAt, new Date(at)), lt(A.id, id))));
     }
+    if (q.unused) {
+      const R = this.t.assetRefs;
+      conds.push(sql`not exists (select 1 from ${R} where ${R.assetId} = ${A.id})`);
+    }
+    if (q.missingAlt) conds.push(and(eq(A.kind, "image"), sql`btrim(${A.alt}) = ''`));
+    const order = q.sort === "name" ? [sql`lower(${A.name})`, A.id] : q.sort === "size" ? [desc(A.size), A.id] : q.sort === "old" ? [A.createdAt, A.id] : [desc(A.createdAt), desc(A.id)];
     const rows = await this.db
       .select()
       .from(A)
       .where(and(...conds))
-      .orderBy(desc(A.createdAt), desc(A.id))
-      .limit(q.limit ?? 1000);
+      .orderBy(...order)
+      .limit(q.limit ?? 1000)
+      .offset(q.offset ?? 0);
     return rows.map((r) => this.toAsset(r));
   }
   async countAssets(store?: string) {

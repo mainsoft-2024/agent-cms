@@ -64,6 +64,8 @@ export interface DocFilter {
 }
 export type AssetPatch = Partial<Omit<CmsAsset, "id" | "store" | "createdAt">>;
 
+export type AssetSort = "new" | "old" | "name" | "size";
+
 export interface AssetQuery {
   store?: string;
   /** Exactly this folder ("" = top level). */
@@ -80,6 +82,13 @@ export interface AssetQuery {
   createdBefore?: string;
   /** true: only what is in the trash. Default: only what is not. */
   trashed?: boolean;
+  /** No document uses it (draft or published). */
+  unused?: boolean;
+  /** Images without alt text. */
+  missingAlt?: boolean;
+  /** Order. Default "new" (newest first, with `before` as the cursor); the others page with `offset`. */
+  sort?: AssetSort;
+  offset?: number;
   /** Entries strictly older than this cursor (`createdAt|id` of the last one). */
   before?: string | null;
   limit?: number;
@@ -480,10 +489,20 @@ export class MemoryRepo implements CmsRepo {
           (!q.tag || a.tags.includes(q.tag)) &&
           (!q.createdBefore || a.createdAt < q.createdBefore) &&
           (!needle || a.name.toLowerCase().includes(needle) || a.alt.toLowerCase().includes(needle) || a.tags.some((t) => t.toLowerCase().includes(needle))) &&
-          (!q.before || `${a.createdAt}|${a.id}` < q.before)
+          (!q.before || `${a.createdAt}|${a.id}` < q.before) &&
+          (!q.unused || !this.assetRefs.some((r) => r.assetId === a.id)) &&
+          (!q.missingAlt || (a.kind === "image" && !a.alt.trim()))
       )
-      .sort((x, y) => `${y.createdAt}|${y.id}`.localeCompare(`${x.createdAt}|${x.id}`))
-      .slice(0, q.limit ?? 1000)
+      .sort((x, y) =>
+        q.sort === "name"
+          ? x.name.toLowerCase().localeCompare(y.name.toLowerCase()) || x.id.localeCompare(y.id)
+          : q.sort === "size"
+            ? y.size - x.size || x.id.localeCompare(y.id)
+            : q.sort === "old"
+              ? `${x.createdAt}|${x.id}`.localeCompare(`${y.createdAt}|${y.id}`)
+              : `${y.createdAt}|${y.id}`.localeCompare(`${x.createdAt}|${x.id}`)
+      )
+      .slice(q.offset ?? 0, (q.offset ?? 0) + (q.limit ?? 1000))
       .map((a) => structuredClone(a));
   }
   async countAssets(store?: string) {

@@ -62,6 +62,8 @@ export interface ReadResult {
   totalLines: number;
   from: number;
   to: number;
+  /** Where the next page starts (null at the end). If `version` changes between pages, start again. */
+  nextOffset: number | null;
   /** `N→text` lines. */
   content: string;
   outline?: OutlineItem[];
@@ -96,6 +98,8 @@ export interface EditResult {
   counts: number[];
   /** Set when the collection keeps agents' edits as suggestions. */
   suggestion?: Suggestion;
+  /** True for `dryRun`: nothing was saved. */
+  dryRun?: boolean;
 }
 
 export interface Suggestion {
@@ -188,8 +192,8 @@ export function createAx(ctx: AxContext) {
       const text = docFile(doc);
       const n = numberLines(text, o.offset ?? 1, o.outline ? 0 : (o.limit ?? 400));
       const base = { path: docPath(col, doc.slug, doc.format), collection: col, slug: doc.slug, version: doc.version, format: fmt(doc), draft, totalLines: n.total };
-      if (o.outline) return { ...base, from: 1, to: n.total, content: "", outline: outline(text) };
-      return { ...base, from: n.from, to: n.to, content: n.content };
+      if (o.outline) return { ...base, from: 1, to: n.total, nextOffset: null, content: "", outline: outline(text) };
+      return { ...base, from: n.from, to: n.to, nextOffset: n.to < n.total ? n.to + 1 : null, content: n.content };
     },
 
     /** The file as text (CLI pull, raw links). */
@@ -257,7 +261,7 @@ export function createAx(ctx: AxContext) {
     },
 
     /** Replace unique text with new text, in order, all or none; one new version. */
-    async edit(actor: Actor, col: string, slug: string, edits: TextEdit[], o: { note?: string; expectedVersion?: number } = {}): Promise<EditResult> {
+    async edit(actor: Actor, col: string, slug: string, edits: TextEdit[], o: { note?: string; expectedVersion?: number; dryRun?: boolean } = {}): Promise<EditResult> {
       ctx.collection(col);
       await ctx.ready();
       const doc = await ctx.get(actor, col, slug, { draft: true });
@@ -268,6 +272,8 @@ export function createAx(ctx: AxContext) {
       if (!("text" in r)) throw editFailure(r);
       const input = parse(r.text, doc.fields);
       const base = { path: docPath(col, doc.slug, input.format), collection: col, slug: doc.slug, changed: r.changed, counts: r.counts, snippet: snippets(r.text, r.changed) };
+      // A dry run shows what would change; nothing is saved, suggested or announced.
+      if (o.dryRun) return { ...base, version: doc.version, saved: false, dryRun: true };
       if (suggests(actor, col)) {
         const suggestion = await saveSuggestion(actor, doc, edits, o.note ?? null, r.changed);
         return { ...base, version: doc.version, saved: false, suggestion };
@@ -342,7 +348,8 @@ export function createAx(ctx: AxContext) {
         throw fail("raw_link_expired");
       }
       // A PUT link sends one file; a GET link can be read until it expires.
-      if (method === "PUT") await ctx.repo.deleteRecords({ kind: "raw_link", id: r.id });
+      // Claimed by deleting it: of two requests at once only one deletes a row.
+      if (method === "PUT" && (await ctx.repo.deleteRecords({ kind: "raw_link", id: r.id })) === 0) throw fail("raw_link_invalid");
       return { actor: d.actor, collection: d.collection, slug: d.slug, version: d.version };
     },
 

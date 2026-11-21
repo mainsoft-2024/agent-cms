@@ -24,6 +24,11 @@ export const guide = defineCollection({
   access: { read: ({ actor }) => actor.kind !== "anonymous" },
   // What an agent writes here goes out only after a person approved it.
   review: { agents: "required" },
+  // Asked before publishing: a warning can be accepted, an error stops it.
+  publishChecks: [
+    (doc) => (doc.summary.trim() ? [] : [{ code: "summary_missing", message: "A guide without a summary is hard to find in search.", severity: "warning" as const, path: "summary" }]),
+    (doc) => (/\bTODO\b/.test(doc.body) ? [{ code: "todo_left", message: "The text still says TODO.", severity: "error" as const, path: "body", line: doc.body.split("\n").findIndex((l) => /\bTODO\b/.test(l)) + 1 }] : []),
+  ],
 });
 
 // The media library is on when the app is given a storage: `npm run s3:dev`

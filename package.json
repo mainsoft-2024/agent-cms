@@ -274,7 +274,7 @@
     "test:db": "tsx --test src/db/*.test.ts",
     "test:s3": "tsx --test src/storage-s3.test.ts",
     "s3:dev": "bash scripts/s3-dev.sh",
-    "test:ui": "tsx --tsconfig registry/tsconfig.json --test registry/__tests__/*.test.tsx",
+    "test:ui": "tsx --tsconfig registry/tsconfig.json --test registry/__tests__/*.test.tsx registry/__tests__/*.test.ts",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
     "check:pack": "publint --strict && attw --pack . --profile node16",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",

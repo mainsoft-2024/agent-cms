@@ -193,7 +193,10 @@ export function createOutbox(ctx: OutboxContext) {
     async secret(actor: Actor, id: string): Promise<{ secret: string }> {
       admin(actor);
       await ctx.ready();
-      return { secret: sealer().open((await found(id)).secretEnc) };
+      const w = await found(id);
+      // Who looked at a signing secret, and when (never the secret itself).
+      ctx.audit(actor, "webhook.secret_view", { detail: { id: w.id, name: w.name } });
+      return { secret: sealer().open(w.secretEnc) };
     },
     /** Send a `ping` now (not through the queue, no retries) and return what happened. */
     async test(actor: Actor, id: string): Promise<WebhookDelivery> {

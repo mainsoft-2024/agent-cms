@@ -164,7 +164,7 @@ const WriteBody = z.object({
 const Expected = z.object({ expectedVersion: z.number().int().positive().optional() });
 
 export function json(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers } });
+  return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers } });
 }
 
 export function errorResponse(err: unknown, cms?: CmsLike): Response {
@@ -176,7 +176,8 @@ export function errorResponse(err: unknown, cms?: CmsLike): Response {
   }
   if (err instanceof z.ZodError) {
     const issues = err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
-    return json({ error: "invalid_request", kind: "invalid", message: formatMessage(core?.messages, "invalid_request", { issues }), params: { issues } }, 422);
+    const list = err.issues.slice(0, 20).map((i) => ({ path: i.path.join("."), code: i.code, message: i.message }));
+    return json({ error: "invalid_request", kind: "invalid", message: formatMessage(core?.messages, "invalid_request", { issues }), params: { issues }, issues: list }, 422);
   }
   console.error("[agent-cms] request failed:", err);
   return json({ error: "internal", kind: "internal", message: formatMessage(core?.messages, "internal"), params: {} }, 500);
@@ -201,6 +202,11 @@ export function sameSite(req: Request, trusted: readonly string[] = []): boolean
   if (req.headers.get("sec-fetch-site") === "cross-site") return false;
   if (!origin) return true; // not a browser page: nothing rides along by itself
   if (!from) return false; // "null" (a sandboxed frame) or not an address
+  // A plain-http page may not write to an https app of the same name.
+  const proto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase() || safeProto(req.url);
+  if (proto === "https:" || proto === "https") {
+    if (safeProto(origin) === "http:" && !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(from)) return false;
+  }
   const own = [safeHost(req.url), req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || null, req.headers.get("host")];
   return own.some((h) => !!h && h.toLowerCase() === from.toLowerCase());
 }
@@ -216,7 +222,11 @@ export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsH
   const raw = keyFromHeader(req.headers.get("authorization"));
   if (raw) {
     const actor = await core.authenticateKey(raw);
-    if (!actor) throw new CmsError("invalid_key", {}, { messages: core.messages });
+    if (!actor) {
+      // Guessing keys from one address runs into a limit (30 wrong keys a minute).
+      await limited(`badkey:${ipOf(req) ?? "unknown"}`, 30);
+      throw new CmsError("invalid_key", {}, { messages: core.messages });
+    }
     const policy = await core.keyPolicy(actor.id);
     if (policy.allowedIps.length && !ipAllowed(ipOf(req), policy.allowedIps)) throw new CmsError("forbidden_ip", {}, { messages: core.messages });
     await limited(`key:${actor.id}`, policy.perMinute);
@@ -239,6 +249,50 @@ export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsH
   return person;
 }
 
+function safeProto(u: string): string | null {
+  try {
+    return new URL(u).protocol;
+  } catch {
+    return null;
+  }
+}
+
+/** The path for logs: secrets in it (raw file links) become placeholders. */
+export function redactPath(path: string): string {
+  return path.replace(/^\/raw\/[^/]+/, "/raw/:token").replace(/\/(preview|share)\/[A-Za-z0-9_-]{16,}/g, "/$1/:token");
+}
+
+/** A caller's own request id if it looks like one, else a new one. */
+function requestId(req: Request): string {
+  const given = req.headers.get("x-request-id");
+  if (given && /^[A-Za-z0-9._:-]{8,64}$/.test(given)) return given;
+  return crypto.randomUUID();
+}
+
+/** The body as text, refusing more than `max` bytes before it is all read. */
+export async function readLimited(req: Request, max: number): Promise<string> {
+  const declared = Number(req.headers.get("content-length") ?? NaN);
+  if (Number.isFinite(declared) && declared > max) throw new CmsError("body_too_large", {}, { status: 413 });
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const parts: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) {
+      void reader.cancel().catch(() => undefined);
+      throw new CmsError("body_too_large", {}, { status: 413 });
+    }
+    parts.push(value);
+  }
+  const all = new Uint8Array(n);
+  let at = 0;
+  for (const p of parts) (all.set(p, at), (at += p.byteLength));
+  return new TextDecoder().decode(all);
+}
+
 function safeHost(origin: string): string | null {
   try {
     return new URL(origin).host;
@@ -247,9 +301,8 @@ function safeHost(origin: string): string | null {
   }
 }
 
-async function readJson(req: Request, optional: boolean): Promise<unknown> {
-  const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) throw new CmsError("body_too_large", {}, { status: 413 });
+async function readJson(req: Request, optional: boolean, max = MAX_BODY_BYTES): Promise<unknown> {
+  const text = await readLimited(req, max);
   if (!text.trim()) {
     if (optional) return {};
     throw new CmsError("invalid_json");
@@ -284,9 +337,15 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
 
   return async function handler(req: Request): Promise<Response> {
     const t0 = Date.now();
+    const id = requestId(req);
     let seen: { kind: string; via: string | null } = { kind: "anonymous", via: null };
     const res = await handle(req, (a) => (seen = a));
-    core.telemetry({ type: "request", method: req.method.toUpperCase(), path: new URL(req.url).pathname.slice(base.length) || "/", status: res.status, ms: Date.now() - t0, actor: seen.kind, via: seen.via });
+    try {
+      res.headers.set("x-request-id", id);
+    } catch {
+      /* a response with fixed headers (a redirect from fetch) */
+    }
+    core.telemetry({ type: "request", id, method: req.method.toUpperCase(), path: redactPath(new URL(req.url).pathname.slice(base.length) || "/"), status: res.status, ms: Date.now() - t0, actor: seen.kind, via: seen.via });
     return res;
   };
 
@@ -319,8 +378,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           const f = await core.ax.file(link.actor, link.collection, link.slug);
           return new Response(f.text, { status: 200, headers: { "content-type": `${f.format === "html" ? "text/html" : "text/markdown"}; charset=utf-8`, "content-disposition": `attachment; filename="${f.path.split("/").pop()}"`, etag: `"${f.version}"`, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
         }
-        const text = await req.text();
-        const r = await core.ax.write(link.actor, link.collection, link.slug, text, { expectedVersion: versionFromIfMatch(req.headers.get("if-match")) ?? link.version, note: "uploaded file" });
+        const text = await readLimited(req, MAX_BODY_BYTES);
+        // The link is for the version it was made from; a different If-Match is refused, not obeyed.
+        const asked = versionFromIfMatch(req.headers.get("if-match"));
+        if (asked !== undefined && asked !== link.version) throw new CmsError("conflict_version", { expected: link.version, actual: asked }, { status: 409, messages: core.messages });
+        const r = await core.ax.write(link.actor, link.collection, link.slug, text, { expectedVersion: link.version, note: "uploaded file" });
         return json(r);
       }
       const client = req.headers.get("x-agent-cms-client");
@@ -517,7 +579,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const tags = z.array(z.string().max(40)).max(30).optional();
         if (seg.length === 1 && m === "GET") {
           const kinds = (q.get("kind") ?? "").split(",").filter((k): k is AssetKind => (ASSET_KINDS as readonly string[]).includes(k) && k !== "folder");
-          return json(await assets.list(actor, { store: q.get("store"), folder: q.get("folder"), kinds, q: q.get("q") ?? undefined, tag: q.get("tag") ?? undefined, cursor: q.get("cursor"), limit: Number(q.get("limit") ?? 48) || 48 }));
+          return json(await assets.list(actor, { store: q.get("store"), folder: q.get("folder"), kinds, q: q.get("q") ?? undefined, tag: q.get("tag") ?? undefined, unused: q.get("unused") === "true" || q.get("unused") === "1", missingAlt: q.get("missingAlt") === "true" || q.get("missingAlt") === "1", sort: (["new", "old", "name", "size"] as const).find((x) => x === q.get("sort")), cursor: q.get("cursor"), limit: Number(q.get("limit") ?? 48) || 48 }));
+        }
+        if (seg[1] === "_zip" && seg.length === 2 && m === "GET") {
+          const z1 = await assets.zip(actor, (q.get("ids") ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+          return new Response(z1.data as unknown as BodyInit, { headers: { "content-type": "application/zip", "content-disposition": `attachment; filename="${z1.name}"`, "cache-control": "private, no-store", "x-content-type-options": "nosniff" } });
         }
         if (seg[1] === "_folders" && seg.length === 2) {
           if (m === "GET") return json({ stores: await assets.folders(actor) });
@@ -707,7 +773,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return new Response(f.text, { status: 200, headers: { "content-type": `${f.format === "html" ? "text/html" : "text/markdown"}; charset=utf-8`, etag: `"${f.version}"`, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
           }
           if (action === "file" && m === "PUT") {
-            const text = await req.text();
+            const text = await readLimited(req, MAX_BODY_BYTES);
             return json(await core.ax.write(actor, col, slug, text, { expectedVersion: expected(), note: q.get("note") ?? undefined }));
           }
           if (action === "file-link" && m === "POST") {
@@ -721,9 +787,10 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
                 edits: z.array(z.object({ oldString: z.string().min(1), newString: z.string(), replaceAll: z.boolean().optional() })).min(1).max(50),
                 expectedVersion: z.number().int().positive().optional(),
                 note: z.string().max(300).optional(),
+                dryRun: z.boolean().optional(),
               })
             );
-            return json(await core.ax.edit(actor, col, slug, b.edits, { expectedVersion: expected(b.expectedVersion), note: b.note }));
+            return json(await core.ax.edit(actor, col, slug, b.edits, { expectedVersion: expected(b.expectedVersion), note: b.note, dryRun: b.dryRun }));
           }
           if (action === "suggestions" && m === "GET") return json({ suggestions: await core.ax.suggestions(actor, col, slug) });
           if (action === "checks" && m === "POST") {
@@ -826,8 +893,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         return json(r, 200, q.get("download") === "1" ? { "content-disposition": `attachment; filename="cms-export-${new Date().toISOString().slice(0, 10)}.json"` } : {});
       }
       if (seg[0] === "import" && seg.length === 1 && m === "POST") {
-        const text = await req.text();
-        if (text.length > IMPORT_MAX_BYTES) throw new CmsError("body_too_large", {}, { status: 413 });
+        const text = await readLimited(req, IMPORT_MAX_BYTES);
         let raw: unknown;
         try {
           raw = JSON.parse(text);

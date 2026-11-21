@@ -9,7 +9,8 @@
 "use client";
 
 import * as React from "react";
-import { ArrowUpDown, Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, MessageSquare, MoreHorizontal } from "lucide-react";
+import { createPortal } from "react-dom";
+import { AppWindow, ArrowUpDown, Bot, Columns2, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, MessageSquare, MoreHorizontal } from "lucide-react";
 import { isCmsRemoteError, type CollectionSchema, type CommentThread, type DocRelease } from "@mainsoft/agent-cms/client";
 import { mergeDocs, resolveDocMerge, splitLines } from "@mainsoft/agent-cms/diff";
 import { docState, type CmsDoc, type AutosaveState, type Presence } from "@mainsoft/agent-cms/types";
@@ -24,11 +25,12 @@ import { errorMessage } from "./cms-messages";
 import { CmsFieldForm, problemKey, type FieldProblem } from "./cms-field-form";
 import { AddToReleaseDialog, BodyBackdrop, CommentsPanel, offsetOf, placeOf, PublishButton, ReviewStrip, ScheduleStrip, type BodyCursor } from "./cms-flow";
 import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
+import { createUploader } from "./cms-upload";
 import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-tools";
 import { pasteAsMarkdown } from "./cms-paste";
 import { CmsMerge } from "./cms-merge";
-import { CodeBox, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText } from "./cms-parts";
-import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, type DocContent } from "./use-cms";
+import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText } from "./cms-parts";
+import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, type DocContent } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
 type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
@@ -131,11 +133,18 @@ function takeStatus(collection: string, slug: string): string | null {
 }
 
 export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className }: CmsDocEditorProps) {
-  const { client, t, locale, me } = useCms();
+  const { client, t, locale, me, baseUrl, slots } = useCms();
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
   /** Where the cursor last was in the body (null: the person never put it there). */
   const caretRef = React.useRef<[number, number] | null>(null);
   const [picking, setPicking] = React.useState(false);
+  const [checks, setChecks] = React.useState<null | Awaited<ReturnType<typeof client.publishChecks>>>(null);
+  const [view, setView] = useLocalStorage<"blocks" | "markdown">("cms-body-view", "blocks");
+  // The markdown view can show the preview beside the text; the block view is one column (it looks like the page already).
+  const [sidePreview, setSidePreview] = useLocalStorage<boolean>("cms-side-preview", true);
+  const [previewWindow, setPreviewWindow] = React.useState(false);
+  const insertRef = React.useRef<((md: string) => void) | null>(null);
+  const pickWaiter = React.useRef<((md: string | null) => void) | null>(null);
   const mobile = useIsMobile();
   const schemaQ = useAsync(() => client.schema(collection), [client, collection]);
   const schema = schemaQ.data;
@@ -238,24 +247,40 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   }, [client, collection, slug, applyDoc]);
 
   // ── diagnose and autosave ──
+  // Each check and autosave gets a number; an answer to an older one is dropped,
+  // so a slow reply can neither bring back a fixed problem nor overwrite a newer save.
+  const diagSeq = React.useRef(0);
+  const autoSeq = React.useRef(0);
   const diagnose = useDebounced(async (c: DocContent) => {
+    const mine = ++diagSeq.current;
     try {
       const d = await client.diagnose(collection, toInput(c, doc?.fields), doc?.slug);
+      if (mine !== diagSeq.current) return;
       setProblems(d as Diagnostic[]);
     } catch {
       /* the save will tell */
     }
   }, 400);
 
-  const autosave = useDebounced(async (c: DocContent, base: number, s: string) => {
+  const autosaveRaw = useDebounced(async (c: DocContent, base: number, s: string) => {
+    const mine = ++autoSeq.current;
     setAuto({ state: "saving" });
     try {
       const a = await client.autosave(collection, s, toInput(c, doc?.fields), base);
-      setAuto({ state: "saved", at: a.at });
+      if (mine === autoSeq.current) setAuto({ state: "saved", at: a.at });
     } catch {
-      setAuto({ state: "failed" });
+      if (mine === autoSeq.current) setAuto({ state: "failed" });
     }
   }, autosaveDelay);
+  const autosave = React.useMemo(() => {
+    const run = (c: DocContent, base: number, s: string) => autosaveRaw(c, base, s);
+    /** Stops the timer and makes an autosave already on its way not count. */
+    run.cancel = () => {
+      autosaveRaw.cancel();
+      autoSeq.current++;
+    };
+    return run;
+  }, [autosaveRaw]);
 
   const setContent = (next: DocContent) => {
     edited.current = true;
@@ -321,10 +346,18 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         return d;
       }
       if (!doc) return null;
+      const sent = content;
+      // The server marks a reverted change against the version that made it, so this goes first.
       if (revertedIds.length) await client.review(collection, doc.slug, revertedIds, "reverted").catch(() => undefined);
       if (!sameContent(content, saved) || !publish) d = await client.update(collection, doc.slug, toInput(content, doc.fields), { expectedVersion: baseVersion, publish });
       else d = await client.publish(collection, doc.slug, { expectedVersion: baseVersion });
+      // Typing that happened while the save was on its way stays (and stays unsaved).
+      const typed = live.current.content;
       applyDoc(d);
+      if (!sameContent(typed, sent)) {
+        setContentRaw(typed);
+        edited.current = true;
+      }
       setRestoreOffer(null);
       setAuto({ state: "idle" });
       setReviewed((r) => Object.fromEntries(Object.entries(r).filter(([, x]) => x.action === "accepted")));
@@ -473,7 +506,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const previewRef = React.useRef<HTMLDivElement>(null);
   const [outline, setOutline] = React.useState(false);
   const wide = !mobile && !loading && !!schema && !loadError && mode.kind !== "merge";
-  const sync = usePreviewSync(bodyRef, previewRef, content.body, wide, width);
+  const blocksView = !!slots.blockEditor && view === "blocks";
+  const sideBySide = wide && !blocksView && sidePreview;
+  const sync = usePreviewSync(bodyRef, previewRef, content.body, sideBySide, width);
   // Wide screens: the row with the text and the preview is as tall as the window minus the header and the
   // status line, which both stay in place. The info form scrolls away above it once you work in the body.
   const rootRef = React.useRef<HTMLDivElement>(null);
@@ -517,6 +552,99 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     const id = requestAnimationFrame(() => sync.select(p[0], p[1]));
     return () => cancelAnimationFrame(id);
   }, [mobileTab, sync]);
+
+  // Publishing first asks the collection's checks; findings open a dialog (errors block, warnings may be accepted).
+  const publish = async () => {
+    if (isNew || !doc || !schema?.publishChecks) return void save(true);
+    setBusy(true);
+    try {
+      const r = await client.publishChecks(collection, doc.slug, toInput(content, doc.fields));
+      setBusy(false);
+      if (r.checks.length || r.blocking) return setChecks(r);
+    } catch {
+      setBusy(false);
+    }
+    void save(true);
+  };
+  // ── keyboard ──
+  const publishRef = React.useRef(publish);
+  publishRef.current = publish;
+  const keys = React.useRef({ save, dirty, busy, isNew, canWrite: false, canPublish: false });
+  keys.current = { save, dirty, busy, isNew, canWrite: !!schema?.canWrite, canPublish: !!schema?.canPublish && !schema?.needsReview };
+  useShortcut(mode.kind === "edit" && "mod+s", () => {
+    const k = keys.current;
+    if (k.canWrite && !k.busy && (k.dirty || k.isNew)) void k.save(false);
+  });
+  useShortcut(mode.kind === "edit" && "mod+shift+p", () => {
+    const k = keys.current;
+    if (k.canPublish && !k.busy) void publishRef.current();
+  });
+
+  // ── a copy in this browser: survives a lost connection and a closed tab ──
+  // Scoped by CMS mount and person: a shared browser never offers someone else's copy.
+  const localKey = `agent-cms:draft:${baseUrl}:${me?.actor.id ?? "-"}:${collection}/${currentSlug || "_new"}`;
+  const writeLocal = useDebounced((c: DocContent, base: number) => {
+    try {
+      window.localStorage.setItem(localKey, JSON.stringify({ content: c, baseVersion: base, at: new Date().toISOString() }));
+    } catch {
+      /* private mode or full */
+    }
+  }, 400);
+  React.useEffect(() => {
+    if (loading) return;
+    if (edited.current && !sameContent(content, saved)) writeLocal(content, baseVersion);
+    else {
+      writeLocal.cancel();
+      try {
+        window.localStorage.removeItem(localKey);
+      } catch {
+        /* ignore */
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, saved, loading, localKey]);
+  // On open: a copy left here that the server does not have becomes the restore offer.
+  React.useEffect(() => {
+    if (loading || !doc || restoreOffer || !me) return;
+    try {
+      const raw = window.localStorage.getItem(localKey);
+      if (!raw) return;
+      const kept = JSON.parse(raw) as { content: DocContent; baseVersion: number; at: string };
+      const old = Date.now() - Date.parse(kept.at) > 14 * 864e5;
+      if (old || kept.baseVersion > doc.version || sameContent(contentOf(kept.content as CmsDoc), doc)) return window.localStorage.removeItem(localKey);
+      setRestoreOffer({ content: contentOf(kept.content as CmsDoc), baseVersion: kept.baseVersion, at: kept.at, by: t("restore_this_browser") });
+    } catch {
+      /* bad JSON: ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, doc?.slug, me?.actor.id]);
+  // Leaving with edits the server has not got asks first.
+  const unsaved = dirty && auto.state !== "saved";
+  React.useEffect(() => {
+    if (!unsaved) return;
+    const on = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", on);
+    return () => window.removeEventListener("beforeunload", on);
+  }, [unsaved]);
+  // Offline: say so, and save when the connection is back.
+  const [offline, setOffline] = React.useState(false);
+  React.useEffect(() => {
+    const sync = () => setOffline(typeof navigator !== "undefined" && navigator.onLine === false);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return () => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, []);
+  React.useEffect(() => {
+    if (!offline && auto.state === "failed" && doc && live.current.dirty) autosave(live.current.content, live.current.baseVersion, doc.slug);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offline]);
 
   if (mode.kind === "merge" && doc)
     return (
@@ -590,7 +718,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
             disabled={!dirty && !!st && st.state === "published" && !st.modifiedSincePublish}
             canSchedule={!!doc}
             schedule={doc?.schedule ?? null}
-            onPublish={() => void save(true)}
+            onPublish={() => void publish()}
             onSchedule={scheduleAt}
             onUnschedule={unschedule}
           />
@@ -741,8 +869,47 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   ) : null;
 
   const bodyId = "cms-editor-body";
+  // ── block editor (when the app passes one in `slots.blockEditor`) ──
+  const BlockEditor = slots.blockEditor;
+  const blocksOn = !!BlockEditor && view === "blocks";
+  const targetOf = (md: string) => /\]\(([^)\s]+)/.exec(md)?.[1] ?? "";
+  const blockProps = {
+    value: content.body,
+    onChange: (body: string) => setContent({ ...live.current.content, body }),
+    readOnly: !canWrite,
+    id: bodyId,
+    describedBy: byField.body?.length ? `${bodyId}-err` : undefined,
+    insertRef,
+    resolveFileUrl: (target: string) => {
+      const m = /^asset:([a-z0-9]{12})(?:\/(.*))?$/.exec(target);
+      return m ? client.fileUrl({ id: m[1], name: m[2] ? decodeURIComponent(m[2]) : "file" }) : target;
+    },
+    onPickMedia: me?.media && canWrite ? () => new Promise<string | null>((done) => ((pickWaiter.current = done), setPicking(true))) : undefined,
+    uploadFile:
+      me?.media && canWrite
+        ? (file: File) =>
+            new Promise<string>((ok, bad) => {
+              const up = createUploader({
+                client,
+                memory: null,
+                onDone: (a) => ok(targetOf(assetMarkdown(a))),
+                onChange: (items) => {
+                  const f = items.find((i) => i.state === "failed");
+                  if (f) (bad(new Error(f.error ?? t("media_upload_failed"))), up.remove(f.key));
+                },
+              });
+              up.add([file]);
+            })
+        : undefined,
+  };
   /** Put a file at the cursor: media on a line of its own, other files as a link. */
   const insertAsset = (a: Parameters<typeof assetMarkdown>[0]) => {
+    if (pickWaiter.current) {
+      pickWaiter.current(assetMarkdown(a));
+      pickWaiter.current = null;
+      return;
+    }
+    if (blocksOn && insertRef.current) return insertRef.current(assetMarkdown(a));
     const el = bodyRef.current;
     const [at, end] = caretRef.current ?? [content.body.length, content.body.length];
     const before = content.body.slice(0, at);
@@ -763,13 +930,29 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const bodyInvalid = bodyErr?.some((e) => e.severity === "error");
   const bodyPane = (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={doc.slug} canWrite={canWrite} onApplied={() => void client.get(collection, doc.slug, { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
       <div className="flex items-center gap-1.5 border-b px-3 py-2 text-xs text-muted-foreground">
         <FileText aria-hidden className="h-3.5 w-3.5" />
         <Label htmlFor={bodyId} className="text-xs font-medium text-muted-foreground">
-          {t("field_body")}
+          {blocksOn ? t("blk_body") : t("field_body")}
         </Label>
         <span className="flex-1" />
-        {canWrite && sectionCount > 1 ? (
+        {BlockEditor ? (
+          <div role="group" aria-label={t("blk_view")} className="-my-1 flex rounded-md border p-0.5">
+            {(["blocks", "markdown"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                aria-pressed={view === v}
+                onClick={() => setView(v)}
+                className={cn("rounded px-2 py-0.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring", view === v ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
+              >
+                {t(v === "blocks" ? "blk_view_blocks" : "blk_view_markdown")}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {canWrite && sectionCount > 1 && !blocksOn ? (
           <Button type="button" variant="ghost" size="sm" aria-pressed={outline} aria-label={t("sections_order")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", outline && "bg-muted")} onClick={() => setOutline((v) => !v)}>
             <ArrowUpDown aria-hidden className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">{t("sections_order")}</span>
@@ -781,9 +964,51 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
             {t("media_insert_button")}
           </Button>
         ) : null}
-        <span>{t("chars", { n: content.body.length.toLocaleString(locale) })}</span>
+        {!mobile && !blocksOn ? (
+          <Button type="button" variant="ghost" size="sm" aria-pressed={sidePreview} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", sidePreview && "bg-muted")} onClick={() => setSidePreview(!sidePreview)}>
+            <Columns2 aria-hidden className="h-3.5 w-3.5" />
+            <span className="hidden lg:inline">{t("blk_preview_side")}</span>
+          </Button>
+        ) : null}
+        {!mobile ? (
+          <Button type="button" variant="ghost" size="sm" aria-pressed={previewWindow} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", previewWindow && "bg-muted")} onClick={() => setPreviewWindow((v) => !v)}>
+            <AppWindow aria-hidden className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">{t("blk_preview_window")}</span>
+          </Button>
+        ) : null}
+        <BodyCount body={content.body} />
       </div>
-      <CmsMediaPicker open={picking} onOpenChange={setPicking} onPick={insertAsset} />
+      <ConfirmDialog
+        open={!!checks}
+        onOpenChange={(o) => !o && setChecks(null)}
+        title={checks?.blocking ? t("checks_blocked_title") : t("checks_warn_title")}
+        description={checks?.blocking ? t("checks_blocked_text") : t("checks_warn_text")}
+        confirmLabel={checks?.blocking ? t("close") : t("checks_publish_anyway")}
+        destructive={false}
+        onConfirm={() => {
+          const go = checks && !checks.blocking;
+          setChecks(null);
+          if (go) void save(true);
+        }}
+      >
+        <ul className="grid max-h-72 gap-1.5 overflow-y-auto text-sm" aria-label={t("checks_list")}>
+          {[...(checks?.diagnostics.filter((d) => d.severity === "error") ?? []).map((d) => ({ severity: "error" as const, message: d.message, where: d.path })), ...(checks?.checks ?? []).map((c) => ({ severity: c.severity, message: c.message, where: c.line ? t("checks_line", { n: c.line }) : c.path }))].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "error" ? -1 : 1)).map((c, i) => (
+            <li key={i} className="flex items-start gap-2 rounded-md border px-3 py-2">
+              <span className={cn("mt-0.5 shrink-0 rounded px-1.5 text-[11px] font-medium", c.severity === "error" ? "bg-destructive/10 text-destructive" : "bg-amber-500/15 text-amber-700 dark:text-amber-400")}>{c.severity === "error" ? t("checks_error") : t("checks_warning")}</span>
+              <span className="min-w-0 flex-1 break-words">{c.message}</span>
+              {c.where ? <span className="shrink-0 text-xs text-muted-foreground">{c.where}</span> : null}
+            </li>
+          ))}
+        </ul>
+      </ConfirmDialog>
+      <CmsMediaPicker
+        open={picking}
+        onOpenChange={(o) => {
+          setPicking(o);
+          if (!o && pickWaiter.current) (pickWaiter.current(null), (pickWaiter.current = null));
+        }}
+        onPick={insertAsset}
+      />
       {blocks}
       {outline && sectionCount > 1 ? (
         <SectionsOrder
@@ -799,7 +1024,14 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           }}
         />
       ) : null}
-      <div className={cn("relative flex min-h-[360px] flex-1 flex-col", outline && sectionCount > 1 && "hidden")}>
+      {blocksOn && BlockEditor ? (
+        <div className="mx-auto flex w-full max-w-[780px] flex-1 flex-col px-5 sm:pl-12 sm:pr-8">
+          <React.Suspense fallback={<p className="py-6 text-sm text-muted-foreground">{t("blk_loading")}</p>}>
+            <BlockEditor key={`${collection}/${currentSlug}`} {...blockProps} />
+          </React.Suspense>
+        </div>
+      ) : null}
+      <div className={cn("relative flex min-h-[360px] flex-1 flex-col", ((outline && sectionCount > 1) || blocksOn) && "hidden")}>
         {marks.length || cursors.length ? <BodyBackdrop box={bodyRef} text={content.body} marks={marks} cursors={cursors} /> : null}
         <Textarea
           ref={bodyRef}
@@ -874,7 +1106,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   );
 
   const autosaveText =
-    auto.state === "saving" ? t("autosaving") : auto.state === "saved" && auto.at ? t("autosaved_at", { time: formatTime(auto.at, locale) }) : auto.state === "failed" ? t("autosave_failed") : dirty ? t("unsaved") : "";
+    offline && dirty ? t("offline_kept") : auto.state === "saving" ? t("autosaving") : auto.state === "saved" && auto.at ? t("autosaved_at", { time: formatTime(auto.at, locale) }) : auto.state === "failed" ? t("autosave_failed") : dirty ? t("unsaved") : "";
 
   const problemsFoot = (
     <div className="flex flex-col">
@@ -1068,11 +1300,20 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         </div>
       ) : null}
       <div className="border-b px-6 py-3.5">{form}</div>
-      <div ref={rowRef} className={cn("flex min-h-[360px] divide-x", rowHeight === null ? "flex-1" : "shrink-0")} style={rowHeight === null ? undefined : { height: rowHeight }}>
-        {bodyPane}
-        {previewPane(true)}
-        {commentsOpen ? comments(() => setCommentsOpen(false)) : null}
-      </div>
+      {sideBySide ? (
+        <div ref={rowRef} className={cn("flex min-h-[360px] divide-x", rowHeight === null ? "flex-1" : "shrink-0")} style={rowHeight === null ? undefined : { height: rowHeight }}>
+          {bodyPane}
+          {previewPane(true)}
+          {commentsOpen ? comments(() => setCommentsOpen(false)) : null}
+        </div>
+      ) : (
+        // One column: the body grows with its text and the page scrolls (the header and the status line stay).
+        <div ref={rowRef} className="flex min-h-[360px] flex-1 divide-x">
+          {bodyPane}
+          {commentsOpen ? <div className="sticky top-0 flex max-h-dvh w-80 shrink-0 flex-col self-start">{comments(() => setCommentsOpen(false))}</div> : null}
+        </div>
+      )}
+      {previewWindow ? <PreviewWindow title={content.title} summary={content.summary} body={content.body} name={`cms-preview-${collection}-${currentSlug ?? "new"}`} onClosed={() => setPreviewWindow(false)} /> : null}
       <div ref={footRef} className="sticky bottom-0 z-10 bg-background">
         {problemsFoot}
       </div>
@@ -1176,3 +1417,183 @@ export function CmsPreviewLinkDialog({ open, onOpenChange, collection, slug, ver
 }
 
 export type { CollectionSchema };
+
+/** Agents' edits waiting for a person (collections with `agentEdits: "suggest"`): what changes, apply or reject. */
+function SuggestionCards({ collection, slug, canWrite, onApplied }: { collection: string; slug: string; canWrite: boolean; onApplied: () => void }) {
+  const { client, t, locale, toast } = useCms();
+  const list = useAsync(() => client.suggestions(collection, slug), [client, collection, slug]);
+  const [busy, setBusy] = React.useState<string | null>(null);
+  const items = list.data ?? [];
+  if (!items.length) return null;
+  const act = async (id: string, apply: boolean) => {
+    setBusy(id);
+    try {
+      if (apply) await client.applySuggestion(collection, slug, id);
+      else await client.rejectSuggestion(collection, slug, id);
+      toast(apply ? t("sugg_applied") : t("sugg_rejected"), { tone: "ok" });
+      list.reload();
+      if (apply) onApplied();
+    } catch (e) {
+      toast(errorMessage(e, t), { tone: "error" });
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-2 border-b bg-muted/30 px-3 py-2" role="region" aria-label={t("sugg_title", { n: items.length })}>
+      <p className="text-xs font-medium">{t("sugg_title", { n: items.length })}</p>
+      {items.map((s) => (
+        <article key={s.id} className="rounded-md border bg-background p-2.5 text-sm">
+          <header className="mb-1.5 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">{s.by.agent ? `${s.by.agent}, ${s.by.label}` : s.by.label}</span>
+            <time dateTime={s.at} title={new Date(s.at).toLocaleString(locale)}>
+              {relativeTime(s.at, t, locale)}
+            </time>
+            {s.lines.length ? <span>{t("sugg_lines", { from: s.lines[0].from, to: s.lines[s.lines.length - 1].to })}</span> : null}
+          </header>
+          {s.note ? <p className="mb-1.5">{s.note}</p> : null}
+          <div className="grid gap-1 font-mono text-[12px] leading-5">
+            {s.edits.slice(0, 3).map((e, i) => (
+              <div key={i} className="grid gap-0.5">
+                <del className="block whitespace-pre-wrap break-words rounded bg-destructive/10 px-1.5 no-underline">{e.oldString}</del>
+                <ins className="block whitespace-pre-wrap break-words rounded bg-emerald-500/15 px-1.5 no-underline">{e.newString || "∅"}</ins>
+              </div>
+            ))}
+            {s.edits.length > 3 ? <span className="text-xs text-muted-foreground">{t("sugg_more", { n: s.edits.length - 3 })}</span> : null}
+          </div>
+          {canWrite ? (
+            <div className="mt-2 flex gap-2">
+              <Button type="button" size="sm" className="h-7" disabled={busy === s.id} onClick={() => void act(s.id, true)}>
+                {t("sugg_apply")}
+              </Button>
+              <Button type="button" size="sm" variant="outline" className="h-7" disabled={busy === s.id} onClick={() => void act(s.id, false)}>
+                {t("sugg_reject")}
+              </Button>
+            </div>
+          ) : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+// ── body length ───────────────────────────────────────────────────────────────
+
+/** Words, characters and reading time of the body (markup left out). */
+export function bodyStats(body: string): { words: number; chars: number; minutes: number } {
+  const text = body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/:::html[\s\S]*?\n:::/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[\[link:[^|\]]+\|([^\]]+)\]\]/g, "$1")
+    .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+[.)]|\|)\s?/gm, "")
+    .replace(/[*_~`|]/g, "");
+  const words = text.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)?.length ?? 0;
+  const chars = text.replace(/\s/g, "").length;
+  // Hangul and other scripts without spaces read by characters, the rest by words.
+  const cjk = text.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g)?.length ?? 0;
+  const minutes = Math.max(1, Math.round(cjk > chars / 2 ? chars / 500 : words / 230));
+  return { words, chars, minutes };
+}
+
+function BodyCount({ body }: { body: string }) {
+  const { t, locale } = useCms();
+  const s = React.useMemo(() => bodyStats(body), [body]);
+  const n = (x: number) => x.toLocaleString(locale);
+  return (
+    <span title={`${t("blk_words", { n: n(s.words) })} · ${t("blk_chars", { n: n(s.chars) })}`} className="tabular-nums">
+      <span className="hidden sm:inline">{t("blk_words", { n: n(s.words) })} · </span>
+      {t("blk_read_min", { n: n(s.minutes) })}
+    </span>
+  );
+}
+
+// ── live preview in a window of its own ───────────────────────────────────────
+
+/**
+ * The preview in a separate browser window (put it on a second screen): it is
+ * drawn by this page, so it follows every keystroke without saving. Closing it
+ * or pressing the button again ends it.
+ */
+function PreviewWindow({ title, summary, body, name, onClosed }: { title: string; summary: string; body: string; name: string; onClosed: () => void }) {
+  const { t, toast } = useCms();
+  const [host, setHost] = React.useState<HTMLElement | null>(null);
+  const [width, setWidth] = React.useState<"375" | "768" | "full">("full");
+  const win = React.useRef<Window | null>(null);
+  const closedRef = React.useRef(onClosed);
+  closedRef.current = onClosed;
+  React.useEffect(() => {
+    const w = window.open("", name, "popup,width=920,height=1000");
+    if (!w) {
+      toast(t("blk_preview_blocked"), { tone: "error" });
+      closedRef.current();
+      return;
+    }
+    win.current = w;
+    const d = w.document;
+    d.title = t("preview");
+    d.documentElement.lang = document.documentElement.lang;
+    d.documentElement.className = document.documentElement.className;
+    d.documentElement.style.cssText = document.documentElement.style.cssText;
+    // The same styles as this page, so the preview looks the same.
+    d.head.innerHTML = "";
+    for (const el of Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))) d.head.appendChild(el.cloneNode(true));
+    const base = d.createElement("base");
+    base.href = document.baseURI;
+    d.head.prepend(base);
+    d.body.innerHTML = "";
+    d.body.className = document.body.className;
+    const root = d.createElement("div");
+    d.body.appendChild(root);
+    setHost(root);
+    // Keep the theme in step with the admin.
+    const mo = new MutationObserver(() => (d.documentElement.className = document.documentElement.className));
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    const timer = window.setInterval(() => {
+      if (w.closed) {
+        window.clearInterval(timer);
+        closedRef.current();
+      }
+    }, 500);
+    const closeWithUs = () => w.close();
+    window.addEventListener("pagehide", closeWithUs);
+    return () => {
+      mo.disconnect();
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", closeWithUs);
+      setHost(null);
+      if (!w.closed) w.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
+  React.useEffect(() => {
+    if (win.current && !win.current.closed) win.current.document.title = `${t("preview")} · ${title || t("new_doc_title")}`;
+  }, [title, t]);
+  if (!host) return null;
+  return createPortal(
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="sticky top-0 z-10 flex items-center gap-2 border-b bg-background/95 px-4 py-2 text-xs text-muted-foreground backdrop-blur">
+        <span className="relative flex size-2">
+          <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/60 motion-reduce:animate-none" />
+          <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+        </span>
+        <span>{t("blk_preview_live")}</span>
+        <span className="flex-1" />
+        <Segmented
+          label={t("preview_width")}
+          value={width}
+          onChange={setWidth}
+          options={[
+            { value: "375", label: "375" },
+            { value: "768", label: "768" },
+            { value: "full", label: t("width_full") },
+          ]}
+          itemClassName="h-6 px-2 text-xs"
+        />
+      </div>
+      <MarkdownPreview title={title} summary={summary} body={body} className={cn("mx-auto px-6 py-8", width === "375" ? "max-w-[375px]" : width === "768" ? "max-w-[768px]" : "max-w-3xl")} />
+    </div>,
+    host
+  );
+}

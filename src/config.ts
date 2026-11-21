@@ -25,7 +25,8 @@ export interface AgentCmsConfig {
   ui?: { dir?: string };
 }
 
-export function defineConfig(c: AgentCmsConfig): AgentCmsConfig {
+/** Checks the shape and keeps the literal types (collection slugs, field names) of what you pass. */
+export function defineConfig<const C extends AgentCmsConfig>(c: C): C {
   return c;
 }
 

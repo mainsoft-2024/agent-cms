@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "./fixtures";
 
 // 0.13.0 in a real browser: the dashboard, automations, roles, import and export, and the OpenAPI document.
 const api = "/api/cms";
@@ -40,7 +40,7 @@ test("automations: a published News post gets a keyword on the next cron call; a
   await page.getByRole("button", { name: "New automation" }).click();
   await page.getByLabel("Name").fill("News keyword");
   await page.getByLabel("When").selectOption("doc.published");
-  await page.getByLabel("Collection").selectOption("posts");
+  await page.getByLabel("Collection", { exact: true }).selectOption("posts");
   await page.getByRole("button", { name: "Add a condition" }).click();
   await page.getByLabel("Value").fill("News");
   await page.getByRole("button", { name: "Add an action" }).click();
@@ -113,7 +113,7 @@ test("roles: make a role, allow writing in Blog, find a person by name, delete i
 test("import and export: a markdown file is shown first, then becomes a draft; the export holds it", async ({ page, request }) => {
   const slug = `imported-${Date.now()}`;
   await page.goto("/admin/transfer");
-  await page.getByLabel("Collection").selectOption("guide");
+  await page.getByLabel("Collection", { exact: true }).selectOption("guide");
   await page.getByLabel("Choose a file").setInputFiles({ name: `${slug}.md`, mimeType: "text/markdown", buffer: Buffer.from(`---\ntitle: Imported guide\n---\n\n## Step one\n\nFrom a file.\n`) });
   const row = page.getByRole("row").filter({ hasText: `${slug}.md` });
   await expect(row).toContainText("New document");
