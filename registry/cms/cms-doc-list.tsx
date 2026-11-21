@@ -24,7 +24,7 @@ import type { MessageKey } from "./cms-messages";
 import { errorMessage } from "./cms-messages";
 import { CmsEmpty } from "./cms-empty";
 import { ConfirmDialog, flowState, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, Who } from "./cms-parts";
-import { formatZoned, relativeTime, useAsync, useCms, useDebounced, useIsMobile } from "./use-cms";
+import { formatZoned, relativeTime, useAsync, useCms, trashChanged, useDebounced, useIsMobile, useShortcut } from "./use-cms";
 
 type BulkAction = Parameters<RestClient["bulk"]>[1];
 type BulkResult = Awaited<ReturnType<RestClient["bulk"]>>[number];
@@ -58,7 +58,7 @@ export interface CmsDocListProps {
 }
 
 export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument, keysHref, pageSize = 50, presenceMs = 20000, className }: CmsDocListProps) {
-  const { client, t, locale, me } = useCms();
+  const { client, t, locale, me, toast } = useCms();
   const mobile = useIsMobile();
   const schema = useAsync(() => client.schema(collection), [client, collection]);
   const counts = useAsync(() => client.counts(collection), [client, collection]);
@@ -191,6 +191,20 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
 
   const open = (slug: string) => onOpenDocument?.(collection, slug);
 
+  // ── keyboard: "/" finds, "n" starts a new document, mod+A selects what is shown, Esc clears ──
+  const searchRef = React.useRef<HTMLInputElement>(null);
+  useShortcut("/", () => searchRef.current?.focus());
+  useShortcut(!!onNewDocument && "n", () => schema.data?.canWrite && onNewDocument?.(collection));
+  useShortcut(
+    docs.length > 0 && "mod+a",
+    () => {
+      setSelectMode(true);
+      selectAll(true);
+    },
+    { inFields: false }
+  );
+  useShortcut(selected.size > 0 && "escape", () => clearSelection());
+
   const run = async () => {
     if (!confirm) return;
     setRunning(true);
@@ -202,7 +216,26 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
         confirm.action,
         confirm.slugs.map((slug) => ({ slug, expectedVersion: bySlug.get(slug)?.version }))
       );
-      setResults({ action: confirm.action, results: res, titles: Object.fromEntries(confirm.slugs.map((s) => [s, bySlug.get(s)?.title ?? s])) });
+      const action = confirm.action;
+      const done = res.filter((r) => r.ok);
+      if (done.length === res.length) {
+        // Everything went through: a message with Undo instead of a dialog.
+        const undoable = action === "archive" || action === "unarchive" || (action === "delete" && (me?.trashDays ?? 0) > 0);
+        const undo = async () => {
+          try {
+            if (action === "delete") await client.restoreTrash(done.map((r) => ({ kind: "document" as const, id: bySlug.get(r.slug)!.id })));
+            else await client.bulk(collection, action === "archive" ? "unarchive" : "archive", done.map((r) => ({ slug: r.slug })));
+            toast(t("undo_done"), { tone: "ok" });
+          } catch (e) {
+            toast(errorMessage(e, t), { tone: "error" });
+          }
+          setReloadTick((n) => n + 1);
+          counts.reload();
+          trashChanged();
+        };
+        if (action === "delete") trashChanged();
+        toast(t(`bulk_done_${action}` as MessageKey, { n: done.length }), { tone: "ok", action: undoable ? { label: t("undo"), run: undo } : undefined });
+      } else setResults({ action, results: res, titles: Object.fromEntries(confirm.slugs.map((s) => [s, bySlug.get(s)?.title ?? s])) });
       setConfirm(null);
       clearSelection();
       setReloadTick((n) => n + 1);
@@ -313,6 +346,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       </label>
       <Search aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
       <Input
+        ref={searchRef}
         id={`cms-list-q-${collection}`}
         type="search"
         value={qInput}
@@ -586,6 +620,16 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
           <StatusText className="text-xs" tone={loadError ? "error" : "muted"}>
             {loadError ? errorMessage(loadError, t) : loading ? t("loading") : docs.length === 0 ? t("no_results") : t("shown_of", { shown: docs.length, total })}
           </StatusText>
+          {!loading && !loadError && docs.length === 0 && filtered ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => applyFilter({})}>
+              {t("clear_filters")}
+            </Button>
+          ) : null}
+          {loadError ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setReloadTick((n) => n + 1)}>
+              {t("retry")}
+            </Button>
+          ) : null}
           {cursor ? (
             <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void loadMore()}>
               {t("load_more")}

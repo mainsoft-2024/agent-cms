@@ -10,7 +10,9 @@ export async function generateMetadata({ params, searchParams }: PageProps<"/doc
   const draft = await previewDoc(token, "docs", slug);
   if (draft) return { title: draft.doc.title, robots: { index: false, follow: false } };
   const doc = await publishedDoc("docs", slug);
-  return doc ? { title: doc.title, description: doc.summary || undefined, alternates: { canonical: `/docs/${slug}`, languages: { ko: `/ko/docs/${slug}` } } } : {};
+  // Point to the Korean page only when it is really published.
+  const ko = doc ? await publishedDoc("docs-ko", slug).catch(() => null) : null;
+  return doc ? { title: doc.title, description: doc.summary || undefined, alternates: { canonical: `/docs/${slug}`, languages: ko ? { en: `/docs/${slug}`, ko: `/ko/docs/${slug}` } : undefined } } : {};
 }
 
 export default async function Page({ params, searchParams }: PageProps<"/docs/[slug]">) {

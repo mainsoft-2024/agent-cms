@@ -86,6 +86,7 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
   const [busy, setBusy] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
   const [slug, setSlug] = React.useState("");
+  const [testCol, setTestCol] = React.useState("");
   const runs = useAsync<AutomationRun[]>(() => client.automationRuns(auto.id, 20), [client, auto.id, auto.updatedAt]);
   const hooks = useAsync(() => (me?.webhooks ? client.webhooks().then((r) => r.webhooks) : Promise.resolve([])), [client, me?.webhooks]);
   const releases = useAsync(() => client.releases().then((r) => r.filter((x) => x.state !== "published"), () => []), [client]);
@@ -220,15 +221,34 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
           {t("automation_test")}
         </h2>
         <p className="text-xs text-muted-foreground">{t("automation_test_text")}</p>
-        <div className="flex max-w-md items-center gap-2">
+        {/* The test runs the saved rule: with unsaved changes it would test something else than what is shown. */}
+        {JSON.stringify(input()) !== JSON.stringify({ name: auto.name, enabled: auto.enabled, trigger: { event: auto.trigger.event, collection: auto.trigger.collection ?? null }, conditions: auto.conditions, actions: auto.actions }) ? (
+          <p className="text-xs text-amber-700 dark:text-amber-400">{t("automation_test_save_first")}</p>
+        ) : null}
+        <div className="flex max-w-md flex-wrap items-center gap-2">
+          {!collection && cols.length > 1 ? (
+            <select aria-label={t("automation_test_collection")} className="h-9 rounded-md border bg-background px-2 text-sm" value={testCol} onChange={(e) => setTestCol(e.target.value)}>
+              <option value="">{t("automation_test_collection")}</option>
+              {cols.map((c) => (
+                <option key={c.slug} value={c.slug}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <Input aria-label={t("automation_test_slug")} placeholder={t("automation_test_slug")} value={slug} onChange={(e) => setSlug(e.target.value)} />
           <Button
             type="button"
             variant="outline"
-            disabled={busy || !slug.trim() || !(collection || cols[0])}
+            disabled={
+              busy ||
+              !slug.trim() ||
+              !(collection || (cols.length === 1 ? cols[0] : testCol)) ||
+              JSON.stringify(input()) !== JSON.stringify({ name: auto.name, enabled: auto.enabled, trigger: { event: auto.trigger.event, collection: auto.trigger.collection ?? null }, conditions: auto.conditions, actions: auto.actions })
+            }
             onClick={() =>
               run(async () => {
-                const r = await client.testAutomation(auto.id, { collection: collection || cols[0].slug, slug: slug.trim() });
+                const r = await client.testAutomation(auto.id, { collection: collection || (cols.length === 1 ? cols[0].slug : testCol), slug: slug.trim() });
                 return r.matches ? t("automation_test_match", { title: r.title, actions: r.actions.map((a) => actionLabel(a.type)).join(", ") || "—" }) : t("automation_test_nomatch", { title: r.title });
               })
             }
@@ -247,7 +267,9 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
             {t("automation_refresh")}
           </Button>
         </div>
-        <StatusText className="text-xs">{runs.data && !runs.data.length ? t("automation_runs_empty") : ""}</StatusText>
+        <StatusText className="text-xs" tone={runs.error ? "error" : "muted"}>
+          {runs.error ? errorMessage(runs.error, t) : runs.loading && !runs.data ? t("loading") : runs.data && !runs.data.length ? t("automation_runs_empty") : ""}
+        </StatusText>
         <ul className="flex flex-col divide-y" aria-label={t("automation_runs")}>
           {(runs.data ?? []).map((r) => (
             <li key={r.id} className="flex items-center gap-2 py-1.5 text-xs">
@@ -256,7 +278,7 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
                 {r.title ?? r.slug ?? t(`trigger.${r.event}` as never)}
                 {r.error ? <span className="text-muted-foreground"> · {r.error}</span> : null}
               </span>
-              <time className="shrink-0 text-muted-foreground" dateTime={r.at}>
+              <time className="shrink-0 text-muted-foreground" dateTime={r.at} title={new Date(r.at).toLocaleString(locale, { timeZoneName: "short" })}>
                 {relativeTime(r.at, t, locale)}
               </time>
             </li>

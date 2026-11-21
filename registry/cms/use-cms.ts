@@ -44,6 +44,24 @@ export interface CmsContextValue {
   meError: unknown;
   reloadMe: () => void;
   slots: CmsSlots;
+  /** Show a short message at the bottom of the screen (announced to screen readers). Returns its id. */
+  toast: (message: string, o?: ToastOptions) => number;
+  /** Take a message away before its time. */
+  dismissToast: (id: number) => void;
+}
+
+export interface ToastOptions {
+  /** "error" stays until closed and is announced at once; "ok" and "info" leave after `duration`. */
+  tone?: "ok" | "error" | "info";
+  /** One button in the message, e.g. Undo. Pressing it closes the message. */
+  action?: { label: string; run: () => void | Promise<void> };
+  /** Milliseconds before the message leaves. Default 5000 (8000 with an action, never for errors). */
+  duration?: number;
+}
+
+interface ToastItem extends ToastOptions {
+  id: number;
+  message: string;
 }
 
 const CmsContext = React.createContext<CmsContextValue | null>(null);
@@ -68,11 +86,149 @@ export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, 
     };
   }, [client, tick]);
   const origin = appUrl ?? (typeof window !== "undefined" ? window.location.origin : "");
+  const [toasts, setToasts] = React.useState<ToastItem[]>([]);
+  const seq = React.useRef(0);
+  const dismissToast = React.useCallback((id: number) => setToasts((l) => l.filter((x) => x.id !== id)), []);
+  const toast = React.useCallback((message: string, o: ToastOptions = {}) => {
+    const id = ++seq.current;
+    // Newest last; never more than three at once (the oldest goes first).
+    setToasts((l) => [...l.filter((x) => x.message !== message), { ...o, id, message }].slice(-3));
+    return id;
+  }, []);
   const value = React.useMemo<CmsContextValue>(
-    () => ({ client, t, locale, baseUrl, appUrl: origin.replace(/\/+$/, ""), me, meError, reloadMe: () => setTick((n) => n + 1), slots }),
-    [client, t, locale, baseUrl, origin, me, meError, slots]
+    () => ({ client, t, locale, baseUrl, appUrl: origin.replace(/\/+$/, ""), me, meError, reloadMe: () => setTick((n) => n + 1), slots, toast, dismissToast }),
+    [client, t, locale, baseUrl, origin, me, meError, slots, toast, dismissToast]
   );
-  return React.createElement(CmsContext.Provider, { value }, children);
+  return React.createElement(CmsContext.Provider, { value }, children, React.createElement(Toaster, { toasts, dismiss: dismissToast, closeLabel: t("close") }));
+}
+
+// ── toasts ────────────────────────────────────────────────────────────────────
+// A polite live region that always exists (so screen readers hear the first
+// message too) and an assertive one for errors. Hovering or focusing a message
+// stops its timer; Escape closes the newest.
+
+function ToastRow({ item, dismiss, closeLabel }: { item: ToastItem; dismiss: (id: number) => void; closeLabel: string }) {
+  const [paused, setPaused] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const ms = item.duration ?? (item.tone === "error" ? 0 : item.action ? 8000 : 5000);
+  React.useEffect(() => {
+    if (!ms || paused) return;
+    const h = setTimeout(() => dismiss(item.id), ms);
+    return () => clearTimeout(h);
+  }, [ms, paused, dismiss, item.id]);
+  const h = React.createElement;
+  return h(
+    "div",
+    {
+      "data-cms-toast": item.tone ?? "info",
+      onMouseEnter: () => setPaused(true),
+      onMouseLeave: () => setPaused(false),
+      onFocus: () => setPaused(true),
+      onBlur: () => setPaused(false),
+      className:
+        "pointer-events-auto flex w-full items-center gap-3 rounded-lg border bg-popover px-4 py-3 text-sm text-popover-foreground shadow-lg motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 " +
+        (item.tone === "error" ? "border-destructive/40" : ""),
+    },
+    h("span", { className: "min-w-0 flex-1 break-words " + (item.tone === "error" ? "text-destructive" : "") }, item.message),
+    item.action
+      ? h(
+          "button",
+          {
+            type: "button",
+            disabled: busy,
+            className: "shrink-0 rounded-md px-2 py-1 font-medium text-primary underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+            onClick: async () => {
+              setBusy(true);
+              try {
+                await item.action!.run();
+              } finally {
+                dismiss(item.id);
+              }
+            },
+          },
+          item.action.label
+        )
+      : null,
+    h(
+      "button",
+      { type: "button", "aria-label": closeLabel, className: "shrink-0 rounded-md px-1.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", onClick: () => dismiss(item.id) },
+      "×"
+    )
+  );
+}
+
+function Toaster({ toasts, dismiss, closeLabel }: { toasts: ToastItem[]; dismiss: (id: number) => void; closeLabel: string }) {
+  React.useEffect(() => {
+    if (!toasts.length) return;
+    const on = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      // A dialog that is open takes Escape for itself.
+      if (typeof document !== "undefined" && document.querySelector("[role=dialog],[role=alertdialog]")) return;
+      dismiss(toasts[toasts.length - 1].id);
+    };
+    document.addEventListener("keydown", on);
+    return () => document.removeEventListener("keydown", on);
+  }, [toasts, dismiss]);
+  const h = React.createElement;
+  const list = (items: ToastItem[]) => items.map((x) => h(ToastRow, { key: x.id, item: x, dismiss, closeLabel }));
+  const wrap = "pointer-events-none fixed inset-x-3 bottom-3 z-[100] flex flex-col items-stretch gap-2 sm:inset-x-auto sm:right-4 sm:bottom-4 sm:w-96";
+  return h(
+    React.Fragment,
+    null,
+    h("div", { role: "status", "aria-live": "polite", "aria-atomic": false, className: wrap, "data-cms-toaster": "" }, list(toasts.filter((x) => x.tone !== "error"))),
+    h("div", { role: "alert", "aria-live": "assertive", className: wrap + " sm:bottom-20" }, list(toasts.filter((x) => x.tone === "error")))
+  );
+}
+
+// ── cross-screen news ─────────────────────────────────────────────────────────
+
+/** Window event a screen sends after it put something in the trash or took it out (the sidebar count listens). */
+export const TRASH_CHANGED = "agent-cms:trash-changed";
+export const trashChanged = () => {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(TRASH_CHANGED));
+};
+
+// ── keyboard shortcuts ────────────────────────────────────────────────────────
+
+/** True while the person types in a field (single-letter shortcuts stay quiet then). */
+export function isTyping(e: KeyboardEvent): boolean {
+  const el = e.target as HTMLElement | null;
+  if (!el || typeof el.closest !== "function") return false;
+  return !!el.closest("input, textarea, select, [contenteditable=''], [contenteditable='true'], [role=textbox]");
+}
+
+/** "mod" is ⌘ on Apple machines and Ctrl elsewhere. */
+export const isApple = () => typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+export const modLabel = () => (isApple() ? "⌘" : "Ctrl");
+
+/**
+ * Listen for a key on the page. `combo` is like "mod+s", "shift+?", "/", "n".
+ * Single keys without mod do nothing while the person types in a field;
+ * `inFields` overrides that (true: always fire, false: never while typing).
+ */
+export function useShortcut(combo: string | null | false, handler: (e: KeyboardEvent) => void, o: { inFields?: boolean } = {}) {
+  const ref = React.useRef(handler);
+  ref.current = handler;
+  React.useEffect(() => {
+    if (!combo) return;
+    const parts = combo.toLowerCase().split("+");
+    const key = parts[parts.length - 1];
+    const mod = parts.includes("mod");
+    const shift = parts.includes("shift");
+    const alt = parts.includes("alt");
+    const on = (e: KeyboardEvent) => {
+      if (e.isComposing || e.defaultPrevented) return;
+      if (mod !== (e.metaKey || e.ctrlKey) || alt !== e.altKey) return;
+      if (shift && !e.shiftKey) return;
+      if (!shift && e.shiftKey && key.length === 1 && /[a-z]/.test(key)) return;
+      if ((e.key || "").toLowerCase() !== key) return;
+      if (!(o.inFields ?? mod) && isTyping(e)) return;
+      e.preventDefault();
+      ref.current(e);
+    };
+    document.addEventListener("keydown", on);
+    return () => document.removeEventListener("keydown", on);
+  }, [combo, o.inFields]);
 }
 
 export function useCms(): CmsContextValue {
@@ -301,6 +457,11 @@ export function zonedToIso(date: string, time: string, timeZone: string): string
   let guess = want;
   // Twice: the first step can land on the other side of a clock change.
   for (let i = 0; i < 2; i++) guess -= wallMs(guess, timeZone) - want;
+  // A time the clock skips (spring forward, e.g. 02:30 in New York on 8 March 2026) does not exist: refuse it.
+  if (wallMs(guess, timeZone) !== want) return null;
+  // A time that happens twice (fall back) takes the earlier one.
+  const hour = 3_600_000;
+  if (wallMs(guess - hour, timeZone) === want) guess -= hour;
   return new Date(guess).toISOString();
 }
 

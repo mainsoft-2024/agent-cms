@@ -312,3 +312,20 @@ test("korean screen text is written in 음슴체: no value ends a sentence with 
   }
   assert.deepEqual(bad, []);
 });
+
+test("messages: every placeholder in a translation exists in English, and the other way round", async () => {
+  const names = (s: string) => new Set([...s.matchAll(/\{(\w+)(?:\|[^|}]*\|[^|}]*)?\}/g)].map((m) => m[1]));
+  const ui = await import("../registry/cms/cms-messages");
+  const srv = { en: (await import("./messages/en")).en as Record<string, string>, ko: (await import("./messages/ko")).ko as Record<string, string> };
+  const bad: string[] = [];
+  for (const [where, en, ko] of [["registry", ui.en as Record<string, string>, ui.ko as Record<string, string>], ["server", srv.en, srv.ko]] as const) {
+    for (const [k, v] of Object.entries(ko)) {
+      if (typeof v !== "string" || typeof en[k] !== "string") continue;
+      const a = names(en[k]);
+      const b = names(v);
+      for (const n of b) if (!a.has(n)) bad.push(`${where} ko.${k}: {${n}} is not in English`);
+      for (const n of a) if (!b.has(n)) bad.push(`${where} ko.${k}: {${n}} from English is missing`);
+    }
+  }
+  assert.deepEqual(bad, []);
+});

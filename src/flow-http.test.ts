@@ -46,7 +46,7 @@ test("rest: schedule, the cron route with its own secret, and the trash", async 
   await api.remove("guide", "a");
   const trash = await api.trash();
   assert.deepEqual([trash.days, trash.canPurge, trash.items.map((i) => [i.kind, i.slug, i.state])], [30, true, [["document", "a", "published"]]]);
-  assert.deepEqual(await api.restoreTrash(trash.items), { restored: 1 });
+  assert.equal((await api.restoreTrash(trash.items)).restored, 1);
   assert.equal((await api.get("guide", "a")).title, "A");
   await api.remove("guide", "a");
   assert.deepEqual(await api.purgeTrash("all"), { purged: 1 });
@@ -115,7 +115,7 @@ test("tools: an agent requests a review, reads comments, uses the trash and a re
   await callTool(cms, bot, "delete_document", { collection: "guide", slug: "x" });
   const trash = (await callTool(cms, bot, "list_trash", {})) as { items: { kind: "document"; id: string; slug: string }[] };
   assert.deepEqual(trash.items.map((i) => i.slug), ["x"]);
-  assert.deepEqual(await callTool(cms, bot, "restore_from_trash", { items: [{ kind: "document", id: trash.items[0].id }] }), { restored: 1 });
+  assert.equal(((await callTool(cms, bot, "restore_from_trash", { items: [{ kind: "document", id: trash.items[0].id }] })) as { restored: number }).restored, 1);
   const rel = (await callTool(cms, bot, "create_release", { name: "R1" })) as { id: string };
   await callTool(cms, bot, "add_to_release", { id: rel.id, items: [{ collection: "guide", slug: "x" }] });
   assert.deepEqual(await callTool(cms, bot, "publish_release", { id: rel.id }), { id: rel.id, name: "R1", state: "published", documents: 1 });

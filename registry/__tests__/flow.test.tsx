@@ -215,7 +215,7 @@ test("flow: the trash lists deleted documents, restores them, and deletes them f
   await user.click(screen.getByRole("button", { name: "Restore" }));
   const dlg = await screen.findByRole("dialog");
   assert.ok(within(dlg).getByText("Restore 1 documents?"));
-  assert.ok(within(dlg).getByText("Documents that were published go public again."));
+  assert.ok(within(dlg).getByText(/Documents that were published go public again\./));
   await user.click(within(dlg).getByRole("button", { name: "Restore" }));
   await screen.findByText("Restored 1");
   assert.equal((await s.cms.get(admin, "guide", "old-pricing"))?.title, "Old pricing", "published again");

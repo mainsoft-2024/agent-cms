@@ -44,10 +44,13 @@ test("keys: list with expired badge; create shows the secret once with MCP and C
 
   const done = await screen.findByRole("dialog", { name: "release-bot" });
   assert.ok(within(done).getByText("This key is shown only now, once."));
-  const secret = within(done).getAllByText(/^sgk_/)[0].textContent ?? "";
+  assert.ok(within(done).queryByText(/^sgk_[A-Za-z0-9_-]{20,}$/) === null, "masked until Show");
+  await user.click(within(done).getAllByRole("button", { name: "Show" })[0]);
+  const secret = within(done).getAllByText(/^sgk_[^•]+$/)[0].textContent ?? "";
   assert.match(secret, /^sgk_/);
   const cliTab = within(done).getByRole("tab", { name: "CLI (.env)" });
   assert.equal(cliTab.getAttribute("aria-selected"), "true");
+  for (const b of within(done).queryAllByRole("button", { name: "Show", pressed: false })) await user.click(b);
   assert.ok(within(done).getByText((t) => t.includes(`AGENT_CMS_KEY=${secret}`)));
   assert.ok(within(done).getByText("npx @mainsoft/agent-cms collections"));
   await user.click(within(done).getByRole("tab", { name: "MCP" }));

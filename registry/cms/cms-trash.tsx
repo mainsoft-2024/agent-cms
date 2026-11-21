@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
 import { ConfirmDialog, PageHeader, Segmented, StatusText } from "./cms-parts";
-import { useCms } from "./use-cms";
+import { trashChanged, useCms } from "./use-cms";
 
 export interface CmsTrashProps {
   className?: string;
@@ -71,14 +71,18 @@ export function CmsTrash({ className }: CmsTrashProps) {
     setBusy(true);
     setProblem(null);
     try {
-      if (confirm.what === "empty") setStatus(t("trash_purged", { n: (await client.purgeTrash("all")).purged }));
+      // Only what the dialog showed: something trashed while it was open stays.
+      if (confirm.what === "empty") setStatus(t("trash_purged", { n: (await client.purgeTrash(all.map((i) => ({ kind: i.kind, id: i.id })))).purged }));
       else if (confirm.what === "purge") setStatus(t("trash_purged", { n: (await client.purgeTrash(refs(confirm.ids))).purged }));
       else {
         const r = await client.restoreTrash(refs(confirm.ids));
-        setStatus(r.restored < confirm.ids.length ? `${t("trash_restored", { n: r.restored })}. ${t("trash_slug_taken")}` : t("trash_restored", { n: r.restored }));
+        const failed = (r.results ?? []).filter((x) => !x.ok);
+        const why = failed.length ? failed.map((x) => `${rows.find((row) => row.id === x.id)?.title ?? x.id}: ${x.error?.message ?? ""}`).join("; ") : t("trash_slug_taken");
+        setStatus(r.restored < confirm.ids.length ? `${t("trash_restored", { n: r.restored })}. ${why}` : t("trash_restored", { n: r.restored }));
       }
       setConfirm(null);
       setTick((n) => n + 1);
+      trashChanged();
     } catch (e) {
       setProblem(errorMessage(e, t));
     } finally {
@@ -142,7 +146,7 @@ export function CmsTrash({ className }: CmsTrashProps) {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-9">
-                  <Checkbox aria-label={t("select_all")} checked={allPicked} onCheckedChange={(v) => setPicked(v === true ? new Set(rows.map((r) => r.id)) : new Set())} />
+                  <Checkbox aria-label={t("select_all")} checked={allPicked ? true : rows.some((r) => picked.has(r.id)) ? "indeterminate" : false} onCheckedChange={(v) => setPicked(v === true ? new Set(rows.map((r) => r.id)) : new Set())} />
                 </TableHead>
                 <TableHead>{t("name")}</TableHead>
                 <TableHead className="hidden w-[160px] md:table-cell">{t("trash_col_where")}</TableHead>
@@ -158,8 +162,10 @@ export function CmsTrash({ className }: CmsTrashProps) {
                     <Checkbox aria-label={t("select_row", { title: r.title })} checked={picked.has(r.id)} onCheckedChange={(v) => toggle(r.id, v === true)} />
                   </TableCell>
                   <TableCell className="max-w-0">
-                    <div className="truncate font-medium">{r.title}</div>
-                    <div className="truncate text-xs text-muted-foreground md:hidden">{r.where}</div>
+                    <div className="break-words font-medium md:truncate" title={r.title}>
+                      {r.title}
+                    </div>
+                    <div className="break-all text-xs text-muted-foreground md:hidden">{r.where}</div>
                   </TableCell>
                   <TableCell className="hidden max-w-0 truncate text-[13.5px] md:table-cell">{r.where}</TableCell>
                   <TableCell className="hidden max-w-0 truncate text-[13.5px] md:table-cell">{r.deletedBy ?? ""}</TableCell>
@@ -183,7 +189,15 @@ export function CmsTrash({ className }: CmsTrashProps) {
           }
         }}
         title={!confirm ? "" : confirm.what === "empty" ? t("trash_purge_all") : confirm.what === "purge" ? t("trash_purge_title", { n }) : t(kind === "document" ? "trash_restore_docs" : "trash_restore_files", { n })}
-        description={!confirm ? undefined : confirm.what === "restore" ? (kind === "document" ? t("trash_restore_note") : undefined) : t("trash_purge_note")}
+        description={
+          !confirm
+            ? undefined
+            : confirm.what === "restore"
+              ? kind === "document"
+                ? [t("trash_restore_note"), rows.filter((r) => confirm.ids.includes(r.id) && r.state === "published").length ? t("trash_restore_public", { n: rows.filter((r) => confirm.ids.includes(r.id) && r.state === "published").length }) : ""].filter(Boolean).join(" ")
+                : undefined
+              : t("trash_purge_note")
+        }
         confirmLabel={confirm?.what === "restore" ? t("trash_restore") : confirm?.what === "empty" ? t("trash_empty_all") : t("trash_purge")}
         destructive={confirm?.what !== "restore"}
         busy={busy}

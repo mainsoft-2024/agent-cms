@@ -57,12 +57,20 @@ export interface CmsClientOptions {
   clientName?: string;
 }
 
+/** `Retry-After` in seconds ("120" or an HTTP date); undefined when absent or unreadable. */
+export function retryAfterOf(h: string | null, now = Date.now()): number | undefined {
+  if (!h) return undefined;
+  if (/^\d+$/.test(h.trim())) return Number(h.trim());
+  const at = Date.parse(h);
+  return Number.isFinite(at) ? Math.max(0, Math.ceil((at - now) / 1000)) : undefined;
+}
+
 export class CmsRemoteError extends Error {
   constructor(
     message: string,
     /** e.g. "conflict_version", "forbidden_write", "not_found" (from the server), or "http" / "rpc" / "network". */
     public code: string,
-    public extra: { kind?: string; status?: number; params?: ErrorParams; diagnostics?: Diagnostic[]; current?: unknown } = {}
+    public extra: { kind?: string; status?: number; params?: ErrorParams; diagnostics?: Diagnostic[]; current?: unknown; /** Seconds to wait (from `Retry-After`) before trying again. */ retryAfter?: number; /** `X-Request-Id` of the failed request, for support and logs. */ requestId?: string } = {}
   ) {
     super(message);
     this.name = "CmsRemoteError";
@@ -70,6 +78,12 @@ export class CmsRemoteError extends Error {
   readonly isCmsRemoteError = true;
   get kind() {
     return this.extra.kind;
+  }
+  get retryAfter() {
+    return this.extra.retryAfter;
+  }
+  get requestId() {
+    return this.extra.requestId;
   }
   get status() {
     return this.extra.status;
@@ -315,7 +329,7 @@ export function createRestClient(opts: RestClientOptions) {
     }
     if (!res.ok) {
       const e = (data ?? {}) as { error?: string; message?: string; kind?: string; params?: ErrorParams; diagnostics?: Diagnostic[]; current?: unknown };
-      throw new CmsRemoteError(e.message ?? `HTTP ${res.status}`, e.error ?? "http", { kind: e.kind, status: res.status, params: e.params, diagnostics: e.diagnostics, current: e.current });
+      throw new CmsRemoteError(e.message ?? `HTTP ${res.status}`, e.error ?? "http", { kind: e.kind, status: res.status, params: e.params, diagnostics: e.diagnostics, current: e.current, retryAfter: retryAfterOf(res.headers.get("retry-after")), requestId: res.headers.get("x-request-id") ?? undefined });
     }
     return data as T;
   }
@@ -371,7 +385,7 @@ export function createRestClient(opts: RestClientOptions) {
     saveFilter: (c: string, b: { name: string; query: Record<string, string>; shared?: boolean }) => req<{ filter: SavedFilter }>("POST", `/collections/${enc(c)}/_filters`, { body: b }).then((r) => r.filter),
     removeFilter: (c: string, id: string) => req<{ ok: true }>("DELETE", `/collections/${enc(c)}/_filters/${enc(id)}`),
     trash: (kind?: TrashRef["kind"]) => req<{ items: TrashItem[]; days: number; canPurge: boolean }>("GET", "/trash", { query: { kind } }),
-    restoreTrash: (items: TrashRef[]) => req<{ restored: number }>("POST", "/trash/_restore", { body: { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
+    restoreTrash: (items: TrashRef[]) => req<{ restored: number; results?: { kind: TrashRef["kind"]; id: string; ok: boolean; error?: { code: string; message: string } }[] }>("POST", "/trash/_restore", { body: { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
     purgeTrash: (items: TrashRef[] | "all") => req<{ purged: number }>("POST", "/trash/_purge", { body: items === "all" ? { all: true } : { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
     releases: () => req<{ releases: CmsRelease[] }>("GET", "/releases").then((r) => r.releases),
     release: (id: string) => req<{ release: ReleaseView }>("GET", `/releases/${enc(id)}`).then((r) => r.release),
@@ -423,6 +437,8 @@ export function createRestClient(opts: RestClientOptions) {
     retentionRules: () => req<{ rules: { what: string; days: number }[] }>("GET", "/retention"),
     runRetention: (o: { dryRun?: boolean } = {}) => req<{ dryRun: boolean; at: string; items: { what: string; days: number; before: string; rows: number }[] }>("POST", "/retention", { body: o }),
     assets: (q: Omit<AssetListOptions, "kinds"> & { kind?: string } = {}) => req<{ assets: AssetView[]; cursor: string | null; counts: AssetCounts }>("GET", "/assets", { query: { ...q } }),
+    /** Address that downloads these files as one zip (open it in the browser; cookies sign it in). */
+    assetZipUrl: (ids: readonly string[]) => `${base}/assets/_zip?ids=${ids.map(encodeURIComponent).join(",")}`,
     assetFolders: () => req<{ stores: FolderTree[] }>("GET", "/assets/_folders").then((r) => r.stores),
     createAssetFolder: (path: string, store?: string | null) => req<{ store: string; path: string }>("POST", "/assets/_folders", { body: { path, store } }),
     deleteAssetFolder: (path: string, store?: string | null) => req<{ ok: true }>("DELETE", "/assets/_folders", { query: { path, store } }),

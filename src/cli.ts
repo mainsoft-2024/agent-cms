@@ -47,7 +47,8 @@
  *       content from somewhere else: a JSON list, a CSV sheet, a WordPress export file
  *   agent-cms openapi                    this app's REST API as an OpenAPI 3.1 document
  *   agent-cms retention [--dry-run]      delete what the retention rules allow (admin key); --dry-run only counts
- *   agent-cms call <tool> '<json args>'
+ *   agent-cms call <tool> '<json args>'         (or --args-file args.json, or --args-file - for stdin)
+ *   any command: --json-errors  one JSON line on stderr when it fails (code, kind, status, message, requestId)
  *
  * Env: AGENT_CMS_URL (https://app/api/cms) and AGENT_CMS_KEY (sgk_…), or
  * `--env <file>` with those two lines. Output is JSON.
@@ -90,7 +91,38 @@ export interface CliIo {
   run?: (cmd: string, args: string[], cwd: string) => number;
 }
 
-const WITH_VALUE = new Set(["--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every"]);
+const WITH_VALUE = new Set(["--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--offset", "--limit", "--context", "--glob", "--args-file"]);
+/** Switches without a value. Anything else that starts with "--" is refused before any request. */
+const SWITCHES = new Set(["--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
+
+/** Problems with the flags (unknown, missing value), or null. Checked before reading any settings. */
+export function checkFlags(argv: string[]): string | null {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") break; // what follows is positional, even when it starts with "--"
+    if (!a.startsWith("--")) continue;
+    const name = a.includes("=") ? a.slice(0, a.indexOf("=")) : a;
+    if (WITH_VALUE.has(name)) {
+      if (a.includes("=")) continue;
+      const v = argv[i + 1];
+      if (v === undefined || (v.startsWith("--") && v !== "--")) return `${name} needs a value`;
+      i++;
+      continue;
+    }
+    if (SWITCHES.has(name)) continue;
+    const all = [...WITH_VALUE, ...SWITCHES];
+    const near = all.find((k) => k.startsWith(name.slice(0, 5))) ?? all.find((k) => levenshtein(k, name) <= 2);
+    return `unknown flag ${name}${near ? ` (did you mean ${near}?)` : ""}`;
+  }
+  return null;
+}
+
+function levenshtein(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array<number>(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+}
 
 function flag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -104,6 +136,10 @@ function positional(argv: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === "--") {
+      out.push(...argv.slice(i + 1));
+      break;
+    }
     if (WITH_VALUE.has(a)) {
       i++;
       continue;
@@ -126,6 +162,8 @@ export function parseEnvFile(text: string): Record<string, string> {
 const USAGE = `agent-cms ${VERSION}
 in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync>
 with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import | openapi | retention
+               read | grep | edit | pull | push | status
+options:       --env <file>  --json  --json-errors  --  (what follows is a file name, even if it starts with --)
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
 const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage"]);
@@ -144,11 +182,21 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
     out(USAGE);
     return cmd ? 0 : 1;
   }
+  const bad = checkFlags(argv);
+  if (bad) {
+    if (argv.includes("--json-errors")) err(JSON.stringify({ error: "invalid_flags", kind: "invalid", message: bad }));
+    else err(`[agent-cms] ${bad}. See: npx @mainsoft/agent-cms help`);
+    return 2;
+  }
   try {
     if (LOCAL.has(cmd)) return await runLocal(cmd, args, argv, { ...io, cwd, out, err });
     return await runRemote(cmd, args, argv, { ...io, out, err, read });
   } catch (e) {
-    err(`[agent-cms] ${isCmsRemoteError(e) ? `${e.code}: ` : ""}${e instanceof Error ? e.message : String(e)}`);
+    // --json-errors: one JSON line on stderr for scripts (stdout stays for data); never secrets.
+    if (argv.includes("--json-errors")) {
+      const r = isCmsRemoteError(e) ? e : null;
+      err(JSON.stringify({ error: r?.code ?? "error", kind: r?.kind ?? null, status: r?.status ?? null, message: e instanceof Error ? e.message : String(e), params: r?.extra.params ?? {}, requestId: r?.requestId ?? null }));
+    } else err(`[agent-cms] ${isCmsRemoteError(e) ? `${e.code}: ` : ""}${e instanceof Error ? e.message : String(e)}`);
     return 1;
   }
 }
@@ -364,8 +412,17 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
     }
     case "call": {
       need(1);
-      const parsed = args[1] ? JSON.parse(args[1]) : {};
-      print(await api.call(args[0], parsed));
+      // Arguments inline, or from a file / stdin (`--args-file -`) when they are long or need no shell quoting.
+      const file = flag(argv, "args-file");
+      if (file && args[1]) throw new Error("give the arguments inline or with --args-file, not both");
+      const source = file === "-" ? readFileSync(0, "utf8") : file ? read(file) : args[1];
+      let parsed: unknown = {};
+      try {
+        parsed = source ? JSON.parse(source) : {};
+      } catch (e) {
+        throw new Error(`the arguments ${file ? `in ${file === "-" ? "stdin" : file}` : ""} are not JSON: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      print(await api.call(args[0], parsed as Record<string, unknown>));
       return 0;
     }
     default:

@@ -28,7 +28,7 @@ import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-
 import { pasteAsMarkdown } from "./cms-paste";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText } from "./cms-parts";
-import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, type DocContent } from "./use-cms";
+import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useShortcut, type DocContent } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
 type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
@@ -131,7 +131,7 @@ function takeStatus(collection: string, slug: string): string | null {
 }
 
 export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className }: CmsDocEditorProps) {
-  const { client, t, locale, me } = useCms();
+  const { client, t, locale, me, baseUrl } = useCms();
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
   /** Where the cursor last was in the body (null: the person never put it there). */
   const caretRef = React.useRef<[number, number] | null>(null);
@@ -238,24 +238,40 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   }, [client, collection, slug, applyDoc]);
 
   // ── diagnose and autosave ──
+  // Each check and autosave gets a number; an answer to an older one is dropped,
+  // so a slow reply can neither bring back a fixed problem nor overwrite a newer save.
+  const diagSeq = React.useRef(0);
+  const autoSeq = React.useRef(0);
   const diagnose = useDebounced(async (c: DocContent) => {
+    const mine = ++diagSeq.current;
     try {
       const d = await client.diagnose(collection, toInput(c, doc?.fields), doc?.slug);
+      if (mine !== diagSeq.current) return;
       setProblems(d as Diagnostic[]);
     } catch {
       /* the save will tell */
     }
   }, 400);
 
-  const autosave = useDebounced(async (c: DocContent, base: number, s: string) => {
+  const autosaveRaw = useDebounced(async (c: DocContent, base: number, s: string) => {
+    const mine = ++autoSeq.current;
     setAuto({ state: "saving" });
     try {
       const a = await client.autosave(collection, s, toInput(c, doc?.fields), base);
-      setAuto({ state: "saved", at: a.at });
+      if (mine === autoSeq.current) setAuto({ state: "saved", at: a.at });
     } catch {
-      setAuto({ state: "failed" });
+      if (mine === autoSeq.current) setAuto({ state: "failed" });
     }
   }, autosaveDelay);
+  const autosave = React.useMemo(() => {
+    const run = (c: DocContent, base: number, s: string) => autosaveRaw(c, base, s);
+    /** Stops the timer and makes an autosave already on its way not count. */
+    run.cancel = () => {
+      autosaveRaw.cancel();
+      autoSeq.current++;
+    };
+    return run;
+  }, [autosaveRaw]);
 
   const setContent = (next: DocContent) => {
     edited.current = true;
@@ -321,10 +337,18 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         return d;
       }
       if (!doc) return null;
+      const sent = content;
+      // The server marks a reverted change against the version that made it, so this goes first.
       if (revertedIds.length) await client.review(collection, doc.slug, revertedIds, "reverted").catch(() => undefined);
       if (!sameContent(content, saved) || !publish) d = await client.update(collection, doc.slug, toInput(content, doc.fields), { expectedVersion: baseVersion, publish });
       else d = await client.publish(collection, doc.slug, { expectedVersion: baseVersion });
+      // Typing that happened while the save was on its way stays (and stays unsaved).
+      const typed = live.current.content;
       applyDoc(d);
+      if (!sameContent(typed, sent)) {
+        setContentRaw(typed);
+        edited.current = true;
+      }
       setRestoreOffer(null);
       setAuto({ state: "idle" });
       setReviewed((r) => Object.fromEntries(Object.entries(r).filter(([, x]) => x.action === "accepted")));
@@ -517,6 +541,84 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     const id = requestAnimationFrame(() => sync.select(p[0], p[1]));
     return () => cancelAnimationFrame(id);
   }, [mobileTab, sync]);
+
+  // ── keyboard ──
+  const keys = React.useRef({ save, dirty, busy, isNew, canWrite: false, canPublish: false });
+  keys.current = { save, dirty, busy, isNew, canWrite: !!schema?.canWrite, canPublish: !!schema?.canPublish && !schema?.needsReview };
+  useShortcut(mode.kind === "edit" && "mod+s", () => {
+    const k = keys.current;
+    if (k.canWrite && !k.busy && (k.dirty || k.isNew)) void k.save(false);
+  });
+  useShortcut(mode.kind === "edit" && "mod+shift+p", () => {
+    const k = keys.current;
+    if (k.canPublish && !k.busy) void k.save(true);
+  });
+
+  // ── a copy in this browser: survives a lost connection and a closed tab ──
+  // Scoped by CMS mount and person: a shared browser never offers someone else's copy.
+  const localKey = `agent-cms:draft:${baseUrl}:${me?.actor.id ?? "-"}:${collection}/${currentSlug || "_new"}`;
+  const writeLocal = useDebounced((c: DocContent, base: number) => {
+    try {
+      window.localStorage.setItem(localKey, JSON.stringify({ content: c, baseVersion: base, at: new Date().toISOString() }));
+    } catch {
+      /* private mode or full */
+    }
+  }, 400);
+  React.useEffect(() => {
+    if (loading) return;
+    if (edited.current && !sameContent(content, saved)) writeLocal(content, baseVersion);
+    else {
+      writeLocal.cancel();
+      try {
+        window.localStorage.removeItem(localKey);
+      } catch {
+        /* ignore */
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, saved, loading, localKey]);
+  // On open: a copy left here that the server does not have becomes the restore offer.
+  React.useEffect(() => {
+    if (loading || !doc || restoreOffer || !me) return;
+    try {
+      const raw = window.localStorage.getItem(localKey);
+      if (!raw) return;
+      const kept = JSON.parse(raw) as { content: DocContent; baseVersion: number; at: string };
+      const old = Date.now() - Date.parse(kept.at) > 14 * 864e5;
+      if (old || kept.baseVersion > doc.version || sameContent(contentOf(kept.content as CmsDoc), doc)) return window.localStorage.removeItem(localKey);
+      setRestoreOffer({ content: contentOf(kept.content as CmsDoc), baseVersion: kept.baseVersion, at: kept.at, by: t("restore_this_browser") });
+    } catch {
+      /* bad JSON: ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, doc?.slug, me?.actor.id]);
+  // Leaving with edits the server has not got asks first.
+  const unsaved = dirty && auto.state !== "saved";
+  React.useEffect(() => {
+    if (!unsaved) return;
+    const on = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", on);
+    return () => window.removeEventListener("beforeunload", on);
+  }, [unsaved]);
+  // Offline: say so, and save when the connection is back.
+  const [offline, setOffline] = React.useState(false);
+  React.useEffect(() => {
+    const sync = () => setOffline(typeof navigator !== "undefined" && navigator.onLine === false);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return () => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, []);
+  React.useEffect(() => {
+    if (!offline && auto.state === "failed" && doc && live.current.dirty) autosave(live.current.content, live.current.baseVersion, doc.slug);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offline]);
 
   if (mode.kind === "merge" && doc)
     return (
@@ -874,7 +976,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   );
 
   const autosaveText =
-    auto.state === "saving" ? t("autosaving") : auto.state === "saved" && auto.at ? t("autosaved_at", { time: formatTime(auto.at, locale) }) : auto.state === "failed" ? t("autosave_failed") : dirty ? t("unsaved") : "";
+    offline && dirty ? t("offline_kept") : auto.state === "saving" ? t("autosaving") : auto.state === "saved" && auto.at ? t("autosaved_at", { time: formatTime(auto.at, locale) }) : auto.state === "failed" ? t("autosave_failed") : dirty ? t("unsaved") : "";
 
   const problemsFoot = (
     <div className="flex flex-col">

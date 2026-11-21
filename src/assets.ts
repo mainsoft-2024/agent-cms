@@ -13,7 +13,8 @@ import type { AnyCollection } from "./cms";
 import type { CmsErrorCode, CmsErrorOptions, Diagnostic, ErrorParams } from "./errors";
 import { assetUses, externalImages } from "./markdown";
 import { FetchGuardError, guardedFetch, imageSize, type ResolveHost } from "./net-guard";
-import type { CmsRepo } from "./repo";
+import type { AssetSort, CmsRepo } from "./repo";
+import { makeZip, zipNames } from "./zip";
 import {
   acceptsFile,
   ASSET_ID_RE,
@@ -209,6 +210,12 @@ export interface AssetListOptions {
   kinds?: readonly AssetKind[];
   q?: string;
   tag?: string;
+  /** Only files no document uses. */
+  unused?: boolean;
+  /** Only images without alt text. */
+  missingAlt?: boolean;
+  /** Default "new". */
+  sort?: AssetSort;
   cursor?: string | null;
   limit?: number;
 }
@@ -715,7 +722,9 @@ export function createAssets(ctx: AssetsContext) {
     need(actor, store.name, "read");
     const under = cleanFolder(o.folder) ?? "";
     const limit = Math.min(Math.max(o.limit ?? 48, 1), 200);
-    const rows = await repo.listAssets({ store: store.name, under, status: "ready", notKinds: ["folder"], kinds: o.kinds?.length ? o.kinds : undefined, q: o.q, tag: o.tag, before: o.cursor ?? null, limit: limit + 1 });
+    const sort = o.sort && o.sort !== "new" ? o.sort : undefined;
+    const offset = sort && o.cursor?.startsWith("o:") ? Math.max(0, Number(o.cursor.slice(2)) || 0) : 0;
+    const rows = await repo.listAssets({ store: store.name, under, status: "ready", notKinds: ["folder"], kinds: o.kinds?.length ? o.kinds : undefined, q: o.q, tag: o.tag, unused: o.unused || undefined, missingAlt: o.missingAlt || undefined, sort, offset, before: sort ? null : (o.cursor ?? null), limit: limit + 1 });
     const page = rows.slice(0, limit);
     const counts = { all: 0, image: 0, video: 0, audio: 0, document: 0, other: 0 };
     for (const c of await repo.countAssets(store.name)) {
@@ -724,7 +733,8 @@ export function createAssets(ctx: AssetsContext) {
       counts.all += c.n;
     }
     const last = page[page.length - 1];
-    return { assets: page.map(view), cursor: rows.length > limit && last ? `${last.createdAt}|${last.id}` : null, counts };
+    const cursor = rows.length > limit && last ? (sort ? `o:${offset + limit}` : `${last.createdAt}|${last.id}`) : null;
+    return { assets: page.map(view), cursor, counts };
   }
 
   /** The stores this actor may read, each with its folders and how many files are in and under them. */
@@ -804,6 +814,34 @@ export function createAssets(ctx: AssetsContext) {
     need(actor, a.store, "read");
     const u = await usage(actor, a);
     return { ...view(a), usage: u.documents, usageHidden: u.hidden };
+  }
+
+  /** Several files as one zip (stored, not compressed). At most 200 files and 200MB. */
+  async function zip(actor: Actor, ids: readonly string[], o: { maxCount?: number; maxBytes?: number } = {}): Promise<{ data: Uint8Array; name: string; files: number }> {
+    await ctx.ready();
+    const maxCount = o.maxCount ?? 200;
+    const maxBytes = o.maxBytes ?? 200 * 1024 * 1024;
+    const unique = [...new Set(ids)].filter(Boolean);
+    if (!unique.length) throw fail("invalid", { message: "ids: give at least one file" });
+    const rows = [];
+    for (const id of unique) {
+      const a = await load(id);
+      need(actor, a.store, "read");
+      rows.push(a);
+    }
+    const total = rows.reduce((n, a) => n + a.size, 0);
+    const mb = (n: number) => `${Math.round(n / 1024 / 1024)}MB`;
+    if (rows.length > maxCount || total > maxBytes) throw fail("zip_too_large", { count: rows.length, size: mb(total), maxCount, maxSize: mb(maxBytes) });
+    const names = zipNames(rows.map((a) => (a.folder ? `${a.folder}/${a.name}` : a.name)));
+    const entries = [];
+    for (let i = 0; i < rows.length; i++) {
+      const a = rows[i];
+      const data = await storeOf(a.store).cfg.adapter.readStart(a.key, a.size);
+      if (!data) throw fail("asset_not_found", { id: a.id });
+      entries.push({ name: names[i], data, date: new Date(a.updatedAt) });
+    }
+    ctx.audit(actor, "asset.download", { detail: { files: rows.length, bytes: total } });
+    return { data: makeZip(entries), name: `files-${new Date().toISOString().slice(0, 10)}.zip`, files: rows.length };
   }
 
   async function update(actor: Actor, id: string, patch: { alt?: string; tags?: string[]; focal?: { x: number; y: number } | null }): Promise<AssetView> {
@@ -1287,6 +1325,7 @@ export function createAssets(ctx: AssetsContext) {
     replace,
     import: importFromUrl,
     list,
+    zip,
     folders,
     createFolder,
     deleteFolder,

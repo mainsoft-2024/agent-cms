@@ -41,12 +41,15 @@ const KIND_ICON = { video: Film, audio: Music, document: FileText, other: FileIc
 /** The small picture of a file: its thumbnail, the image itself, or an icon. */
 export function AssetThumb({ asset, className }: { asset: AssetView; className?: string }) {
   const { client } = useCms();
-  const [broken, setBroken] = React.useState(false);
   const src = asset.thumbKey ? client.fileUrl(asset, { thumb: true }) : asset.kind === "image" ? client.fileUrl(asset) : null;
+  // Broken for this address only: a new thumbnail (after a replace) gets its own try.
+  const [brokenSrc, setBrokenSrc] = React.useState<string | null>(null);
+  const broken = !!src && brokenSrc === src;
+  const setBroken = () => setBrokenSrc(src);
   const Icon = KIND_ICON[asset.kind];
   return (
     <span className={cn("relative flex aspect-[4/3] items-center justify-center overflow-hidden rounded-md border bg-muted", className)}>
-      {src && !broken ? <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" onError={() => setBroken(true)} /> : <Icon aria-hidden className="h-7 w-7 text-muted-foreground" />}
+      {src && !broken ? <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" onError={setBroken} /> : <Icon aria-hidden className="h-7 w-7 text-muted-foreground" />}
       {asset.duration ? <span className="absolute bottom-1.5 right-1.5 rounded bg-black/70 px-1 text-[11px] tabular-nums text-white">{clock(asset.duration)}</span> : null}
       {asset.visibility === "private" ? (
         <span className="absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded bg-background/90">
@@ -57,20 +60,54 @@ export function AssetThumb({ asset, className }: { asset: AssetView; className?:
   );
 }
 
-export function AssetGrid({ assets, selected, onSelect, className, picking }: { assets: AssetView[]; selected?: string | null; onSelect: (a: AssetView) => void; className?: string; picking?: boolean }) {
+export function AssetGrid({
+  assets,
+  selected,
+  onSelect,
+  className,
+  picking,
+  checked,
+  onCheck,
+}: {
+  assets: AssetView[];
+  selected?: string | null;
+  onSelect: (a: AssetView) => void;
+  className?: string;
+  picking?: boolean;
+  /** Files ticked for a bulk action; with `onCheck` each tile gets a checkbox. */
+  checked?: ReadonlySet<string>;
+  /** `range`: shift was held (tick everything from the last ticked one). */
+  onCheck?: (a: AssetView, range: boolean) => void;
+}) {
   const { t } = useCms();
   return (
     <ul className={cn("grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4", className)}>
       {assets.map((a) => {
         const on = a.id === selected;
         return (
-          <li key={a.id} className="min-w-0">
+          <li key={a.id} className="group/tile relative min-w-0">
+            {onCheck ? (
+              <input
+                type="checkbox"
+                aria-label={t("media_check", { name: a.name })}
+                checked={!!checked?.has(a.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCheck(a, e.shiftKey);
+                }}
+                onChange={() => undefined}
+                className={cn(
+                  "absolute left-3 top-3 z-10 h-4 w-4 cursor-pointer accent-primary opacity-0 shadow focus-visible:opacity-100 group-hover/tile:opacity-100",
+                  (checked?.size ?? 0) > 0 && "opacity-100"
+                )}
+              />
+            ) : null}
             <button
               type="button"
               aria-pressed={on}
               aria-label={`${a.name}${a.visibility === "private" ? `, ${t("media_private")}` : ""}`}
-              onClick={() => onSelect(a)}
-              className={cn("group block w-full rounded-lg p-1.5 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", on && "bg-accent ring-2 ring-ring")}
+              onClick={(e) => (onCheck && (checked?.size || e.shiftKey || e.metaKey || e.ctrlKey) ? onCheck(a, e.shiftKey) : onSelect(a))}
+              className={cn("group block w-full rounded-lg p-1.5 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", on && "bg-accent ring-2 ring-ring", checked?.has(a.id) && "bg-primary/10 ring-2 ring-primary")}
             >
               <span className="relative block">
                 <AssetThumb asset={a} />
@@ -98,6 +135,12 @@ export interface AssetQueryState {
   kind: KindTab;
   q: string;
   tag: string | null;
+  /** "new" (default), "old", "name", "size". */
+  sort?: "new" | "old" | "name" | "size";
+  /** Only files no document uses. */
+  unused?: boolean;
+  /** Only images without alt text. */
+  missingAlt?: boolean;
 }
 
 /** Files that match, newest first, with "load more". */
@@ -108,11 +151,13 @@ export function useAssetList(query: AssetQueryState, enabled = true) {
   const [error, setError] = React.useState<unknown>(null);
   const [tick, setTick] = React.useState(0);
   const run = React.useRef(0);
-  const { store, folder, kind, q, tag } = query;
+  const { store, folder, kind, q, tag, sort, unused, missingAlt } = query;
   const fetchPage = React.useCallback(
-    (cursor: string | null) => client.assets({ store, folder, kind: KIND_QUERY[kind], q: q || undefined, tag: tag ?? undefined, cursor, limit: 24 }),
-    [client, store, folder, kind, q, tag]
+    (cursor: string | null) =>
+      client.assets({ store, folder, kind: KIND_QUERY[kind], q: q || undefined, tag: tag ?? undefined, sort: sort && sort !== "new" ? sort : undefined, unused: unused || undefined, missingAlt: missingAlt || undefined, cursor, limit: 24 }),
+    [client, store, folder, kind, q, tag, sort, unused, missingAlt]
   );
+  const loadingMore = React.useRef<string | null>(null);
   React.useEffect(() => {
     if (!enabled) return;
     const mine = ++run.current;
@@ -123,10 +168,13 @@ export function useAssetList(query: AssetQueryState, enabled = true) {
     );
   }, [fetchPage, tick, enabled]);
   const more = async () => {
-    if (!state.cursor) return;
+    // One request per cursor; a page or an error for an older query is dropped.
+    if (!state.cursor || loadingMore.current === state.cursor) return;
     const mine = run.current;
-    const r = await fetchPage(state.cursor).catch((e: unknown) => (setError(e), null));
-    if (r && mine === run.current) setState((s) => ({ assets: [...s.assets, ...r.assets], cursor: r.cursor, counts: r.counts }));
+    loadingMore.current = state.cursor;
+    const r = await fetchPage(state.cursor).catch((e: unknown) => (mine === run.current && setError(e), null));
+    loadingMore.current = null;
+    if (r && mine === run.current) setState((s) => ({ assets: [...s.assets, ...r.assets.filter((a) => !s.assets.some((x) => x.id === a.id))], cursor: r.cursor, counts: r.counts }));
   };
   return { ...state, loading, error, more, reload: () => setTick((n) => n + 1), setState };
 }
