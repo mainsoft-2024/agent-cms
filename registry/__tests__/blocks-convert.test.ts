@@ -1,62 +1,110 @@
-// The block editor's converter: markdown → blocks → markdown loses nothing.
+// The block editor's model: markdown → blocks → markdown loses nothing, and the
+// editing commands (marks, links, typed markdown) work on spans.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { blocksToMarkdown, fingerprint, inlineMd, markdownToBlocks, sameMarkdown } from "../cms/cms-blocks-convert";
+import { blocksToClipboard, blocksToMarkdown, markdownToBlocks, sameMarkdown, type EBlock, type TextBlock } from "../cms/cms-blocks-convert";
+import { autoFormat, hasMark, insertText, linkAt, mdToSpans, setLink, sliceSpans, spansToMd, toggleMark, type Span } from "../cms/cms-blocks-inline";
 
 const root = new URL("../../", import.meta.url).pathname;
 const files = ["README.md", "CHANGELOG.md", "TODO.md", ...["en", "ko"].flatMap((l) => readdirSync(`${root}apps/docs/content/${l}`).map((f) => `apps/docs/content/${l}/${f}`))];
+const fresh = (bs: EBlock[]) => bs.map((b) => ({ ...b, orig: undefined }));
 
 test("blocks: every markdown file in the repository survives the block editor, untouched and rewritten", () => {
   const bad: string[] = [];
   for (const f of files) {
     const md = readFileSync(root + f, "utf8");
-    const { blocks, sources } = markdownToBlocks(md);
-    const kept = blocksToMarkdown(blocks, (b) => (b.id ? sources[b.id] : undefined));
-    if (!sameMarkdown(md, kept)) bad.push(`${f} (kept)`);
+    const blocks = markdownToBlocks(md);
+    if (!sameMarkdown(md, blocksToMarkdown(blocks))) bad.push(`${f} (kept)`);
     // Written fresh from the blocks (as after an edit everywhere). Fences of four or more backticks are beyond the parser.
-    if (!/````/.test(md) && !sameMarkdown(md, blocksToMarkdown(blocks))) bad.push(`${f} (fresh)`);
+    if (!/````/.test(md) && !sameMarkdown(md, blocksToMarkdown(fresh(blocks)))) bad.push(`${f} (fresh)`);
   }
   assert.deepEqual(bad, []);
 });
 
-test("blocks: what the editor cannot show is a source block with the text as written", () => {
-  const md = [":::html\n<div onclick=\"x()\">Hi</div>\n:::", "> [!tip]\n> Careful", "| a | b |\n| --: | :-- |\n| 1 | 2 |", ":::columns\n:::col\nLeft\n:::col\nRight\n:::", "![Alt](asset:abcdefabcdef/pic.png \"Other caption\")"].join("\n\n");
-  const { blocks } = markdownToBlocks(md);
+test("blocks: untouched documents come back byte for byte", () => {
+  const bad = files.filter((f) => {
+    const md = readFileSync(root + f, "utf8").replace(/^\n+|\n+$/g, "");
+    return blocksToMarkdown(markdownToBlocks(md)) !== md;
+  });
+  assert.deepEqual(bad, []);
+});
+
+test("blocks: what the editor has no block for is a source block with the text as written", () => {
+  const md = [":::html\n<div onclick=\"x()\">Hi</div>\n:::", "> [!tip]\n> Careful\n>\n> - more", "| a | b |\n| --: | :-- |\n| 1 | 2 |", ":::columns\n:::col\nLeft\n:::col\nRight\n:::", "![Alt](asset:abcdefabcdef/pic.png \"Other caption\")", ":::toggle More\nInside\n:::"].join("\n\n");
+  const blocks = markdownToBlocks(md);
   assert.deepEqual(
-    blocks.map((b) => [b.type, b.props?.kind]),
+    blocks.map((b) => [b.type, b.type === "source" ? b.kind : null]),
     [
-      ["cmsSource", "html"],
-      ["cmsSource", "callout"],
-      ["cmsSource", "table"],
-      ["cmsSource", "columns"],
-      ["cmsSource", "media"],
+      ["source", "html"],
+      ["source", "callout"],
+      ["source", "table"],
+      ["source", "columns"],
+      ["source", "media"],
+      ["source", "toggle"],
     ]
   );
-  assert.equal(blocksToMarkdown(blocks), md);
+  assert.equal(blocksToMarkdown(fresh(blocks)), md);
 });
 
 test("blocks: the editor's own blocks map both ways", () => {
-  const md = "## Title\n\nSome **bold *both*** and `code`, ~~gone~~, a [link](https://x.dev), a [file](asset:f1f1f1f1f1f1/a.pdf) and [[link:pricing|Pricing]].\\\nNext line.\n\n- one\n- two\n\n1. first\n2. second\n\n- [x] done\n- [ ] todo\n\n> quoted\n\n```ts\nconst a = 1;\n```\n\n---\n\n| h1 | h2 |\n| --- | --- |\n| c1 | c2 |\n\n![Alt text](asset:img1img1img1/p.png)\n\n:::toggle More\nInside\n:::";
-  const { blocks } = markdownToBlocks(md);
+  const md = "## Title\n\n### Sub\n\nSome **bold *both*** and `code`, ~~gone~~, a [link](https://x.dev), a [file](asset:f1f1f1f1f1f1/a.pdf) and [[link:pricing|Pricing]].\\\nNext line.\n\n- one\n- two\n\n3. third\n4. fourth\n\n- [x] done\n- [ ] todo\n\n> quoted\n\n> [!warning]\n> Mind the gap\n\n```ts\nconst a = 1;\n```\n\n---\n\n![Alt text](asset:img1img1img1/p.png)";
+  const blocks = markdownToBlocks(md);
   assert.deepEqual(
     blocks.map((b) => b.type),
-    ["heading", "paragraph", "bulletListItem", "bulletListItem", "numberedListItem", "numberedListItem", "checkListItem", "checkListItem", "quote", "codeBlock", "divider", "table", "image", "toggleListItem"]
+    ["h2", "h3", "p", "bullet", "bullet", "number", "number", "todo", "todo", "quote", "callout", "code", "hr", "media"]
   );
-  assert.ok(sameMarkdown(md, blocksToMarkdown(blocks)), blocksToMarkdown(blocks));
+  assert.equal((blocks[5] as TextBlock).start, 3);
+  assert.ok(sameMarkdown(md, blocksToMarkdown(fresh(blocks))), blocksToMarkdown(fresh(blocks)));
+  assert.ok(blocksToMarkdown(fresh(blocks)).includes("3. third\n4. fourth"));
+});
+
+test("blocks: two lists in a row stay two lists; empty lines vanish", () => {
+  const md = "- a\n- b\n\n<!-- -->\n\n- c";
+  const blocks = markdownToBlocks("- a\n- b");
+  const two: EBlock[] = [...blocks, { id: "x", type: "p", spans: [] }, { id: "y", type: "bullet", spans: [{ text: "c" }] }];
+  assert.equal(blocksToMarkdown(fresh(two)), "- a\n- b\n\n- c");
+  void md;
+  const back = markdownToBlocks("1. a\n\n---\n\n1. b");
+  assert.equal(blocksToMarkdown(fresh(back)), "1. a\n\n---\n\n1. b");
 });
 
 test("blocks: an untouched block keeps its exact text; a changed one is written fresh", () => {
   const md = "Some *odd*   spacing  here\n\n* star list";
-  const { blocks, sources } = markdownToBlocks(md);
-  const before = Object.fromEntries(blocks.map((b) => [b.id!, fingerprint(b)]));
-  const keep = (b: (typeof blocks)[number]) => (b.id && before[b.id] === fingerprint(b) ? sources[b.id] : undefined);
-  assert.equal(blocksToMarkdown(blocks, keep).split("\n\n")[0], "Some *odd*   spacing  here");
-  const edited = blocks.map((b, i) => (i === 0 ? { ...b, content: [{ type: "text", text: "Changed", styles: {} }] } : b));
-  assert.equal(blocksToMarkdown(edited, keep).split("\n\n")[0], "Changed");
+  const blocks = markdownToBlocks(md);
+  assert.equal(blocksToMarkdown(blocks), md);
+  const edited = blocks.map((b, i) => (i === 0 ? { ...(b as TextBlock), spans: [{ text: "Changed" }] } : b));
+  assert.equal(blocksToMarkdown(edited), "Changed\n\n* star list");
+  assert.equal(blocksToClipboard(blocks), "Some *odd*   spacing  here\n\n- star list");
 });
 
-test("blocks: marks stay open across runs and spaces stay outside them", () => {
-  assert.equal(inlineMd([{ type: "text", text: "a ", styles: { bold: true } }, { type: "text", text: "b", styles: { bold: true, code: true } }, { type: "text", text: " c", styles: {} }]), "**a `b`** c");
-  assert.equal(inlineMd([{ type: "text", text: "2*3 [x]", styles: {} }]), "2\\*3 \\[x\\]");
+test("spans: marks stay open across spans and spaces stay outside them", () => {
+  assert.equal(spansToMd([{ text: "a ", b: true }, { text: "b", b: true, code: true }, { text: " c" }]), "**a `b`** c");
+  assert.equal(spansToMd([{ text: "2*3 [x]" }]), "2\\*3 \\[x\\]");
+  assert.equal(spansToMd([{ text: "one" }, { text: "\n" }, { text: "two" }]), "one\\\ntwo");
+  for (const md of ["**bold *both***", "a [link **x**](https://x.dev) b", "`a ` b`` c", "[[link:pricing|Pricing]] and ~~old~~"]) assert.equal(spansToMd(mdToSpans(md)).length > 0, true, md);
+  assert.deepEqual(mdToSpans("**a *b***"), [{ text: "a ", b: true }, { text: "b", b: true, i: true }]);
+});
+
+test("spans: toggling marks, links and typed markdown", () => {
+  const s: Span[] = [{ text: "hello world" }];
+  const bold = toggleMark(s, 0, 5, "b");
+  assert.equal(spansToMd(bold), "**hello** world");
+  assert.ok(hasMark(bold, 0, 5, "b"));
+  assert.equal(spansToMd(toggleMark(bold, 0, 5, "b")), "hello world");
+  assert.equal(spansToMd(toggleMark(bold, 0, 11, "b")), "**hello world**");
+  const linked = setLink(s, 6, 11, "https://x.dev");
+  assert.equal(spansToMd(linked), "hello [world](https://x.dev)");
+  assert.deepEqual(linkAt(linked, 8), { href: "https://x.dev", from: 6, to: 11 });
+  assert.equal(spansToMd(setLink(linked, 6, 11, null)), "hello world");
+  assert.deepEqual(sliceSpans(bold, 3, 8), [{ text: "lo", b: true }, { text: " wo" }]);
+  assert.equal(spansToMd(insertText(bold, 5, "!", { b: true })), "**hello!** world");
+  const typed = autoFormat([{ text: "say **hi**" }], 10)!;
+  assert.equal(spansToMd(typed.spans), "say **hi**");
+  assert.deepEqual(typed.spans, [{ text: "say " }, { text: "hi", b: true }]);
+  assert.equal(typed.caret, 6);
+  assert.deepEqual(autoFormat([{ text: "a *b*" }], 5)!.spans, [{ text: "a " }, { text: "b", i: true }]);
+  assert.deepEqual(autoFormat([{ text: "run `npm i`" }], 11)!.spans, [{ text: "run " }, { text: "npm i", code: true }]);
+  assert.equal(autoFormat([{ text: "2 * 3 * 4" }], 9), null);
+  assert.equal(autoFormat([{ text: "**" }], 2), null);
 });

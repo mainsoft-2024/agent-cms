@@ -329,3 +329,18 @@ test("messages: every placeholder in a translation exists in English, and the ot
   }
   assert.deepEqual(bad, []);
 });
+
+test("the block editor is our own: no editor library in the screens or the package", () => {
+  const dir = join(import.meta.dirname, "../registry/cms");
+  const editorLibs = /from\s+["'](@blocknote|@tiptap|prosemirror|lexical|@lexical|slate|@udecode|@platejs|@mantine|quill|@editorjs)/;
+  const bad = readdirSync(dir).filter((f) => editorLibs.test(readFileSync(join(dir, f), "utf8")));
+  assert.deepEqual(bad, []);
+  const pkg = JSON.parse(readFileSync(join(import.meta.dirname, "../package.json"), "utf8")) as Record<string, Record<string, string> | undefined>;
+  const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies });
+  assert.deepEqual(deps.filter((d) => /^(@blocknote|@tiptap|@mantine|prosemirror|lexical|@lexical)/.test(d)), []);
+});
+
+test("markdown: code spans with backticks inside read back the same", async () => {
+  const { codeSpan } = await import("./markdown");
+  for (const v of ["a`b", "x``y", "``", "plain", "` lead"]) assert.deepEqual(parseInline(`see ${codeSpan(v)} here`)[1], { t: "code", v }, v);
+});

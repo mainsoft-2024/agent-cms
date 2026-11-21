@@ -298,12 +298,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
-    "@blocknote/core": "^0.57.0",
-    "@blocknote/mantine": "^0.57.0",
-    "@blocknote/react": "^0.57.0",
     "@electric-sql/pglite": "0.5.16",
-    "@mantine/core": "^8.3.18",
-    "@mantine/hooks": "^8.3.18",
     "@playwright/test": "1.65.1",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",

@@ -9,7 +9,8 @@
 "use client";
 
 import * as React from "react";
-import { ArrowUpDown, Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, MessageSquare, MoreHorizontal } from "lucide-react";
+import { createPortal } from "react-dom";
+import { AppWindow, ArrowUpDown, Bot, Columns2, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, MessageSquare, MoreHorizontal } from "lucide-react";
 import { isCmsRemoteError, type CollectionSchema, type CommentThread, type DocRelease } from "@mainsoft/agent-cms/client";
 import { mergeDocs, resolveDocMerge, splitLines } from "@mainsoft/agent-cms/diff";
 import { docState, type CmsDoc, type AutosaveState, type Presence } from "@mainsoft/agent-cms/types";
@@ -139,6 +140,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const [picking, setPicking] = React.useState(false);
   const [checks, setChecks] = React.useState<null | Awaited<ReturnType<typeof client.publishChecks>>>(null);
   const [view, setView] = useLocalStorage<"blocks" | "markdown">("cms-body-view", "blocks");
+  // The markdown view can show the preview beside the text; the block view is one column (it looks like the page already).
+  const [sidePreview, setSidePreview] = useLocalStorage<boolean>("cms-side-preview", true);
+  const [previewWindow, setPreviewWindow] = React.useState(false);
   const insertRef = React.useRef<((md: string) => void) | null>(null);
   const pickWaiter = React.useRef<((md: string | null) => void) | null>(null);
   const mobile = useIsMobile();
@@ -502,7 +506,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const previewRef = React.useRef<HTMLDivElement>(null);
   const [outline, setOutline] = React.useState(false);
   const wide = !mobile && !loading && !!schema && !loadError && mode.kind !== "merge";
-  const sync = usePreviewSync(bodyRef, previewRef, content.body, wide, width);
+  const blocksView = !!slots.blockEditor && view === "blocks";
+  const sideBySide = wide && !blocksView && sidePreview;
+  const sync = usePreviewSync(bodyRef, previewRef, content.body, sideBySide, width);
   // Wide screens: the row with the text and the preview is as tall as the window minus the header and the
   // status line, which both stay in place. The info form scrolls away above it once you work in the body.
   const rootRef = React.useRef<HTMLDivElement>(null);
@@ -958,7 +964,19 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
             {t("media_insert_button")}
           </Button>
         ) : null}
-        <span>{t("chars", { n: content.body.length.toLocaleString(locale) })}</span>
+        {!mobile && !blocksOn ? (
+          <Button type="button" variant="ghost" size="sm" aria-pressed={sidePreview} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", sidePreview && "bg-muted")} onClick={() => setSidePreview(!sidePreview)}>
+            <Columns2 aria-hidden className="h-3.5 w-3.5" />
+            <span className="hidden lg:inline">{t("blk_preview_side")}</span>
+          </Button>
+        ) : null}
+        {!mobile ? (
+          <Button type="button" variant="ghost" size="sm" aria-pressed={previewWindow} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", previewWindow && "bg-muted")} onClick={() => setPreviewWindow((v) => !v)}>
+            <AppWindow aria-hidden className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">{t("blk_preview_window")}</span>
+          </Button>
+        ) : null}
+        <BodyCount body={content.body} />
       </div>
       <ConfirmDialog
         open={!!checks}
@@ -1007,9 +1025,11 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         />
       ) : null}
       {blocksOn && BlockEditor ? (
-        <React.Suspense fallback={<p className="px-4 py-6 text-sm text-muted-foreground">{t("blk_loading")}</p>}>
-          <BlockEditor key={`${collection}/${currentSlug}`} {...blockProps} />
-        </React.Suspense>
+        <div className="mx-auto flex w-full max-w-[780px] flex-1 flex-col px-5 sm:pl-12 sm:pr-8">
+          <React.Suspense fallback={<p className="py-6 text-sm text-muted-foreground">{t("blk_loading")}</p>}>
+            <BlockEditor key={`${collection}/${currentSlug}`} {...blockProps} />
+          </React.Suspense>
+        </div>
       ) : null}
       <div className={cn("relative flex min-h-[360px] flex-1 flex-col", ((outline && sectionCount > 1) || blocksOn) && "hidden")}>
         {marks.length || cursors.length ? <BodyBackdrop box={bodyRef} text={content.body} marks={marks} cursors={cursors} /> : null}
@@ -1280,11 +1300,20 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         </div>
       ) : null}
       <div className="border-b px-6 py-3.5">{form}</div>
-      <div ref={rowRef} className={cn("flex min-h-[360px] divide-x", rowHeight === null ? "flex-1" : "shrink-0")} style={rowHeight === null ? undefined : { height: rowHeight }}>
-        {bodyPane}
-        {previewPane(true)}
-        {commentsOpen ? comments(() => setCommentsOpen(false)) : null}
-      </div>
+      {sideBySide ? (
+        <div ref={rowRef} className={cn("flex min-h-[360px] divide-x", rowHeight === null ? "flex-1" : "shrink-0")} style={rowHeight === null ? undefined : { height: rowHeight }}>
+          {bodyPane}
+          {previewPane(true)}
+          {commentsOpen ? comments(() => setCommentsOpen(false)) : null}
+        </div>
+      ) : (
+        // One column: the body grows with its text and the page scrolls (the header and the status line stay).
+        <div ref={rowRef} className="flex min-h-[360px] flex-1 divide-x">
+          {bodyPane}
+          {commentsOpen ? <div className="sticky top-0 flex max-h-dvh w-80 shrink-0 flex-col self-start">{comments(() => setCommentsOpen(false))}</div> : null}
+        </div>
+      )}
+      {previewWindow ? <PreviewWindow title={content.title} summary={content.summary} body={content.body} name={`cms-preview-${collection}-${currentSlug ?? "new"}`} onClosed={() => setPreviewWindow(false)} /> : null}
       <div ref={footRef} className="sticky bottom-0 z-10 bg-background">
         {problemsFoot}
       </div>
@@ -1445,5 +1474,126 @@ function SuggestionCards({ collection, slug, canWrite, onApplied }: { collection
         </article>
       ))}
     </div>
+  );
+}
+
+// ── body length ───────────────────────────────────────────────────────────────
+
+/** Words, characters and reading time of the body (markup left out). */
+export function bodyStats(body: string): { words: number; chars: number; minutes: number } {
+  const text = body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/:::html[\s\S]*?\n:::/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[\[link:[^|\]]+\|([^\]]+)\]\]/g, "$1")
+    .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+[.)]|\|)\s?/gm, "")
+    .replace(/[*_~`|]/g, "");
+  const words = text.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)?.length ?? 0;
+  const chars = text.replace(/\s/g, "").length;
+  // Hangul and other scripts without spaces read by characters, the rest by words.
+  const cjk = text.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g)?.length ?? 0;
+  const minutes = Math.max(1, Math.round(cjk > chars / 2 ? chars / 500 : words / 230));
+  return { words, chars, minutes };
+}
+
+function BodyCount({ body }: { body: string }) {
+  const { t, locale } = useCms();
+  const s = React.useMemo(() => bodyStats(body), [body]);
+  const n = (x: number) => x.toLocaleString(locale);
+  return (
+    <span title={`${t("blk_words", { n: n(s.words) })} · ${t("blk_chars", { n: n(s.chars) })}`} className="tabular-nums">
+      <span className="hidden sm:inline">{t("blk_words", { n: n(s.words) })} · </span>
+      {t("blk_read_min", { n: n(s.minutes) })}
+    </span>
+  );
+}
+
+// ── live preview in a window of its own ───────────────────────────────────────
+
+/**
+ * The preview in a separate browser window (put it on a second screen): it is
+ * drawn by this page, so it follows every keystroke without saving. Closing it
+ * or pressing the button again ends it.
+ */
+function PreviewWindow({ title, summary, body, name, onClosed }: { title: string; summary: string; body: string; name: string; onClosed: () => void }) {
+  const { t, toast } = useCms();
+  const [host, setHost] = React.useState<HTMLElement | null>(null);
+  const [width, setWidth] = React.useState<"375" | "768" | "full">("full");
+  const win = React.useRef<Window | null>(null);
+  const closedRef = React.useRef(onClosed);
+  closedRef.current = onClosed;
+  React.useEffect(() => {
+    const w = window.open("", name, "popup,width=920,height=1000");
+    if (!w) {
+      toast(t("blk_preview_blocked"), { tone: "error" });
+      closedRef.current();
+      return;
+    }
+    win.current = w;
+    const d = w.document;
+    d.title = t("preview");
+    d.documentElement.lang = document.documentElement.lang;
+    d.documentElement.className = document.documentElement.className;
+    d.documentElement.style.cssText = document.documentElement.style.cssText;
+    // The same styles as this page, so the preview looks the same.
+    d.head.innerHTML = "";
+    for (const el of Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))) d.head.appendChild(el.cloneNode(true));
+    const base = d.createElement("base");
+    base.href = document.baseURI;
+    d.head.prepend(base);
+    d.body.innerHTML = "";
+    d.body.className = document.body.className;
+    const root = d.createElement("div");
+    d.body.appendChild(root);
+    setHost(root);
+    // Keep the theme in step with the admin.
+    const mo = new MutationObserver(() => (d.documentElement.className = document.documentElement.className));
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    const timer = window.setInterval(() => {
+      if (w.closed) {
+        window.clearInterval(timer);
+        closedRef.current();
+      }
+    }, 500);
+    const closeWithUs = () => w.close();
+    window.addEventListener("pagehide", closeWithUs);
+    return () => {
+      mo.disconnect();
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", closeWithUs);
+      setHost(null);
+      if (!w.closed) w.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
+  React.useEffect(() => {
+    if (win.current && !win.current.closed) win.current.document.title = `${t("preview")} · ${title || t("new_doc_title")}`;
+  }, [title, t]);
+  if (!host) return null;
+  return createPortal(
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="sticky top-0 z-10 flex items-center gap-2 border-b bg-background/95 px-4 py-2 text-xs text-muted-foreground backdrop-blur">
+        <span className="relative flex size-2">
+          <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/60 motion-reduce:animate-none" />
+          <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+        </span>
+        <span>{t("blk_preview_live")}</span>
+        <span className="flex-1" />
+        <Segmented
+          label={t("preview_width")}
+          value={width}
+          onChange={setWidth}
+          options={[
+            { value: "375", label: "375" },
+            { value: "768", label: "768" },
+            { value: "full", label: t("width_full") },
+          ]}
+          itemClassName="h-6 px-2 text-xs"
+        />
+      </div>
+      <MarkdownPreview title={title} summary={summary} body={body} className={cn("mx-auto px-6 py-8", width === "375" ? "max-w-[375px]" : width === "768" ? "max-w-[768px]" : "max-w-3xl")} />
+    </div>,
+    host
   );
 }

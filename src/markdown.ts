@@ -121,7 +121,7 @@ const INLINE_RE = new RegExp(
     String.raw`(?<br>\\\n)`,
     String.raw`\\(?<esc>[\\${"`"}*_~\[\]#>!|:+.)(\-])`,
     String.raw`\[\[link:(?<key>[a-z0-9][a-z0-9._-]*)\|(?<keyLabel>[^\]]+)\]\]`,
-    "``(?<code2>.+?)``",
+    "(?<ticks>``+)(?<code2>.+?)\\k<ticks>(?!`)",
     "`(?<code>[^`]+)`",
     String.raw`!\[(?<alt>[^\]]*)\]\(\s*(?<img>(?:[^()\s]|\([^()\s]*\))+)(?:\s+"(?<cap>[^"]*)")?\s*\)`,
     String.raw`\[(?<label>[^\]]+)\]\((?<href>(?:[^()\s]|\([^()\s]*\))+)\)`,
@@ -137,6 +137,14 @@ function wrap(t: "strong" | "em" | "del", inner: string): Inline {
   const kids = parseInline(inner);
   if (kids.length === 1 && kids[0].t === "text") return { t, v: kids[0].v };
   return { t, v: inlineText(kids), kids };
+}
+
+/** A code span with enough backticks around it for the backticks inside. */
+export function codeSpan(v: string): string {
+  if (!v.includes("`")) return `\`${v}\``;
+  const longest = Math.max(...(v.match(/`+/g) ?? []).map((r) => r.length));
+  const ticks = "`".repeat(Math.max(2, longest + 1));
+  return `${ticks} ${v} ${ticks}`;
 }
 
 export function parseInline(src: string): Inline[] {
@@ -465,7 +473,7 @@ function inlineMd(items: Inline[], esc: boolean): string {
         case "del":
           return `~~${i.kids ? inlineMd(i.kids, esc) : text(i.v)}~~`;
         case "code":
-          return i.v.includes("`") ? `\`\` ${i.v} \`\`` : `\`${i.v}\``;
+          return codeSpan(i.v);
         case "br":
           return "\\\n";
         case "link":
