@@ -45,6 +45,8 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       title: text("title").notNull(),
       summary: text("summary").notNull().default(""),
       body: text("body").notNull().default(""),
+      /** "markdown" (default) or "html" (0.15.0, schema 8). */
+      format: text("body_format").notNull().default("markdown"),
       category: text("category"),
       keywords: jsonb("keywords").$type<string[]>().notNull().default([]),
       fields: jsonb("fields").$type<Record<string, unknown>>().notNull().default({}),
@@ -619,6 +621,11 @@ CREATE TABLE IF NOT EXISTS ${tbl("records")} (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ${idx("records_key_idx")} ON ${tbl("records")} ("kind", "key");
 CREATE INDEX IF NOT EXISTS ${idx("records_scope_idx")} ON ${tbl("records")} ("kind", "scope", "created_at");`.trim(),
+    },
+    {
+      version: 8,
+      name: "agent-cms 0.15.0: body format (markdown or html)",
+      sql: `ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "body_format" text NOT NULL DEFAULT 'markdown';`,
     },
   ];
 }

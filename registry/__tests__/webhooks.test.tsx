@@ -113,7 +113,7 @@ test("webhooks: without secretsKey the screen says what is missing; Korean, phon
   await userEvent.setup().click(screen.getByRole("button", { name: "채팅 알림" }));
   const panel = await screen.findByRole("complementary", { name: "채팅 알림" });
   assert.ok(within(panel).getByRole("button", { name: "시험 전송" }));
-  assert.ok(within(panel).getByText("아직 보낸 것이 없어요."));
+  assert.ok(within(panel).getByText("아직 보낸 것이 없음."));
   assert.deepEqual(await axeViolations(), []);
 });
 

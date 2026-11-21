@@ -11,7 +11,8 @@ import type { CmsErrorCode, CmsErrorOptions, ErrorParams } from "./errors";
 import type { CmsRepo } from "./repo";
 import type { Actor, AuditAction, CmsRecord } from "./types";
 
-export const ROLE_OPS = ["read", "write", "publish", "delete"] as const;
+/** `html`: add or change HTML. `html_scripts`: HTML that runs in an isolated frame (0.15.0). */
+export const ROLE_OPS = ["read", "write", "publish", "delete", "html", "html_scripts"] as const;
 export type RoleOp = (typeof ROLE_OPS)[number];
 /** Target → what is allowed. A target is a collection slug. */
 export type RolePermissions = Record<string, Partial<Record<RoleOp, boolean>>>;

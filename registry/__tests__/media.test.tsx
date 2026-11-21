@@ -114,14 +114,14 @@ test("media: folders, tiles, a file's details, alt text, tags, the extension slo
 
   // Deleting a file in use shows the documents first.
   await user.click(within(panel).getByRole("button", { name: "삭제" }));
-  const dialog = await screen.findByRole("dialog", { name: "파일 1개를 삭제할까요?" });
-  assert.ok(within(dialog).getByText("삭제한 파일은 되살릴 수 없어요."));
+  const dialog = await screen.findByRole("dialog", { name: "파일 1개를 삭제할지 확인" });
+  assert.ok(within(dialog).getByText("삭제한 파일은 되살릴 수 없음."));
   assert.ok(within(dialog).getByText("이 파일을 쓰는 문서 1개"));
   assert.ok(within(dialog).getByRole("link", { name: "Hello, world" }));
   await user.click(within(dialog).getByRole("button", { name: "삭제" }));
   await waitFor(() => assert.ok(screen.queryByRole("button", { name: "launch-hero.png" }) === null));
   await assert.rejects(s.cms.assets.get(admin, hero.id));
-  await screen.findByText("파일이 없어요.");
+  await screen.findByText("파일이 없음.");
 
   // A new folder becomes the place uploads go.
   await user.click(screen.getByRole("button", { name: "새 폴더" }));
@@ -328,10 +328,10 @@ test("media: the focal point by keyboard, and replacing a file asks first", asyn
   const input = panel.querySelector('input[type="file"]') as HTMLInputElement;
   assert.equal(input.accept, ".png");
   await user.upload(input, new File([new Uint8Array(1500)], "logo-2026.png", { type: "image/png" }));
-  const dialog = await screen.findByRole("dialog", { name: "“logo.png”의 내용을 바꿀까요?" });
-  assert.ok(within(dialog).getByText("주소는 그대로예요. 지금 내용은 되돌릴 수 없어요."));
+  const dialog = await screen.findByRole("dialog", { name: "“logo.png”의 내용을 바꿀지 확인" });
+  assert.ok(within(dialog).getByText("주소는 그대로임. 지금 내용은 되돌릴 수 없음."));
   assert.ok(within(dialog).getByText(/logo-2026\.png/));
-  assert.ok(within(dialog).getByText("이 파일을 쓰는 문서 1개에 새 내용이 보여요."));
+  assert.ok(within(dialog).getByText("이 파일을 쓰는 문서 1개에 새 내용이 보임."));
   assert.deepEqual(await axeViolations(), []);
   assert.equal(s.requests.some((r) => r.path === "/assets/uploads"), false, "nothing is sent before the answer");
   await user.click(within(dialog).getByRole("button", { name: "바꾸기" }));

@@ -157,6 +157,6 @@ test("empty: new document plus the agent guide (CLI, MCP URL, key link)", async 
   assert.deepEqual(await axeViolations(), []);
   cleanup();
   renderWith(s, <CmsEmpty collection="notices" />, { messages: ko });
-  await screen.findByRole("heading", { name: "아직 문서가 없어요" });
+  await screen.findByRole("heading", { name: "아직 문서가 없음" });
   assert.ok(screen.getByRole("heading", { name: "에이전트로 쓰기" }));
 });

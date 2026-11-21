@@ -1,3 +1,4 @@
+import type { HtmlPolicy } from "./html-inspect";
 /**
  * agent-cms — an add-on CMS that people (an admin screen) and agents (REST,
  * MCP, CLI) edit together. Lives inside the app: no separate server. It hands
@@ -22,7 +23,8 @@ export type { CmsErrorCode, CmsErrorKind, CmsErrorOptions, Diagnostic, ErrorPara
 export const DOC_STATUSES = ["draft", "published", "archived"] as const;
 export type DocStatus = (typeof DOC_STATUSES)[number];
 
-export const KEY_SCOPES = ["read", "write", "publish", "admin"] as const;
+/** `html` (0.15.0): may add or change HTML blocks and HTML documents (with write). */
+export const KEY_SCOPES = ["read", "write", "publish", "admin", "html"] as const;
 export type KeyScope = (typeof KEY_SCOPES)[number];
 
 /** How a request came in. Used for usage counts (`cms_hits.source`) and the audit log. */
@@ -55,11 +57,24 @@ export type Actor = (
 };
 
 /** The editable content of a document; one version = one snapshot of this. */
+/** One finding of a publish check. */
+export interface PublishCheckResult {
+  code: string;
+  message: string;
+  severity: "error" | "warning";
+  /** `body`, `title`, `fields.cover`… */
+  path?: string;
+  /** 1-based body line, when the finding is in the body. */
+  line?: number;
+}
+
 export interface DocContent {
   slug: string;
   title: string;
   summary: string;
   body: string;
+  /** How `body` is written. Absent means "markdown"; "html" only in collections with `body.formats` including it (0.15.0). */
+  format?: "markdown" | "html";
   category: string | null;
   keywords: string[];
   fields: Record<string, unknown>;
@@ -270,6 +285,9 @@ export interface CmsKey {
 }
 
 export const AUDIT_ACTIONS = [
+  "doc.suggest",
+  "doc.suggest.apply",
+  "doc.suggest.reject",
   "key.rotate",
   "retention.run",
   "key.create",
@@ -475,6 +493,28 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
     /** true: an image without alt text is an error, not a warning. */
     requireAlt?: boolean;
   };
+  /** Body formats this collection takes (0.15.0). Default `["markdown"]`. Add "html" for whole-HTML documents (landing pages, newsletters). */
+  body?: { formats?: readonly ("markdown" | "html")[] };
+  /**
+   * HTML blocks (`:::html`) and HTML documents (0.15.0). HTML is saved exactly as written; this decides how it is drawn
+   * and who may add it. Default: drawn safely (sanitized), added by admins, roles with "html" and keys with the "html" scope.
+   */
+  html?: HtmlPolicy & {
+    /** Who may add or change HTML (instead of admins and the "html" role permission). */
+    access?: (a: AccessArgs) => boolean;
+    /** Who may add or change HTML that runs in an isolated frame (instead of admins and "html_scripts"). */
+    scripts?: (a: AccessArgs) => boolean;
+  };
+  /**
+   * What an agent's edit does (API keys and agents acting for a person). "apply" (default): a new version
+   * right away. "suggest": the edit is kept as a suggestion a person applies or rejects in the editor.
+   */
+  agentEdits?: "apply" | "suggest";
+  /**
+   * Your own checks before publishing (also shown in the editor's publish dialog and in `diagnose`).
+   * An "error" stops publishing; a "warning" can be published anyway.
+   */
+  publishChecks?: Array<(doc: DocContent, ctx: { collection: string; slug: string }) => PublishCheckResult[] | void | Promise<PublishCheckResult[] | void>>;
   /**
    * Who needs another person's approval before publishing. `agents`: API
    * keys and agents acting for a person. `everyone`: people too (nobody

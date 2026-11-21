@@ -182,6 +182,60 @@ export const CMS_TOOLS: CmsToolDef[] = [
     },
   },
   {
+    name: "read_document",
+    description:
+      "Read a document as one file with line numbers (`N→text`): frontmatter (slug, title, summary, category, keywords, then one line per field) and the body (markdown, `:::html` blocks, or HTML for HTML documents). Writers see the working copy. Long documents: pass offset/limit (lines), or outline=true for headings and blocks with their lines. Note `version` for edit_document.",
+    input: z.object({ collection: col, slug, offset: z.number().int().positive().optional(), limit: z.number().int().positive().max(2000).optional(), outline: z.boolean().optional() }),
+    run: async (cms, actor, a) => cms.ax.read(actor, a.collection as string, a.slug as string, { offset: a.offset as number | undefined, limit: a.limit as number | undefined, outline: a.outline as boolean | undefined }),
+  },
+  {
+    name: "grep_documents",
+    description:
+      "Find lines across documents, like grep. Literal text by default; regex=true for a regular expression (max 200 characters). Narrow with collections, slugs or glob (`guide/2026-*`). output: lines (default, with `context` lines around), files, or count. `partial: true` means the search stopped early; narrow it.",
+    input: z.object({
+      pattern: z.string().min(1),
+      regex: z.boolean().optional(),
+      ignoreCase: z.boolean().optional(),
+      collections: z.array(z.string()).optional(),
+      slugs: z.array(z.string()).optional(),
+      glob: z.string().optional(),
+      context: z.number().int().min(0).max(5).optional(),
+      output: z.enum(["lines", "files", "count"]).optional(),
+      drafts: z.boolean().optional(),
+      limit: z.number().int().positive().max(2000).optional(),
+    }),
+    run: async (cms, actor, a) => cms.ax.grep(actor, a as never),
+  },
+  {
+    name: "edit_document",
+    needs: "write",
+    description:
+      "Change a document by replacing exact text with new text, like a code editor (read_document first; copy oldString exactly, without the `N→` prefix). Works the same for body text, HTML and fields (frontmatter lines). oldString must be unique unless replaceAll=true; several edits apply in order, all or none, as one new version. Not found: the answer lists the closest lines. Pass expectedVersion. In collections that keep agents' edits as suggestions the answer has `suggestion` and saved=false.",
+    input: z.object({
+      collection: col,
+      slug,
+      edits: z.array(z.object({ oldString: z.string().min(1), newString: z.string(), replaceAll: z.boolean().optional() })).min(1).max(50),
+      expectedVersion,
+      note: z.string().optional(),
+    }),
+    run: async (cms, actor, a) => cms.ax.edit(actor, a.collection as string, a.slug as string, a.edits as never, { expectedVersion: a.expectedVersion as number | undefined, note: a.note as string | undefined }),
+  },
+  {
+    name: "write_document",
+    needs: "write",
+    description:
+      "Replace a whole document with a file (the read_document form without line numbers), or create it when the slug is new. Replacing needs expectedVersion. Prefer edit_document for changes; use this for new documents or rewrites. Fields missing from the frontmatter are removed.",
+    input: z.object({ collection: col, slug, content: z.string().min(4), expectedVersion, note: z.string().optional() }),
+    run: async (cms, actor, a) => cms.ax.write(actor, a.collection as string, a.slug as string, a.content as string, { expectedVersion: a.expectedVersion as number | undefined, note: a.note as string | undefined }),
+  },
+  {
+    name: "document_file_link",
+    description:
+      "A 10-minute link to download (GET) or upload (PUT, needs write) a document as a file, for large documents or tools that work on files (curl, a code editor). The PUT link takes one upload; send `If-Match: <version>`.",
+    input: z.object({ collection: col, slug, method: z.enum(["GET", "PUT"]).optional() }),
+    run: async (cms, actor, a) => cms.ax.rawLink(actor, a.collection as string, a.slug as string, { method: a.method as "GET" | "PUT" | undefined }),
+  },
+  {
     name: "publish_document",
     needs: "publish",
     description: "Publish the latest (or a given) version of a document.",

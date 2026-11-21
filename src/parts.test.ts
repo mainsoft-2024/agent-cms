@@ -294,3 +294,21 @@ test("frontmatter: # and commas inside quotes are kept", () => {
   assert.equal(d.title, "Fix #123");
   assert.deepEqual(d.fields, { tags: ["a, b", "c"] });
 });
+
+test("korean screen text is written in 음슴체: no value ends a sentence with 요 (0.15.0)", () => {
+  const root = join(import.meta.dirname, "..");
+  const files: [string, string][] = [
+    ["src/messages/ko.ts", ""],
+    ["registry/cms/cms-messages.ts", "export const ko"],
+  ];
+  const bad: string[] = [];
+  for (const [f, marker] of files) {
+    const src = readFileSync(join(root, f), "utf8");
+    const body = marker ? src.slice(src.indexOf(marker)) : src;
+    for (const m of body.matchAll(/^\s+([a-zA-Z_]\w*):\s*"((?:[^"\\]|\\.)*)"/gm)) {
+      // 필요 is a noun, not the polite ending.
+      if (/(?<!필)요[.!?]?(\s|$)|까요\?/.test(m[2])) bad.push(`${f} ${m[1]}: ${m[2]}`);
+    }
+  }
+  assert.deepEqual(bad, []);
+});

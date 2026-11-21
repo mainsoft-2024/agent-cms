@@ -111,7 +111,7 @@ test("automations: Korean strings, and someone who is not an admin is told so", 
   assert.match((await screen.findByRole("navigation", { name: "자동화" })).textContent ?? "", /알림매주 월요일/);
   assert.equal((screen.getByLabelText("언제") as HTMLSelectElement).value, "schedule.weekly");
   assert.ok(screen.queryByLabelText("컬렉션") === null, "a schedule has no collection");
-  await screen.findByText(/^아직 실행된 적이 없어요\./);
+  await screen.findByText(/^아직 실행된 적이 없음\./);
   cleanup();
 
   s.session.user = { kind: "user", id: "u5", label: "Reader", isAdmin: false };
@@ -222,8 +222,8 @@ test("dashboard: the cards match the lists, changes split people and agents, the
 test("dashboard: empty CMS, Korean, and a reader sees only what they may read", async () => {
   const s = makeServer();
   renderWith(s, <CmsDashboard basePath="/cms" />, { messages: ko });
-  await screen.findByText("이 기간에 읽힌 문서가 없어요.");
-  await screen.findByText("아직 활동이 없어요.");
+  await screen.findByText("이 기간에 읽힌 문서가 없음.");
+  await screen.findByText("아직 활동이 없음.");
   assert.equal(screen.getByText("문서", { selector: "dt" }).parentElement!.querySelector("dd")!.textContent, "0");
   cleanup();
 

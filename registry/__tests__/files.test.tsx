@@ -57,7 +57,7 @@ test("files: a bucket folder by folder, with move, share link and delete for wha
 
   // Delete: the documents that use any of the files are shown first.
   await user.click(within(bar).getByRole("button", { name: "삭제" }));
-  dialog = await screen.findByRole("dialog", { name: "파일 2개를 삭제할까요?" });
+  dialog = await screen.findByRole("dialog", { name: "파일 2개를 삭제할지 확인" });
   assert.ok(await within(dialog).findByText("이 파일을 쓰는 문서 1개"));
   assert.ok(within(dialog).getByRole("link", { name: "Hello, world" }));
   await user.click(within(dialog).getByRole("button", { name: "취소" }));

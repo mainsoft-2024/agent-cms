@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
 import type { AssetInfo } from "@mainsoft/agent-cms";
+import { sanitizeHtml } from "@mainsoft/agent-cms/html";
 
 type Files = Record<string, AssetInfo>;
 
@@ -8,7 +9,10 @@ type Files = Record<string, AssetInfo>;
 // have your own components; what matters here is how media is looked up.
 function inlines(items: Inline[], files: Files): ReactNode[] {
   return items.map((i, n) => {
-    if (i.t === "strong") return <strong key={n}>{i.v}</strong>;
+    if (i.t === "strong") return <strong key={n}>{i.kids ? inlines(i.kids, files) : i.v}</strong>;
+    if (i.t === "em") return <em key={n}>{i.kids ? inlines(i.kids, files) : i.v}</em>;
+    if (i.t === "del") return <del key={n}>{i.kids ? inlines(i.kids, files) : i.v}</del>;
+    if (i.t === "br") return <br key={n} />;
     if (i.t === "code") return <code key={n}>{i.v}</code>;
     if (i.t === "link") return <a key={n} href={i.href} className="underline">{i.v}</a>;
     if (i.t === "file") return files[i.asset] ? <a key={n} href={files[i.asset].url} className="underline">{i.v}</a> : <span key={n}>{i.v}</span>;
@@ -60,6 +64,24 @@ export function PostBody({ body, files, imageSrc }: { body: string; files: Files
             </figure>
           );
         }
+        case "todo":
+          return <ul key={n} className="space-y-1">{b.items.map((it, k) => <li key={k} className="flex gap-2"><input type="checkbox" checked={it.checked} readOnly disabled /> <span>{inlines(it.inline, files)}</span></li>)}</ul>;
+        case "table":
+          return (
+            <div key={n} className="overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                <thead><tr>{b.head.map((c, k) => <th key={k} className="border-b p-2 text-left" style={{ textAlign: b.align[k] ?? undefined }}>{inlines(c, files)}</th>)}</tr></thead>
+                <tbody>{b.rows.map((r, i) => <tr key={i}>{r.map((c, k) => <td key={k} className="border-b p-2" style={{ textAlign: b.align[k] ?? undefined }}>{inlines(c, files)}</td>)}</tr>)}</tbody>
+              </table>
+            </div>
+          );
+        case "toggle":
+          return <details key={n}><summary className="cursor-pointer font-medium">{inlines(b.title, files)}</summary>{draw(b.blocks)}</details>;
+        case "columns":
+          return <div key={n} className="grid gap-4 md:grid-flow-col md:auto-cols-fr">{b.cols.map((c, k) => <div key={k} className="min-w-0 space-y-3">{draw(c)}</div>)}</div>;
+        case "html":
+          // HTML is kept as written in the CMS; sanitizeHtml draws only what is safe.
+          return <div key={n} dangerouslySetInnerHTML={{ __html: sanitizeHtml(b.v, {}, { assetUrl: (id, name) => files[id]?.url ?? `/api/cms/files/${id}/${encodeURIComponent(name)}` }) }} />;
         default:
           return null;
       }

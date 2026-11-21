@@ -245,11 +245,12 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_jobs", "cms_presence", "cms_releases", "cms_saved_filters", "cms_webhook_deliveries", "cms_webhooks"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 5], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 4], /0\.10\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.11\.0/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.12\.0/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 6], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.15\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -429,10 +430,18 @@ test("db: schema 6 → 7 adds cms_records; automations, runs and roles work on a
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [6, ["cms_records"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.match(pending.steps[pending.steps.length - 1], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.15\.0: body format/);
     await run(db, pending.sql);
     await run(db, pending.sql); // safe to run again
     assert.deepEqual([(await repo.inspect()).schemaVersion, (await repo.inspect()).missingTables], [SCHEMA_VERSION, []]);
+    // Schema 8: the body format is kept on a real database.
+    const fmtCms = createCms({ repo, collections: [defineCollection({ slug: "pages", label: "Pages", visibility: "public", body: { formats: ["markdown", "html"] } }), guide] });
+    await fmtCms.create(admin, "pages", { slug: "landing", title: "Landing", format: "html", body: "<h1>Hi</h1>" });
+    assert.equal((await fmtCms.get(admin, "pages", "landing", { draft: true })).format, "html");
+    assert.equal((await fmtCms.update(admin, "pages", "landing", { title: "Landing 2" })).format, "html");
+    await fmtCms.create(admin, "pages", { slug: "md", title: "Md", body: "x" });
+    assert.equal((await fmtCms.get(admin, "pages", "md", { draft: true })).format, undefined);
 
     // Automations: made, run by cron, the run is kept, deleting takes the runs along.
     const made = await cms.automations.create(admin, { name: "Tag", enabled: true, trigger: { event: "doc.published", collection: "guide" }, conditions: [{ field: "title", op: "contains", value: "Hello" }], actions: [{ type: "add_keyword", name: "new" }] });

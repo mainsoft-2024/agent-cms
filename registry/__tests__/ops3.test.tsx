@@ -68,6 +68,6 @@ test("keys: Korean strings for limits and rotation", async () => {
   await screen.findByText("분당 30회");
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "교체: 배포" }));
-  const confirm = await screen.findByRole("dialog", { name: "“배포”의 새 시크릿을 만들까요?" });
+  const confirm = await screen.findByRole("dialog", { name: "“배포”의 새 시크릿을 만들지 확인" });
   assert.match(confirm.textContent ?? "", /1시간 동안 계속 동작/);
 });
