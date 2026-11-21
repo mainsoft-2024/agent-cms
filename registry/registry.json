@@ -198,6 +198,33 @@
       ]
     },
     {
+      "name": "cms-block-editor",
+      "type": "registry:component",
+      "title": "Block editor",
+      "description": "A Notion-style block editor for the document body (BlockNote, MPL-2.0 core). The body stays markdown: untouched blocks keep their text, and what the blocks cannot show (HTML, columns, callouts, aligned tables) stays as editable source blocks. Slash menu, image paste and drop into the media library, a Blocks/Markdown switch in the editor. Pass it as `slots.blockEditor`.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "@blocknote/core@^0.57.0",
+        "@blocknote/react@^0.57.0",
+        "@blocknote/mantine@^0.57.0",
+        "@mantine/core@^8.3.0",
+        "@mantine/hooks@^8.3.0"
+      ],
+      "registryDependencies": [
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-block-editor.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-blocks-convert.ts",
+          "type": "registry:lib"
+        }
+      ]
+    },
+    {
       "name": "cms-media",
       "type": "registry:component",
       "title": "Media library",

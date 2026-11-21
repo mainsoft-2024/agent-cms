@@ -7,7 +7,7 @@
 "use client";
 
 import * as React from "react";
-import { Copy, Crosshair, Download, Folder, FolderPlus, LayoutGrid, Link as LinkIcon, List, Pencil, Replace, Search, Trash2, X } from "lucide-react";
+import { Copy, Crosshair, Download, Folder, FolderPlus, LayoutGrid, Link as LinkIcon, List, Pencil, Replace, Search, Tag, Trash2, X } from "lucide-react";
 import type { AssetDetail, AssetView, FolderTree } from "@mainsoft/agent-cms/client";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -20,7 +20,7 @@ import { AssetGrid, AssetThumb, folderOptions, kindName, kindTabs, SELECT_CLASS,
 import { errorMessage } from "./cms-messages";
 import { ConfirmDialog, copyText, PageHeader, Segmented, StateBadge, StatusText, Who } from "./cms-parts";
 import { fileSize } from "./cms-upload";
-import { forgetAsset, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage } from "./use-cms";
+import { forgetAsset, useAsync, useCms, useDebounced, useIsMobile, trashChanged, useLocalStorage, useShortcut } from "./use-cms";
 
 export interface CmsMediaProps {
   /** Where the admin screens live, for links to the documents that use a file. Default "/admin". */
@@ -30,7 +30,7 @@ export interface CmsMediaProps {
 }
 
 export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaProps) {
-  const { client, t, me, locale } = useCms();
+  const { client, t, me, locale, toast } = useCms();
   const stores = me?.media?.stores ?? [];
   const tree = useAsync<FolderTree[]>(() => client.assetFolders(), [client]);
   const [where, setWhere] = React.useState<{ store: string | null; folder: string | null }>({ store: null, folder: null });
@@ -46,7 +46,28 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
   const applyQ = useDebounced(setQ, 250);
   const store = where.store ?? stores[0]?.name ?? null;
   const info = stores.find((s) => s.name === store);
-  const list = useAssetList({ store, folder: where.folder, kind, q, tag }, !!me?.media);
+  const [sort, setSort] = useLocalStorage<"new" | "old" | "name" | "size">("cms-media-sort", "new");
+  const [only, setOnly] = React.useState<"" | "unused" | "missingAlt">("");
+  const list = useAssetList({ store, folder: where.folder, kind, q, tag, sort, unused: only === "unused", missingAlt: only === "missingAlt" }, !!me?.media);
+  // ── ticked files and what can be done to all of them ──
+  const [checked, setChecked] = React.useState<Set<string>>(new Set());
+  const lastChecked = React.useRef<string | null>(null);
+  React.useEffect(() => setChecked(new Set()), [store, where.folder, kind, q, tag, sort, only]);
+  const check = (a: AssetView, range: boolean) =>
+    setChecked((s) => {
+      const n = new Set(s);
+      const ids = list.assets.map((x) => x.id);
+      if (range && lastChecked.current && ids.includes(lastChecked.current)) {
+        const [i, j] = [ids.indexOf(lastChecked.current), ids.indexOf(a.id)].sort((x, y) => x - y);
+        for (const id of ids.slice(i, j + 1)) n.add(id);
+      } else if (n.has(a.id)) n.delete(a.id);
+      else n.add(a.id);
+      lastChecked.current = a.id;
+      return n;
+    });
+  const [bulk, setBulk] = React.useState<null | "move" | "tag" | "delete">(null);
+  useShortcut(list.assets.length > 0 && "mod+a", () => setChecked(new Set(list.assets.map((a) => a.id))), { inFields: false });
+  useShortcut(checked.size > 0 && "escape", () => setChecked(new Set()));
   const refresh = () => {
     list.reload();
     tree.reload();
@@ -161,7 +182,20 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
               />
             </div>
             <Segmented label={t("media_kind")} value={kind} onChange={setKind} options={kindTabs(list.counts, t)} className="max-w-full overflow-x-auto" />
-            <div className="ml-auto hidden items-center gap-2 md:flex">
+            <div className="ml-auto flex items-center gap-2">
+              <select aria-label={t("media_only")} className={cn(SELECT_CLASS, "max-w-[150px]", only && "border-primary")} value={only} onChange={(e) => setOnly(e.target.value as typeof only)}>
+                <option value="">{t("media_only_all")}</option>
+                <option value="unused">{t("media_only_unused")}</option>
+                <option value="missingAlt">{t("media_only_missing_alt")}</option>
+              </select>
+              <select aria-label={t("media_sort")} className={cn(SELECT_CLASS, "max-w-[140px]")} value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
+                <option value="new">{t("media_sort_new")}</option>
+                <option value="old">{t("media_sort_old")}</option>
+                <option value="name">{t("media_sort_name")}</option>
+                <option value="size">{t("media_sort_size")}</option>
+              </select>
+            </div>
+            <div className="hidden items-center gap-2 md:flex">
             {tags.length ? (
               <select aria-label={t("media_tag")} className={cn(SELECT_CLASS, "max-w-[140px]")} value={tag ?? ""} onChange={(e) => setTag(e.target.value || null)}>
                 <option value="">{t("media_tag")}</option>
@@ -185,7 +219,64 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
           </div>
           <div className="flex-1 px-2.5 py-3 md:px-3.5">
             {list.error ? <StatusText tone="error">{errorMessage(list.error, t)}</StatusText> : null}
-            {!list.loading && !list.assets.length && !list.error ? <p className="py-16 text-center text-sm text-muted-foreground">{t("media_empty")}</p> : null}
+            {!list.loading && !list.assets.length && !list.error ? (
+              <div className="py-16 text-center text-sm text-muted-foreground">
+                <p>{q || tag || only || kind !== "all" ? t("media_no_match") : t("media_empty")}</p>
+                {q || tag || only || kind !== "all" ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-3"
+                    onClick={() => {
+                      setText("");
+                      setQ("");
+                      setTag(null);
+                      setOnly("");
+                      setKind("all");
+                    }}
+                  >
+                    {t("clear_filters")}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+            {checked.size ? (
+              <div role="toolbar" aria-label={t("bulk_bar")} className="sticky top-0 z-20 mb-3 flex flex-wrap items-center gap-2 rounded-lg border bg-background/95 px-3 py-2 shadow-sm backdrop-blur">
+                <span className="text-sm font-medium tabular-nums" aria-live="polite">
+                  {t("media_checked", { n: checked.size })}
+                </span>
+                <Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => setChecked(checked.size === list.assets.length ? new Set() : new Set(list.assets.map((a) => a.id)))}>
+                  {checked.size === list.assets.length ? t("select_none") : t("select_all_shown")}
+                </Button>
+                <span className="flex-1" />
+                <a className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-7 gap-1.5")} href={client.assetZipUrl([...checked])} download>
+                  <Download aria-hidden className="h-4 w-4" />
+                  {t("media_zip")}
+                </a>
+                {info?.can.write ? (
+                  <>
+                    <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5" onClick={() => setBulk("move")}>
+                      <Folder aria-hidden className="h-4 w-4" />
+                      {t("media_move")}
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5" onClick={() => setBulk("tag")}>
+                      <Tag aria-hidden className="h-4 w-4" />
+                      {t("media_add_tag")}
+                    </Button>
+                  </>
+                ) : null}
+                {info?.can.delete ? (
+                  <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 text-destructive hover:text-destructive" onClick={() => setBulk("delete")}>
+                    <Trash2 aria-hidden className="h-4 w-4" />
+                    {t("action_delete")}
+                  </Button>
+                ) : null}
+                <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={t("select_none")} onClick={() => setChecked(new Set())}>
+                  <X aria-hidden className="h-4 w-4" />
+                </Button>
+              </div>
+            ) : null}
             {view === "list" && list.assets.length ? (
               <Table>
                 <TableHeader>
@@ -213,7 +304,7 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
                 </TableBody>
               </Table>
             ) : (
-              <AssetGrid assets={list.assets} selected={openId} onSelect={(a) => setOpenId(a.id === openId ? null : a.id)} className={openId ? "xl:grid-cols-3" : undefined} />
+              <AssetGrid assets={list.assets} selected={openId} onSelect={(a) => setOpenId(a.id === openId ? null : a.id)} checked={checked} onCheck={check} className={openId ? "xl:grid-cols-3" : undefined} />
             )}
           </div>
           {list.assets.length ? (
@@ -263,6 +354,20 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
           await client.createAssetFolder(path, store);
           tree.reload();
           setWhere({ store, folder: path });
+        }}
+      />
+      <BulkDialog
+        what={bulk}
+        ids={[...checked]}
+        assets={list.assets}
+        folders={options.filter((o) => o.store === store)}
+        onClose={() => setBulk(null)}
+        onDone={(message, undo) => {
+          setBulk(null);
+          setChecked(new Set());
+          refresh();
+          trashChanged();
+          toast(message, { tone: "ok", action: undo ? { label: t("undo"), run: async () => (await undo().catch((e: unknown) => void toast(errorMessage(e, t), { tone: "error" })), refresh()) } : undefined });
         }}
       />
       <UploadPanel items={uploads.items} onRetry={uploads.retry} onRemove={uploads.remove} onClose={uploads.clear} />
@@ -419,12 +524,17 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
       setData((d) => (d ? { ...d, ...next } : d));
       onChanged(next);
       setSaveError(null);
+      return true;
     } catch (e) {
       setSaveError(e);
+      return false;
     }
   };
   const focal = asset && asset.focalX !== null && asset.focalY !== null ? { x: asset.focalX, y: asset.focalY } : null;
-  const point = focal ?? { x: 0.5, y: 0.5 };
+  // Arrow keys move a local point at once and save once, a moment after the last press.
+  const [nudge, setNudge] = React.useState<{ x: number; y: number } | null>(null);
+  const saveNudge = useDebounced((p: { x: number; y: number }) => void save({ focal: p }).then(() => setNudge(null)), 500);
+  const point = nudge ?? focal ?? { x: 0.5, y: 0.5 };
   const body = !asset ? (
     <StatusText tone={error ? "error" : "muted"}>{error ? errorMessage(error, t) : t("loading")}</StatusText>
   ) : (
@@ -502,7 +612,9 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
                     if (!d) return;
                     e.preventDefault();
                     const k = FOCAL_STEP * (e.shiftKey ? 5 : 1);
-                    void save({ focal: { x: Math.min(1, Math.max(0, point.x + d[0] * k)), y: Math.min(1, Math.max(0, point.y + d[1] * k)) } });
+                    const next = { x: Math.min(1, Math.max(0, point.x + d[0] * k)), y: Math.min(1, Math.max(0, point.y + d[1] * k)) };
+                    setNudge(next);
+                    saveNudge(next);
                   }}
                 />
               ) : null}
@@ -603,11 +715,14 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
               value={tagText}
               onChange={(e) => setTagText(e.target.value)}
               onKeyDown={(e) => {
+                // Enter while a Korean or Japanese word is still being composed finishes the word, not the tag.
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 const v = tagText.trim().replace(/,$/, "");
                 if ((e.key === "Enter" || e.key === ",") && v) {
                   e.preventDefault();
-                  setTagText("");
-                  if (!asset.tags.includes(v)) void save({ tags: [...asset.tags, v] });
+                  if (asset.tags.includes(v)) return setTagText("");
+                  // The text stays until the save worked, so a failure loses nothing.
+                  void save({ tags: [...asset.tags, v] }).then((ok) => ok && setTagText(""));
                 }
               }}
               className="h-6 min-w-[60px] flex-1 bg-transparent text-sm outline-none"
@@ -717,5 +832,117 @@ export function UsageList({ asset, basePath, docHref }: { asset: Pick<AssetDetai
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Move, tag or delete the ticked files, with a short summary and Undo where it can be undone. */
+function BulkDialog({
+  what,
+  ids,
+  assets,
+  folders,
+  onClose,
+  onDone,
+}: {
+  what: null | "move" | "tag" | "delete";
+  ids: string[];
+  assets: AssetView[];
+  folders: { value: string; label: string; folder: string | null }[];
+  onClose: () => void;
+  onDone: (message: string, undo?: () => Promise<unknown>) => void;
+}) {
+  const { client, t, me } = useCms();
+  const [folder, setFolder] = React.useState("");
+  const [tag, setTag] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<unknown>(null);
+  const [inUse, setInUse] = React.useState(0);
+  const deleted = React.useRef<string[]>([]);
+  React.useEffect(() => {
+    if (what) (setError(null), setInUse(0), (deleted.current = []), setTag(""), setFolder(folders[0]?.folder ?? ""));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [what]);
+  const byId = new Map(assets.map((a) => [a.id, a]));
+  const go = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (what === "move") {
+        const before = ids.map((id) => [id, byId.get(id)?.folder ?? null] as const);
+        for (const id of ids) await client.moveAsset(id, { folder: folder || null });
+        onDone(t("media_moved_n", { n: ids.length }), async () => {
+          for (const [id, f] of before) await client.moveAsset(id, { folder: f });
+        });
+      } else if (what === "tag") {
+        const v = tag.trim();
+        if (!v) return;
+        const added: string[] = [];
+        for (const id of ids) {
+          const a = byId.get(id);
+          if (!a || a.tags.includes(v)) continue;
+          await client.updateAsset(id, { tags: [...a.tags, v] });
+          added.push(id);
+        }
+        onDone(t("media_tagged_n", { n: added.length, tag: v }), async () => {
+          for (const id of added) await client.updateAsset(id, { tags: byId.get(id)!.tags });
+        });
+      } else if (what === "delete") {
+        // First pass without `confirm`: files in use stop and are counted.
+        let used = 0;
+        const done: string[] = [...deleted.current];
+        for (const id of ids.filter((x) => !deleted.current.includes(x))) {
+          try {
+            await client.removeAsset(id, { confirm: inUse > 0 });
+            done.push(id);
+          } catch (e) {
+            if ((e as { code?: string }).code === "asset_in_use") used++;
+            else throw e;
+          }
+        }
+        if (used && !inUse) {
+          // Ask once more for the files documents use; the others are gone already.
+          deleted.current = done;
+          setInUse(used);
+          return;
+        }
+        const trash = (me?.trashDays ?? 0) > 0;
+        onDone(t("media_deleted_n", { n: done.length }), trash ? () => client.restoreTrash(done.map((id) => ({ kind: "asset" as const, id }))) : undefined);
+      }
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <ConfirmDialog
+      open={!!what}
+      onOpenChange={(o) => !o && onClose()}
+      title={what === "move" ? t("media_move_n", { n: ids.length }) : what === "tag" ? t("media_tag_n", { n: ids.length }) : t("media_delete_title", { n: ids.length })}
+      description={what === "delete" ? (inUse ? t("media_delete_used_n", { n: inUse }) : (me?.trashDays ?? 0) > 0 ? t("confirm_delete_trash", { days: me!.trashDays! }) : t("media_delete_gone")) : undefined}
+      confirmLabel={what === "move" ? t("media_move") : what === "tag" ? t("media_add_tag") : inUse ? t("media_delete_anyway") : t("action_delete")}
+      destructive={what === "delete"}
+      busy={busy}
+      error={error ? errorMessage(error, t) : null}
+      onConfirm={go}
+    >
+      {what === "move" ? (
+        <div className="grid gap-1.5">
+          <Label htmlFor="cms-bulk-folder">{t("media_folder")}</Label>
+          <select id="cms-bulk-folder" className={SELECT_CLASS} value={folder} onChange={(e) => setFolder(e.target.value)}>
+            {folders.map((o) => (
+              <option key={o.value} value={o.folder ?? ""}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : what === "tag" ? (
+        <div className="grid gap-1.5">
+          <Label htmlFor="cms-bulk-tag">{t("media_tag")}</Label>
+          <Input id="cms-bulk-tag" autoFocus maxLength={40} value={tag} onChange={(e) => setTag(e.target.value)} />
+        </div>
+      ) : null}
+    </ConfirmDialog>
   );
 }

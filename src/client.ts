@@ -263,7 +263,27 @@ export type ShareTtl = "1h" | "24h" | "7d";
 export type AssetCounts = Record<"all" | "image" | "video" | "audio" | "document" | "other", number>;
 export type AssetDetail = AssetView & { usage: AssetUsage[]; usageHidden: number };
 
+/** An agent's edit kept for a person to apply or reject. */
+export interface SuggestionWire {
+  id: string;
+  baseVersion: number;
+  edits: { oldString: string; newString: string; replaceAll?: boolean }[];
+  note: string | null;
+  by: { kind: "user" | "key" | "system"; label: string; agent: string | null };
+  at: string;
+  lines: { from: number; to: number }[];
+}
+
 export interface CollectionSchema {
+  /** Body formats this collection allows (0.15.0). */
+  formats?: ("markdown" | "html")[];
+  /** The person may add or change HTML blocks / run scripts in isolated HTML. */
+  canHtml?: boolean;
+  canHtmlScripts?: boolean;
+  /** "suggest": an agent's edits wait as suggestions for a person. */
+  agentEdits?: "apply" | "suggest";
+  /** The collection has publish checks (the editor asks them before publishing). */
+  publishChecks?: boolean;
   slug: string;
   label: string;
   visibility: "public" | "internal";
@@ -348,6 +368,13 @@ export function createRestClient(opts: RestClientOptions) {
     remove: (c: string, s: string, expectedVersion?: number) => req<{ ok: true }>("DELETE", doc(c, s), { ifMatch: expectedVersion }),
     diagnose: (c: string, d: DocInputWire, slug?: string) => req<{ diagnostics: Diagnostic[] }>("POST", `/collections/${enc(c)}/_diagnose`, { body: { doc: d, slug } }).then((r) => r.diagnostics),
     patch: (c: string, s: string, ops: PatchOp[], o: { expectedVersion?: number; dryRun?: boolean } = {}) => req<{ doc: CmsDoc | null; diff: string; diagnostics: Diagnostic[]; saved: boolean }>("POST", `${doc(c, s)}/patch`, { body: { ops, ...o } }),
+    /** Agents' edits waiting as suggestions (collections with `agentEdits: "suggest"`). */
+    suggestions: (c: string, s: string) => req<{ suggestions: SuggestionWire[] }>("GET", `${doc(c, s)}/suggestions`).then((r) => r.suggestions),
+    applySuggestion: (c: string, s: string, id: string) => req<unknown>("POST", `${doc(c, s)}/suggestions/${enc(id)}/apply`),
+    rejectSuggestion: (c: string, s: string, id: string) => req<unknown>("POST", `${doc(c, s)}/suggestions/${enc(id)}/reject`),
+    /** What the collection's publish checks (and the schema) say about this content, before publishing. */
+    publishChecks: (c: string, s: string, d?: DocInputWire) =>
+      req<{ diagnostics: Diagnostic[]; checks: { code: string; message: string; severity: "error" | "warning"; path?: string; line?: number }[]; blocking: boolean }>("POST", `${doc(c, s)}/checks`, { body: { doc: d } }),
     autosave: (c: string, s: string, d: DocInputWire, baseVersion: number) => req<{ autosave: AutosaveState }>("PUT", `${doc(c, s)}/autosave`, { body: { doc: d, baseVersion } }).then((r) => r.autosave),
     discardAutosave: (c: string, s: string) => req<{ ok: true }>("DELETE", `${doc(c, s)}/autosave`),
     publish: (c: string, s: string, o: { expectedVersion?: number; version?: number } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/publish`, { body: { version: o.version }, ifMatch: o.expectedVersion }).then((r) => r.doc),

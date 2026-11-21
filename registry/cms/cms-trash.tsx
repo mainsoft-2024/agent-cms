@@ -146,7 +146,7 @@ export function CmsTrash({ className }: CmsTrashProps) {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-9">
-                  <Checkbox aria-label={t("select_all")} checked={allPicked ? true : rows.some((r) => picked.has(r.id)) ? "indeterminate" : false} onCheckedChange={(v) => setPicked(v === true ? new Set(rows.map((r) => r.id)) : new Set())} />
+                  <Checkbox aria-label={t("select_all")} checked={allPicked} aria-checked={allPicked ? "true" : rows.some((r) => picked.has(r.id)) ? "mixed" : "false"} onCheckedChange={(v) => setPicked(v === true ? new Set(rows.map((r) => r.id)) : new Set())} />
                 </TableHead>
                 <TableHead>{t("name")}</TableHead>
                 <TableHead className="hidden w-[160px] md:table-cell">{t("trash_col_where")}</TableHead>

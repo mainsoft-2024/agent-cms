@@ -54,6 +54,7 @@ test("keys: list with expired badge; create shows the secret once with MCP and C
   assert.ok(within(done).getByText((t) => t.includes(`AGENT_CMS_KEY=${secret}`)));
   assert.ok(within(done).getByText("npx @mainsoft/agent-cms collections"));
   await user.click(within(done).getByRole("tab", { name: "MCP" }));
+  for (const b of within(done).queryAllByRole("button", { name: "Show", pressed: false })) await user.click(b);
   assert.ok(within(done).getByText((t) => t.includes('"mcpServers"') && t.includes("http://localhost/api/cms/mcp") && t.includes(`Bearer ${secret}`)));
   // user-event swaps in its own clipboard; put a spy back.
   const copied: string[] = [];

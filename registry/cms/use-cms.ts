@@ -31,6 +31,29 @@ export interface CmsProviderProps {
 export interface CmsSlots {
   /** Next to a file's alt text field in the media library. `setAlt` fills the field (the person still saves it). */
   assetAlt?: (asset: AssetDetail, o: { setAlt: (alt: string) => void }) => React.ReactNode;
+  /**
+   * The block editor for the body (`npx @mainsoft/agent-cms add cms-block-editor`). Without it
+   * the body is edited as markdown text. Pass it lazily (next/dynamic or React.lazy): it is large.
+   */
+  blockEditor?: React.ComponentType<BlockEditorProps>;
+}
+
+export interface BlockEditorProps {
+  /** The body as markdown. */
+  value: string;
+  /** Called with new markdown, only when the text really changed. */
+  onChange: (markdown: string) => void;
+  readOnly?: boolean;
+  /** Upload a pasted or dropped file; returns the markdown target ("asset:ID/name"). */
+  uploadFile?: (file: File) => Promise<string>;
+  /** The address to show for a target ("asset:ID/name" → a real URL). */
+  resolveFileUrl?: (target: string) => string;
+  /** Open the media picker; resolves to markdown for the picked file, or null. */
+  onPickMedia?: () => Promise<string | null>;
+  /** The screen puts markdown at the cursor through this. */
+  insertRef?: React.MutableRefObject<((markdown: string) => void) | null>;
+  id?: string;
+  describedBy?: string;
 }
 
 export interface CmsContextValue {

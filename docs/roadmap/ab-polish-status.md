@@ -13,6 +13,13 @@
 | 3 게시 전 점검 (ab-p3 일부) | 서버만 | `publishChecks`, `publish_check_failed`, `POST …/checks`. 점검 창과 문장 단위 비교는 아직 |
 | 음슴체 (ab-tone) | 끝 | 어드민·오류 문구 ko 전체, 지킴 테스트 |
 
+## 2차에서 한 것 (2026-11-21, 브랜치 `agents/polish-2`)
+
+- 블록 편집기 `cms-block-editor` (BlockNote MPL 코어만), 변환기 `cms-blocks-convert.ts`, / 메뉴, 이미지 붙여넣기·끌어 놓기 업로드, 블록/마크다운 전환
+- 게시 전 점검 창, 제안 카드, 알림+되돌리기, 단축키와 단축키 창, 오프라인 사본, 떠나기 경고
+- 미디어 여러 개 선택, 옮기기·태그·zip·삭제(되돌리기), 안 쓰는 파일·대체 텍스트 없는 이미지 필터, 정렬
+- 리뷰 에이전트 제안 75개 중 57개 반영 (목록: `docs/roadmap/review-2026-11-21.md`)
+
 ## 아직 안 한 것
 
 - **블록 편집기(ab-rich 나머지)**: BlockNote(MPL-2.0 core만, xl-* 금지) 연결, 우리 Block ↔ BlockNote 변환기(`cms-blocks-convert.ts`), 사용자 블록(미디어, 알림 상자, 문서 링크, HTML, 원문), 바뀌지 않으면 저장하지 않기, 한국어 IME e2e, 지연 로딩, `editor: "markdown"` 옵션.

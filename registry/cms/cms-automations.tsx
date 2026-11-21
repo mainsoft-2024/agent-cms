@@ -104,13 +104,17 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
     }
   }
   const input = () => ({ name, enabled, trigger: { event: event as CmsAutomation["trigger"]["event"], collection: collection || null }, conditions, actions });
+  // The form as last saved (set on first render and after each save): the test runs that, not what is on screen.
+  const savedForm = React.useRef<string | null>(null);
+  if (savedForm.current === null) savedForm.current = JSON.stringify(input());
+  const unsaved = JSON.stringify(input()) !== savedForm.current;
   const patchAt = <V,>(set: React.Dispatch<React.SetStateAction<V[]>>, i: number, p: Partial<V>) => set((l) => l.map((x, n) => (n === i ? { ...x, ...p } : x)));
   const actionLabel = (a: string) => lists.actionLabels[a] ?? t(`action.${a}` as never);
   const targets = (type: string): { id: string; label: string }[] | null =>
     type === "webhook" ? (hooks.data ?? []).map((w) => ({ id: w.id, label: w.name })) : type === "add_to_release" ? (releases.data ?? []).map((r) => ({ id: r.id, label: r.name })) : type === "call" ? lists.functions.map((f) => ({ id: f, label: f })) : null;
 
   return (
-    <form className="flex max-w-3xl flex-col gap-5" onSubmit={(e) => (e.preventDefault(), void run(async () => (await client.updateAutomation(auto.id, input()), t("automation_saved"))))}>
+    <form className="flex max-w-3xl flex-col gap-5" onSubmit={(e) => (e.preventDefault(), void run(async () => (await client.updateAutomation(auto.id, input()), (savedForm.current = JSON.stringify(input())), t("automation_saved"))))}>
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex min-w-0 flex-1 basis-full flex-col gap-1.5 sm:basis-0">
           <Label htmlFor="cms-auto-name">{t("automation_name")}</Label>
@@ -222,7 +226,7 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
         </h2>
         <p className="text-xs text-muted-foreground">{t("automation_test_text")}</p>
         {/* The test runs the saved rule: with unsaved changes it would test something else than what is shown. */}
-        {JSON.stringify(input()) !== JSON.stringify({ name: auto.name, enabled: auto.enabled, trigger: { event: auto.trigger.event, collection: auto.trigger.collection ?? null }, conditions: auto.conditions, actions: auto.actions }) ? (
+        {unsaved ? (
           <p className="text-xs text-amber-700 dark:text-amber-400">{t("automation_test_save_first")}</p>
         ) : null}
         <div className="flex max-w-md flex-wrap items-center gap-2">
@@ -244,7 +248,7 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
               busy ||
               !slug.trim() ||
               !(collection || (cols.length === 1 ? cols[0] : testCol)) ||
-              JSON.stringify(input()) !== JSON.stringify({ name: auto.name, enabled: auto.enabled, trigger: { event: auto.trigger.event, collection: auto.trigger.collection ?? null }, conditions: auto.conditions, actions: auto.actions })
+              unsaved
             }
             onClick={() =>
               run(async () => {

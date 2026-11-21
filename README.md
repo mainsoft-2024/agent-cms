@@ -734,6 +734,10 @@ import { toNodeHandler } from "@mainsoft/agent-cms/adapters/node";
 app.use("/api/cms", toNodeHandler(createCmsHandler({ cms, resolveUser })));   // Express
 ```
 
+## Block editor
+
+`npx @mainsoft/agent-cms add cms-block-editor` adds a Notion-style block editor (BlockNote MPL-2.0 core). Pass it as `slots.blockEditor`. The body is still stored as markdown: untouched blocks keep their text, and what blocks cannot show stays as an editable source block. Type `/` for blocks; pasted images go to the media library. The admin also has toasts with Undo, `?` for keyboard shortcuts, a local copy of unsaved edits, and bulk actions in media (move, tag, zip, delete).
+
 ## Agents
 
 This package never calls a model. It has no model or key settings. It hands

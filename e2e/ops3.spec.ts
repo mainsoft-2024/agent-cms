@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 // 0.14.0 in a real browser: key limits and rotation, the events stream, retention.
 const api = "/api/cms";

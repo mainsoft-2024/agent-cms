@@ -247,12 +247,20 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
 
   const expiresAt = (): string | null => {
     if (expiry === "none") return null;
-    if (expiry === "custom") return date ? new Date(`${date}T23:59:59`).toISOString() : null;
+    // The key works through the whole chosen day in this browser's time zone: it ends at the next midnight.
+    if (expiry === "custom") {
+      if (!date) return null;
+      const end = new Date(`${date}T00:00:00`);
+      end.setDate(end.getDate() + 1);
+      return end.toISOString();
+    }
     return new Date(Date.now() + Number(expiry) * 86_400_000).toISOString();
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const until = expiresAt();
+    if (until && Date.parse(until) <= Date.now()) return setError(t("key_expiry_past"));
     setBusy(true);
     setError(null);
     try {
@@ -386,17 +394,17 @@ export function KeyCreated({ name, secret, mcpServerName = "agent-cms", onClose 
         </DialogTitle>
         <DialogDescription>{t("key_once")}</DialogDescription>
       </DialogHeader>
-      <CodeBox value={secret} label={t("key_secret")} />
+      <CodeBox value={secret} secret={secret} label={t("key_secret")} />
       <Tabs defaultValue="cli" className="mt-1">
         <TabsList aria-label={t("key_connect")}>
           <TabsTrigger value="mcp">MCP</TabsTrigger>
           <TabsTrigger value="cli">CLI (.env)</TabsTrigger>
         </TabsList>
         <TabsContent value="mcp">
-          <CodeBox value={mcp} label="MCP" multiline />
+          <CodeBox value={mcp} secret={secret} label="MCP" multiline />
         </TabsContent>
         <TabsContent value="cli" className="flex flex-col gap-2">
-          <CodeBox value={env} label=".env" multiline />
+          <CodeBox value={env} secret={secret} label=".env" multiline />
           <CodeBox value="npx @mainsoft/agent-cms collections" label="CLI" className="[&>code]:whitespace-normal [&>code]:[overflow-wrap:anywhere]" />
         </TabsContent>
       </Tabs>

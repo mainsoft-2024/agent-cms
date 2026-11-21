@@ -22,8 +22,13 @@ export interface CmsDashboardProps {
 export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDashboardProps) {
   const { client, t, locale } = useCms();
   const [days, setDays] = React.useState<"7" | "14" | "30">("14");
-  const stats = useAsync(() => client.stats(Number(days)), [client, days]);
+  const stats = useAsync(() => client.stats(Number(days)).then((r) => ({ ...r, days })), [client, days]);
   const s = stats.data;
+  /** The data on screen may be for the period chosen before (loading, or the new one failed). */
+  const stale = !!s && s.days !== days;
+  const num = (n: number) => new Intl.NumberFormat(locale).format(n);
+  // Days are calendar dates ("2026-11-21"), not instants: format them without moving them to another zone.
+  const day = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(locale, { month: "short", day: "numeric", timeZone: "UTC" });
   const href = (c: string, slug: string) => docHref?.(c, slug) ?? `${basePath}/${encodeURIComponent(c)}/${encodeURIComponent(slug)}`;
   const max = Math.max(1, ...(s?.changes ?? []).map((c) => c.people + c.agents));
   const cards = s ? ([["dash_documents", s.totals.documents], ["dash_published", s.totals.published], ["dash_review", s.totals.review], ["dash_scheduled", s.totals.scheduled]] as const) : [];
@@ -36,6 +41,7 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
       <div className="flex flex-col gap-6 px-4 py-4 md:px-6">
         <StatusText tone={stats.error ? "error" : "muted"} className="text-xs">
           {stats.error ? errorMessage(stats.error, t) : stats.loading && !s ? t("loading") : ""}
+          {stale ? ` ${t(stats.loading ? "dash_updating" : "dash_showing", { n: s!.days })}` : ""}
         </StatusText>
         {s ? (
           <>
@@ -43,11 +49,11 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
               {cards.map(([key, n]) => (
                 <div key={key} className="min-w-0 rounded-lg border px-4 py-3">
                   <dt className="truncate text-xs text-muted-foreground">{t(key)}</dt>
-                  <dd className="mt-1 text-2xl font-semibold tabular-nums">{n}</dd>
+                  <dd className="mt-1 text-2xl font-semibold tabular-nums">{num(n)}</dd>
                 </div>
               ))}
             </dl>
-            <section aria-labelledby="cms-dash-changes" className="rounded-lg border px-4 py-3">
+            <section aria-labelledby="cms-dash-changes" className={cn("rounded-lg border px-4 py-3", stale && "opacity-60")} aria-busy={stale && stats.loading}>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <h2 id="cms-dash-changes" className="text-sm font-medium">
                   {t("dash_changes")}
@@ -63,17 +69,19 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
               </div>
               <ol className="mt-3 flex h-36 items-end gap-1" aria-label={t("dash_changes")}>
                 {s.changes.map((c) => (
-                  <li key={c.day} className="flex h-full min-w-0 flex-1 flex-col justify-end" title={t("dash_day", { day: formatDate(c.day, locale), people: c.people, agents: c.agents })}>
-                    <span className="sr-only">{t("dash_day", { day: formatDate(c.day, locale), people: c.people, agents: c.agents })}</span>
+                  <li key={c.day} className="flex h-full min-w-0 flex-1 flex-col justify-end" title={t("dash_day", { day: day(c.day), people: c.people, agents: c.agents })}>
+                    <span className="sr-only">{t("dash_day", { day: day(c.day), people: c.people, agents: c.agents })}</span>
                     <span aria-hidden className="block w-full rounded-t-sm bg-foreground/35" style={{ height: `${(c.agents / max) * 100}%` }} />
                     <span aria-hidden className={cn("block w-full bg-foreground", c.agents ? "" : "rounded-t-sm")} style={{ height: `${(c.people / max) * 100}%`, minHeight: c.people + c.agents ? 0 : 1 }} />
                   </li>
                 ))}
               </ol>
-              <div aria-hidden className="mt-1 flex justify-between text-[11px] text-muted-foreground">
-                <span>{formatDate(s.changes[0].day, locale)}</span>
-                <span>{formatDate(s.changes[s.changes.length - 1].day, locale)}</span>
-              </div>
+              {s.changes.length ? (
+                <div aria-hidden className="mt-1 flex justify-between text-[11px] text-muted-foreground">
+                  <span>{day(s.changes[0].day)}</span>
+                  <span>{day(s.changes[s.changes.length - 1].day)}</span>
+                </div>
+              ) : null}
             </section>
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <section aria-labelledby="cms-dash-top" className="min-w-0">
@@ -87,7 +95,7 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
                       <a href={href(d.collection, d.slug)} className="min-w-0 flex-1 truncate outline-none hover:underline focus-visible:underline">
                         {d.title}
                       </a>
-                      <span className="shrink-0 tabular-nums text-muted-foreground">{d.hits}</span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground">{num(d.hits)}</span>
                     </li>
                   ))}
                 </ol>
@@ -110,7 +118,7 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
                           t(`activity.${r.action}` as never, { who: r.who, title: r.title ?? r.slug ?? "" })
                         )}
                       </span>
-                      <time className="shrink-0 text-xs text-muted-foreground" dateTime={r.at}>
+                      <time className="shrink-0 text-xs text-muted-foreground" dateTime={r.at} title={new Date(r.at).toLocaleString(locale, { timeZoneName: "short" })}>
                         {relativeTime(r.at, t, locale)}
                       </time>
                     </li>

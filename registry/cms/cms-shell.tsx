@@ -157,7 +157,13 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
       active && "bg-accent font-medium text-accent-foreground"
     );
 
-  const close = () => setOpen(false);
+  // A link in the phone menu: the menu closes and focus goes to the new page, not back to the menu button.
+  const mainRef = React.useRef<HTMLElement>(null);
+  const navigated = React.useRef(false);
+  const close = () => {
+    navigated.current = true;
+    setOpen(false);
+  };
 
   const nav = (
     <nav aria-label={t("nav_label")} className="flex flex-col gap-0.5 text-sm">
@@ -384,14 +390,30 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
           {nav}
         </aside>
         <Sheet open={open} onOpenChange={setOpen}>
-          <SheetContent side="left" className="w-72 overflow-y-auto p-3">
+          <SheetContent
+            side="left"
+            className="w-72 overflow-y-auto p-3"
+            {...({
+              // Radix sheets: where focus goes when the sheet closes.
+              onCloseAutoFocus: (e: Event) => {
+                if (!navigated.current) return;
+                navigated.current = false;
+                e.preventDefault();
+                const h = mainRef.current?.querySelector<HTMLElement>("h1");
+                if (h && !h.hasAttribute("tabindex")) h.setAttribute("tabindex", "-1");
+                (h ?? mainRef.current)?.focus({ preventScroll: true });
+              },
+            } as object)}
+          >
             <SheetTitle className="sr-only">{t("menu")}</SheetTitle>
             <SheetDescription className="sr-only">{t("nav_label")}</SheetDescription>
             {brand}
             {nav}
           </SheetContent>
         </Sheet>
-        <main className="flex min-w-0 flex-1 flex-col">{children}</main>
+        <main ref={mainRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
+          {children}
+        </main>
       </div>
       <ShortcutsDialog open={help} onOpenChange={setHelp} />
     </ShellNavContext.Provider>
