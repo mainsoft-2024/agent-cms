@@ -15,6 +15,7 @@ export default defineConfig([
       "storage-vercel-blob": "src/storage-vercel-blob.ts",
       agent: "src/agent.ts",
       markdown: "src/markdown.ts",
+      html: "src/html.ts",
       frontmatter: "src/frontmatter.ts",
       types: "src/types.ts",
       tables: "src/tables.ts",
@@ -31,13 +32,13 @@ export default defineConfig([
     dts: true,
     clean: true,
     target: "es2022",
-    external: ["drizzle-orm", "zod", "@modelcontextprotocol/sdk", "jiti", "sharp", "@vercel/blob"],
+    external: ["drizzle-orm", "zod", "@modelcontextprotocol/sdk", "jiti", "sharp", "@vercel/blob", "sanitize-html"],
   },
   {
     entry: { bin: "src/bin.ts" },
     format: ["esm"],
     target: "node20",
     banner: { js: "#!/usr/bin/env node" },
-    external: ["drizzle-orm", "zod", "@modelcontextprotocol/sdk", "jiti", "sharp", "@vercel/blob"],
+    external: ["drizzle-orm", "zod", "@modelcontextprotocol/sdk", "jiti", "sharp", "@vercel/blob", "sanitize-html"],
   },
 ]);

@@ -164,6 +164,16 @@
         "default": "./dist/markdown.cjs"
       }
     },
+    "./html": {
+      "import": {
+        "types": "./dist/html.d.ts",
+        "default": "./dist/html.js"
+      },
+      "require": {
+        "types": "./dist/html.d.cts",
+        "default": "./dist/html.cjs"
+      }
+    },
     "./frontmatter": {
       "import": {
         "types": "./dist/frontmatter.d.ts",
@@ -298,6 +308,7 @@
     "@types/pg": "8.23.1",
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
+    "@types/sanitize-html": "^2.16.2",
     "@vercel/blob": "2.9.0",
     "axe-core": "4.14.1",
     "drizzle-orm": "0.45.2",
@@ -336,7 +347,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
     "aws4fetch": "^1.0.20",
-    "jiti": "2.7.0"
+    "jiti": "2.7.0",
+    "sanitize-html": "^2.18.2"
   },
   "bugs": {
     "url": "https://github.com/mainsoft-2024/agent-cms/issues"

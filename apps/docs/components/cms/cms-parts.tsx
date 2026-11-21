@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import { Bot, Check, Copy, Download, FileText, ImageOff, Lightbulb, Link as LinkIcon, Menu, Paperclip, Pencil, TriangleAlert, Info } from "lucide-react";
-import { parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
+import { inspectHtml, parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -310,7 +310,10 @@ function Inlines({ items }: { items: Inline[] }) {
   return (
     <>
       {items.map((i, n) => {
-        if (i.t === "strong") return <strong key={n}>{i.v}</strong>;
+        if (i.t === "strong") return <strong key={n}>{i.kids ? <Inlines items={i.kids} /> : i.v}</strong>;
+        if (i.t === "em") return <em key={n}>{i.kids ? <Inlines items={i.kids} /> : i.v}</em>;
+        if (i.t === "del") return <del key={n}>{i.kids ? <Inlines items={i.kids} /> : i.v}</del>;
+        if (i.t === "br") return <br key={n} />;
         if (i.t === "code") return <code key={n} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]">{i.v}</code>;
         if (i.t === "link")
           return (
@@ -496,9 +499,125 @@ function Block1({ b, components }: { b: Block; components?: BlockComponents }) {
           ))}
         </div>
       );
+    case "todo":
+      return (
+        <ul className="my-2 space-y-1 leading-7">
+          {b.items.map((it, k) => (
+            <li key={k} className="flex items-start gap-2">
+              <input type="checkbox" checked={it.checked} readOnly disabled className="mt-1.5 h-4 w-4 shrink-0 accent-foreground" aria-label={it.checked ? "done" : "to do"} />
+              <span className={cn("min-w-0", it.checked && "text-muted-foreground line-through")}>
+                <Inlines items={it.inline} />
+              </span>
+            </li>
+          ))}
+        </ul>
+      );
+    case "table":
+      return (
+        <div className="my-3 overflow-x-auto rounded-md border">
+          <table className="w-full border-collapse text-sm">
+            <thead className="bg-muted/60">
+              <tr>
+                {b.head.map((c, k) => (
+                  <th key={k} scope="col" className="border-b px-3 py-1.5 font-semibold" style={{ textAlign: b.align[k] ?? "left" }}>
+                    <Inlines items={c} />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {b.rows.map((r, i) => (
+                <tr key={i} className="border-b last:border-0">
+                  {r.map((c, k) => (
+                    <td key={k} className="px-3 py-1.5 align-top" style={{ textAlign: b.align[k] ?? "left" }}>
+                      <Inlines items={c} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    case "toggle":
+      return (
+        <details className="group my-2 rounded-md border px-3 py-1.5 [&[open]]:pb-2">
+          <summary className="cursor-pointer select-none font-medium marker:text-muted-foreground">
+            <Inlines items={b.title} />
+          </summary>
+          <div className="mt-1 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+            <Blocks blocks={b.blocks} components={components} />
+          </div>
+        </details>
+      );
+    case "columns":
+      return (
+        <div className="my-3 grid gap-4" style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, 14rem), 1fr))` }}>
+          {b.cols.map((c, k) => (
+            <div key={k} className="min-w-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+              <Blocks blocks={c} components={components} />
+            </div>
+          ))}
+        </div>
+      );
+    case "html":
+      return <HtmlBlock html={b.v} isolated={!!b.isolated} />;
+    case "raw":
+      return (
+        <pre className="my-3 overflow-x-auto rounded-md border border-dashed p-3 font-mono text-xs text-muted-foreground" title="raw">
+          {b.v}
+        </pre>
+      );
     default:
       return null;
   }
+}
+
+/**
+ * An HTML block in the admin: drawn inside a frame with no access to the admin
+ * (no scripts unless the block runs isolated), with what will not work listed under it.
+ */
+export function HtmlBlock({ html, isolated }: { html: string; isolated: boolean }) {
+  const { client, t } = useCms();
+  const inert = React.useMemo(() => (isolated ? [] : inspectHtml(html)), [html, isolated]);
+  const [height, setHeight] = React.useState(80);
+  const ref = React.useRef<HTMLIFrameElement>(null);
+  const doc = React.useMemo(() => {
+    const body = html.replace(/(["'(\s=])asset:([a-z0-9]{12})(?:\/([^\s"'<>)]*))?/g, (_m, pre: string, id: string, name?: string) => `${pre}${client.fileUrl({ id, name: name ?? "" })}`);
+    // Safe blocks: a policy turns off the block's own scripts and event handlers, as the site does.
+    const csp = isolated ? "" : `<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-cmsh'; object-src 'none'; frame-src https://www.youtube-nocookie.com https://player.vimeo.com">`;
+    const report = `<script nonce="cmsh">(function(){function s(){parent.postMessage({type:"agent-cms:height",height:Math.ceil(document.documentElement.scrollHeight)},"*")}addEventListener("load",s);new ResizeObserver(s).observe(document.documentElement)})()</script>`;
+    return `<!doctype html><html><head><meta charset="utf-8">${csp}<base target="_blank"><style>html,body{margin:0}body{font:14px/1.6 system-ui,sans-serif}img,video{max-width:100%;height:auto}</style></head><body>${body}${report}</body></html>`;
+  }, [html, client, isolated]);
+  React.useEffect(() => {
+    const on = (e: MessageEvent) => {
+      if (e.source === ref.current?.contentWindow && e.data?.type === "agent-cms:height") setHeight(Math.min(2000, Math.max(40, Number(e.data.height) || 80)));
+    };
+    window.addEventListener("message", on);
+    return () => window.removeEventListener("message", on);
+  }, []);
+  return (
+    <div className="my-3" data-html-block>
+      <iframe
+        ref={ref}
+        title="HTML"
+        // The height report needs scripts; without allow-same-origin the frame cannot reach the admin.
+        sandbox="allow-scripts allow-popups"
+        srcDoc={doc}
+        style={{ height }}
+        className="block w-full rounded-md border bg-white"
+      />
+      {inert.length ? (
+        <p className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground" aria-label={t("html_inert_title")}>
+          {inert.map((x, k) => (
+            <span key={k} className="rounded border border-amber-300 bg-amber-50 px-1.5 py-px font-mono text-amber-900">
+              {x.detail} · {t(`html_inert_${x.kind}` as never)}
+            </span>
+          ))}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 export interface MarkdownPreviewProps {

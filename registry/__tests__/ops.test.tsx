@@ -83,7 +83,7 @@ test("keys: expired badge, revoke with confirm", async () => {
     assert.ok(screen.getByText("만료됨"));
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "폐기: old-script" }));
-    const confirm = await screen.findByRole("dialog", { name: "old-script 키를 폐기할까요?" });
+    const confirm = await screen.findByRole("dialog", { name: "old-script 키를 폐기할지 확인" });
     assert.deepEqual(await axeViolations(), []);
     await user.click(within(confirm).getByRole("button", { name: "폐기" }));
     await screen.findByText("폐기됨");

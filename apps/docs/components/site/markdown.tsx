@@ -1,4 +1,5 @@
 import { parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
+import { sanitizeHtml } from "@mainsoft/agent-cms/html";
 import Link from "next/link";
 import { CodeBlock } from "./code-block";
 
@@ -48,7 +49,10 @@ function Inlines({ items, lang, files = {} }: { items: Inline[]; lang: "en" | "k
     <>
       {items.map((x, i) => {
         if (x.t === "text") return x.v;
-        if (x.t === "strong") return <strong key={i}>{x.v}</strong>;
+        if (x.t === "strong") return <strong key={i}>{x.kids ? <Inlines items={x.kids} lang={lang} files={files} /> : x.v}</strong>;
+        if (x.t === "em") return <em key={i}>{x.kids ? <Inlines items={x.kids} lang={lang} files={files} /> : x.v}</em>;
+        if (x.t === "del") return <del key={i}>{x.kids ? <Inlines items={x.kids} lang={lang} files={files} /> : x.v}</del>;
+        if (x.t === "br") return <br key={i} />;
         if (x.t === "code") return <code key={i} className="inline-code">{x.v}</code>;
         if (x.t === "link") {
           const href = localHref(x.href, lang);
@@ -138,6 +142,74 @@ function BlockView({ b, lang, files }: { b: Block; lang: "en" | "ko"; files: Fil
           ))}
         </p>
       );
+    case "todo":
+      return (
+        <ul className="list-none pl-0">
+          {b.items.map((it, k) => (
+            <li key={k} className="flex items-start gap-2">
+              <input type="checkbox" checked={it.checked} readOnly disabled className="mt-[0.45em]" />
+              <span>
+                <Inlines items={it.inline} lang={lang} files={files} />
+              </span>
+            </li>
+          ))}
+        </ul>
+      );
+    case "table":
+      return (
+        <div className="overflow-x-auto">
+          <table>
+            <thead>
+              <tr>
+                {b.head.map((c, k) => (
+                  <th key={k} style={{ textAlign: b.align[k] ?? undefined }}>
+                    <Inlines items={c} lang={lang} files={files} />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {b.rows.map((r, i) => (
+                <tr key={i}>
+                  {r.map((c, k) => (
+                    <td key={k} style={{ textAlign: b.align[k] ?? undefined }}>
+                      <Inlines items={c} lang={lang} files={files} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    case "toggle":
+      return (
+        <details>
+          <summary>
+            <Inlines items={b.title} lang={lang} files={files} />
+          </summary>
+          {b.blocks.map((x, i) => (
+            <BlockView key={i} b={x} lang={lang} files={files} />
+          ))}
+        </details>
+      );
+    case "columns":
+      return (
+        <div className="grid gap-6 md:grid-flow-col md:auto-cols-fr">
+          {b.cols.map((c, k) => (
+            <div key={k} className="min-w-0">
+              {c.map((x, i) => (
+                <BlockView key={i} b={x} lang={lang} files={files} />
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+    case "html":
+      // Kept as written in the CMS; drawn through the allow-list here.
+      return <div className="cms-html" dangerouslySetInnerHTML={{ __html: sanitizeHtml(b.v, {}, { assetUrl: (id, name) => files[id]?.url ?? fileHref(id, name) }) }} />;
+    case "raw":
+      return null;
   }
 }
 

@@ -30,6 +30,12 @@
  *       so an edit someone made since is never overwritten. Frontmatter: see frontmatter.ts.
  *   agent-cms patch <collection> <slug> <ops.json> [--expected-version N] [--dry-run]
  *   agent-cms publish <collection> <slug>
+ *   agent-cms read <collection> <slug> [--offset N] [--limit N] [--outline]   the document as a numbered file
+ *   agent-cms grep <pattern> [--regex] [-i] [--collections a,b] [--glob "guide/2026-*"] [--context N] [--files | --count]
+ *   agent-cms edit <collection> <slug> <old text> <new text> [--all] [--expected-version N]
+ *   agent-cms pull <collection> <slug...> [--dir path]   documents as files you edit with any editor (.agent-cms/state.json remembers versions)
+ *   agent-cms push [files...]               send changed files back; someone else's edit since is merged, or marked as a conflict
+ *   agent-cms status                        pulled files changed here or in the CMS
  *   agent-cms upload <files...> [--store name] [--folder path] [--alt "text"] [--tag a,b]
  *       put files into the media library (large files go up in parts)
  *   agent-cms export <dir> [--collection a,b] [--drafts] [--with-files]
@@ -223,6 +229,34 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
       print(await api.call("patch_document", { collection: args[0], slug: args[1], ops: Array.isArray(ops) ? ops : [ops], expectedVersion: expectedVersion(), dryRun: argv.includes("--dry-run") }));
       return 0;
     }
+    case "read": {
+      need(2);
+      const n = (k: string) => (flag(argv, k) ? Number(flag(argv, k)) : undefined);
+      const r = (await api.call("read_document", { collection: args[0], slug: args[1], offset: n("offset"), limit: n("limit"), outline: argv.includes("--outline") || undefined })) as { content: string; outline?: { line: number; kind: string; text: string }[]; version: number; path: string; totalLines: number };
+      if (argv.includes("--json")) print(r);
+      else io.out(r.outline ? r.outline.map((o) => `${o.line}\t${o.kind}\t${o.text}`).join("\n") : `# ${r.path} · version ${r.version} · ${r.totalLines} lines\n${r.content}`);
+      return 0;
+    }
+    case "grep": {
+      need(1);
+      const cols = flag(argv, "collections");
+      const output = argv.includes("--count") ? "count" : argv.includes("--files") ? "files" : "lines";
+      const r = (await api.call("grep_documents", { pattern: args[0], regex: argv.includes("--regex") || undefined, ignoreCase: argv.includes("-i") || argv.includes("--ignore-case") || undefined, collections: cols ? cols.split(",") : undefined, glob: flag(argv, "glob"), context: flag(argv, "context") ? Number(flag(argv, "context")) : undefined, output })) as { matches: { path: string; line: number; text: string }[]; files: { path: string; count: number }[]; count: number; partial: boolean; error?: string; message?: string };
+      if (r.error) throw new CmsRemoteError(r.message ?? r.error, r.error);
+      if (argv.includes("--json")) print(r);
+      else io.out(output === "count" ? String(r.count) : output === "files" ? r.files.map((f) => f.path).join("\n") : r.matches.map((m) => `${m.path}:${m.line}:${m.text}`).join("\n"));
+      if (r.partial) io.err("[agent-cms] the search stopped early; narrow it (--collections, --glob)");
+      return r.count ? 0 : 1;
+    }
+    case "edit": {
+      need(4);
+      print(await api.call("edit_document", { collection: args[0], slug: args[1], edits: [{ oldString: args[2], newString: args[3], replaceAll: argv.includes("--all") || undefined }], expectedVersion: expectedVersion(), note: flag(argv, "note") }));
+      return 0;
+    }
+    case "pull":
+    case "push":
+    case "status":
+      return files(cmd, args, argv, api, io, read);
     case "openapi": {
       // What this key may read, as an OpenAPI 3.1 document: `openapi > openapi.json`.
       const res = await (io.fetch ?? fetch)(`${env.AGENT_CMS_URL.replace(/\/$/, "")}/openapi.json`, { headers: { authorization: `Bearer ${env.AGENT_CMS_KEY}`, "x-agent-cms-client": "cli" } });
@@ -791,4 +825,101 @@ function add(args: string[], argv: string[], io: LocalIo): number {
     } else io.out(`\nthese screens use shadcn/ui parts you do not have yet:\n  npx ${cmd.join(" ")}\n(or run add again with --yes)`);
   }
   return 0;
+}
+
+// ── pull / push: documents as local files ─────────────────────────────────────
+
+interface PullState {
+  files: Record<string, { collection: string; slug: string; version: number; base: string }>;
+}
+
+type ToolApi = { call: (name: string, args?: Record<string, unknown>) => Promise<unknown> };
+
+async function files(cmd: "pull" | "push" | "status", args: string[], argv: string[], api: ToolApi, io: CliIo, read: (p: string) => string): Promise<number> {
+  const { hasConflictMarkers, mergeFiles } = await import("./doc-files");
+  const out = io.out ?? ((l: string) => console.log(l));
+  const err = io.err ?? ((l: string) => console.error(l));
+  const root = flag(argv, "dir") ?? io.cwd ?? ".";
+  const statePath = join(root, ".agent-cms", "state.json");
+  const state: PullState = existsSync(statePath) ? (JSON.parse(readFileSync(statePath, "utf8")) as PullState) : { files: {} };
+  const save = () => {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+  };
+  const fetchFile = async (collection: string, slug: string) => {
+    const r = (await api.call("read_document", { collection, slug, limit: 2000 })) as { content?: string; version: number; path: string; totalLines: number; error?: string; message?: string };
+    if (r.error) throw new CmsRemoteError(r.message ?? r.error, r.error);
+    let text = (r.content ?? "").split("\n").map((l) => l.replace(/^\s*\d+→/, "")).join("\n");
+    // Long documents: read the rest in pages.
+    for (let from = 2001; from <= r.totalLines; from += 2000) {
+      const more = (await api.call("read_document", { collection, slug, offset: from, limit: 2000 })) as { content: string };
+      text += "\n" + more.content.split("\n").map((l) => l.replace(/^\s*\d+→/, "")).join("\n");
+    }
+    return { text: text + "\n", version: r.version, path: r.path };
+  };
+
+  if (cmd === "pull") {
+    if (args.length < 2) throw new CmsRemoteError("usage: pull <collection> <slug...> [--dir path]", "usage");
+    const [collection, ...slugs] = args;
+    for (const slug of slugs) {
+      const f = await fetchFile(collection, slug);
+      const p = join(root, f.path);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, f.text);
+      state.files[f.path] = { collection, slug, version: f.version, base: f.text };
+      out(`pulled ${f.path} (version ${f.version})`);
+    }
+    save();
+    return 0;
+  }
+
+  const paths = (args.length ? args.map((a) => relative(root, a).split("\\").join("/")) : Object.keys(state.files)).filter((p) => state.files[p]);
+  if (cmd === "status") {
+    for (const p of paths) {
+      const s = state.files[p];
+      const local = existsSync(join(root, p)) ? read(join(root, p)) : null;
+      const remote = (await api.call("read_document", { collection: s.collection, slug: s.slug, limit: 1 })) as { version: number };
+      const marks = [local === null ? "deleted here" : local !== s.base ? "changed here" : "", remote.version !== s.version ? `changed in the CMS (v${s.version} → v${remote.version})` : ""].filter(Boolean);
+      out(`${p}: ${marks.join(", ") || "up to date"}`);
+    }
+    return 0;
+  }
+
+  let failed = 0;
+  for (const p of paths) {
+    const s = state.files[p];
+    const local = read(join(root, p));
+    if (hasConflictMarkers(local)) {
+      err(`${p}: still has conflict markers (<<<<<<< / >>>>>>>); fix them first`);
+      failed++;
+      continue;
+    }
+    if (local === s.base) continue;
+    const remote = await fetchFile(s.collection, s.slug);
+    let text = local;
+    if (remote.version !== s.version && remote.text !== s.base) {
+      const m = mergeFiles(s.base, local, remote.text);
+      if (m.conflicts) {
+        writeFileSync(join(root, p), m.text);
+        state.files[p] = { ...s, version: remote.version, base: remote.text };
+        err(`${p}: ${m.conflicts} conflict(s) with an edit made in the CMS (v${s.version} → v${remote.version}). Fix the marked parts, then push again.`);
+        failed++;
+        continue;
+      }
+      text = m.text;
+      out(`${p}: merged with the CMS's v${remote.version}`);
+    }
+    const r = (await api.call("write_document", { collection: s.collection, slug: s.slug, content: text, expectedVersion: remote.version, note: flag(argv, "note") })) as { version?: number; saved?: boolean; suggestion?: { id: string }; error?: string; message?: string };
+    if (r.error) {
+      err(`${p}: ${r.message ?? r.error}`);
+      failed++;
+      continue;
+    }
+    if (r.suggestion) out(`${p}: kept as a suggestion (${r.suggestion.id}) for a person to apply`);
+    else out(`${p}: saved as version ${r.version}`);
+    writeFileSync(join(root, p), text);
+    state.files[p] = { ...s, version: r.version ?? remote.version, base: r.suggestion ? remote.text : text };
+  }
+  save();
+  return failed ? 1 : 0;
 }

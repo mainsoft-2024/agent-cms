@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased (0.15.0, first part of the editing and media polish)
+
+Agents edit documents the way coding agents edit code, HTML is kept exactly as written, and markdown grows tables, task lists, toggles, columns, italic and strike. **Schema 8** (one column: `cms_documents.body_format`); run `npx @mainsoft/agent-cms migrate apply` or the step in `migrate check`.
+
+- **Documents as files for agents.** New tools `read_document` (numbered lines, `offset`/`limit`, `outline`), `grep_documents` (literal or regex, `collections`, `glob`, `context`, `output: lines|files|count`, stops early with `partial: true`), `edit_document` (exact `oldString` → `newString`, unique unless `replaceAll`, several edits as one version, all or none; "not found" answers name the closest lines), `write_document` (whole file; replacing needs `expectedVersion`) and `document_file_link` (10-minute GET/PUT link). Fields are frontmatter lines, so one edit can change body text, HTML and fields together; a bad field fails with its line number. REST: `POST /grep`, `GET …/:slug/read`, `GET|PUT …/:slug/file`, `POST …/:slug/edit`, `POST …/:slug/file-link`, `GET|PUT /raw/:token`.
+- **CLI** `read`, `grep`, `edit`, `pull`, `push`, `status`: pull documents into files, edit them with any editor, push them back. An edit someone made in the CMS meanwhile is merged; when both changed the same lines the file gets git-style conflict markers and nothing is saved.
+- **Suggestions.** `agentEdits: "suggest"` on a collection keeps edits by API keys and agents as suggestions (`GET …/:slug/suggestions`, `POST …/suggestions/:id/apply|reject`). A suggestion whose text changed since cannot be applied (`suggestion_stale`).
+- **HTML blocks** (`:::html` … `:::`) and **HTML documents** (`body: { formats: ["markdown", "html"] }` on a collection, `format: "html"` on a document). HTML is stored as written and never stripped. Parts that would do nothing on the page (scripts, event handlers, script URLs, frames from other hosts, `style`) come back as `html_inert` warnings with their line. Adding or changing HTML needs the role permission `html` (admins have it; keys need the new `html` scope); HTML that runs (`:::html isolated` with `html.render: "isolated"`) needs `html_scripts`.
+- **`@mainsoft/agent-cms/html`**: `sanitizeHtml` (allow-list; asset: addresses resolved), `isolatedHtml` (a page for `<iframe sandbox="allow-scripts">` with a height report), `markdownToHtml`, `bodyToSafeHtml`, `inspectHtml`. Tested against 35 XSS filter evasions.
+- **Markdown**: `*italic*` / `_italic_`, `~~strike~~`, nesting inside bold, backslash escapes, hard line breaks, GFM tables with alignment, `- [ ]` task lists, ordered lists that start at any number, `:::toggle Title`, `:::columns` / `:::col`, unknown `:::name` blocks kept word for word. New `toMarkdown(blocks)` writes a tree back; every markdown file in this repository reads back the same (tested).
+- **Publish checks**: `publishChecks` on a collection; an `error` stops publishing (`publish_check_failed`), and `POST …/:slug/checks` shows problems before publishing.
+- The admin preview draws the new blocks; HTML blocks show in a sandboxed frame with what will not work listed under them. The example app and docs site render them too.
+- **Korean screen text is 음슴체** across the admin and error messages (a test keeps it that way).
+
+Not in this part yet (see `docs/roadmap/ab-polish-status.md`): the block editor (BlockNote), toasts and undo, editor slash menu and image paste, media multi-select and bulk actions, phone toolbar, the HTML-document conversion dialog.
+
 ## 0.14.0
 
 Operations: request limits, key rotation, retention, more hooks, and a live stream of events. **No schema change.** See [UPGRADE-0.14.md](./UPGRADE-0.14.md).

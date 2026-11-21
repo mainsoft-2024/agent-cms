@@ -48,6 +48,7 @@ export class DrizzleRepo implements CmsRepo {
       title: r.title,
       summary: r.summary,
       body: r.body,
+      ...(r.format === "html" ? { format: "html" as const } : {}),
       category: r.category,
       keywords: r.keywords ?? [],
       fields: r.fields ?? {},

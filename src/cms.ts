@@ -26,7 +26,9 @@ import { CmsError, formatMessage, isCmsError, type CmsErrorCode, type CmsErrorOp
 import { displayPrefix, generateKey, hashKey } from "./keys";
 import { badRanges, createLimiter, type RateLimitOptions } from "./limits";
 import { createRetention, type RetentionOptions } from "./retention";
-import { appLinkKeys, extractToc, parseMarkdown } from "./markdown";
+import { appLinkKeys, extractToc, htmlRegions, parseMarkdown } from "./markdown";
+import { hasScripts, inspectHtml, type HtmlInert } from "./html-inspect";
+import { createAx } from "./ax";
 import { applyPatch, sectionRanges, type PatchOp } from "./patch";
 import type { CmsRepo, DocPatch, StoredVersion } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
@@ -46,6 +48,7 @@ import {
   type DocStatus,
   type DocSummary,
   type KeyScope,
+  type PublishCheckResult,
   type ReviewMark,
   type SearchMissEvent,
   type VersionChange,
@@ -87,6 +90,8 @@ export interface DocInput<F = Record<string, unknown>> {
   title?: string;
   summary?: string;
   body?: string;
+  /** "markdown" (default) or "html": only in collections whose `body.formats` include it. */
+  format?: "markdown" | "html";
   category?: string | null;
   keywords?: string[];
   /** On update: a JSON Merge Patch (a key set to null is removed). */
@@ -292,6 +297,7 @@ function contentOf(doc: DocContent): DocContent {
     title: doc.title,
     summary: doc.summary ?? "",
     body: doc.body ?? "",
+    ...(doc.format === "html" ? { format: "html" as const } : {}),
     category: doc.category ?? null,
     keywords: [...(doc.keywords ?? [])],
     fields: structuredClone(doc.fields ?? {}),
@@ -307,7 +313,7 @@ export type CmsTelemetry =
   | { type: "error"; where: string; message: string };
 
 /** First path segments the CMS uses itself. A plugin cannot take one of these names. */
-export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "retention", "_events", "auth", "_stats", "_me", "_cron"]);
+export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "grep", "raw", "retention", "_events", "auth", "_stats", "_me", "_cron"]);
 
 /** Audit actions that are also events (webhooks, plugin listeners). */
 const EVENT_OF: Partial<Record<AuditAction, WebhookEvent>> = {
@@ -521,6 +527,60 @@ export function createCmsCore(opts: CreateCmsOptions) {
   // ── validation ────────────────────────────────────────────────────────────
 
   /** Every problem with `c` at once (and the cleaned content). */
+  /** What HTML in the body does nothing when drawn safely, with body line numbers. */
+  function htmlInertOf(cfg: AnyCollection, c: DocContent): HtmlInert[] {
+    const policy = cfg.html ?? {};
+    if (c.format === "html") return policy.render === "isolated" ? [] : inspectHtml(c.body, policy);
+    const out: HtmlInert[] = [];
+    for (const r of htmlRegions(c.body)) {
+      if (r.isolated && policy.render === "isolated") continue;
+      for (const x of inspectHtml(r.v, policy)) out.push({ ...x, line: r.line + x.line - 1 });
+    }
+    return out;
+  }
+
+  /** HTML pieces of a body, as keys: what a write adds is what the old body did not have. */
+  function htmlKeys(c: Pick<DocContent, "body" | "format"> | null): string[] {
+    if (!c) return [];
+    if (c.format === "html") return [`doc:${c.body}`];
+    return htmlRegions(c.body).map((r) => `${r.isolated ? "isolated" : "safe"}:${r.v}`);
+  }
+
+  function canHtml(actor: Actor, col: string, what: "html" | "html_scripts", doc?: CmsDoc | null): boolean {
+    const c = collection(col);
+    if (actor.kind === "system") return true;
+    if (actor.kind === "key") return actor.scopes.includes("admin") || (what === "html" && actor.scopes.includes("html"));
+    const fn = what === "html" ? c.html?.access : c.html?.scripts;
+    if (fn) return fn({ actor, collection: col, doc });
+    if (actor.kind !== "user") return false;
+    return actor.isAdmin || (roles.allows(actor, col, what) ?? false);
+  }
+
+  /**
+   * HTML a write adds or changes needs the "html" permission; HTML that runs (an isolated block, or a
+   * collection drawn isolated) needs "html_scripts". Removing or moving HTML is a normal edit.
+   */
+  async function htmlGate(actor: Actor, col: string, prev: Pick<DocContent, "body" | "format"> | null, next: Pick<DocContent, "body" | "format">) {
+    const before = htmlKeys(prev);
+    const added = htmlKeys(next).filter((k) => {
+      const i = before.indexOf(k);
+      if (i < 0) return true;
+      before.splice(i, 1);
+      return false;
+    });
+    if (!added.length) return;
+    const cfg = collection(col);
+    if (!canHtml(actor, col, "html")) {
+      if (actor.kind !== "anonymous") audit(actor, "access.denied", { collection: col, outcome: "denied", detail: { need: "html" } });
+      throw fail("forbidden_html", { collection: col });
+    }
+    const runs = added.some((k) => k.startsWith("isolated:") || (cfg.html?.render === "isolated" && hasScripts(k.slice(k.indexOf(":") + 1))));
+    if (runs && !canHtml(actor, col, "html_scripts")) {
+      if (actor.kind !== "anonymous") audit(actor, "access.denied", { collection: col, outcome: "denied", detail: { need: "html_scripts" } });
+      throw fail("forbidden_html_scripts", { collection: col });
+    }
+  }
+
   function check(col: string, c: DocContent): { content: DocContent; diagnostics: Diagnostic[] } {
     const cfg = collection(col);
     const out = contentOf(c);
@@ -549,6 +609,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const bad = appLinkKeys(out.body).filter((k) => !cfg.links!.resolve(k));
       if (bad.length) add("body", "unknown_link", { keys: bad });
     }
+    const formats = cfg.body?.formats ?? ["markdown"];
+    if (!formats.includes(out.format ?? "markdown")) add("format", "format_not_allowed", { collection: col, format: out.format ?? "markdown" });
+    for (const x of htmlInertOf(cfg, out)) add("body", "html_inert", { line: x.line, kind: x.kind, detail: x.detail }, "warning");
     return { content: out, diagnostics: diags };
   }
 
@@ -588,7 +651,25 @@ export function createCmsCore(opts: CreateCmsOptions) {
     }
   }
   async function gate(which: "beforePublish" | "beforeDelete", actor: Actor, doc: { collection: string; slug: string; version: number }, content: DocContent) {
+    if (which === "beforePublish") {
+      const errors = (await appChecks(doc.collection, doc.slug, content)).filter((x) => x.severity === "error");
+      if (errors.length)
+        throw fail("publish_check_failed", { checks: errors.map((e) => e.message).join("; ") }, { diagnostics: errors.map((e) => ({ path: e.path ?? "", code: "publish_check_failed" as const, params: { checks: e.message, check: e.code, line: e.line ?? null }, severity: "error" as const, message: e.message })) });
+    }
     for (const fn of collection(doc.collection).hooks?.[which] ?? []) await hook(fn, { collection: doc.collection, slug: doc.slug, content, version: doc.version, actor });
+  }
+
+  /** The collection's own `publishChecks`. A check that throws counts as an error with its message. */
+  async function appChecks(col: string, slug: string, content: DocContent): Promise<PublishCheckResult[]> {
+    const out: PublishCheckResult[] = [];
+    for (const fn of collection(col).publishChecks ?? []) {
+      try {
+        for (const r of (await fn(content, { collection: col, slug })) ?? []) out.push({ code: String(r.code), message: String(r.message), severity: r.severity === "error" ? "error" : "warning", path: r.path, line: r.line });
+      } catch (e) {
+        out.push({ code: "check_failed", message: e instanceof Error ? e.message : String(e), severity: "error" });
+      }
+    }
+    return out;
   }
 
   function validate(col: string, c: DocContent): DocContent {
@@ -622,6 +703,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       title: input.title ?? cur.title,
       summary: input.summary ?? cur.summary,
       body: input.body ?? cur.body,
+      ...((input.format ?? cur.format) === "html" ? { format: "html" as const } : {}),
       category: input.category !== undefined ? input.category : cur.category,
       keywords: input.keywords ?? cur.keywords,
       fields: input.fields !== undefined ? (mergePatch(cur.fields, input.fields) as Record<string, unknown>) : cur.fields,
@@ -869,11 +951,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
       title: input.title ?? "",
       summary: input.summary ?? "",
       body: input.body ?? "",
+      ...(input.format === "html" ? { format: "html" as const } : {}),
       category: input.category ?? cfg.categories?.[0] ?? null,
       keywords: input.keywords ?? [],
       fields: (input.fields as Record<string, unknown>) ?? {},
     }));
     await assets.assertDoc(cfg, content);
+    await htmlGate(actor, col, null, content);
     const at = nowIso();
     const doc = await repo.tx(async (r) => {
       const other = await r.findDoc(col, content.slug, { trashed: true });
@@ -920,7 +1004,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (publish && needsReview(actor, doc.collection)) throw reviewRequired(actor, doc.collection, doc.slug);
     if (publish) await gate("beforePublish", actor, { collection: doc.collection, slug: next.slug, version: v }, next);
     const wasPublic = doc.publishedVersion !== null && doc.status !== "archived";
-    let patch: DocPatch = { ...next, version: v, updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent, updatedAt: at, autosave: null };
+    await htmlGate(actor, doc.collection, doc, next);
+    let patch: DocPatch = { ...next, format: next.format ?? "markdown", version: v, updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent, updatedAt: at, autosave: null };
     if (publish) {
       patch = { ...patch, status: "published", publishedVersion: v, published: next, publishedAt: doc.publishedAt ?? at, review: null, ...afterPublish(doc) };
       if (!wasPublic && doc.publishedAt) patch.republishedAt = at;
@@ -1694,6 +1779,37 @@ export function createCmsCore(opts: CreateCmsOptions) {
     },
   });
 
+  // ── editing as files (ax.ts) ──────────────────────────────────────────────
+
+  const ax = createAx({
+    repo,
+    fail,
+    ready: ensureSchema,
+    nowIso,
+    collection,
+    collections: () => [...collections.keys()],
+    can,
+    assert,
+    get,
+    create: (actor, col, input, o) => create(actor, col, input as DocInput, o),
+    update: (actor, col, slug, input, o) => update(actor, col, slug, input as DocInput, o),
+    actorRef,
+    audit: (actor, action, o) => audit(actor, action, o ?? {}),
+  });
+
+  /** Everything to look at before publishing: the document's problems and the collection's own checks. */
+  async function publishChecks(actor: Actor, col: string, slug: string, input: DocInput = {}) {
+    const diagnostics = await diagnose(actor, col, input, { slug });
+    const cur = await repo.findDoc(col, slug);
+    if (!cur) throw fail("not_found", { collection: col, slug });
+    const checks = await appChecks(col, slug, validateLoose(col, merged(cur, input)));
+    return { diagnostics, checks, blocking: diagnostics.some((d) => d.severity === "error") || checks.some((c) => c.severity === "error") };
+  }
+  /** The content as the checks see it, even when it does not validate yet. */
+  function validateLoose(col: string, c: DocContent): DocContent {
+    return check(col, c).content;
+  }
+
   // ── plugins (plugin.ts) ───────────────────────────────────────────────────
 
   const plugins = {
@@ -1755,6 +1871,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
       subscribers.add(fn);
       return () => void subscribers.delete(fn);
     },
+    /**
+     * Documents as files, for agents (0.15.0): `read`, `grep`, `edit`, `write`, `file`, `rawLink`,
+     * `rawOpen`, and suggestions (`suggestions`, `applySuggestion`, `rejectSuggestion`).
+     */
+    ax,
+    /** May `actor` add HTML (`"html"`) or HTML that runs (`"html_scripts"`) in the collection? */
+    canHtml,
+    publishChecks,
     /** Throws unless `actor` may do `what` in the collection. */
     assertCan: (actor: Actor, col: string, what: "read" | "write" | "publish" | "delete") => assert(actor, col, what),
     /**

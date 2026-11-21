@@ -39,6 +39,14 @@
  *   POST   /mcp                                       MCP (official SDK, streamable HTTP, stateless)
  *   GET    /export?collections=a,b&drafts=1&download=1  documents as markdown files: {files: [{path, text}], documents}
  *   POST   /import {files, dryRun?, diff?, onConflict?, publish?, collection?, only?}  → {items, applied}
+ *   POST   /grep                                      {pattern, regex?, collections?, glob?, context?, output?} → matching lines
+ *   GET    /collections/:c/:slug/read?offset&limit&outline=1  the document as a numbered file
+ *   GET    /collections/:c/:slug/file                 the document as a file (text); PUT replaces it (If-Match)
+ *   POST   /collections/:c/:slug/edit                 {edits:[{oldString,newString,replaceAll?}], expectedVersion?} → one version
+ *   POST   /collections/:c/:slug/file-link            {method?} → a 10-minute /raw/:token link
+ *   GET    /collections/:c/:slug/suggestions          agents' edits kept as suggestions; POST …/suggestions/:id/apply|reject
+ *   POST   /collections/:c/:slug/checks               {doc?} → diagnostics and publish checks
+ *   GET|PUT /raw/:token                               download or upload a document file through a link
  *   GET    /openapi.json                              this API as an OpenAPI 3.1 document (what the caller may read)
  *   GET    /_stats?days=7|14|30                       the dashboard's numbers (signed in)
  *   GET    /automations | POST {name, trigger, conditions, actions} | PATCH, DELETE /automations/:id
@@ -303,6 +311,18 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         note({ kind: "cron", via: null });
         return json(await core.cron());
       }
+      if (seg[0] === "raw" && seg.length === 2 && (m === "GET" || m === "PUT")) {
+        // A short-lived link from document_file_link: the token is the permission.
+        const link = await core.ax.rawOpen(seg[1], m);
+        note({ kind: link.actor.kind, via: "raw" });
+        if (m === "GET") {
+          const f = await core.ax.file(link.actor, link.collection, link.slug);
+          return new Response(f.text, { status: 200, headers: { "content-type": `${f.format === "html" ? "text/html" : "text/markdown"}; charset=utf-8`, "content-disposition": `attachment; filename="${f.path.split("/").pop()}"`, etag: `"${f.version}"`, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+        }
+        const text = await req.text();
+        const r = await core.ax.write(link.actor, link.collection, link.slug, text, { expectedVersion: versionFromIfMatch(req.headers.get("if-match")) ?? link.version, note: "uploaded file" });
+        return json(r);
+      }
       const client = req.headers.get("x-agent-cms-client");
       const who = await resolveActor(core, req, opts.resolveUser, opts.trustedOrigins, opts.clientIp);
       const actor: Actor = { ...who, via: seg[0] === "mcp" ? (client === "cli" ? "cli" : "mcp") : client === "cli" ? "cli" : "rest" };
@@ -338,6 +358,25 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             .filter((c) => core.can(actor, c.slug, "read"))
             .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish") })),
         });
+      }
+
+      if (seg[0] === "grep" && seg.length === 1 && m === "POST") {
+        const b = await body(
+          req,
+          z.object({
+            pattern: z.string().min(1).max(1000),
+            regex: z.boolean().optional(),
+            ignoreCase: z.boolean().optional(),
+            collections: z.array(z.string()).max(50).optional(),
+            slugs: z.array(z.string()).max(500).optional(),
+            glob: z.string().max(300).optional(),
+            context: z.number().int().min(0).max(5).optional(),
+            output: z.enum(["lines", "files", "count"]).optional(),
+            drafts: z.boolean().optional(),
+            limit: z.number().int().positive().max(2000).optional(),
+          })
+        );
+        return json(await core.ax.grep(actor, b));
       }
 
       if (seg[0] === "openapi.json" && seg.length === 1 && m === "GET") {
@@ -566,6 +605,12 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             forbiddenChars: cfg.forbiddenChars ?? [],
             canWrite: core.can(actor, col, "write"),
             canPublish: core.can(actor, col, "publish"),
+            formats: cfg.body?.formats ?? ["markdown"],
+            html: { render: cfg.html?.render ?? "safe", iframeHosts: cfg.html?.iframeHosts ?? null, allowStyle: cfg.html?.allowStyle ?? false, classPrefix: cfg.html?.classPrefix ?? null },
+            canHtml: core.canHtml(actor, col, "html"),
+            canHtmlScripts: core.canHtml(actor, col, "html_scripts"),
+            agentEdits: cfg.agentEdits ?? "apply",
+            publishChecks: (cfg.publishChecks?.length ?? 0) > 0,
           });
         }
         if (seg.length === 3 && seg[2] === "_diagnose" && m === "POST") {
@@ -653,6 +698,38 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json(await core.patch(actor, col, slug, b.ops as never, { ...b, expectedVersion: expected(b.expectedVersion) }));
           }
           if (action === "sections" && m === "GET") return json({ sections: await core.sections(actor, col, slug) });
+          if (action === "read" && m === "GET") {
+            const n = (k: string) => (q.get(k) ? Number(q.get(k)) : undefined);
+            return json(await core.ax.read(actor, col, slug, { offset: n("offset"), limit: n("limit"), outline: q.get("outline") === "1" }));
+          }
+          if (action === "file" && m === "GET") {
+            const f = await core.ax.file(actor, col, slug);
+            return new Response(f.text, { status: 200, headers: { "content-type": `${f.format === "html" ? "text/html" : "text/markdown"}; charset=utf-8`, etag: `"${f.version}"`, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+          }
+          if (action === "file" && m === "PUT") {
+            const text = await req.text();
+            return json(await core.ax.write(actor, col, slug, text, { expectedVersion: expected(), note: q.get("note") ?? undefined }));
+          }
+          if (action === "file-link" && m === "POST") {
+            const b = await body(req, z.object({ method: z.enum(["GET", "PUT"]).optional() }), true);
+            return json(await core.ax.rawLink(actor, col, slug, b), 201);
+          }
+          if (action === "edit" && m === "POST") {
+            const b = await body(
+              req,
+              z.object({
+                edits: z.array(z.object({ oldString: z.string().min(1), newString: z.string(), replaceAll: z.boolean().optional() })).min(1).max(50),
+                expectedVersion: z.number().int().positive().optional(),
+                note: z.string().max(300).optional(),
+              })
+            );
+            return json(await core.ax.edit(actor, col, slug, b.edits, { expectedVersion: expected(b.expectedVersion), note: b.note }));
+          }
+          if (action === "suggestions" && m === "GET") return json({ suggestions: await core.ax.suggestions(actor, col, slug) });
+          if (action === "checks" && m === "POST") {
+            const b = await body(req, z.object({ doc: DocInput.optional() }), true);
+            return json(await core.publishChecks(actor, col, slug, (b.doc ?? {}) as never));
+          }
           if (action === "autosave" && m === "PUT") {
             const b = await body(req, z.object({ doc: DocInput, baseVersion: z.number().int().positive() }));
             return json({ autosave: await core.autosave(actor, col, slug, b.doc, b.baseVersion) });
@@ -711,6 +788,14 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           const b = await body(req, z.object({ note: z.string().max(2000).nullable().optional(), publish: z.boolean().optional() }), true);
           const doc = seg[4] === "request" ? await core.requestReview(actor, col, slug, b) : seg[4] === "approve" ? await core.approveReview(actor, col, slug, b) : seg[4] === "reject" ? await core.rejectReview(actor, col, slug, b) : null;
           if (doc) return json({ doc: wire(doc) }, 200, { etag: etag(doc) });
+        }
+        if (slug && seg[3] === "suggestions" && seg.length === 6 && m === "POST" && (seg[5] === "apply" || seg[5] === "reject")) {
+          if (seg[5] === "reject") {
+            await core.ax.rejectSuggestion(actor, col, slug, seg[4]);
+            return json({ ok: true });
+          }
+          const b = await body(req, z.object({ edits: z.array(z.object({ oldString: z.string().min(1), newString: z.string(), replaceAll: z.boolean().optional() })).min(1).max(50).optional(), note: z.string().max(300).optional() }), true);
+          return json(await core.ax.applySuggestion(actor, col, slug, seg[4], b));
         }
         if (slug && seg[3] === "comments" && seg[5] === "resolve" && seg.length === 6 && m === "POST") {
           const b = await body(req, z.object({ resolved: z.boolean().optional() }), true);
