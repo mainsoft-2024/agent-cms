@@ -74,18 +74,23 @@ test("automations: make one on the screen; a publish that matches runs on the ne
 
   // "Try it" changes nothing and says what would happen.
   const before = s.requests.length;
-  await user.type(screen.getByLabelText("Document address (slug)"), "other");
+  // The document is found by its title: nobody types a slug.
+  const pick = async (title: string) => {
+    const other = screen.queryByRole("button", { name: "Pick another document" });
+    if (other) await user.click(other);
+    await user.type(screen.getByRole("combobox", { name: "Document to try it on" }), title);
+    await user.click(await screen.findByRole("option", { name: new RegExp(title) }));
+  };
+  await pick("Other");
   await user.click(screen.getByRole("button", { name: "Try it" }));
   await screen.findByText("“Other” does not match the conditions, so it would be skipped.");
-  await user.clear(screen.getByLabelText("Document address (slug)"));
-  await user.type(screen.getByLabelText("Document address (slug)"), "hello");
+  await pick("Hello");
   await user.click(screen.getByRole("button", { name: "Try it" }));
   await screen.findByText("“Hello” matches. It would do: Add a keyword, Call an app function");
   assert.ok(s.requests.slice(before).every((r) => r.method === "GET" || r.path.endsWith("/test")), "no write was made");
-  await user.clear(screen.getByLabelText("Document address (slug)"));
-  await user.type(screen.getByLabelText("Document address (slug)"), "nope");
-  await user.click(screen.getByRole("button", { name: "Try it" }));
-  await screen.findByText(/not found|No document/i);
+  await user.click(screen.getByRole("button", { name: "Pick another document" }));
+  await user.type(screen.getByRole("combobox", { name: "Document to try it on" }), "nope-nothing");
+  await screen.findByText("No document matches.");
 
   // An action without what it needs is refused with the reason.
   await user.selectOptions(screen.getAllByLabelText("Do")[1], "add_to_release");
@@ -216,9 +221,9 @@ test("dashboard: the cards match the lists, changes split people and agents, the
   const top = screen.getByRole("heading", { name: "Most read" }).parentElement!;
   const link = within(top).getByRole("link", { name: "Getting started" });
   assert.equal(link.getAttribute("href"), "/admin/guide/a");
-  assert.match(link.closest("li")!.textContent ?? "", /Getting started1$/);
+  assert.match(link.closest("li")!.textContent ?? "", /^1Getting started1 reads$/);
   const recent = screen.getByRole("heading", { name: "Recent activity" }).parentElement!;
-  assert.match(recent.textContent ?? "", /docs-agent edited From the agent/);
+  assert.match(recent.textContent ?? "", /docs-agent created From the agent/);
   assert.match(recent.textContent ?? "", /Admin published Getting started/);
   assert.deepEqual(await axeViolations(), []);
 

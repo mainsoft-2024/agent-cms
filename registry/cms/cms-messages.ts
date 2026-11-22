@@ -1391,6 +1391,16 @@ export const en = {
   "audit.role.member.add": "Added to a role",
   "audit.role.member.remove": "Removed from a role",
   "audit.import.run": "Import",
+  "activity.doc.create": "{who} created {title}",
+  dash_changes_total: "{n} in all",
+  dash_changes_none: "No changes in the last {n} days.",
+  dash_reads: "reads",
+  automation_test_doc: "Document to try it on",
+  automation_test_doc_hint: "Find a document by its title",
+  doc_pick_other: "Pick another document",
+  doc_pick_failed: "Could not search.",
+  doc_pick_none: "No document matches.",
+  automation_test_schedule: "A rule on a schedule runs at its time on every matching document; there is no single document to try it on. Its runs show below.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2768,6 +2778,16 @@ export const ko: CmsMessages = {
   "audit.role.member.add": "역할에 넣음",
   "audit.role.member.remove": "역할에서 뺌",
   "audit.import.run": "가져오기",
+  "activity.doc.create": "{who}, {title} 만듦",
+  dash_changes_total: "모두 {n}개",
+  dash_changes_none: "최근 {n}일 동안 변경 없음.",
+  dash_reads: "번 읽힘",
+  automation_test_doc: "시험할 문서",
+  automation_test_doc_hint: "제목으로 문서 찾기",
+  doc_pick_other: "다른 문서 고르기",
+  doc_pick_failed: "찾지 못함.",
+  doc_pick_none: "맞는 문서 없음.",
+  automation_test_schedule: "예약 규칙은 정한 시각에 맞는 문서 전부에 돌아서 문서 하나로 시험할 수 없음. 실행 기록은 아래에 나옴.",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;

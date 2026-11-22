@@ -5,6 +5,7 @@
 "use client";
 
 import * as React from "react";
+import { Button } from "@/components/ui/button";
 import { Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
@@ -31,6 +32,8 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
   const day = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(locale, { month: "short", day: "numeric", timeZone: "UTC" });
   const href = (c: string, slug: string) => docHref?.(c, slug) ?? `${basePath}/${encodeURIComponent(c)}/${encodeURIComponent(slug)}`;
   const max = Math.max(1, ...(s?.changes ?? []).map((c) => c.people + c.agents));
+  const total = (s?.changes ?? []).reduce((n, c) => n + c.people + c.agents, 0);
+  const topMax = Math.max(1, ...(s?.top ?? []).map((d) => d.hits));
   const cards = s ? ([["dash_documents", s.totals.documents], ["dash_published", s.totals.published], ["dash_review", s.totals.review], ["dash_scheduled", s.totals.scheduled]] as const) : [];
 
   return (
@@ -39,10 +42,28 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
         <Segmented label={t("dash_period")} value={days} onChange={setDays} options={(["7", "14", "30"] as const).map((n) => ({ value: n, label: t("dash_days", { n }) }))} />
       </PageHeader>
       <div className="flex flex-col gap-6 px-4 py-4 md:px-6">
-        <StatusText tone={stats.error ? "error" : "muted"} className="text-xs">
-          {stats.error ? errorMessage(stats.error, t) : stats.loading && !s ? t("loading") : ""}
-          {stale ? ` ${t(stats.loading ? "dash_updating" : "dash_showing", { n: s!.days })}` : ""}
-        </StatusText>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusText tone={stats.error ? "error" : "muted"} className="text-xs">
+            {stats.error ? errorMessage(stats.error, t) : ""}
+            {stale ? ` ${t(stats.loading ? "dash_updating" : "dash_showing", { n: s!.days })}` : ""}
+          </StatusText>
+          {stats.error && !stats.loading ? (
+            <Button type="button" variant="outline" size="sm" className="h-7" onClick={stats.reload}>
+              {t("retry")}
+            </Button>
+          ) : null}
+        </div>
+        {/* First load: the shape of the page, so nothing jumps when the numbers arrive. */}
+        {!s && stats.loading ? (
+          <div aria-busy="true" aria-label={t("loading")} className="flex flex-col gap-6">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="h-[74px] animate-pulse rounded-lg border bg-muted/50 motion-reduce:animate-none" />
+              ))}
+            </div>
+            <div className="h-52 animate-pulse rounded-lg border bg-muted/50 motion-reduce:animate-none" />
+          </div>
+        ) : null}
         {s ? (
           <>
             <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -57,6 +78,7 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <h2 id="cms-dash-changes" className="text-sm font-medium">
                   {t("dash_changes")}
+                  <span className="ml-2 font-normal tabular-nums text-muted-foreground">{t("dash_changes_total", { n: num(total) })}</span>
                 </h2>
                 <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                   <span aria-hidden className="h-2 w-2 rounded-sm bg-foreground" />
@@ -67,7 +89,8 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
                   {t("dash_agents")}
                 </span>
               </div>
-              <ol className="mt-3 flex h-36 items-end gap-1" aria-label={t("dash_changes")}>
+              {!total ? <p className="mt-3 text-xs text-muted-foreground">{t("dash_changes_none", { n: s.days })}</p> : null}
+              <ol className={cn("mt-3 flex h-36 items-end gap-1", !total && "h-10")} aria-label={t("dash_changes")}>
                 {s.changes.map((c) => (
                   <li key={c.day} className="flex h-full min-w-0 flex-1 flex-col justify-end" title={t("dash_day", { day: day(c.day), people: c.people, agents: c.agents })}>
                     <span className="sr-only">{t("dash_day", { day: day(c.day), people: c.people, agents: c.agents })}</span>
@@ -88,14 +111,20 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
                 <h2 id="cms-dash-top" className="mb-2 text-sm font-medium">
                   {t("dash_top")}
                 </h2>
-                <StatusText className="text-xs">{s.top.length ? "" : t("dash_top_empty")}</StatusText>
-                <ol className="flex flex-col divide-y">
-                  {s.top.map((d) => (
-                    <li key={`${d.collection}/${d.slug}`} className="flex items-center gap-3 py-2 text-sm">
+                {s.top.length ? null : <p className="rounded-md border border-dashed px-3 py-4 text-xs text-muted-foreground">{t("dash_top_empty")}</p>}
+                <ol className="isolate flex flex-col divide-y">
+                  {s.top.map((d, n) => (
+                    <li key={`${d.collection}/${d.slug}`} className="relative flex items-center gap-3 py-2 text-sm">
+                      {/* A faint bar behind the row shows the share at a glance; the number says it exactly. */}
+                      <span aria-hidden className="absolute inset-y-1 left-0 -z-10 rounded bg-muted" style={{ width: `${(d.hits / topMax) * 100}%` }} />
+                      <span aria-hidden className="w-4 shrink-0 pl-1 text-xs tabular-nums text-muted-foreground">{n + 1}</span>
                       <a href={href(d.collection, d.slug)} className="min-w-0 flex-1 truncate outline-none hover:underline focus-visible:underline">
                         {d.title}
                       </a>
-                      <span className="shrink-0 tabular-nums text-muted-foreground">{num(d.hits)}</span>
+                      <span className="shrink-0 pr-1 tabular-nums text-muted-foreground">
+                        {num(d.hits)}
+                        <span className="sr-only"> {t("dash_reads")}</span>
+                      </span>
                     </li>
                   ))}
                 </ol>
@@ -104,7 +133,7 @@ export function CmsDashboard({ basePath = "/admin", docHref, className }: CmsDas
                 <h2 id="cms-dash-recent" className="mb-2 text-sm font-medium">
                   {t("dash_recent")}
                 </h2>
-                <StatusText className="text-xs">{s.recent.length ? "" : t("dash_recent_empty")}</StatusText>
+                {s.recent.length ? null : <p className="rounded-md border border-dashed px-3 py-4 text-xs text-muted-foreground">{t("dash_recent_empty")}</p>}
                 <ul className="flex flex-col divide-y">
                   {s.recent.map((r, i) => (
                     <li key={i} className="flex items-center gap-2 py-2 text-sm">

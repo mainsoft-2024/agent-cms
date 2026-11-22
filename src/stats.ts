@@ -23,7 +23,7 @@ export interface StatsContext {
   dayOf: (d: Date) => string;
   ready: () => Promise<void> | void;
   collections: () => string[];
-  can: (actor: Actor, collection: string, what: "read" | "write") => boolean;
+  can: (actor: Actor, collection: string, what: "read" | "write", doc?: CmsDoc | null) => boolean;
   counts: (actor: Actor, collection: string) => Promise<DocCounts>;
   isAdmin: (actor: Actor) => boolean;
 }
@@ -48,7 +48,12 @@ export function createStats(ctx: StatsContext) {
     for (const col of readable) {
       const editor = ctx.can(actor, col, "write");
       const list = await ctx.repo.listDocs({ collection: col });
-      for (const d of list) if (!d.deletedAt && (editor || d.publishedVersion !== null)) docs.set(d.id, d);
+      // Per document, like a list: what this person may edit, or else read (judged on the published copy).
+      for (const d of list) {
+        if (d.deletedAt) continue;
+        if (editor && ctx.can(actor, col, "write", d)) docs.set(d.id, d);
+        else if (d.publishedVersion !== null && d.published && ctx.can(actor, col, "read", { ...d, ...(d.published as object) } as CmsDoc)) docs.set(d.id, { ...d, ...(d.published as object) } as CmsDoc);
+      }
       if (editor) {
         const n = await ctx.counts(actor, col);
         totals.documents += n.all;
@@ -69,7 +74,7 @@ export function createStats(ctx: StatsContext) {
     // Only what the caller may edit: a version list is an editor's view.
     const stamps = (await ctx.repo.versionsSince(new Date(since.getTime() - 86_400_000).toISOString(), 5000)).filter((v) => {
       const d = docs.get(v.documentId);
-      return !!d && ctx.can(actor, d.collection, "write");
+      return !!d && ctx.can(actor, d.collection, "write", d);
     });
     for (const v of stamps) {
       const slot = byDay.get(ctx.dayOf(new Date(v.createdAt)));
@@ -87,13 +92,15 @@ export function createStats(ctx: StatsContext) {
 
     const recent: CmsStats["recent"] = stamps.slice(0, 10).map((v) => {
       const d = docs.get(v.documentId)!;
-      return { at: v.createdAt, who: v.authorAgent ?? v.authorLabel, agent: v.authorKind !== "user" || !!v.authorAgent, action: "doc.save", collection: d.collection, slug: d.slug, title: d.title, version: v.version };
+      return { at: v.createdAt, who: v.authorAgent ?? v.authorLabel, agent: v.authorKind !== "user" || !!v.authorAgent, action: v.version === 1 ? "doc.create" : "doc.save", collection: d.collection, slug: d.slug, title: d.title, version: v.version };
     });
     if (ctx.isAdmin(actor)) {
       const entries: AuditEntry[] = await ctx.repo.listAudit({ before: null, limit: 60 });
       const titles = new Map([...docs.values()].map((d) => [`${d.collection}/${d.slug}`, d.title]));
       for (const e of entries) {
         if (!SHOWN.has(e.action) || e.outcome !== "ok") continue;
+        // A document the person may not see stays out of their dashboard, admin or not, when rules say so.
+        if (e.collection && e.slug && e.action !== "doc.delete" && ![...docs.values()].some((d) => d.collection === e.collection && d.slug === e.slug)) continue;
         recent.push({ at: e.at, who: e.actorAgent ?? e.actorLabel, agent: e.actorKind !== "user" || !!e.actorAgent, action: e.action, collection: e.collection, slug: e.slug, title: titles.get(`${e.collection}/${e.slug}`) ?? (typeof e.detail.name === "string" ? e.detail.name : null), version: e.version });
       }
     }
