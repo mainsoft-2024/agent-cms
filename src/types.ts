@@ -185,6 +185,8 @@ export interface ReleaseItem {
 export interface CmsRelease {
   id: string;
   name: string;
+  /** Items left out of this answer because the reader may not edit those documents (0.18.0). */
+  hiddenItems?: number;
   state: "open" | "scheduled" | "published";
   publishAt: string | null;
   items: ReleaseItem[];

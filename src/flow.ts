@@ -501,17 +501,30 @@ export function createFlow(ctx: FlowContext) {
   async function viewRelease(actor: Actor, rel: CmsRelease): Promise<ReleaseView> {
     const items: ReleaseView["items"] = [];
     const docs = await docsById(repo, rel.items.filter((it) => known(it.collection)).map((it) => it.documentId));
+    let hidden = 0;
     for (const it of rel.items) {
       const doc = known(it.collection) ? (docs.get(it.documentId) ?? null) : null;
+      // A document this person may not edit is counted, not shown (title, slug and versions stay private).
+      if (!known(it.collection) || !can(actor, it.collection, "write", doc)) {
+        hidden++;
+        continue;
+      }
       items.push({ ...it, slug: doc?.slug ?? it.slug, title: doc?.title ?? it.title, currentVersion: doc?.version ?? null, stale: !!doc && doc.version !== it.version, state: doc ? docState(doc).state : null, canPublish: !!doc && can(actor, it.collection, "publish", doc) });
     }
-    return { ...rel, items, canPublish: rel.state !== "published" && items.length > 0 && items.every((i) => i.canPublish) };
+    return { ...rel, items, hiddenItems: hidden, canPublish: rel.state !== "published" && items.length > 0 && !hidden && items.every((i) => i.canPublish) };
   }
 
   async function releases(actor: Actor): Promise<CmsRelease[]> {
     await ctx.ready();
     needEditor(actor);
-    return repo.listReleases();
+    // The list carries each item's title and slug: only the ones this person may edit, with a count of the rest.
+    const all = await repo.listReleases();
+    const ids = [...new Set(all.flatMap((r) => r.items.map((i) => i.documentId)))];
+    const docs = await docsById(repo, ids);
+    return all.map((r) => {
+      const mine = r.items.filter((i) => known(i.collection) && can(actor, i.collection, "write", docs.get(i.documentId) ?? null));
+      return mine.length === r.items.length ? r : { ...r, items: mine, hiddenItems: r.items.length - mine.length };
+    });
   }
 
   async function release(actor: Actor, id: string): Promise<ReleaseView> {

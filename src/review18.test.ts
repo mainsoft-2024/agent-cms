@@ -260,3 +260,28 @@ test("round 2: a tenant asked for while its old handler drains gets a new one on
   assert.equal(await (await second).text(), "ok");
   assert.deepEqual(log, ["create 1", "dispose acme", "create 2"]);
 });
+
+test("round 3: editors get drafts only of documents they may edit; patch and flow answers are projected; releases hide others' items", async () => {
+  const owned = defineCollection({
+    slug: "owned",
+    label: "Owned",
+    visibility: "public",
+    fields: z.object({ owner: z.string().optional(), cost: z.number().optional() }),
+    access: { write: ({ actor, doc }) => actor.kind === "user" && (actor.isAdmin || !doc || (doc.fields as { owner?: string }).owner === actor.id) },
+    fieldAccess: { cost: { read: ({ actor }) => actor.kind === "user" && actor.isAdmin } },
+  });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [owned], warn: () => {} });
+  await cms.create(admin, "owned", { slug: "mine", title: "Mine", body: "x\n", fields: { owner: "u2", cost: 1 } });
+  await cms.create(admin, "owned", { slug: "theirs", title: "Theirs public", body: "x\n", fields: { owner: "u9", cost: 2 } }, { publish: true });
+  await cms.update(admin, "owned", "theirs", { title: "Theirs secret draft" });
+  const titles = (await cms.list(editor, "owned", { drafts: true })).map((d) => d.title).sort();
+  assert.deepEqual(titles, ["Mine", "Theirs public"], "someone else's draft is not shown, its published copy is");
+
+  const p = await cms.patch(editor, "owned", "mine", [{ op: "append", markdown: "more" }]);
+  assert.doesNotMatch(JSON.stringify(p), /"cost"/, "patch answers through the same projection");
+
+  const rel = await cms.releases.create(admin, { name: "Mixed" });
+  await cms.releases.add(admin, rel.id, [{ collection: "owned", slug: "mine" }, { collection: "owned", slug: "theirs" }]);
+  const seen = await cms.releases.get(editor, rel.id);
+  assert.deepEqual([seen.items.map((i) => i.slug), seen.hiddenItems, seen.canPublish], [["mine"], 1, false]);
+});

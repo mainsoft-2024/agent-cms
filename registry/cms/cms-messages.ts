@@ -1405,6 +1405,19 @@ export const en = {
   empty_text_writer: "Write the first one here. It stays a draft until you publish it.",
   empty_text_reader: "Nothing has been published here yet.",
   agent_guide_text: "An agent or a script can write drafts here too. A person reviews and publishes.",
+  release_hidden_items: "{n} more documents in this release are ones you cannot edit. Someone who can edit them publishes the release.",
+  transfer_not_same_doc: "This address now belongs to another document; it was not published.",
+  key_sum_can: "{what} in {where}",
+  key_sum_admin_all: "also manages keys, webhooks and roles and reads the audit log, across the whole CMS",
+  "key_scope_word.read": "reads",
+  "key_scope_word.write": "writes drafts",
+  "key_scope_word.publish": "publishes and deletes",
+  "key_scope_word.html": "adds HTML",
+  "key_scope_word.none": "nothing yet",
+  webhook_every_event: "Every event",
+  webhook_only_these: "Only these",
+  webhook_every_event_text: "Sends a message for every event below, including ones added in later versions.",
+  webhook_pick_one: "Pick at least one event.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2796,6 +2809,19 @@ export const ko: CmsMessages = {
   empty_text_writer: "여기서 첫 문서를 쓸 것. 게시하기 전까지는 초안으로 남음.",
   empty_text_reader: "아직 여기 게시된 문서 없음.",
   agent_guide_text: "에이전트나 스크립트도 여기에 초안을 쓸 수 있음. 게시는 사람이 확인하고 함.",
+  release_hidden_items: "이 릴리스에는 수정 권한이 없는 문서가 {n}개 더 있음. 그 문서를 수정할 수 있는 사람이 릴리스를 게시함.",
+  transfer_not_same_doc: "이 주소는 이제 다른 문서의 것이라 게시하지 않음.",
+  key_sum_can: "{where}: {what}",
+  key_sum_admin_all: "CMS 전체에서 키·웹훅·역할 관리와 감사 로그 읽기까지",
+  "key_scope_word.read": "읽기",
+  "key_scope_word.write": "초안 쓰기",
+  "key_scope_word.publish": "게시와 삭제",
+  "key_scope_word.html": "HTML 넣기",
+  "key_scope_word.none": "아직 없음",
+  webhook_every_event: "모든 이벤트",
+  webhook_only_these: "고른 것만",
+  webhook_every_event_text: "아래 이벤트 전부와 앞으로 추가될 이벤트까지 보냄.",
+  webhook_pick_one: "이벤트를 하나 이상 고를 것.",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;

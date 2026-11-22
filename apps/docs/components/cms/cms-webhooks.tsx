@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { errorMessage, type T } from "./cms-messages";
-import { CodeBox, ConfirmDialog, PageHeader, StatusText, DIALOG, EmptyState } from "./cms-parts";
+import { CodeBox, ConfirmDialog, PageHeader, StatusText, DIALOG, EmptyState, Segmented } from "./cms-parts";
 import { relativeTime, useAsync, useCms, useIsMobile } from "./use-cms";
 
 export interface CmsWebhooksProps {
@@ -311,6 +311,8 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
   const [name, setName] = React.useState("");
   const [url, setUrl] = React.useState("");
   const [picked, setPicked] = React.useState<WebhookEvent[]>([]);
+  // "Every event" is a choice of its own: unticking the last event must not quietly mean "all".
+  const [every, setEvery] = React.useState(true);
   const [cols, setCols] = React.useState<string[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -319,6 +321,7 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
     setName(cur?.name ?? "");
     setUrl(cur?.url ?? "");
     setPicked(cur?.events ?? []);
+    setEvery(!cur?.events?.length);
     setCols(cur?.collections ?? []);
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -329,7 +332,7 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
     setBusy(true);
     setError(null);
     try {
-      const input = { name, url, events: picked, collections: cols };
+      const input = { name, url, events: every ? [] : picked, collections: cols };
       if (cur) onSaved(await client.updateWebhook(cur.id, input));
       else {
         const r = await client.createWebhook(input);
@@ -361,9 +364,19 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
           </div>
           <fieldset className="flex flex-col gap-2">
             <legend className="mb-1 text-sm font-medium">{t("webhook_events")}</legend>
-            <p className="text-xs text-muted-foreground">{t("webhook_events_help")}</p>
-            {/* Grouped by what they are about, each group with its own "all". Nothing ticked = every event. */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Segmented
+              label={t("webhook_events")}
+              value={every ? "all" : "some"}
+              onChange={(v) => setEvery(v === "all")}
+              options={[
+                { value: "all", label: t("webhook_every_event") },
+                { value: "some", label: t("webhook_only_these") },
+              ]}
+            />
+            {/* Grouped by what they are about, each group with its own "all". */}
+            {every ? <p className="text-xs text-muted-foreground">{t("webhook_every_event_text")}</p> : null}
+            {!every && !picked.length ? <p className="text-xs text-amber-700 dark:text-amber-400">{t("webhook_pick_one")}</p> : null}
+            <div className={cn("grid grid-cols-1 gap-3 sm:grid-cols-2", every && "hidden")}>
               {groupEvents(events).map(([group, evs]) => {
                 const on = evs.filter((ev) => picked.includes(ev)).length;
                 return (
@@ -408,7 +421,7 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
             <Button type="button" variant="outline" onClick={onClose}>
               {t("cancel")}
             </Button>
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || (!every && !picked.length)}>
               {cur ? t("save") : t("webhook_create")}
             </Button>
           </DialogFooter>

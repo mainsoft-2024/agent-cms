@@ -298,7 +298,9 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
   const colLabel = (slug: string) => me?.collections.find((c) => c.slug === slug)?.label ?? slug;
   // One sentence that says what the key will be able to do, as chosen so far.
   const summary = [
-    t(scopes.includes("admin") ? "key_sum_admin" : scopes.includes("publish") ? "key_sum_publish" : scopes.includes("write") ? "key_sum_write" : "key_sum_read", { where: cols.length ? cols.map(colLabel).join(", ") : t("key_sum_all_cols") }),
+    // Exactly the scopes chosen, in words; admin is about the whole CMS, not the collections.
+    t("key_sum_can", { what: SCOPES.filter((x) => scopes.includes(x) && x !== "admin").map((x) => t(`key_scope_word.${x}` as never)).join(", ") || t("key_scope_word.none"), where: cols.length ? cols.map(colLabel).join(", ") : t("key_sum_all_cols") }),
+    scopes.includes("admin") ? t("key_sum_admin_all") : "",
     expiry === "none" ? t("key_sum_forever") : expiry === "custom" ? (date ? t("key_sum_until", { date }) : "") : t("key_sum_days", { n: Number(expiry) }),
     rate.trim() ? t("key_per_minute", { n: Number(rate) }) : "",
     chips.length || ips.trim() ? t("key_sum_from", { list: [...chips, ...ips.split(/[\s,]+/).filter(Boolean)].join(", ") }) : t("key_sum_anywhere"),

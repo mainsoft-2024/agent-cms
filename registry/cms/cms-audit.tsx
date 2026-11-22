@@ -65,6 +65,7 @@ export function CmsAudit({ pageSize = 50, className }: CmsAuditProps) {
   );
   const filtered = action !== "__all" || group !== "__all" || outcome !== "__all" || actor !== "__all" || !!who || collection !== "__all" || period !== "__all";
   const clear = () => {
+    typedWho.cancel();
     setAction("__all");
     setGroup("__all");
     setOutcome("__all");
@@ -91,6 +92,9 @@ export function CmsAudit({ pageSize = 50, className }: CmsAuditProps) {
       },
       (e) => {
         if (!live) return;
+        // Rows and "Load more" belonged to the filters before: do not show them as this answer.
+        setEntries([]);
+        setCursor(null);
         setError(e);
         setLoading(false);
       }

@@ -511,7 +511,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
           if (!q || i < 0) continue;
           q.splice(i, 1);
           if (!q.length) preLogged.delete(n.key);
-          if (mine.includes(n.seq)) tellSubscribers({ ...n.e, seq: n.seq } as FeedEvent);
+          if (mine.includes(n.seq)) {
+            tellSubscribers({ ...n.e, seq: n.seq } as FeedEvent);
+            void Promise.resolve(opts.changes?.signal?.publish()).catch((err) => report(err, "change signal"));
+          }
         }
       }, 0);
     }
@@ -583,11 +586,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
           break;
         }
         const rows = await repo.changesSince!(seenSeq, 200);
+        let waiting = false;
         for (const r of rows) {
           // Numbers are handed out before commit: a missing number younger than a few seconds may
-          // still arrive. Stop there and look again; an older gap is a rolled-back write.
+          // still arrive. Stop there and look again on the next pull; an older gap is a rolled-back write.
           if (r.seq !== seenSeq + 1 && Date.now() - Date.parse((r as { at?: string }).at ?? "") < GAP_WAIT_MS) {
-            follow.again = false;
+            waiting = true;
             break;
           }
           seenSeq = Math.max(seenSeq, r.seq);
@@ -598,7 +602,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
           }
           tellSubscribers(rowEvent(r));
         }
-        if (rows.length === 200) follow.again = true;
+        if (rows.length === 200 && !waiting) follow.again = true;
       } while (follow.again);
     } catch (e) {
       report(e, "change log follow");
@@ -998,6 +1002,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     assert(actor, col, "write");
     const cfg = collection(col);
     const cur = o.slug ? await repo.findDoc(col, o.slug) : null;
+    // An existing document is only looked at by someone who may edit it (its own rules).
+    if (cur) assert(actor, col, "write", cur);
     const base: DocContent = cur ?? { slug: "", title: "", summary: "", body: "", category: cfg.categories?.[0] ?? null, keywords: [], fields: {} };
     const content = merged(base, input);
     const { diagnostics } = check(col, content);
@@ -1168,12 +1174,18 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const editor = !!o.drafts && can(actor, col, "write");
     if (!editor) assert(actor, col, "read");
     await beforeRead(actor, col, null, editor);
+    // An editor gets the working copy of each document they may edit (judged on the stored row);
+    // of the others, the published copy if they may read it; nothing else.
     const rows = editor
-      ? await repo.listDocs({ collection: col, statuses: o.status ? [o.status] : undefined })
+      ? (await repo.listDocs({ collection: col, statuses: o.status ? [o.status] : undefined })).flatMap((d) => {
+          if (!collection(col).access?.write || can(actor, col, "write", d)) return [d];
+          const pub = publicView(d);
+          return pub && can(actor, col, "read", pub) ? [pub] : [];
+        })
       : await cached(col, "list", async () => (await repo.listDocs({ collection: col, published: true })).map(publicView).filter((d): d is CmsDoc => !!d));
     const q = o.q?.trim().toLowerCase();
     const sorted = rows
-      .filter((d) => can(actor, col, "read", d))
+      .filter((d) => editor || can(actor, col, "read", d))
       .filter((d) => !o.category || d.category === o.category)
       .filter((d) => !q || d.title.toLowerCase().includes(q) || d.slug.includes(q) || d.summary.toLowerCase().includes(q))
       .filter((d) => !editor || !o.by || d.updatedByKind === o.by)
@@ -1219,7 +1231,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const editor = !!o.drafts && can(actor, col, "write");
     // In the database (0.17.0): filter, sort and cut there, and page by the last row, not by a count.
     // A per-document read rule is checked in memory (the list path below), not in SQL.
-    if (typeof repo.pageDocs === "function" && !(editor && o.state) && keyset !== "offset" && !collection(col).access?.read) {
+    if (typeof repo.pageDocs === "function" && !(editor && o.state) && keyset !== "offset" && !collection(col).access?.read && !(editor && collection(col).access?.write)) {
       collection(col);
       await ensureSchema();
       if (!editor) assert(actor, col, "read");
@@ -1285,7 +1297,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const withPublished = (v: StoredVersion, doc: CmsDoc, actor?: Actor): CmsVersion => {
     const out: CmsVersion = { ...v, published: v.version === doc.publishedVersion };
     if (!actor) return out;
-    const hidden = hiddenPaths(actor, doc.collection, doc);
+    // The rule is asked about this version's own content, not the latest draft.
+    const hidden = hiddenPaths(actor, doc.collection, { ...doc, ...v.snapshot, version: v.version } as CmsDoc);
     if (!hidden.length) return out;
     return {
       ...out,
@@ -1418,8 +1431,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     fail("conflict_version", { expected, current: cur.version }, { current: can(actor, col, "write", cur) ? conflictCopy(actor, col, cur) : undefined });
   /** The current document sent with a conflict: the same field projection as a read. */
   const conflictCopy = (actor: Actor, col: string, cur: CmsDoc): CmsDoc => {
-    const hidden = hiddenPaths(actor, col, cur);
-    if (!hidden.length) return cur;
+    const c = collection(col);
+    if (!c.fieldAccess) return cur;
     return {
       ...project(actor, col, cur, cur),
       published: project(actor, col, cur, cur.published as never),
@@ -1809,6 +1822,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const diagnostics = await diagnose(actor, col, input, o);
     const cfg = collection(col);
     const cur = o.slug ? await repo.findDoc(col, o.slug) : null;
+    // An existing document is only looked at by someone who may edit it (its own rules).
+    if (cur) assert(actor, col, "write", cur);
     const content = merged(cur ?? { slug: "", title: "", summary: "", body: "", category: null, keywords: [], fields: {} }, input);
     const blocks = parseMarkdown(content.body, { lines: true });
     return {
@@ -2410,11 +2425,16 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   /** Wrap a write so the document it returns is projected for the actor who asked. */
   function shown<A extends [Actor, string, ...unknown[]], R>(fn: (...a: A) => Promise<R>): (...a: A) => Promise<R> {
+    const isDoc = (d: unknown): d is CmsDoc => !!d && typeof d === "object" && "collection" in d && "fields" in d && "slug" in d;
     return async (...a: A) => {
       const out = await fn(...a);
-      const d = out as unknown as CmsDoc | null;
-      if (!d || typeof d !== "object" || !("collection" in d) || !("fields" in d)) return out;
-      return conflictCopy(a[0], d.collection, d) as unknown as R;
+      if (isDoc(out)) return conflictCopy(a[0], out.collection, out) as unknown as R;
+      // `{ doc, … }` (patch and friends): project the document inside.
+      if (out && typeof out === "object" && isDoc((out as { doc?: unknown }).doc)) {
+        const d = (out as unknown as { doc: CmsDoc }).doc;
+        return { ...(out as object), doc: conflictCopy(a[0], d.collection, d) } as unknown as R;
+      }
+      return out;
     };
   }
   const api = {
@@ -2488,6 +2508,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
         await ensureSchema();
         return (await repo.lastChange?.()) ?? 0;
       },
+      /**
+       * The highest number up to which every change is known to be committed and seen (0.18.0).
+       * Event streams never hand a client a resume point past it, so a slower transaction with a
+       * lower number cannot be skipped on reconnect. -1 while not following.
+       */
+      watermark: () => seenSeq,
       async since(actor: Actor, seq: number, o: { collections?: readonly string[]; limit?: number; hear: (e: FeedEvent) => FeedEvent | boolean | null }): Promise<{ changes: ChangeEvent[]; last: number; more: boolean } | null> {
         await ensureSchema();
         if (!repo.changesSince) return { changes: [], last: 0, more: false };
@@ -2579,8 +2605,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     preview,
     needsReview,
     /** Publish (and/or unpublish) at a time; what goes out is the version that is current now. */
-    schedule: flow.schedule,
-    unschedule: flow.unschedule,
+    schedule: shown(flow.schedule),
+    unschedule: shown(flow.unschedule),
     /** Run everything whose time has come (the `/_cron` route calls this). */
     runScheduled: flow.runScheduled,
     /**
@@ -2617,9 +2643,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     cronSecret: opts.cronSecret ?? null,
     /** Deleted documents and files: `list`, `restore`, `purge`. */
     trash: { ...flow.trash, days: trashDays },
-    requestReview: flow.requestReview,
-    approveReview: flow.approveReview,
-    rejectReview: flow.rejectReview,
+    requestReview: shown(flow.requestReview),
+    approveReview: shown(flow.approveReview),
+    rejectReview: shown(flow.rejectReview),
     reviewRequests: flow.reviewRequests,
     comments: flow.comments,
     async addComment(...a: Parameters<typeof flow.addComment>) {
@@ -2633,7 +2659,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     labelVersion: async (actor: Actor, col: string, slug: string, n: number, o: { label?: string | null; pinned?: boolean }) => {
       const v = await flow.labelVersion(actor, col, slug, n, o);
       const doc = await repo.findDoc(col, slug);
-      return doc ? withPublished(v, doc, actor) : v;
+      if (!doc) throw fail("not_found", { collection: col, slug });
+      return withPublished(v, doc, actor);
     },
     /** Documents that go public together: `list`, `get`, `create`, `add`, `publish`, `schedule`… */
     releases: flow.releases,

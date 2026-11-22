@@ -27,6 +27,9 @@ test("webhooks: create shows the secret; test, a failed delivery sent again, edi
   const dlg = await screen.findByRole("dialog");
   await user.type(within(dlg).getByLabelText("Name"), "Site cache");
   await user.type(within(dlg).getByLabelText("Address"), "https://intranet.example/hook");
+  // "Every event" is the default; choosing events is an explicit step.
+  await user.click(within(dlg).getByRole("radio", { name: "Only these" }));
+  assert.equal((within(dlg).getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled, true, "nothing picked yet");
   await user.click(within(dlg).getByRole("checkbox", { name: "Publish" }));
   await user.click(within(dlg).getByRole("checkbox", { name: "Guide" }));
   await user.click(within(dlg).getByRole("button", { name: "Create" }));

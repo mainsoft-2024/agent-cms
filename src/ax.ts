@@ -181,7 +181,7 @@ export function createAx(ctx: AxContext) {
   async function saveSuggestion(actor: Actor, doc: CmsDoc, edits: TextEdit[], note: string | null, lines: { from: number; to: number }[]): Promise<Suggestion> {
     const who = ctx.actorRef(actor);
     const at = ctx.nowIso();
-    const data = { baseVersion: doc.version, edits, note, by: { kind: who.kind, label: who.label, agent: who.agent }, lines };
+    const data = { docId: doc.id, baseVersion: doc.version, edits, note, by: { kind: who.kind, label: who.label, agent: who.agent }, lines };
     const r = await ctx.repo.insertRecord({ kind: "suggestion", scope: `${doc.collection}/${doc.slug}`, data, at });
     ctx.audit(actor, "doc.suggest", { collection: doc.collection, slug: doc.slug, version: doc.version, detail: { id: r.id, edits: edits.length } });
     return { id: r.id, collection: doc.collection, slug: doc.slug, at, ...data } as Suggestion;
@@ -271,8 +271,11 @@ export function createAx(ctx: AxContext) {
     async edit(actor: Actor, col: string, slug: string, edits: TextEdit[], o: { note?: string; expectedVersion?: number; dryRun?: boolean } = {}): Promise<EditResult> {
       ctx.collection(col);
       await ctx.ready();
+      // Authorize on the stored row (a rule may look at fields this actor cannot see); edit the text they can see.
+      const stored = await ctx.repo.findDoc(col, slug);
+      if (!stored) throw fail("not_found", { collection: col, slug });
+      ctx.assert(actor, col, "write", stored);
       const doc = await ctx.get(actor, col, slug, { draft: true });
-      ctx.assert(actor, col, "write", doc);
       if (o.expectedVersion !== undefined && o.expectedVersion !== doc.version) throw fail("conflict_version", { expected: o.expectedVersion, current: doc.version });
       const text = docFile(doc);
       const r = applyEdits(text, edits);
@@ -364,10 +367,18 @@ export function createAx(ctx: AxContext) {
     async suggestions(actor: Actor, col: string, slug: string): Promise<Suggestion[]> {
       ctx.collection(col);
       await ctx.ready();
-      const doc = await ctx.get(actor, col, slug, { draft: true });
-      ctx.assert(actor, col, "write", doc);
-      const rows = await ctx.repo.listRecords({ kind: "suggestion", scope: `${col}/${doc.slug}`, order: "asc", limit: 200 });
-      return rows.map((r) => ({ id: r.id, collection: col, slug: doc.slug, at: r.createdAt, ...(r.data as Omit<Suggestion, "id" | "collection" | "slug" | "at">) }));
+      const stored = await ctx.repo.findDoc(col, slug);
+      if (!stored) throw fail("not_found", { collection: col, slug });
+      ctx.assert(actor, col, "write", stored);
+      const rows = await ctx.repo.listRecords({ kind: "suggestion", scope: `${col}/${stored.slug}`, order: "asc", limit: 200 });
+      // Only this document's (a later one with the same slug does not inherit them), and none that
+      // quote a field this person may not see.
+      const seen = ctx.project ? ctx.project(actor, col, stored, stored) : stored;
+      const hidden = Object.keys(stored.fields ?? {}).filter((k) => !(k in ((seen as CmsDoc).fields ?? {})));
+      return rows
+        .filter((r) => { const id = (r.data as { docId?: string }).docId; return !id || id === stored.id; })
+        .filter((r) => !hidden.length || !hidden.some((k) => JSON.stringify((r.data as { edits?: unknown }).edits ?? "").includes(`${k}:`)))
+        .map((r) => ({ id: r.id, collection: col, slug: stored.slug, at: r.createdAt, ...(r.data as Omit<Suggestion, "id" | "collection" | "slug" | "at">) }));
     },
 
     /** Apply a suggestion (optionally changed) as the person; the edit must still fit the current text. */
@@ -375,6 +386,8 @@ export function createAx(ctx: AxContext) {
       const r = await ctx.repo.findRecord("suggestion", id);
       if (!r || r.scope !== `${col}/${slug}`) throw fail("suggestion_not_found");
       const s = r.data as unknown as Suggestion;
+      const owner = (r.data as { docId?: string }).docId;
+      if (owner && (await ctx.repo.findDoc(col, slug))?.id !== owner) throw fail("suggestion_not_found");
       const person: Actor = actor.kind === "user" && actor.agent ? { ...actor, agent: undefined } : actor;
       // Apply as the person even when the collection keeps agents' edits as suggestions.
       let res: EditResult;

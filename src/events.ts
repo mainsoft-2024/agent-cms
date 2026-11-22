@@ -72,7 +72,9 @@ export function hearAs<E extends OutEvent>(core: CmsCore, actor: Actor, e: E, on
 const frame = (event: string, id: string, data: unknown) => `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 /** Without an id frame line, so the client's last id stays the last real event. */
 const note = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-const publicEvent = ({ seq: _s, remote: _r, ...e }: FeedEvent) => e;
+// `seq` stays in the data: delivery is at least once (a resume point never passes a change that is
+// not yet committed, so a reconnect may repeat a few), and clients drop repeats by it.
+const publicEvent = ({ remote: _r, ...e }: FeedEvent) => e;
 
 export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions = {}): Response {
   for (const c of o.collections ?? []) {
@@ -95,6 +97,7 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
       // Events that arrive while the missed ones are being replayed wait here, so the order holds.
       let queue: FeedEvent[] | null = [];
       let lastSent = 0;
+      let sentId = 0;
       const replayed = new Set<number>();
       const deliver = (e: FeedEvent) => {
         const heard = hearAs(core, actor, e, o.collections);
@@ -104,7 +107,11 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
           if (replayed.has(e.seq)) return; // already sent from the log
           lastSent = Math.max(lastSent, e.seq);
         }
-        send(frame(e.event, e.seq !== undefined ? String(e.seq) : new Date().toISOString(), publicEvent(e)));
+        // The resume point (the frame id) never runs ahead of what is known to be committed.
+        const wm = core.changes.watermark();
+        const id = e.seq === undefined ? new Date().toISOString() : String(wm >= 0 ? Math.min(e.seq, Math.max(wm, sentId)) : e.seq);
+        if (e.seq !== undefined && wm >= 0) sentId = Math.max(sentId, Math.min(e.seq, wm));
+        send(frame(e.event, id, publicEvent(e)));
       };
       const unsubscribe = core.subscribe((e) => {
         if (queue) queue.push(e);

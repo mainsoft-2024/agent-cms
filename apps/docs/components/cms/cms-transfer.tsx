@@ -154,6 +154,9 @@ export function CmsTransfer({ className }: { className?: string }) {
         const i = items[n];
         if (!i.publishError || !i.toVersion) continue;
         try {
+          // Still the document the import saved (not one made later with the same address)?
+          const now = await client.get(i.collection, i.slug, { draft: true });
+          if (i.documentId && now.id !== i.documentId) throw new Error(t("transfer_not_same_doc"));
           await client.publish(i.collection, i.slug, { version: i.toVersion, expectedVersion: i.toVersion });
           items[n] = { ...i, published: true, publishError: null };
         } catch (e) {
@@ -378,7 +381,7 @@ function ImportResult({ items, busy, onRetry, onClose }: { items: ImportItem[]; 
   const failed = items.filter((i) => i.change === "error");
   return (
     <section aria-label={t("transfer_result")} className="flex min-w-0 flex-col gap-2 rounded-md border px-3 py-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+      <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         <span className="inline-flex items-center gap-1.5"><CircleCheck aria-hidden className="h-4 w-4 text-green-700 dark:text-green-400" />{t("transfer_saved_n", { n: saved })}</span>
         {published ? <span>{t("transfer_published_n", { n: published })}</span> : null}
         {publishFailed.length ? <span className="text-amber-700 dark:text-amber-400">{t("transfer_publish_failed_n", { n: publishFailed.length })}</span> : null}

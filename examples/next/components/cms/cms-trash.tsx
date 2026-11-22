@@ -234,7 +234,11 @@ export function CmsTrash({ className }: CmsTrashProps) {
                     {r.purgeAt ? (
                       // Days for a glance; the exact moment on hover and for screen readers.
                       <time dateTime={r.purgeAt} title={t("trash_purge_at", { at: fullTime(r.purgeAt) })} aria-label={t("trash_purge_at", { at: fullTime(r.purgeAt) })} className={cn(daysLeft(r.purgeAt) <= 1 && "font-medium text-destructive")}>
-                        {daysLeft(r.purgeAt) <= 1 ? t("trash_purge_soon", { at: new Date(r.purgeAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) }) : t("days_n", { n: daysLeft(r.purgeAt) })}
+                        {daysLeft(r.purgeAt) <= 1
+                          ? new Date(r.purgeAt).toDateString() === new Date().toDateString()
+                            ? t("trash_purge_soon", { at: new Date(r.purgeAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) })
+                            : fullTime(r.purgeAt)
+                          : t("days_n", { n: daysLeft(r.purgeAt) })}
                       </time>
                     ) : (
                       ""

@@ -429,7 +429,8 @@ export function CmsRelease({ id, onBack, onOpenDocument, className }: CmsRelease
           </div>
         ) : null}
         {rel.lastError && open && !blocked.length ? <StatusText tone="error" className="mb-3 [overflow-wrap:anywhere]">{rel.lastError}</StatusText> : null}
-        {!rel.items.length ? <p className="mx-auto max-w-sm py-16 text-center text-sm text-muted-foreground">{t("release_items_empty")}</p> : null}
+        {rel.hiddenItems ? <p className="mb-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">{t("release_hidden_items", { n: rel.hiddenItems })}</p> : null}
+        {!rel.items.length && !rel.hiddenItems ? <p className="mx-auto max-w-sm py-16 text-center text-sm text-muted-foreground">{t("release_items_empty")}</p> : null}
         {rel.items.length ? (
           <Table>
             <TableHeader>

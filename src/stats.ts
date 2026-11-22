@@ -45,26 +45,29 @@ export function createStats(ctx: StatsContext) {
     const readable = ctx.collections().filter((c) => ctx.can(actor, c, "read"));
     const totals = { documents: 0, published: 0, review: 0, scheduled: 0 };
     const docs = new Map<string, CmsDoc>();
+    // What this person may edit (stored rows) and, of the rest, what they may read (published copies).
+    const editable = new Set<string>();
     for (const col of readable) {
       const editor = ctx.can(actor, col, "write");
       const list = await ctx.repo.listDocs({ collection: col });
-      // Per document, like a list: what this person may edit, or else read (judged on the published copy).
       for (const d of list) {
         if (d.deletedAt) continue;
-        if (editor && ctx.can(actor, col, "write", d)) docs.set(d.id, d);
-        else if (d.publishedVersion !== null && d.published && ctx.can(actor, col, "read", { ...d, ...(d.published as object) } as CmsDoc)) docs.set(d.id, { ...d, ...(d.published as object) } as CmsDoc);
+        if (editor && ctx.can(actor, col, "write", d)) {
+          docs.set(d.id, d);
+          editable.add(d.id);
+          continue;
+        }
+        if (d.publishedVersion === null || !d.published || d.status === "archived") continue;
+        const pub = { ...d, ...(d.published as object) } as CmsDoc;
+        if (ctx.can(actor, col, "read", pub)) docs.set(d.id, pub);
       }
-      if (editor) {
-        const n = await ctx.counts(actor, col);
-        totals.documents += n.all;
-        totals.published += n.published;
-        totals.review += n.review;
-        totals.scheduled += n.scheduled;
-      } else {
-        const pub = list.filter((d) => !d.deletedAt && d.publishedVersion !== null && d.status !== "archived").length;
-        totals.documents += pub;
-        totals.published += pub;
-      }
+    }
+    // Totals count only those documents, so the cards match what the lists show this person.
+    for (const d of docs.values()) {
+      totals.documents++;
+      if (d.publishedVersion !== null && d.status !== "archived") totals.published++;
+      if (editable.has(d.id) && d.review?.state === "requested") totals.review++;
+      if (editable.has(d.id) && d.schedule) totals.scheduled++;
     }
 
     const since = new Date(nowMs - (days - 1) * 86_400_000);
@@ -74,7 +77,7 @@ export function createStats(ctx: StatsContext) {
     // Only what the caller may edit: a version list is an editor's view.
     const stamps = (await ctx.repo.versionsSince(new Date(since.getTime() - 86_400_000).toISOString(), 5000)).filter((v) => {
       const d = docs.get(v.documentId);
-      return !!d && ctx.can(actor, d.collection, "write", d);
+      return !!d && editable.has(v.documentId);
     });
     for (const v of stamps) {
       const slot = byDay.get(ctx.dayOf(new Date(v.createdAt)));

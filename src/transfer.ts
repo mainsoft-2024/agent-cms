@@ -48,6 +48,8 @@ export interface ImportItem {
   /** Why it was skipped or failed. */
   reason: string | null;
   diff?: string;
+  /** The document's id once saved: "publish again" checks it is still the same document. */
+  documentId?: string | null;
   /** Published by this import (with `publish`). */
   published?: boolean;
   /**
@@ -66,7 +68,7 @@ export interface TransferContext {
   ready: () => Promise<void> | void;
   message: (e: unknown) => string;
   collections: () => string[];
-  can: (actor: Actor, collection: string, what: "read" | "write" | "publish") => boolean;
+  can: (actor: Actor, collection: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) => boolean;
   list: (actor: Actor, collection: string, o: { drafts?: boolean }) => Promise<CmsDoc[]>;
   diagnose: (actor: Actor, collection: string, input: DocInput, o: { slug?: string }) => Promise<Diagnostic[]>;
   create: (actor: Actor, collection: string, input: DocInput, o: { note?: string }) => Promise<CmsDoc>;
@@ -132,6 +134,8 @@ export function createTransfer(ctx: TransferContext) {
           const wasPublic = data.status === "published";
           item.fromVersion = cur?.version ?? null;
           if (cur?.deletedAt) throw fail("slug_in_trash", { slug: item.slug });
+          // Compared with (and diffed against) only when this person may edit that document.
+          if (cur && !ctx.can(actor, col, "write", cur)) throw fail("forbidden_write", { collection: col });
           item.diagnostics = await ctx.diagnose(actor, col, doc, { slug: cur ? item.slug : undefined });
           const same = !!cur && stable({ t: cur.title, s: cur.summary, b: cur.body.trim(), c: cur.category, k: cur.keywords, f: { ...cur.fields, ...(doc.fields ?? {}) } }) === stable({ t: doc.title ?? cur.title, s: doc.summary ?? cur.summary, b: (doc.body ?? "").trim(), c: doc.category === undefined ? cur.category : doc.category, k: doc.keywords ?? cur.keywords, f: cur.fields });
           if (o.diff && cur && !same) item.diff = unifiedDiff(cur.body, doc.body ?? "", { from: `v${cur.version}`, to: f.path });
@@ -154,6 +158,10 @@ export function createTransfer(ctx: TransferContext) {
             const note = "import";
             const saved = cur ? await ctx.update(actor, col, item.slug, doc, { note, expectedVersion: cur.version }) : await ctx.create(actor, col, doc, { note });
             item.toVersion = saved.version;
+            item.documentId = saved.id;
+          } else if (cur) {
+            item.toVersion = cur.version;
+            item.documentId = cur.id;
           }
           // Publishing is its own step: when it fails the save stands and the item says so.
           if (o.publish && wasPublic) {

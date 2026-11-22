@@ -36,7 +36,7 @@ test("keys: list with expired badge; create shows the secret once with MCP and C
   // Least privilege first: a new key starts as read-only, and says so.
   const access = within(dialog).getByRole("radiogroup", { name: "What it may do" });
   assert.equal(within(access).getByRole("radio", { name: "Read" }).getAttribute("aria-checked"), "true");
-  assert.ok(within(dialog).getByText(/reads every collection · never expires · from anywhere/));
+  assert.ok(within(dialog).getByText(/reads in every collection · never expires · from anywhere/));
   await user.click(within(access).getByRole("radio", { name: "Custom" }));
   assert.equal(within(dialog).getByRole("checkbox", { name: "read" }).getAttribute("data-state"), "checked");
   await user.click(within(dialog).getByRole("checkbox", { name: "publish" }));

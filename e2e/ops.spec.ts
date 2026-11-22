@@ -14,11 +14,12 @@ test("webhooks: make one, test it, a publish arrives signed after the cron call,
   await clear(request);
   const slug = `hook-${Date.now()}`;
   await page.goto("/admin/webhooks");
-  await expect(page.getByText("No webhooks yet.")).toBeVisible();
-  await page.getByRole("button", { name: "New webhook" }).click();
+  await expect(page.getByText("No webhooks yet")).toBeVisible();
+  await page.getByRole("button", { name: "New webhook" }).first().click();
   const dlg = page.getByRole("dialog", { name: "New webhook" });
   await dlg.getByLabel("Name").fill("Site cache");
   await dlg.getByLabel("Address").fill(`${baseURL}/api/hook`);
+  await dlg.getByRole("radio", { name: "Only these" }).click();
   await dlg.getByRole("checkbox", { name: "Publish", exact: true }).click();
   await dlg.getByRole("button", { name: "Create" }).click();
   const made = page.getByRole("dialog", { name: "“Site cache” is ready" });
@@ -67,7 +68,8 @@ test("webhooks on a phone: the list and the panel fit the screen @mobile", async
   await page.getByRole("button", { name: "Team chat notifications" }).click();
   await expect(page.getByRole("complementary", { name: "Team chat notifications" }).getByText("Nothing has been sent yet.")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
-  await page.getByRole("button", { name: "New webhook" }).click();
+  await page.getByRole("button", { name: "New webhook" }).first().click();
+  await page.getByRole("dialog", { name: "New webhook" }).getByRole("radio", { name: "Only these" }).click();
   await expect(page.getByRole("dialog", { name: "New webhook" }).getByRole("checkbox", { name: "Comment" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
   await clear(request);
