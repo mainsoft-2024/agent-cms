@@ -252,7 +252,7 @@ test("flow: a release is made, filled, shows what changes, and publishes all of 
   cleanup();
 
   renderWith(s, <CmsRelease id={opened} />);
-  await screen.findByText("No documents in this release");
+  await screen.findByText(/^No documents in this release yet/);
   await user.click(screen.getByRole("button", { name: "Add documents" }));
   let dlg = await screen.findByRole("dialog");
   await user.click(await within(dlg).findByRole("checkbox", { name: /Launch post/ }));

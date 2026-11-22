@@ -1991,7 +1991,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** True when the roles screen has a list of people. */
     hasUsers: () => !!rolesCtx.users,
     /** The roles a person is in (for the people screen). */
-    rolesOf: (userId: string) => roles.of(userId),
+    rolesOf: (userId: string, email?: string | null) => roles.of(userId, email),
     /** Fails with `schema_outdated` when the database needs a migration. */
     checkSchema: async () => {
       await ensureSchema();

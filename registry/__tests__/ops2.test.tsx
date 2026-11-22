@@ -127,26 +127,29 @@ test("roles: a role lets a person write but not publish; code-decided collection
   assert.equal(await code(s.cms.create(park, "guide", { slug: "p", title: "P", body: "x\n" })), "forbidden_write");
 
   renderWith(s, <CmsRoles />);
-  await screen.findByText(/^No roles yet\./);
-  await user.click(screen.getByRole("button", { name: "New role" }));
-  const name = (await screen.findByLabelText("Name")) as HTMLInputElement;
-  assert.equal(name.value, "New role 1");
-  await user.clear(name);
-  await user.type(name, "Writers");
+  await screen.findByText("No roles yet");
+  // The name comes first, with a starting point; nothing is made until "Create role".
+  await user.click(screen.getAllByRole("button", { name: "New role" })[0]);
+  const dlg0 = await screen.findByRole("dialog", { name: "New role" });
+  await user.type(within(dlg0).getByLabelText("Name"), "Writers");
+  await user.click(within(dlg0).getByRole("radio", { name: /Nothing yet/ }));
+  await user.click(within(dlg0).getByRole("button", { name: "Create role" }));
+  await screen.findByText("Created the role Writers");
 
-  const table = screen.getByRole("table");
-  const row = (label: string) => within(table).getByRole("cell", { name: label }).closest("tr")!;
+  const table = await screen.findByRole("table");
+  const row = (label: string) => within(table).getByText(label).closest("tr")!;
   assert.equal(within(row("Notices")).getAllByText("Set in code").length, 1, "write is decided in code");
   assert.ok(within(row("Notices")).queryByRole("checkbox", { name: "Notices: Write" }) === null);
+  assert.ok((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled, "nothing to save yet");
   await user.click(within(row("Guide")).getByRole("checkbox", { name: "Guide: Write" }));
+  await screen.findByText("Unsaved changes");
   await user.click(screen.getByRole("button", { name: "Save" }));
-  await screen.findByText("Saved.");
+  await screen.findByText(/^Saved/);
 
-  await screen.findByText("Nobody yet.");
-  await user.type(screen.getByLabelText("Name or id"), "park");
-  const found = await screen.findByRole("list", { name: "Name or id" });
-  await user.click(within(found).getByRole("button", { name: "Park Jiwoo" }));
-  await screen.findByText("People 1");
+  // People are found by name; nobody types an id.
+  await screen.findByText(/No one is in this role yet/);
+  await user.type(screen.getByRole("combobox", { name: "Add a person" }), "park");
+  await user.click(await screen.findByRole("option", { name: /Park Jiwoo/ }));
   await screen.findByRole("button", { name: "Remove Park Jiwoo" });
   assert.deepEqual(await axeViolations(), []);
 
@@ -158,21 +161,22 @@ test("roles: a role lets a person write but not publish; code-decided collection
   assert.equal(await code(s.cms.remove(park, "guide", "p")), "forbidden_publish", "deleting is its own box");
 
   // An admin role hides the table: it may do everything.
-  await user.click(screen.getByRole("checkbox", { name: /^Admin:/ }));
+  const adminBox = () => screen.getAllByRole("checkbox").find((c) => c.closest("label")?.textContent?.startsWith("Admin"))!;
+  await user.click(adminBox());
   assert.ok(screen.queryByRole("table") === null);
-  await user.click(screen.getByRole("checkbox", { name: /^Admin:/ }));
+  await user.click(adminBox());
 
   await user.click(screen.getByRole("button", { name: "Remove Park Jiwoo" }));
-  await screen.findByText("Nobody yet.");
+  await screen.findByText(/No one is in this role yet/);
   assert.equal(await code(s.cms.update(park, "guide", "p", { title: "P2" })), "forbidden_write");
 
   await user.click(screen.getByRole("button", { name: "Delete" }));
   const dlg = await screen.findByRole("dialog", { name: "Delete the role “Writers”?" });
   await user.click(within(dlg).getByRole("button", { name: "Delete" }));
-  await screen.findByText(/^No roles yet\./);
+  await screen.findByText("No roles yet");
 });
 
-test("roles: without a user list a person is added by id; on a phone the roles are a row above the form", async () => {
+test("roles: someone who has not signed in yet is added by email and joins at first sign-in; on a phone the roles are a row above the form", async () => {
   setMobile(true);
   const s = makeServer();
   const user = userEvent.setup();
@@ -182,10 +186,14 @@ test("roles: without a user list a person is added by id; on a phone the roles a
   const nav = await screen.findByRole("navigation", { name: "역할" });
   await within(nav).findByRole("button", { name: /Editors/ });
   assert.equal((screen.getByRole("checkbox", { name: "Guide: 게시" }) as HTMLElement).getAttribute("aria-checked"), "true");
-  await user.type(screen.getByLabelText("사용자 ID"), "u42");
-  await user.click(screen.getByRole("button", { name: "추가" }));
-  await screen.findByText("사람 1");
-  assert.deepEqual((await s.cms.roles.list(admin)).roles.find((r) => r.name === "Editors")?.members, [{ id: "u42", label: "u42" }]);
+  await user.type(screen.getByRole("combobox", { name: "사람 추가" }), "new.person@example.com");
+  await user.click(await screen.findByRole("option", { name: /new\.person@example\.com 추가/ }));
+  await screen.findByText("아직 로그인 안 함");
+  const members = () => s.cms.roles.list(admin).then((r) => r.roles.find((x) => x.name === "Editors")!.members);
+  assert.deepEqual(await members(), [{ id: "email:new.person@example.com", label: "new.person@example.com", email: "new.person@example.com", pending: true }]);
+  // Their first visit with that email turns the invitation into a membership.
+  await s.cms.roles.seen({ kind: "user", id: "u42", label: "New Person", email: "New.Person@example.com", isAdmin: false });
+  assert.deepEqual(await members(), [{ id: "u42", label: "New Person", email: "new.person@example.com" }]);
   await user.click(within(nav).getByRole("button", { name: /Owners/ }));
   await waitFor(() => assert.ok(screen.queryByRole("table") === null));
   assert.equal((screen.getByLabelText("이름") as HTMLInputElement).value, "Owners");
@@ -249,24 +257,29 @@ test("import: a bundle is looked at first, then only the ticked files become dra
   ];
 
   renderWith(s, <CmsTransfer />);
-  await screen.findByText(/^An export file \(\.json\) or markdown files/);
+  await screen.findByText("Drop an export file or markdown files here");
+  // Keeping what is there is the default: an existing document is skipped, new ones come in.
   await user.upload(screen.getByLabelText("Choose a file"), new File([JSON.stringify({ files })], "cms-export.json", { type: "application/json" }));
-  const table = await screen.findByRole("table");
-  const row = (path: string) => within(table).getByText(path).closest("tr")!;
-  assert.match(row("guide/a.md").textContent ?? "", /Av1 → v2None$/);
-  assert.match(row("guide/b.md").textContent ?? "", /BNew documentNone$/);
-  assert.match(row("guide/bad.md").textContent ?? "", /Cannot import|category/i);
-  assert.equal((within(row("guide/bad.md")).getByRole("checkbox") as HTMLButtonElement).disabled, true);
+  const item = async (path: string) => (await screen.findByText(path, { selector: "span[title]" })).closest("li")!;
+  assert.match((await item("guide/a.md")).textContent ?? "", /Skipped/);
+  await screen.findByText(/2 new · 0 would change/);
+  // Replacing is a choice made on purpose, and asked once more.
+  await user.selectOptions(screen.getByLabelText("When the address exists"), "file-wins");
+  await waitFor(async () => assert.match((await item("guide/a.md")).textContent ?? "", /v1 → v2/));
+  assert.match((await item("guide/b.md")).textContent ?? "", /New document/);
+  assert.match((await item("guide/bad.md")).textContent ?? "", /Cannot import/i);
+  assert.equal((within(await item("guide/bad.md")).getByRole("checkbox") as HTMLButtonElement).disabled, true);
   await screen.findByText("3 of 4 files selected");
   assert.equal((await s.cms.counts(admin, "guide")).all, 1, "looking changes nothing");
   assert.deepEqual(await axeViolations(), []);
 
   // Leave one out, then import.
-  await user.click(within(row("guide/c.md")).getByRole("checkbox"));
+  await user.click(within(await item("guide/c.md")).getByRole("checkbox"));
   await screen.findByText("2 of 4 files selected");
-  await user.click(screen.getByRole("button", { name: "Import" }));
+  await user.click(screen.getByRole("button", { name: "Import 2" }));
+  const sure = await screen.findByRole("alertdialog", { name: "Replace 1 existing documents?" }).catch(() => screen.findByRole("dialog", { name: "Replace 1 existing documents?" }));
+  await user.click(within(sure).getByRole("button", { name: "Replace and import" }));
   await screen.findByText("Imported 2 documents as drafts.");
-  assert.ok(screen.queryByRole("table") === null);
   assert.equal((await s.cms.get(admin, "guide", "a", { draft: true })).body.trim(), "two");
   assert.equal((await s.cms.get(admin, "guide", "a")).body.trim(), "one", "the public copy stays until someone publishes");
   assert.equal((await s.cms.get(admin, "guide", "b", { draft: true })).status, "draft");
@@ -277,8 +290,8 @@ test("import: a bundle is looked at first, then only the ticked files become dra
   await user.upload(screen.getByLabelText("Choose a file"), new File([files[0].text.replace("two", "three")], "a.md", { type: "text/markdown" }));
   await screen.findByText("Unknown collection: a.md");
   await user.selectOptions(screen.getByLabelText("Collection"), "guide");
-  await waitFor(() => assert.match(within(screen.getByRole("table")).getByText("a.md").closest("tr")!.textContent ?? "", /Skipped/));
-  assert.equal((screen.getByRole("button", { name: "Import" }) as HTMLButtonElement).disabled, true);
+  await waitFor(async () => assert.match((await item("a.md")).textContent ?? "", /Skipped/));
+  assert.equal((screen.getByRole("button", { name: "Import 0" }) as HTMLButtonElement).disabled, true);
 
   // A file that is not an export.
   await user.upload(screen.getByLabelText("Choose a file"), new File(["{\"nope\":1}"], "x.json", { type: "application/json" }));

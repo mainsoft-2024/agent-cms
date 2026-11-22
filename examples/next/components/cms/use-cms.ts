@@ -89,6 +89,33 @@ interface ToastItem extends ToastOptions {
 
 const CmsContext = React.createContext<CmsContextValue | null>(null);
 
+// ── theme ────────────────────────────────────────────────────────────────────
+
+export type CmsTheme = "light" | "dark" | "system";
+const THEME_KEY = "cms-theme";
+/** The theme kept in this browser ("system" when none). */
+export function storedTheme(): CmsTheme {
+  try {
+    const v = window.localStorage.getItem(THEME_KEY);
+    return v === "light" || v === "dark" ? v : "system";
+  } catch {
+    return "system";
+  }
+}
+/** Light, dark, or the system's: sets the `dark` class on <html> (Tailwind's dark mode) and keeps the choice. */
+export function applyTheme(theme: CmsTheme = storedTheme()): void {
+  if (typeof document === "undefined") return;
+  try {
+    if (theme === "system") window.localStorage.removeItem(THEME_KEY);
+    else window.localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    /* ignore */
+  }
+  const dark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  document.documentElement.classList.toggle("dark", !!dark);
+  document.documentElement.style.colorScheme = dark ? "dark" : "light";
+}
+
 const NO_SLOTS: CmsSlots = {};
 
 export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, slots = NO_SLOTS, children }: CmsProviderProps) {
@@ -98,6 +125,14 @@ export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, 
   const [me, setMe] = React.useState<Me | null>(null);
   const [meError, setMeError] = React.useState<unknown>(null);
   const [tick, setTick] = React.useState(0);
+  // The theme this browser keeps, and the system's when it changes (for "system").
+  React.useEffect(() => {
+    applyTheme();
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const on = () => storedTheme() === "system" && applyTheme("system");
+    mq?.addEventListener?.("change", on);
+    return () => mq?.removeEventListener?.("change", on);
+  }, []);
   React.useEffect(() => {
     let live = true;
     client.me().then(

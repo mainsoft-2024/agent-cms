@@ -1,12 +1,35 @@
 # Changelog
 
-## Unreleased (0.16.0, first part: sign-in of its own)
+## 0.16.0
 
+The CMS runs on its own (`npx @mainsoft/agent-cms dev` / `serve`) with a sign-in of its own: passkeys, two-step codes, single sign-on, invitations. No schema change. Every admin screen was checked at four widths with long names; the ones that broke are fixed, and screens that showed API fields as they are were redone. See [UPGRADE-0.16.md](UPGRADE-0.16.md).
+
+### Standalone server and sign-in
+
+- **`npx @mainsoft/agent-cms dev`**: a CMS on this computer with nothing to set up (a "Posts" collection, kept with PGlite when installed, in memory otherwise). **`serve`** runs `server` from agent-cms.config.ts. **`@mainsoft/agent-cms/serve`**: `startServer({ cms, port })`. The admin is prebuilt (`dist/admin`), with a strict Content Security Policy, `GET /healthz`, cache headers, the scheduler every minute, and a graceful stop on SIGTERM. `examples/server`: Dockerfile and compose (CMS, Postgres, MinIO).
 - **`@mainsoft/agent-cms/auth`**: `createAuth({ cms, origin, sendMail, oidc })` and `createCmsHandler({ cms, auth })`. People, passwords (scrypt, common ones refused), passkeys (WebAuthn written here: ES256, EdDSA, RS256), two-step codes (TOTP with a QR code of our own, recovery codes, trusted devices), OpenID Connect with PKCE, invitations, password resets, a setup code for the first admin, devices list and remote sign-out, confirmation before sensitive actions, `requireMfa` policy, login limits. No schema change (`cms_records`).
 - REST `/auth/*` and `/users/*` (in `/openapi.json` when sign-in is on); `_me.auth`. Making or rotating API keys with a session of this sign-in needs a confirmation in the last 10 minutes.
 - The roles screen finds people from this sign-in.
 - Fix: the events stream holds its request, so a collected `Request` can no longer keep a closed stream subscribed.
-- Not yet: the sign-in, people and account screens, the standalone server (`serve`, `dev`) and the Docker example.
+- **Screens** (`npx @mainsoft/agent-cms add cms-login cms-people cms-account`): sign in (passkey, single sign-on, email and password, the 6-digit code or a recovery code; codes are sent when the sixth digit is typed), first admin with the setup code, accept an invitation (password or passkey only), password reset. **People**: invite several emails at once (pasted lists become chips), the role they start with, mail or links; resend, new link, withdraw; how each person signs in; switch accounts off; make admins; "two-step for everyone". **My account**: name, theme, language, passkeys (add, rename, remove), password with a strength hint, authenticator app with QR code and recovery codes (copy or download, confirm kept), signed-in devices with sign-out each or all others. Changing how people sign in asks you to confirm it is you (password or passkey).
+- **Dark theme** (light, dark, system) from the account menu at the bottom of the sidebar; remembered in the browser and the account.
+- The shell shows a signed-out page with a way back in, a skeleton while it loads, and a retry when `/_me` fails.
+
+### Roles and people
+
+- **No more typing user ids.** People are found by name or email: from the app's `users`, the CMS's sign-in, and everyone who has used the admin (the CMS now remembers who it has seen). Someone who has never signed in is added by email and joins the role at their first sign-in (`POST /roles/:id/members` takes `{ email }`; `members[].pending`).
+- The roles screen asks for a name first and offers templates (editor, publisher, viewer, admin, empty), marks unsaved changes and asks before leaving them, has an "all collections" box per column, an HTML column, explains each permission and what is set in code, and confirms removing yourself from an admin role. Removing someone can be undone.
+
+### Layout and detail fixes from a full audit
+
+- A browser test (`e2e/layout.spec.ts`) opens 17 admin screens at 1600, 1280, 820 and 390 pixels with very long titles, slugs, URLs and file names, presses every harmless button, and fails when anything sticks out of the page, a dialog or a clipping box. Fixed: dialogs grew past the screen with a long link (preview link, keys, webhooks); the media detail panel was cut off (it is a dialog below 1100 px now and scrolls on its own); text that did not wrap in releases, imports and roles.
+- Preview link: the old link is not offered while a new one is made, an Open button, Retry, and who can see what.
+- Lists and files drop pages that arrive for an older filter or folder; a failed "load more" keeps the rows and retries the same page.
+- The editor keeps a local copy for new documents too and says when the browser cannot keep one; a JSON field that does not parse stops saving instead of saving the last good value.
+- Releases say "Not checked" (with Retry) when a check fails, instead of "ready".
+- Import: keeping existing documents is the default; replacing asks first and says how many; drop files; choices survive a re-check; reasons are shown per file.
+- The command palette searches every readable collection, says when some could not be searched, and asks before publishing.
+- Schedules refuse times that do not exist (daylight saving).
 
 ## 0.15.0
 

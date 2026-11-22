@@ -18,7 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { CodeBox, ConfirmDialog, PageHeader, Segmented, StatusText } from "./cms-parts";
+import { CodeBox, ConfirmDialog, PageHeader, Segmented, StatusText, DIALOG } from "./cms-parts";
 import { cmsUrl, formatDate, relativeTime, useAsync, useCms, useIsMobile } from "./use-cms";
 
 const SCOPES: KeyScope[] = ["read", "write", "publish", "admin"];
@@ -181,7 +181,7 @@ export function CmsKeys({ mcpServerName = "agent-cms", className }: CmsKeysProps
       />
 
       <Dialog open={!!created} onOpenChange={(o) => !o && setCreated(null)}>
-        <DialogContent className="max-w-[540px]">{created ? <KeyCreated name={created.key.name} secret={created.secret} mcpServerName={mcpServerName} onClose={() => setCreated(null)} /> : null}</DialogContent>
+        <DialogContent className={DIALOG.lg}>{created ? <KeyCreated name={created.key.name} secret={created.secret} mcpServerName={mcpServerName} onClose={() => setCreated(null)} /> : null}</DialogContent>
       </Dialog>
 
       <ConfirmDialog
@@ -278,7 +278,7 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[480px]">
+      <DialogContent className={DIALOG.md}>
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>{t("new_key")}</DialogTitle>

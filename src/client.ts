@@ -10,7 +10,7 @@
 
 import type { AutomationCondition, AutomationInput, AutomationRun, CmsAutomation } from "./automations";
 import type { WebhookInput, WebhookView } from "./outbox";
-import type { CmsRole, RoleInput, RoleMember, RoleOp } from "./roles";
+import type { CmsRole, PersonMatch, RoleInput, RoleMember, RoleOp } from "./roles";
 import type { CmsStats } from "./stats";
 import type { ImportItem, ImportOptions, TransferFile } from "./transfer";
 import type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
@@ -26,7 +26,7 @@ export type { BlockedItem, CommentThread, ReleaseView, ScheduledRun, TrashItem, 
 export type { WebhookInput, WebhookView } from "./outbox";
 export type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
 export type { AutomationAction, AutomationCondition, AutomationInput, AutomationRun, CmsAutomation } from "./automations";
-export type { CmsRole, RoleInput, RoleMember, RoleOp, RolePermissions } from "./roles";
+export type { CmsRole, PersonMatch, RoleInput, RoleMember, RoleOp, RolePermissions } from "./roles";
 export type { CmsStats } from "./stats";
 export type { ImportConflict, ImportItem, ImportOptions, TransferFile } from "./transfer";
 
@@ -198,7 +198,7 @@ export interface Me {
   nav?: { label: string; href: string; plugin: string }[];
   /** What plugins put into `_me`, by plugin name. */
   plugins?: Record<string, Record<string, unknown>>;
-  actor: { kind: string; label?: string; id?: string | null };
+  actor: { kind: string; label?: string; id?: string | null; email?: string | null };
   isAdmin: boolean;
   previewLinks: boolean;
   /** Days something stays in the trash (0: there is no trash). */
@@ -208,6 +208,68 @@ export interface Me {
   /** The media library, when the app has one and this actor may see it. */
   media?: MediaInfo | null;
   collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean }[];
+  /** The CMS's own sign-in, when the app uses it (`createAuth`). */
+  auth?: { passwords: boolean; passkeys: boolean; sso: { label: string } | null; mail: boolean; adminPath: string; people: boolean } | null;
+}
+
+// ── own sign-in (`createAuth`) ────────────────────────────────────────────────
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  name: string | null;
+  isAdmin: boolean;
+  disabled: boolean;
+  lastLoginAt: string | null;
+  createdAt: string;
+  password: boolean;
+  totp: boolean;
+  passkeys: number;
+  sso: boolean;
+  roles: { id: string; name: string }[];
+}
+export interface AuthInvite {
+  id: string;
+  email: string;
+  isAdmin: boolean;
+  roleId: string | null;
+  invitedBy: string;
+  createdAt: string;
+  expiresAt: string;
+}
+export interface AuthDevice {
+  id: string;
+  current: boolean;
+  createdAt: string;
+  lastSeenAt: string;
+  ip: string | null;
+  device: string;
+  method: string;
+}
+export interface AuthPasskey {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  synced: boolean;
+}
+export interface AuthState {
+  setup: boolean;
+  methods: { password: boolean; passkey: boolean; sso: { label: string } | null };
+  mail: boolean;
+  user: AuthUser | null;
+  mfaSetup: boolean;
+  adminPath: string;
+}
+export type LoginResult = { ok: true; mfaSetup?: boolean; user: AuthUser } | { mfa: true; ticket: string };
+export interface AuthAccount {
+  user: AuthUser;
+  prefs: { theme?: "light" | "dark" | "system"; locale?: string };
+  passkeys: AuthPasskey[];
+  recoveryLeft: number;
+  mfaSetup: boolean;
+  confirmedUntil: string;
+  canChangeEmail: boolean;
 }
 
 export type { AssetUsage, AssetView } from "./assets";
@@ -358,6 +420,47 @@ export function createRestClient(opts: RestClientOptions) {
 
   return {
     me: () => req<Me>("GET", "/_me"),
+    /** The CMS's own sign-in (`createAuth`). */
+    auth: {
+      state: () => req<AuthState>("GET", "/auth/state"),
+      setup: (i: { code: string; email: string; name?: string; password?: string }) => req<{ ok: true; user: AuthUser }>("POST", "/auth/setup", { body: i }),
+      login: (email: string, password: string) => req<LoginResult>("POST", "/auth/login", { body: { email, password } }),
+      mfa: (i: { ticket: string; code?: string; recovery?: string; remember?: boolean }) => req<{ ok: true; user: AuthUser; recoveryLeft?: number }>("POST", "/auth/mfa", { body: i }),
+      logout: () => req<{ ok: true }>("POST", "/auth/logout", { body: {} }),
+      requestReset: (email: string) => req<{ ok: true; mail: boolean }>("POST", "/auth/reset/request", { body: { email } }),
+      resetInfo: (token: string) => req<{ email: string }>("GET", "/auth/reset", { query: { token } }),
+      reset: (token: string, password: string) => req<LoginResult>("POST", "/auth/reset", { body: { token, password } }),
+      invite: (token: string) => req<{ email: string; invitedBy: string | null; isAdmin: boolean; exists: boolean }>("GET", `/auth/invite/${enc(token)}`),
+      acceptInvite: (token: string, i: { name?: string; password?: string }) => req<{ ok: true; user: AuthUser; needsPasskey: boolean }>("POST", `/auth/invite/${enc(token)}`, { body: i }),
+      passkeyOptions: (purpose: "login" | "register" | "reauth") => req<{ challengeId: string; publicKey: Record<string, unknown> }>("POST", "/auth/passkey/options", { body: { purpose } }),
+      passkeyVerify: (challengeId: string, credential: unknown, label?: string) => req<LoginResult & { passkeys?: AuthPasskey[] }>("POST", "/auth/passkey/verify", { body: { challengeId, credential, label } }),
+      ssoUrl: (next?: string) => `${base}/auth/oidc/start${next ? `?next=${enc(next)}` : ""}`,
+      reauth: (password: string) => req<{ ok: true }>("POST", "/auth/reauth", { body: { password } }),
+      policy: () => req<{ requireMfa: boolean }>("GET", "/auth/policy"),
+      setPolicy: (requireMfa: boolean) => req<{ requireMfa: boolean }>("PATCH", "/auth/policy", { body: { requireMfa } }),
+      account: () => req<AuthAccount>("GET", "/auth/me"),
+      updateAccount: (i: { name?: string | null; prefs?: { theme?: "light" | "dark" | "system"; locale?: string } }) => req<{ user: AuthUser; prefs: AuthAccount["prefs"] }>("PATCH", "/auth/me", { body: i }),
+      changePassword: (password: string, current?: string) => req<{ ok: true; endedSessions: number }>("POST", "/auth/me/password", { body: { password, current } }),
+      sessions: () => req<{ sessions: AuthDevice[] }>("GET", "/auth/me/sessions").then((r) => r.sessions),
+      endSession: (id: string) => req<{ ok: true; ended: number; signedOut: boolean }>("DELETE", `/auth/me/sessions/${enc(id)}`),
+      endOtherSessions: () => req<{ ok: true; ended: number }>("DELETE", "/auth/me/sessions"),
+      startTotp: () => req<{ secret: string; uri: string; svg: string }>("POST", "/auth/me/totp", { body: {} }),
+      confirmTotp: (code: string) => req<{ ok: true; recoveryCodes: string[] }>("POST", "/auth/me/totp", { body: { code } }),
+      disableTotp: () => req<{ ok: true }>("DELETE", "/auth/me/totp"),
+      newRecoveryCodes: () => req<{ recoveryCodes: string[] }>("POST", "/auth/me/recovery", { body: {} }),
+      renamePasskey: (id: string, label: string) => req<{ passkeys: AuthPasskey[] }>("PATCH", `/auth/me/passkeys/${enc(id)}`, { body: { label } }).then((r) => r.passkeys),
+      removePasskey: (id: string) => req<{ passkeys: AuthPasskey[] }>("DELETE", `/auth/me/passkeys/${enc(id)}`).then((r) => r.passkeys),
+    },
+    /** People of the CMS's own sign-in (admins). */
+    people: {
+      list: (q?: string) => req<{ users: AuthUser[]; invites: AuthInvite[]; policy: { requireMfa: boolean }; mail: boolean; sso: { label: string } | null }>("GET", "/users", { query: { q } }),
+      invite: (emails: string[], o: { roleId?: string | null; admin?: boolean } = {}) => req<{ invites: { email: string; link: string; sent: boolean }[] }>("POST", "/users/invite", { body: { emails, ...o } }).then((r) => r.invites),
+      revokeInvite: (id: string) => req<{ ok: true }>("DELETE", `/users/invites/${enc(id)}`),
+      resendInvite: (id: string) => req<{ email: string; link: string; sent: boolean }>("POST", `/users/invites/${enc(id)}/resend`, { body: {} }),
+      update: (id: string, i: { name?: string | null; disabled?: boolean; admin?: boolean; roleId?: string | null }) => req<{ user: AuthUser }>("PATCH", `/users/${enc(id)}`, { body: i }).then((r) => r.user),
+      resetLink: (id: string) => req<{ link: string; sent: boolean }>("POST", `/users/${enc(id)}/reset-link`, { body: {} }),
+      endSessions: (id: string) => req<{ ended: number }>("DELETE", `/users/${enc(id)}/sessions`),
+    },
     schema: (c: string) => req<CollectionSchema>("GET", `/collections/${enc(c)}/_schema`),
     list: (c: string, q: ListQuery = {}) => req<{ docs: DocSummary[]; total: number; nextCursor: string | null }>("GET", `/collections/${enc(c)}`, { query: { fields: "summary", ...q } }),
     counts: (c: string) => req<{ counts: DocCounts }>("GET", `/collections/${enc(c)}/_counts`).then((r) => r.counts),
@@ -449,9 +552,9 @@ export function createRestClient(opts: RestClientOptions) {
     createRole: (r: RoleInput) => req<{ role: CmsRole }>("POST", "/roles", { body: r }).then((x) => x.role),
     updateRole: (id: string, r: RoleInput) => req<{ role: CmsRole }>("PATCH", `/roles/${enc(id)}`, { body: r }).then((x) => x.role),
     removeRole: (id: string) => req<{ ok: true }>("DELETE", `/roles/${enc(id)}`),
-    addRoleMember: (id: string, member: { id: string; label?: string }) => req<{ role: CmsRole }>("POST", `/roles/${enc(id)}/members`, { body: member }).then((x) => x.role),
+    addRoleMember: (id: string, member: { id?: string; email?: string; label?: string }) => req<{ role: CmsRole }>("POST", `/roles/${enc(id)}/members`, { body: member }).then((x) => x.role),
     removeRoleMember: (id: string, userId: string) => req<{ role: CmsRole }>("DELETE", `/roles/${enc(id)}/members/${enc(userId)}`).then((x) => x.role),
-    searchUsers: (q: string) => req<{ users: RoleMember[] }>("GET", "/roles/_users", { query: { q } }).then((r) => r.users),
+    searchUsers: (q: string) => req<{ users: PersonMatch[] }>("GET", "/roles/_users", { query: { q } }).then((r) => r.users),
     jobs: (q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number } = {}) => req<{ waiting: number; failed: number; jobs: CmsJob[] }>("GET", "/jobs", { query: q }),
     retryJob: (id: string) => req<{ ok: true }>("POST", `/jobs/${enc(id)}/retry`),
     search: (q: string, collections?: string[]) => req<{ empty: boolean; hits: { collection: string; slug: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(",") } }),

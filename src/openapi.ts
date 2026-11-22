@@ -177,10 +177,10 @@ const BASE_ROUTES: readonly ApiRoute[] = [
 
   { method: "get", path: "/roles", summary: "Roles, with what can be allowed", tag: "roles", auth: "admin", returns: any },
   { method: "post", path: "/roles", summary: "Make a role", tag: "roles", auth: "admin", body: role, returns: obj({ role: any }), status: 201 },
-  { method: "get", path: "/roles/_users", summary: "Find people to add (from the app's user list)", tag: "roles", auth: "admin", query: { q: "" }, returns: obj({ users: arr(any) }) },
+  { method: "get", path: "/roles/_users", summary: "People by name or email (the app's, the sign-in's, and everyone who has used the admin), most recently active first", tag: "roles", auth: "admin", query: { q: "" }, returns: obj({ users: arr(any) }) },
   { method: "patch", path: "/roles/{id}", summary: "Change a role", tag: "roles", auth: "admin", body: role, returns: obj({ role: any }) },
   { method: "delete", path: "/roles/{id}", summary: "Delete a role", tag: "roles", auth: "admin", returns: OK },
-  { method: "post", path: "/roles/{id}/members", summary: "Add a person to a role", tag: "roles", auth: "admin", body: z.object({ id: z.string().min(1).max(200), label: z.string().max(120).optional() }), returns: obj({ role: any }) },
+  { method: "post", path: "/roles/{id}/members", summary: "Add a person to a role: one found by search (`id`), or by `email` (someone who has not signed in yet joins at their first visit)", tag: "roles", auth: "admin", body: z.object({ id: z.string().min(1).max(200).optional(), email: z.string().max(254).optional(), label: z.string().max(120).optional() }), returns: obj({ role: any }) },
   { method: "delete", path: "/roles/{id}/members/{userId}", summary: "Remove a person from a role", tag: "roles", auth: "admin", returns: obj({ role: any }) },
 
   { method: "get", path: "/webhooks", summary: "Webhooks", tag: "webhooks", auth: "admin", returns: any },

@@ -416,6 +416,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       const who = await resolveActor(core, req, resolveUser, opts.trustedOrigins, opts.clientIp);
       const actor: Actor = { ...who, via: seg[0] === "mcp" ? (client === "cli" ? "cli" : "mcp") : client === "cli" ? "cli" : "rest" };
       note({ kind: actor.kind, via: actor.via ?? null });
+      void core.roles.seen(actor);
       const q = url.searchParams;
       /** expectedVersion from If-Match, else from the body. */
       const expected = (fromBody?: number) => versionFromIfMatch(req.headers.get("if-match")) ?? fromBody;
@@ -428,7 +429,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
 
       if (seg[0] === "_me" && m === "GET") {
         return json({
-          actor: actor.kind === "anonymous" ? { kind: "anonymous" } : { kind: actor.kind, label: actor.label, id: "id" in actor ? actor.id : null },
+          actor: actor.kind === "anonymous" ? { kind: "anonymous" } : { kind: actor.kind, label: actor.label, id: "id" in actor ? actor.id : null, ...(actor.kind === "user" && actor.email ? { email: actor.email } : {}) },
           isAdmin: core.isAdmin(actor),
           previewLinks: core.previewEnabled(),
           trashDays: core.trash.days,
@@ -977,7 +978,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           await r.remove(actor, seg[1]);
           return json({ ok: true });
         }
-        if (seg.length === 3 && seg[2] === "members" && m === "POST") return json({ role: await r.addMember(actor, seg[1], await body(req, z.object({ id: z.string().min(1).max(200), label: z.string().max(120).optional() }))) });
+        if (seg.length === 3 && seg[2] === "members" && m === "POST") return json({ role: await r.addMember(actor, seg[1], await body(req, z.object({ id: z.string().min(1).max(200).optional(), email: z.string().max(254).optional(), label: z.string().max(120).optional() }).refine((x) => !!x.id || !!x.email, { message: "id or email" }))) });
         if (seg.length === 4 && seg[2] === "members" && m === "DELETE") return json({ role: await r.removeMember(actor, seg[1], seg[3]) });
       }
 

@@ -18,7 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { ConfirmDialog, PageHeader, Segmented, StateBadge, StatusText, type BadgeState } from "./cms-parts";
+import { ConfirmDialog, PageHeader, Segmented, StateBadge, StatusText, type BadgeState, DIALOG } from "./cms-parts";
 import { formatZoned, toInput, useCms, useDebounced, zonedParts, zonedToIso } from "./use-cms";
 
 const SELECT = "h-9 rounded-md border border-input bg-background px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -36,7 +36,7 @@ function NameDialog({ title, initial = "", action, onClose, onSubmit }: { title:
   const [busy, setBusy] = React.useState(false);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-[400px]">
+      <DialogContent className={DIALOG.sm}>
         <form
           className="grid gap-4"
           onSubmit={(e) => {
@@ -233,7 +233,9 @@ export function CmsRelease({ id, onBack, onOpenDocument, className }: CmsRelease
   const { client, t, locale, me } = useCms();
   const [rel, setRel] = React.useState<ReleaseView | null>(null);
   const [error, setError] = React.useState<unknown>(null);
+  // Errors per document; -1: the check itself failed (not "no problems"); undefined: still checking.
   const [problems, setProblems] = React.useState<Record<string, number>>({});
+  const [checkTick, setCheckTick] = React.useState(0);
   const [blocked, setBlocked] = React.useState<BlockedItem[]>([]);
   const [dialog, setDialog] = React.useState<null | "add" | "schedule" | "publish" | "rename" | "delete">(null);
   const [busy, setBusy] = React.useState(false);
@@ -259,6 +261,7 @@ export function CmsRelease({ id, onBack, onOpenDocument, className }: CmsRelease
   React.useEffect(() => {
     if (!rel || !open) return;
     let live = true;
+    setProblems({});
     void Promise.all(
       rel.items
         .filter((i) => i.action === "publish" && i.currentVersion !== null)
@@ -268,7 +271,7 @@ export function CmsRelease({ id, onBack, onOpenDocument, className }: CmsRelease
             const found = await client.diagnose(i.collection, toInput(d, d.fields), d.slug);
             return [i.documentId, found.filter((x) => x.severity === "error").length] as const;
           } catch {
-            return [i.documentId, 0] as const;
+            return [i.documentId, -1] as const;
           }
         })
     ).then((rows) => live && setProblems(Object.fromEntries(rows)));
@@ -276,7 +279,7 @@ export function CmsRelease({ id, onBack, onOpenDocument, className }: CmsRelease
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, itemsKey, open]);
+  }, [client, itemsKey, open, checkTick]);
 
   const act = async (fn: () => Promise<unknown>, done?: string) => {
     setBusy(true);
@@ -337,9 +340,20 @@ export function CmsRelease({ id, onBack, onOpenDocument, className }: CmsRelease
   };
   const problem = (i: Item) => {
     const stop = blocked.find((b) => b.collection === i.collection && b.slug === i.slug);
-    const n = problems[i.documentId] ?? 0;
+    const n = problems[i.documentId];
     if (!open) return null;
-    if (stop || n || !i.canPublish || i.currentVersion === null)
+    if (!stop && n === -1)
+      return (
+        <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+          <CircleAlert aria-hidden className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">{t("release_check_failed")}</span>
+          <button type="button" className="shrink-0 rounded text-xs underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setCheckTick((x) => x + 1)}>
+            {t("retry")}
+          </button>
+        </span>
+      );
+    if (!stop && n === undefined && i.action === "publish" && i.currentVersion !== null && i.canPublish) return <span className="text-muted-foreground">{t("release_checking")}</span>;
+    if (stop || (n ?? 0) > 0 || !i.canPublish || i.currentVersion === null)
       return (
         <span className="inline-flex items-center gap-1.5 text-amber-700" title={stop?.message}>
           <CircleAlert aria-hidden className="h-3.5 w-3.5 shrink-0" />
@@ -401,9 +415,9 @@ export function CmsRelease({ id, onBack, onOpenDocument, className }: CmsRelease
           </>
         ) : null}
       </PageHeader>
-      <div className="flex-1 px-4 py-4 md:px-6">
+      <div className="min-w-0 flex-1 px-4 py-4 md:px-6">
         {blocked.length ? (
-          <div role="alert" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+          <div role="alert" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 [overflow-wrap:anywhere] dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
             <p className="font-medium">{t("release_blocked")}</p>
             <ul className="mt-1 list-disc pl-5">
               {blocked.map((b) => (
@@ -414,8 +428,8 @@ export function CmsRelease({ id, onBack, onOpenDocument, className }: CmsRelease
             </ul>
           </div>
         ) : null}
-        {rel.lastError && open && !blocked.length ? <StatusText tone="error" className="mb-3">{rel.lastError}</StatusText> : null}
-        {!rel.items.length ? <p className="py-16 text-center text-sm text-muted-foreground">{t("release_items_empty")}</p> : null}
+        {rel.lastError && open && !blocked.length ? <StatusText tone="error" className="mb-3 [overflow-wrap:anywhere]">{rel.lastError}</StatusText> : null}
+        {!rel.items.length ? <p className="mx-auto max-w-sm py-16 text-center text-sm text-muted-foreground">{t("release_items_empty")}</p> : null}
         {rel.items.length ? (
           <Table>
             <TableHeader>
@@ -514,7 +528,7 @@ function ScheduleDialog({ release, zone, onClose, onDone }: { release: ReleaseVi
   };
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-[380px]">
+      <DialogContent className={DIALOG.sm}>
         <form
           className="grid gap-4"
           onSubmit={(e) => {
@@ -590,7 +604,7 @@ function AddDocumentsDialog({ release, onClose, onAdded }: { release: ReleaseVie
   const rows = (docs ?? []).filter((d) => !inside.has(`${col}/${d.slug}`) && (action === "publish" || d.publishedVersion !== null));
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-[520px]">
+      <DialogContent className={DIALOG.lg}>
         <form
           className="grid gap-3.5"
           onSubmit={(e) => {

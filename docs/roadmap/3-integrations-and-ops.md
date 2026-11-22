@@ -363,8 +363,14 @@ PR #24. 스키마 7. 검증: 단위 166개(159 통과, 7은 실제 저장소가 
 - REST `/auth/*`, `/users/*`(OpenAPI 목록 포함), `_me.auth`, 역할 화면의 사람 찾기 연결.
 - 테스트 `src/auth.test.ts` 12개.
 
-아직 안 한 것 (0.16.0 안에서):
-- 화면: cms-login(설정·로그인·2단계·초대·재설정), cms-people, cms-account, 셸 계정 메뉴, 어두운 테마.
-- 단독 서버 `serve`/`dev`(101, 115), 미리 빌드한 어드민, 보안 헤더, healthz, Docker compose, CLI `user create`.
-- 실제 브라우저(Chrome 가상 인증기)로 패스키 확인.
-- 그 뒤 0.17.0: 75, 76, 77, 78, 82, 90, 104, 106, 21, 73, 93/92/134/80 나머지, 113, 131(Notion, zip), 27.
+화면과 단독 서버 (같은 0.16.0, 2026-11-22 오후):
+- 화면: `cms-login`(로그인·첫 설정·2단계·복구 코드·초대 수락·재설정), `cms-people`(초대 칩 입력, 시작 역할, 메일/링크, 다시 보내기·새 링크·취소, 로그인 방법 표시, 계정 끄기, 관리자 지정, 모두 2단계 정책), `cms-account`(이름, 테마, 언어, 패스키 추가·이름·삭제, 비밀번호와 강도, 인증 앱 QR·복구 코드 받기, 기기 목록과 로그아웃), `cms-auth-kit`(패스키 브라우저 처리, 본인 확인 창, 비밀번호 칸), 셸 계정 메뉴와 어두운 테마(밝게·어둡게·시스템), 로그인 풀림 화면.
+- 단독 서버: `npx @mainsoft/agent-cms dev`(설정 없이, PGlite 있으면 `.agent-cms/dev`에 보관), `serve`(설정의 `server`), `@mainsoft/agent-cms/serve`의 `startServer`, 미리 빌드한 어드민 `dist/admin`(scripts/build-admin.mjs, esbuild + tailwind), CSP(인라인 스크립트는 해시 하나), `/healthz`, 1분 예약 작업, SIGTERM 정리, `examples/server`(Dockerfile, compose: CMS+Postgres+MinIO).
+- 역할의 사람: ID 입력 없앰. 이름·이메일 검색(앱 users + 자체 로그인 + 어드민을 쓴 사람 기록 `person`), 처음 보는 이메일은 대기 멤버로 넣고 첫 로그인 때 합류.
+- 전체 화면 레이아웃 검사 `e2e/layout.spec.ts`(17개 화면 × 4개 폭, 긴 이름, 열리는 대화상자까지) 통과. 리뷰 결과와 반영 현황: `docs/roadmap/review-ui-2026-11-22.md`.
+- 실제 브라우저 `e2e/standalone.spec.ts`(설정 코드, 인증 앱 2단계, Chrome 가상 인증기로 패스키 등록·로그인, 초대 링크 수락과 한 번만 쓰기, 어두운 테마) 5개 통과.
+
+아직 안 한 것:
+- CLI `user create`, 메일 보내기 예제(Resend 등), 실제 OIDC 공급자(Google 등)로 확인.
+- 리뷰의 [남음] 항목(`docs/roadmap/review-ui-2026-11-22.md`).
+- 0.17.0: 75, 76, 77, 78, 82, 90, 104, 106, 21, 73, 93/92/134/80 나머지, 113, 131(Notion, zip), 27.

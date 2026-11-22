@@ -1,0 +1,15 @@
+{
+  "name": "agent-cms-server-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "agent-cms dev",
+    "start": "agent-cms migrate apply && agent-cms serve"
+  },
+  "dependencies": {
+    "@mainsoft/agent-cms": "^0.16.0",
+    "drizzle-orm": "^0.44.0",
+    "pg": "^8.13.0",
+    "zod": "^3.25.0"
+  }
+}

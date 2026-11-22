@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { AssetPanel, NewFolderDialog, UsageList, type CmsMediaProps } from "./cms-media";
 import { kindName, SELECT_CLASS, storeLabel, UploadButton, UploadPanel, useUploads } from "./cms-media-picker";
 import { errorMessage, type T } from "./cms-messages";
-import { CodeBox, ConfirmDialog, PageHeader, Segmented, StatusText } from "./cms-parts";
+import { CodeBox, ConfirmDialog, PageHeader, Segmented, StatusText, DIALOG } from "./cms-parts";
 import { fileSize } from "./cms-upload";
 import { formatUntil, useCms, useDebounced } from "./use-cms";
 
@@ -55,11 +55,18 @@ export function CmsFiles({ basePath = "/admin", docHref, className }: CmsFilesPr
   const reload = () => setTick((n) => n + 1);
   const uploads = useUploads(reload);
 
+  // Which folder the rows on screen belong to: a page for another folder is dropped,
+  // and the old rows are not offered (or acted on) while the new folder loads.
+  const view = `${name}\n${prefix}\n${q}`;
+  const viewRef = React.useRef(view);
+  viewRef.current = view;
+  const [shownView, setShownView] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (!name) return;
     let live = true;
+    setPicked(new Set());
     client.storeFiles(name, { prefix, q: q || undefined }).then(
-      (r) => live && (setListing(r), setError(null), setPicked(new Set())),
+      (r) => live && (setListing(r), setShownView(view), setError(null)),
       (e) => live && setError(e)
     );
     return () => {
@@ -77,6 +84,7 @@ export function CmsFiles({ basePath = "/admin", docHref, className }: CmsFilesPr
     setQ("");
     setOpenId(null);
   };
+  const stale = shownView !== view;
   const rows = [...(listing?.folders ?? []).map((f) => `f:${f.path}`), ...(listing?.files ?? []).map((f) => `k:${f.key}`)];
   const all = rows.length > 0 && rows.every((r) => picked.has(r));
   const toggle = (id: string, on: boolean) =>
@@ -109,9 +117,10 @@ export function CmsFiles({ basePath = "/admin", docHref, className }: CmsFilesPr
     }
   };
   const more = async () => {
-    if (!listing?.cursor) return;
-    const r = await client.storeFiles(store.name, { prefix, q: q || undefined, cursor: listing.cursor }).catch((e: unknown) => (setError(e), null));
-    if (r) setListing((l) => (l ? { ...r, folders: [...l.folders, ...r.folders.filter((f) => !l.folders.some((x) => x.path === f.path))], files: [...l.files, ...r.files] } : r));
+    if (!listing?.cursor || stale) return;
+    const asked = view;
+    const r = await client.storeFiles(store.name, { prefix, q: q || undefined, cursor: listing.cursor }).catch((e: unknown) => (asked === viewRef.current && setError(e), null));
+    if (r && asked === viewRef.current) setListing((l) => (l ? { ...r, folders: [...l.folders, ...r.folders.filter((f) => !l.folders.some((x) => x.path === f.path))], files: [...l.files, ...r.files] } : r));
   };
   const parts = prefix ? prefix.split("/") : [];
   const bulk = "h-7 gap-1.5 px-2 text-[13px]";
@@ -205,10 +214,24 @@ export function CmsFiles({ basePath = "/admin", docHref, className }: CmsFilesPr
               </Button>
             </div>
           ) : null}
-          <div className="flex-1">
-            {error ? <StatusText tone="error" className="px-5 py-3">{errorMessage(error, t)}</StatusText> : null}
-            {listing && !rows.length && !error ? <p className="py-16 text-center text-sm text-muted-foreground">{t("media_empty")}</p> : null}
-            {rows.length ? (
+          <div className="min-w-0 flex-1" aria-busy={stale || undefined}>
+            {error ? (
+              <div className="flex items-center gap-3 px-5 py-3">
+                <StatusText tone="error">{errorMessage(error, t)}</StatusText>
+                <Button type="button" variant="outline" size="sm" onClick={reload}>
+                  {t("retry")}
+                </Button>
+              </div>
+            ) : null}
+            {stale && !error ? (
+              <ul aria-label={t("loading")} className="flex flex-col gap-2 px-5 py-4">
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <li key={i} className="h-8 animate-pulse rounded bg-muted" />
+                ))}
+              </ul>
+            ) : null}
+            {!stale && listing && !rows.length && !error ? <p className="py-16 text-center text-sm text-muted-foreground">{q ? t("no_results") : t("files_folder_empty")}</p> : null}
+            {!stale && rows.length ? (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -299,7 +322,7 @@ function MoveDialog({ store, from, sel, onClose, onDone }: { store: string; from
   const [problem, setProblem] = React.useState<string | null>(null);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-[400px]">
+      <DialogContent className={DIALOG.sm}>
         <form
           className="grid gap-4"
           onSubmit={(e) => {
@@ -412,7 +435,7 @@ function ShareDialog({ store, isPrivate, canRegister, files, onClose }: { store:
   const until = links?.find((l) => l.expiresAt)?.expiresAt;
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-[500px]">
+      <DialogContent className={DIALOG.md}>
         <DialogHeader>
           <DialogTitle>{t("files_share")}</DialogTitle>
         </DialogHeader>

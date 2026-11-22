@@ -436,7 +436,7 @@ export function createAuth(o: AuthOptions) {
       totp: !!u.totp,
       passkeys: (await passkeysOf(u.id)).length,
       sso: !!u.oidcSub,
-      roles: core.rolesOf(u.id).map((r) => ({ id: r.id, name: r.name })),
+      roles: core.rolesOf(u.id, u.email).map((r) => ({ id: r.id, name: r.name })),
     };
   }
 

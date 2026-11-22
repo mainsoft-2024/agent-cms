@@ -44,7 +44,8 @@
       "registryDependencies": [
         "dialog",
         "sheet",
-        "cms-lib"
+        "cms-lib",
+        "dropdown-menu"
       ],
       "files": [
         {
@@ -515,7 +516,7 @@
       "name": "cms-roles",
       "type": "registry:component",
       "title": "Roles",
-      "description": "Roles with what they may do per collection (write, publish, delete) and the people in them.",
+      "description": "Roles with what they may do per collection (write, publish, delete, HTML), templates to start from, and the people in them, found by name or email.",
       "dependencies": [
         "@mainsoft/agent-cms",
         "lucide-react"
@@ -525,7 +526,6 @@
         "checkbox",
         "input",
         "label",
-        "table",
         "dialog",
         "cms-lib"
       ],
@@ -555,6 +555,90 @@
       "files": [
         {
           "path": "registry/cms/cms-transfer.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-login",
+      "type": "registry:component",
+      "title": "Sign-in pages",
+      "description": "The CMS's own sign-in pages: passkey, single sign-on, email and password with two-step codes; first admin setup; accepting an invitation; password reset.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "checkbox",
+        "input",
+        "label",
+        "dialog",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-login.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-auth-kit.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-people",
+      "type": "registry:component",
+      "title": "People",
+      "description": "People of the CMS's own sign-in: invite by email, roles, how each person signs in, switching accounts off, the two-step policy.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "checkbox",
+        "input",
+        "label",
+        "dialog",
+        "dropdown-menu",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-people.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-auth-kit.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-account",
+      "type": "registry:component",
+      "title": "My account",
+      "description": "Name, theme and language, passkeys, password, two-step sign-in with recovery codes, and signed-in devices.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "input",
+        "label",
+        "dialog",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-account.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-auth-kit.tsx",
           "type": "registry:component"
         }
       ]

@@ -5,12 +5,15 @@
 // place for your app's own screens. Under 768px the sidebar opens in a sheet.
 "use client";
 
+import { DIALOG, PersonMark } from "./cms-parts";
 import * as React from "react";
-import { ArrowLeftRight, BookOpen, FileText, LayoutGrid, Shield, Workflow, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
+import { ArrowLeftRight, BookOpen, ChevronsUpDown, Keyboard, LogIn, LogOut, Monitor, Moon, Sun, UserCog, Users, FileText, LayoutGrid, Shield, Workflow, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { modLabel, ShellNavContext, TRASH_CHANGED, useCms, useShortcut } from "./use-cms";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { isCmsRemoteError } from "@mainsoft/agent-cms/client";
+import { applyTheme, modLabel, ShellNavContext, storedTheme, TRASH_CHANGED, useCms, useShortcut, type CmsTheme } from "./use-cms";
 
 export interface CmsNavItem {
   label: string;
@@ -32,7 +35,7 @@ export interface CmsLinkProps {
   onClick?: () => void;
 }
 
-export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" } | { kind: "dashboard" } | { kind: "automations" } | { kind: "roles" } | { kind: "transfer" };
+export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" } | { kind: "dashboard" } | { kind: "automations" } | { kind: "roles" } | { kind: "transfer" } | { kind: "people" } | { kind: "account" } | { kind: "login" };
 
 export interface CmsShellProps {
   children?: React.ReactNode;
@@ -65,7 +68,7 @@ export interface CmsShellProps {
 }
 
 export function CmsShell({ children, title, logo, activeCollection, activeHref, basePath = "/admin", hrefFor, extraNav, onSearch, LinkComponent, renderLink, counts, onNavigate, className }: CmsShellProps) {
-  const { t, me, client } = useCms();
+  const { t, me, client, meError, reloadMe } = useCms();
   const [open, setOpen] = React.useState(false);
   const [help, setHelp] = React.useState(false);
   useShortcut("shift+?", () => setHelp(true));
@@ -296,6 +299,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
                 { kind: "audit", label: t("nav_audit"), Icon: ScrollText },
                 ...(me.webhooks ? [{ kind: "webhooks", label: t("nav_webhooks"), Icon: Webhook } as const] : []),
                 ...(me.automations ? [{ kind: "automations", label: t("nav_automations"), Icon: Workflow } as const] : []),
+                ...(me.auth?.people ? [{ kind: "people", label: t("nav_people"), Icon: Users } as const] : []),
                 ...(me.roles ? [{ kind: "roles", label: t("nav_roles"), Icon: Shield } as const] : []),
                 ...(me.automations ? [{ kind: "transfer", label: t("nav_transfer"), Icon: ArrowLeftRight } as const] : []),
               ] as const
@@ -381,18 +385,116 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
   );
 
   const navCtx = React.useMemo(() => ({ openNav: () => setOpen(true) }), []);
+  const go = onNavigate ?? ((h: string) => window.location.assign(h));
+  // Signed out (or the session ended): to the sign-in page when the CMS has one.
+  // With the CMS's own sign-in, an answer for nobody in particular also means signed out.
+  const signedOut = (isCmsRemoteError(meError) && (meError.status === 401 || meError.code === "unauthorized")) || (!!me?.auth && me.actor.kind !== "user" && me.actor.kind !== "key");
+  const loginHref = `${hrefFor?.({ kind: "login" }) ?? `${basePath}/login`}?next=${encodeURIComponent(typeof window === "undefined" ? basePath : window.location.pathname + window.location.search)}`;
+  const [theme, setTheme] = React.useState<CmsTheme>("system");
+  React.useEffect(() => setTheme(storedTheme()), []);
+  const pickTheme = (v: CmsTheme) => {
+    setTheme(v);
+    applyTheme(v);
+    if (me?.auth) void client.auth.updateAccount({ prefs: { theme: v } }).catch(() => undefined);
+  };
+  const actor = me?.actor as { kind: string; id?: string | null; label?: string; email?: string | null } | undefined;
+  const user = actor?.kind === "user" ? { id: actor.id ?? "me", label: actor.label || actor.email || t("account_title"), email: actor.email ?? null } : null;
+  const account = user ? (
+    <div className="sticky bottom-0 -mx-3 mt-auto border-t bg-inherit px-3 pt-2">
+      <DropdownMenu>
+        <DropdownMenuTrigger className="flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-2 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring" aria-label={t("account_menu", { name: user.label })}>
+            <PersonMark id={user.id} label={user.label} />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <bdi className="truncate font-medium">{user.label}</bdi>
+              {user.email ? <span className="truncate text-xs text-muted-foreground">{user.email}</span> : null}
+            </span>
+            <ChevronsUpDown aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="top" align="start" className="w-56">
+          {me?.auth ? (
+            <DropdownMenuItem onClick={() => (close(), go(href({ kind: "account" })))}>
+              <UserCog aria-hidden className="mr-2 h-4 w-4" />
+              {t("account_title")}
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{t("account_theme")}</DropdownMenuLabel>
+          {(
+            [
+              ["light", Sun, t("theme_light")],
+              ["dark", Moon, t("theme_dark")],
+              ["system", Monitor, t("theme_system")],
+            ] as const
+          ).map(([v, Icon, label]) => (
+            <DropdownMenuItem key={v} onClick={() => pickTheme(v)} aria-checked={theme === v} role="menuitemradio">
+              <Icon aria-hidden className="mr-2 h-4 w-4" />
+              <span className="flex-1">{label}</span>
+              {theme === v ? <span aria-hidden className="text-xs">✓</span> : null}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => setHelp(true)}>
+            <Keyboard aria-hidden className="mr-2 h-4 w-4" />
+            {t("shortcuts")}
+          </DropdownMenuItem>
+          {me?.auth ? (
+            <DropdownMenuItem
+              onClick={() =>
+                void client.auth.logout().then(
+                  () => window.location.assign(`${hrefFor?.({ kind: "login" }) ?? `${basePath}/login`}`),
+                  () => window.location.reload()
+                )
+              }
+            >
+              <LogOut aria-hidden className="mr-2 h-4 w-4" />
+              {t("account_sign_out")}
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  ) : null;
+
+  if (signedOut)
+    return (
+      <div className="grid min-h-screen place-items-center bg-muted/40 px-4">
+        <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-xl border bg-background p-8 text-center shadow-sm">
+          <LogIn aria-hidden className="h-6 w-6 text-muted-foreground" />
+          <h1 className="text-lg font-semibold">{t("shell_signed_out")}</h1>
+          <p className="text-sm text-muted-foreground">{t("shell_signed_out_text")}</p>
+          <a href={loginHref} className="mt-2 inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+            {t("auth_sign_in")}
+          </a>
+        </div>
+      </div>
+    );
 
   return (
     <ShellNavContext.Provider value={navCtx}>
       <div className={cn("flex min-h-screen bg-background text-foreground", className)}>
-        <aside className="sticky top-0 hidden h-screen w-60 shrink-0 overflow-y-auto border-r bg-muted/30 p-3 md:block">
+        <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col overflow-y-auto border-r bg-muted/30 p-3 md:flex">
           {brand}
           {nav}
+          {!me && !meError ? (
+            <ul aria-hidden className="flex flex-col gap-1.5 px-2 pt-2">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <li key={i} className="h-6 animate-pulse rounded bg-muted" />
+              ))}
+            </ul>
+          ) : null}
+          {meError && !signedOut ? (
+            <div className="flex flex-col items-start gap-2 px-2 pt-3 text-xs text-destructive">
+              {t("shell_me_failed")}
+              <button type="button" className="rounded border px-2 py-1 text-foreground hover:bg-accent" onClick={reloadMe}>
+                {t("retry")}
+              </button>
+            </div>
+          ) : null}
+          {account}
         </aside>
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
             side="left"
-            className="w-72 overflow-y-auto p-3"
+            className="flex w-[min(18rem,85vw)] flex-col overflow-y-auto p-3"
             {...({
               // Radix sheets: where focus goes when the sheet closes.
               onCloseAutoFocus: (e: Event) => {
@@ -409,6 +511,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
             <SheetDescription className="sr-only">{t("nav_label")}</SheetDescription>
             {brand}
             {nav}
+            {account}
           </SheetContent>
         </Sheet>
         <main ref={mainRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
@@ -459,7 +562,7 @@ export function ShortcutsDialog({ open, onOpenChange }: { open: boolean; onOpenC
   ];
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className={DIALOG.lg}>
         <DialogHeader>
           <DialogTitle>{t("shortcuts")}</DialogTitle>
           <DialogDescription>{t("shortcuts_hint")}</DialogDescription>

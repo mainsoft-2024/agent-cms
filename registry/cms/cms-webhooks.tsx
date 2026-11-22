@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { errorMessage, type T } from "./cms-messages";
-import { CodeBox, ConfirmDialog, PageHeader, StatusText } from "./cms-parts";
+import { CodeBox, ConfirmDialog, PageHeader, StatusText, DIALOG } from "./cms-parts";
 import { relativeTime, useAsync, useCms, useIsMobile } from "./use-cms";
 
 export interface CmsWebhooksProps {
@@ -125,7 +125,7 @@ export function CmsWebhooks({ className }: CmsWebhooksProps) {
         }}
       />
       <Dialog open={!!created} onOpenChange={(o) => !o && setCreated(null)}>
-        <DialogContent>
+        <DialogContent className={DIALOG.md}>
           <DialogHeader>
             <DialogTitle>{t("webhook_created", { name: created?.name ?? "" })}</DialogTitle>
             <DialogDescription>{t("webhook_created_text")}</DialogDescription>
@@ -313,7 +313,7 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
 
   return (
     <Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto">
+      <DialogContent className={DIALOG.lg}>
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>{cur ? t("webhook_edit_title") : t("webhook_new")}</DialogTitle>

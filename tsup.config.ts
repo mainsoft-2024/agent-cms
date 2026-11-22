@@ -25,6 +25,7 @@ export default defineConfig([
       errors: "src/errors.ts",
       config: "src/config.ts",
       "adapters/node": "src/adapters/node.ts",
+      serve: "src/serve.ts",
       "messages/en": "src/messages/en.ts",
       "messages/ko": "src/messages/ko.ts",
     },
@@ -33,13 +34,13 @@ export default defineConfig([
     dts: true,
     clean: true,
     target: "es2022",
-    external: ["drizzle-orm", "zod", "@modelcontextprotocol/sdk", "jiti", "sharp", "@vercel/blob", "sanitize-html"],
+    external: ["drizzle-orm", "zod", "@modelcontextprotocol/sdk", "jiti", "sharp", "@vercel/blob", "sanitize-html", "@electric-sql/pglite"],
   },
   {
     entry: { bin: "src/bin.ts" },
     format: ["esm"],
     target: "node20",
     banner: { js: "#!/usr/bin/env node" },
-    external: ["drizzle-orm", "zod", "@modelcontextprotocol/sdk", "jiti", "sharp", "@vercel/blob", "sanitize-html"],
+    external: ["drizzle-orm", "zod", "@modelcontextprotocol/sdk", "jiti", "sharp", "@vercel/blob", "sanitize-html", "@electric-sql/pglite"],
   },
 ]);

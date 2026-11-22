@@ -1,6 +1,8 @@
 // What `npx @mainsoft/agent-cms init` writes, filled in for the example.
 import { assetId, createCms, defineCollection, DrizzleRepo, type Actor, type MediaOptions } from "@mainsoft/agent-cms";
+import { createAuth } from "@mainsoft/agent-cms/auth";
 import { sharpTransforms } from "@mainsoft/agent-cms/image-sharp";
+import { appendFileSync } from "node:fs";
 import { s3Storage } from "@mainsoft/agent-cms/storage-s3";
 import { vercelBlobStorage } from "@mainsoft/agent-cms/storage-vercel-blob";
 import { sql } from "drizzle-orm";
@@ -58,7 +60,7 @@ export const media: MediaOptions | undefined = stores
     }
   : undefined;
 
-const g = globalThis as unknown as { __exampleCms?: ReturnType<typeof make> };
+const g = globalThis as unknown as { __exampleCms?: ReturnType<typeof make>; __exampleAuth?: ReturnType<typeof makeAuth> | null };
 
 function make() {
   return createCms({
@@ -104,6 +106,24 @@ const demoUsers = [
 ];
 
 export const cms = (g.__exampleCms ??= make());
+
+/**
+ * The CMS's own sign-in, when EXAMPLE_AUTH=own: people, passkeys, two-step codes.
+ * Without it the example has no login and everyone is the demo admin.
+ */
+function makeAuth() {
+  if (process.env.EXAMPLE_AUTH !== "own") return null;
+  return createAuth({
+    cms,
+    appName: "Example",
+    // The setup code also goes to a file, so tests can read it.
+    log: (line) => {
+      console.log(line);
+      if (process.env.SETUP_CODE_FILE) appendFileSync(process.env.SETUP_CODE_FILE, `${line}\n`);
+    },
+  });
+}
+export const auth = g.__exampleAuth === undefined ? (g.__exampleAuth = makeAuth()) : g.__exampleAuth;
 
 /** The example has no login: everyone is the demo admin. Use your session here. */
 export const demoAdmin: Extract<Actor, { kind: "user" }> = { kind: "user", id: "demo", label: "Demo admin", isAdmin: true };

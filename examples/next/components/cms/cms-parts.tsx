@@ -93,6 +93,197 @@ export function People({ people, max = 4, className }: { people: { actorId: stri
   );
 }
 
+/** A person's initials on their own colour (the same colour everywhere they appear). */
+export function PersonMark({ id, label, className }: { id: string; label: string; className?: string }) {
+  const words = label.replace(/@.*/, "").split(/[\s._-]+/).filter(Boolean);
+  const initials = ((words[0]?.[0] ?? "?") + (words.length > 1 ? words[words.length - 1][0] : "")).toUpperCase();
+  return (
+    <span aria-hidden style={{ background: personColor(id) }} className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white", className)}>
+      {initials}
+    </span>
+  );
+}
+
+export interface PersonOption {
+  id: string;
+  label: string;
+  email?: string | null;
+  lastSeenAt?: string | null;
+}
+
+const EMAIL_RE = /^[^\s@<>()"',;:]+@[^\s@<>()"',;:]+\.[^\s@<>()"',;:]{2,}$/;
+
+/**
+ * Find a person by name or email and pick them: a combobox with arrow keys,
+ * people shown with their initials, email and when they were last active.
+ * With `onEmail`, a typed email nobody matches can be added anyway (they
+ * join when they first sign in, or get an invitation).
+ */
+export function PersonPicker({ search, onPick, onEmail, emailLabel, exclude = [], label, placeholder, disabled, className }: {
+  search: (q: string) => Promise<PersonOption[]>;
+  onPick: (p: PersonOption) => void | Promise<void>;
+  onEmail?: (email: string) => void | Promise<void>;
+  /** "Add {email}" / "Invite {email}". */
+  emailLabel?: (email: string) => string;
+  exclude?: string[];
+  label: string;
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const { t, locale } = useCms();
+  const id = React.useId();
+  const [q, setQ] = React.useState("");
+  const [open, setOpen] = React.useState(false);
+  const [found, setFound] = React.useState<PersonOption[]>([]);
+  const [state, setState] = React.useState<"idle" | "busy" | "failed">("idle");
+  const [active, setActive] = React.useState(0);
+  // The query the options on screen answer: nothing older can be picked.
+  const [answered, setAnswered] = React.useState<string | null>(null);
+  const excludeKey = exclude.join("\n");
+  React.useEffect(() => {
+    if (open) document.getElementById(`${id}-o${active}`)?.scrollIntoView({ block: "nearest" });
+  }, [active, open, id]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    let live = true;
+    setState("busy");
+    const timer = setTimeout(
+      () =>
+        search(q).then(
+          (list) => {
+            if (!live) return;
+            const skip = new Set(excludeKey.split("\n"));
+            setFound(list.filter((p) => !skip.has(p.id)));
+            setAnswered(q);
+            setState("idle");
+            setActive(0);
+          },
+          () => live && setState("failed")
+        ),
+      q ? 180 : 0
+    );
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [q, open, search, excludeKey]);
+
+  const email = q.trim().toLowerCase();
+  const fresh = answered === q && state !== "busy";
+  const emailOption = fresh && !!onEmail && EMAIL_RE.test(email) && !found.some((p) => p.email?.toLowerCase() === email);
+  const options: ({ kind: "person"; p: PersonOption } | { kind: "email"; email: string })[] = fresh ? [...found.map((p) => ({ kind: "person" as const, p })), ...(emailOption ? [{ kind: "email" as const, email }] : [])] : [];
+
+  async function choose(i: number) {
+    const o = options[i];
+    if (!o) return;
+    setQ("");
+    setOpen(false);
+    if (o.kind === "person") await onPick(o.p);
+    else await onEmail?.(o.email);
+  }
+
+  return (
+    <div className={cn("relative w-full max-w-md", className)}>
+      <input
+        id={`${id}-input`}
+        role="combobox"
+        aria-label={label}
+        aria-expanded={open && options.length > 0}
+        aria-controls={`${id}-list`}
+        aria-autocomplete="list"
+        aria-activedescendant={open && options[active] ? `${id}-o${active}` : undefined}
+        autoComplete="off"
+        disabled={disabled}
+        placeholder={placeholder ?? label}
+        value={q}
+        onChange={(e) => (setQ(e.target.value), setOpen(true))}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 120)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") (e.preventDefault(), setOpen(true), setActive((a) => Math.min(a + 1, Math.max(options.length - 1, 0))));
+          else if (e.key === "ArrowUp") (e.preventDefault(), setActive((a) => Math.max(a - 1, 0)));
+          else if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229 && open && options.length) (e.preventDefault(), void choose(active));
+          else if (e.key === "Escape" && open) (e.preventDefault(), e.stopPropagation(), setOpen(false));
+        }}
+        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+      />
+      {open ? (
+        <div className="absolute inset-x-0 top-full z-50 mt-1 overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md">
+          <ul id={`${id}-list`} role="listbox" aria-label={label} className="max-h-72 overflow-y-auto p-1">
+            {options.map((o, i) => (
+              <li
+                key={o.kind === "person" ? o.p.id : `email:${o.email}`}
+                id={`${id}-o${i}`}
+                role="option"
+                aria-selected={i === active}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => void choose(i)}
+                className={cn("flex cursor-pointer items-center gap-2.5 rounded px-2 py-1.5 text-sm", i === active && "bg-accent")}
+              >
+                {o.kind === "person" ? (
+                  <>
+                    <PersonMark id={o.p.id} label={o.p.label} />
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <bdi className="truncate font-medium">{o.p.label}</bdi>
+                      {o.p.email && o.p.email !== o.p.label ? <span className="truncate text-xs text-muted-foreground">{o.p.email}</span> : null}
+                    </span>
+                    {o.p.lastSeenAt ? (
+                      <span className="shrink-0 text-xs text-muted-foreground" title={new Date(o.p.lastSeenAt).toLocaleString(locale)}>
+                        {t("person_seen", { time: relativeTimeShort(o.p.lastSeenAt, locale) })}
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <span aria-hidden className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-dashed text-muted-foreground">@</span>
+                    <span className="min-w-0 flex-1 truncate">{emailLabel ? emailLabel(o.email) : o.email}</span>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+          {!options.length ? (
+            <p role="status" className={cn("px-3 py-2.5 text-sm", state === "failed" ? "text-destructive" : "text-muted-foreground")}>
+              {state === "busy" ? t("loading") : state === "failed" ? t("role_search_failed") : q ? (onEmail ? t("person_none_email") : t("role_search_none")) : t("person_none_yet")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** "3 min", "2 days": short, for tight places. */
+export function relativeTimeShort(iso: string, locale: string, now = Date.now()): string {
+  const s = Math.round((Date.parse(iso) - now) / 1000);
+  const f = new Intl.RelativeTimeFormat(locale, { numeric: "auto", style: "short" });
+  const a = Math.abs(s);
+  if (a < 60) return f.format(0, "second");
+  if (a < 3600) return f.format(Math.round(s / 60), "minute");
+  if (a < 86400) return f.format(Math.round(s / 3600), "hour");
+  if (a < 86400 * 30) return f.format(Math.round(s / 86400), "day");
+  if (a < 86400 * 365) return f.format(Math.round(s / (86400 * 30)), "month");
+  return f.format(Math.round(s / (86400 * 365)), "year");
+}
+
+// ── dialogs ──────────────────────────────────────────────────────────────────
+
+/**
+ * Sizes for `<DialogContent className={DIALOG.md}>`. Written out (Tailwind reads class names from
+ * the source). Each one also lets the column shrink below its content
+ * (`minmax(0,1fr)`), so a long link or name wraps or truncates instead of
+ * pushing the dialog wider than the screen, and scrolls when it is taller.
+ */
+export const DIALOG = {
+  sm: "grid-cols-[minmax(0,1fr)] max-h-[min(92dvh,900px)] overflow-y-auto w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] sm:max-w-[400px]",
+  md: "grid-cols-[minmax(0,1fr)] max-h-[min(92dvh,900px)] overflow-y-auto w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] sm:max-w-[500px]",
+  lg: "grid-cols-[minmax(0,1fr)] max-h-[min(92dvh,900px)] overflow-y-auto w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] sm:max-w-[600px]",
+  xl: "grid-cols-[minmax(0,1fr)] max-h-[min(92dvh,900px)] w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] sm:max-w-[820px]",
+} as const;
+
 // ── copy ─────────────────────────────────────────────────────────────────────
 
 export async function copyText(text: string): Promise<boolean> {
@@ -142,8 +333,8 @@ export function CodeBox({ value, label, className, multiline, secret }: { value:
   const [shown, setShown] = React.useState(false);
   const masked = secret && !shown ? value.split(secret).join(`${secret.slice(0, 4)}${"•".repeat(12)}${secret.slice(-4)}`) : value;
   return (
-    <div className={cn("flex items-start gap-2 rounded-md border bg-muted/50 px-3 py-2", className)}>
-      <code dir="ltr" className={cn("min-w-0 flex-1 font-mono text-xs leading-5", multiline ? "whitespace-pre-wrap break-all" : "truncate")}>
+    <div className={cn("flex w-full min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted/50 px-3 py-2", className)}>
+      <code dir="ltr" title={multiline || secret ? undefined : value} className={cn("min-w-0 flex-1 font-mono text-xs leading-5", multiline ? "whitespace-pre-wrap break-all" : "truncate")}>
         {masked}
       </code>
       {secret ? (
@@ -234,9 +425,9 @@ export function Segmented<V extends string>({ value, onChange, options, label, l
 // ── status and errors ────────────────────────────────────────────────────────
 
 /** A live region for status lines (saved, failed, counts). */
-export function StatusText({ children, className, tone }: { children?: React.ReactNode; className?: string; tone?: "muted" | "error" | "ok" }) {
+export function StatusText({ children, className, tone, id }: { children?: React.ReactNode; className?: string; tone?: "muted" | "error" | "ok"; id?: string }) {
   return (
-    <div role="status" className={cn("text-sm", tone === "error" ? "text-destructive" : tone === "ok" ? "text-green-700" : "text-muted-foreground", className)}>
+    <div id={id} role="status" className={cn("text-sm", tone === "error" ? "text-destructive" : tone === "ok" ? "text-green-700 dark:text-green-400" : "text-muted-foreground", className)}>
       {children}
     </div>
   );
@@ -261,7 +452,7 @@ export function ConfirmDialog({ open, onOpenChange, title, description, children
   const { t } = useCms();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[460px]">
+      <DialogContent className={DIALOG.md}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
