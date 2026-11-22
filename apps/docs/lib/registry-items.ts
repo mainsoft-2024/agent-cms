@@ -27,6 +27,6 @@ export const NOT_LIVE: Record<string, string> = {
   "cms-automations": "No live demo: automations change documents and call other services, and the demo is shared by every visitor. Add the screen to your app, or run the example app (examples/next).",
   "cms-roles": "No live demo: roles decide who may write, and the demo is shared by every visitor. Add the screen to your app, or run the example app (examples/next).",
   "cms-transfer": "No live demo: an import writes documents, and the demo is shared by every visitor. Add the screen to your app, or run the example app (examples/next).",
-  "cms-block-editor": "No live demo here: the docs admin keeps the markdown editor. Run the example app (examples/next) to try the block editor.",
+  "cms-block-editor": "No live demo on this page: it needs a document to edit. The docs admin (/admin) uses it for every page, and the example app (examples/next) shows it too.",
   "cms-preview-comments": "This box goes on your public page. In the editor demo, make a preview link with \"Allow comments\": the page behind that link is yours, so the demo has none.",
 };

@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { ConfirmDialog, PageHeader, Segmented, StatusText } from "./cms-parts";
+import { ConfirmDialog, PageHeader, Segmented, StatusText, EmptyState } from "./cms-parts";
 import { trashChanged, useCms } from "./use-cms";
 
 export interface CmsTrashProps {
@@ -96,8 +96,8 @@ export function CmsTrash({ className }: CmsTrashProps) {
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       <PageHeader title={t("nav_trash")}>
-        {data?.canPurge ? (
-          <Button type="button" variant="outline" className="gap-1.5 text-destructive hover:text-destructive" disabled={!all.length} onClick={() => setConfirm({ what: "empty" })}>
+        {data?.canPurge && all.length ? (
+          <Button type="button" variant="outline" className="gap-1.5 text-destructive hover:text-destructive" onClick={() => setConfirm({ what: "empty" })}>
             <Trash2 aria-hidden className="h-4 w-4" />
             {t("trash_empty_all")}
           </Button>
@@ -140,7 +140,7 @@ export function CmsTrash({ className }: CmsTrashProps) {
         ) : null}
         {kind === "asset" && files.length ? <p className="mb-2.5 text-xs text-muted-foreground">{t("trash_file_note")}</p> : null}
         {error ? <StatusText tone="error">{errorMessage(error, t)}</StatusText> : null}
-        {data && !rows.length ? <p className="py-16 text-center text-sm text-muted-foreground">{t("trash_none")}</p> : null}
+        {data && !rows.length ? <EmptyState icon={Trash2} title={t("trash_none")} text={t("trash_none_text", { days: data.days ?? 30 })} /> : null}
         {rows.length ? (
           <Table>
             <TableHeader>
@@ -178,7 +178,7 @@ export function CmsTrash({ className }: CmsTrashProps) {
         ) : null}
       </div>
       <div className="flex items-center gap-3 px-4 py-3 text-xs text-muted-foreground md:px-6">
-        <StatusText className="text-xs">{status ?? (data ? t("shown_of", { shown: rows.length, total: rows.length }) : t("loading"))}</StatusText>
+        <StatusText className="text-xs">{status ?? (data ? (rows.length ? t("shown_of", { shown: rows.length, total: rows.length }) : "") : t("loading"))}</StatusText>
       </div>
       <ConfirmDialog
         open={!!confirm}

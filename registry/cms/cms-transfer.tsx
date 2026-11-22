@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { ConfirmDialog, PageHeader, Segmented, StatusText } from "./cms-parts";
+import { ConfirmDialog, PageHeader, Segmented, StatusText, NativeSelect } from "./cms-parts";
 import { fileSize } from "./cms-upload";
 import { useCms } from "./use-cms";
 
@@ -149,14 +149,14 @@ export function CmsTransfer({ className }: { className?: string }) {
           <p className="text-sm text-muted-foreground">{t("transfer_export_text")}</p>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cms-export-col">{t("transfer_collection")}</Label>
-            <select id="cms-export-col" className={cn(SELECT, "max-w-xs")} value={collection} onChange={(e) => setCollection(e.target.value)}>
+            <NativeSelect id="cms-export-col" className={cn(SELECT, "max-w-xs")} value={collection} onChange={(e) => setCollection(e.target.value)}>
               <option value="">{t("transfer_all_collections")}</option>
               {(me?.collections ?? []).map((c) => (
                 <option key={c.slug} value={c.slug}>
                   {c.label}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
           <label className="flex items-center gap-2 text-sm">
             <Checkbox checked={drafts} onCheckedChange={(v) => setDrafts(v === true)} />
@@ -210,25 +210,25 @@ export function CmsTransfer({ className }: { className?: string }) {
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="flex min-w-0 flex-col gap-1.5">
               <Label htmlFor="cms-import-col">{t("transfer_collection")}</Label>
-              <select id="cms-import-col" className={cn(SELECT, "w-full")} value={collection} onChange={(e) => setCollection(e.target.value)}>
+              <NativeSelect id="cms-import-col" className={cn(SELECT, "w-full")} value={collection} onChange={(e) => setCollection(e.target.value)}>
                 <option value="">{t("transfer_from_file")}</option>
                 {cols.map((c) => (
                   <option key={c.slug} value={c.slug}>
                     {c.label}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
               <p className="text-xs text-muted-foreground">{collection ? t("transfer_collection_one") : t("transfer_collection_file")}</p>
             </div>
             <div className="flex min-w-0 flex-col gap-1.5">
               <Label htmlFor="cms-import-conflict">{t("transfer_conflict")}</Label>
-              <select id="cms-import-conflict" className={cn(SELECT, "w-full")} value={conflict} onChange={(e) => setConflict(e.target.value as ImportConflict)}>
+              <NativeSelect id="cms-import-conflict" className={cn(SELECT, "w-full")} value={conflict} onChange={(e) => setConflict(e.target.value as ImportConflict)}>
                 {CONFLICTS.map((c) => (
                   <option key={c} value={c}>
                     {t(`conflict.${c}` as never)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
               <p className="text-xs text-muted-foreground">{t(`conflict_hint.${conflict}` as never)}</p>
             </div>
           </div>

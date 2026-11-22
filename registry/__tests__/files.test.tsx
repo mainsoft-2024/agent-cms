@@ -31,7 +31,9 @@ test("files: a bucket folder by folder, with move, share link and delete for wha
   await user.click(await screen.findByRole("button", { name: "contracts" }));
   await user.click(await screen.findByRole("button", { name: "2026" }));
   await screen.findByRole("button", { name: "msa-acme.pdf" });
-  assert.deepEqual(within(screen.getByRole("navigation", { name: "경로" })).getAllByText(/./).map((e) => e.textContent), ["공개", "contracts", "2026"]);
+  // Several stores: the select names the store, and the path starts at a folder icon named after it.
+  const path = screen.getByRole("navigation", { name: "경로" });
+  assert.deepEqual(Array.from(path.querySelectorAll("button, [aria-current]")).map((e) => e.getAttribute("aria-label") ?? e.textContent), ["공개", "contracts", "2026"]);
   assert.deepEqual(screen.getAllByRole("columnheader").slice(1).map((h) => h.textContent), ["이름", "종류", "크기", "마지막 수정"]);
   const kinds = screen.getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell").slice(1, 3).map((c) => c.textContent));
   assert.deepEqual(kinds, [["signed", "폴더"], ["brief.docx", "Word 문서"], ["logo.png", "PNG 이미지"], ["msa-acme.pdf", "PDF"]]);

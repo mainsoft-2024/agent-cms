@@ -18,7 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { AssetGrid, AssetThumb, folderOptions, kindName, kindTabs, SELECT_CLASS, storeLabel, UploadButton, UploadPanel, useAssetList, useUploads, type KindTab } from "./cms-media-picker";
 import { errorMessage } from "./cms-messages";
-import { ConfirmDialog, copyText, PageHeader, Segmented, StateBadge, StatusText, Who, DIALOG } from "./cms-parts";
+import { ConfirmDialog, copyText, PageHeader, Segmented, StateBadge, StatusText, Who, DIALOG, NativeSelect } from "./cms-parts";
 import { fileSize } from "./cms-upload";
 import { forgetAsset, useAsync, useCms, useDebounced, useIsMobile, useMediaQuery, trashChanged, useLocalStorage, useShortcut } from "./use-cms";
 
@@ -152,7 +152,7 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
         >
           <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3 md:px-5">
             {options.length > 1 ? (
-              <select
+              <NativeSelect
                 aria-label={t("media_folder")}
                 className={cn(SELECT_CLASS, "w-full md:hidden")}
                 value={`${store ?? ""}:${where.folder ?? ""}`}
@@ -166,7 +166,7 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
                     {o.label}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             ) : null}
             <div className="relative min-w-[160px] flex-1 md:max-w-[260px]">
               <Search aria-hidden className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -183,28 +183,28 @@ export function CmsMedia({ basePath = "/admin", docHref, className }: CmsMediaPr
             </div>
             <Segmented label={t("media_kind")} value={kind} onChange={setKind} options={kindTabs(list.counts, t)} className="max-w-full overflow-x-auto" />
             <div className="ml-auto flex items-center gap-2">
-              <select aria-label={t("media_only")} className={cn(SELECT_CLASS, "max-w-[150px]", only && "border-primary")} value={only} onChange={(e) => setOnly(e.target.value as typeof only)}>
+              <NativeSelect aria-label={t("media_only")} className={cn(SELECT_CLASS, "max-w-[150px]", only && "border-primary")} value={only} onChange={(e) => setOnly(e.target.value as typeof only)}>
                 <option value="">{t("media_only_all")}</option>
                 <option value="unused">{t("media_only_unused")}</option>
                 <option value="missingAlt">{t("media_only_missing_alt")}</option>
-              </select>
-              <select aria-label={t("media_sort")} className={cn(SELECT_CLASS, "max-w-[140px]")} value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
+              </NativeSelect>
+              <NativeSelect aria-label={t("media_sort")} className={cn(SELECT_CLASS, "max-w-[140px]")} value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
                 <option value="new">{t("media_sort_new")}</option>
                 <option value="old">{t("media_sort_old")}</option>
                 <option value="name">{t("media_sort_name")}</option>
                 <option value="size">{t("media_sort_size")}</option>
-              </select>
+              </NativeSelect>
             </div>
             <div className="hidden items-center gap-2 md:flex">
             {tags.length ? (
-              <select aria-label={t("media_tag")} className={cn(SELECT_CLASS, "max-w-[140px]")} value={tag ?? ""} onChange={(e) => setTag(e.target.value || null)}>
+              <NativeSelect aria-label={t("media_tag")} className={cn(SELECT_CLASS, "max-w-[140px]")} value={tag ?? ""} onChange={(e) => setTag(e.target.value || null)}>
                 <option value="">{t("media_tag")}</option>
                 {tags.map((x) => (
                   <option key={x} value={x}>
                     {x}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             ) : null}
             <Segmented
               label={t("media_view")}
@@ -540,7 +540,8 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
     <StatusText tone={error ? "error" : "muted"}>{error ? errorMessage(error, t) : t("loading")}</StatusText>
   ) : (
     <>
-      <div className="flex items-center gap-2">
+      {/* In the phone dialog the dialog's own close button sits top right: keep clear of it. */}
+      <div className={cn("flex items-center gap-2", mobile && "pr-9")}>
         <div className="min-w-0 flex-1">
           {naming !== null ? (
             <Input
@@ -930,13 +931,13 @@ function BulkDialog({
       {what === "move" ? (
         <div className="grid gap-1.5">
           <Label htmlFor="cms-bulk-folder">{t("media_folder")}</Label>
-          <select id="cms-bulk-folder" className={SELECT_CLASS} value={folder} onChange={(e) => setFolder(e.target.value)}>
+          <NativeSelect id="cms-bulk-folder" className={SELECT_CLASS} value={folder} onChange={(e) => setFolder(e.target.value)}>
             {folders.map((o) => (
               <option key={o.value} value={o.folder ?? ""}>
                 {o.label}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
       ) : what === "tag" ? (
         <div className="grid gap-1.5">

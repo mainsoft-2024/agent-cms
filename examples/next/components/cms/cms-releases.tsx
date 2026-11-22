@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { CalendarClock, CircleAlert, MoreHorizontal, Plus, RefreshCw, Search, X } from "lucide-react";
+import { CalendarClock, CircleAlert, MoreHorizontal, Plus, RefreshCw, Search, X, Layers } from "lucide-react";
 import { isCmsRemoteError, type BlockedItem, type ReleaseView } from "@mainsoft/agent-cms/client";
 import type { CmsRelease as Release, DocSummary } from "@mainsoft/agent-cms/types";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { ConfirmDialog, PageHeader, Segmented, StateBadge, StatusText, type BadgeState, DIALOG } from "./cms-parts";
+import { ConfirmDialog, PageHeader, Segmented, StateBadge, StatusText, type BadgeState, DIALOG, NativeSelect, EmptyState } from "./cms-parts";
 import { formatZoned, toInput, useCms, useDebounced, zonedParts, zonedToIso } from "./use-cms";
 
 const SELECT = "h-9 rounded-md border border-input bg-background px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -131,7 +131,7 @@ export function CmsReleases({ onOpenRelease, hrefFor, className }: CmsReleasesPr
       </PageHeader>
       <div className="flex-1 px-4 py-4 md:px-6">
         {error ? <StatusText tone="error">{errorMessage(error, t)}</StatusText> : null}
-        {list && !list.length ? <p className="py-16 text-center text-sm text-muted-foreground">{t("release_empty")}</p> : null}
+        {list && !list.length ? <EmptyState icon={Layers} title={t("release_empty")} text={t("release_empty_text")} /> : null}
         {list?.length ? (
           <Table>
             <TableHeader>
@@ -621,13 +621,13 @@ function AddDocumentsDialog({ release, onClose, onAdded }: { release: ReleaseVie
             <DialogDescription className="sr-only">{release.name}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-2">
-            <select aria-label={t("release_col_collection")} className={cn(SELECT, "max-w-[160px]")} value={col} onChange={(e) => (setCol(e.target.value), setPicked(new Set()))}>
+            <NativeSelect aria-label={t("release_col_collection")} className={cn(SELECT, "max-w-[160px]")} value={col} onChange={(e) => (setCol(e.target.value), setPicked(new Set()))}>
               {cols.map((c) => (
                 <option key={c.slug} value={c.slug}>
                   {c.label}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
             <div className="relative min-w-0 flex-1">
               <Search aria-hidden className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input

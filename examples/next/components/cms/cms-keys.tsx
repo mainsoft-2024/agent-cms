@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { CircleCheck, Plus } from "lucide-react";
+import { CircleCheck, Plus, KeyRound } from "lucide-react";
 import type { CmsKey, KeyScope } from "@mainsoft/agent-cms/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { CodeBox, ConfirmDialog, PageHeader, Segmented, StatusText, DIALOG } from "./cms-parts";
+import { CodeBox, ConfirmDialog, PageHeader, Segmented, StatusText, DIALOG, EmptyState } from "./cms-parts";
 import { cmsUrl, formatDate, relativeTime, useAsync, useCms, useIsMobile } from "./use-cms";
 
 const SCOPES: KeyScope[] = ["read", "write", "publish", "admin"];
@@ -88,8 +88,9 @@ export function CmsKeys({ mcpServerName = "agent-cms", className }: CmsKeysProps
       </PageHeader>
       <div className="relative min-w-0 flex-1 overflow-x-auto px-4 py-4 md:px-6">
         <StatusText tone={keys.error ? "error" : "muted"} className="mb-2 text-xs">
-          {keys.error ? errorMessage(keys.error, t) : keys.loading && !keys.data ? t("loading") : keys.data && !list.length ? t("no_keys") : ""}
+          {keys.error ? errorMessage(keys.error, t) : keys.loading && !keys.data ? t("loading") : ""}
         </StatusText>
+        {keys.data && !list.length && !keys.error ? <EmptyState icon={KeyRound} title={t("no_keys")} text={t("keys_empty_text")} /> : null}
         {list.length ? (
           <Table>
             <TableHeader>

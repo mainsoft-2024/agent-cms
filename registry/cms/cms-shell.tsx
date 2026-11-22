@@ -11,7 +11,7 @@ import { ArrowLeftRight, BookOpen, ChevronsUpDown, Keyboard, LogIn, LogOut, Moni
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { isCmsRemoteError } from "@mainsoft/agent-cms/client";
 import { applyTheme, modLabel, ShellNavContext, storedTheme, TRASH_CHANGED, useCms, useShortcut, type CmsTheme } from "./use-cms";
 
@@ -400,7 +400,9 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
   const actor = me?.actor as { kind: string; id?: string | null; label?: string; email?: string | null } | undefined;
   const user = actor?.kind === "user" ? { id: actor.id ?? "me", label: actor.label || actor.email || t("account_title"), email: actor.email ?? null } : null;
   const account = user ? (
-    <div className="sticky bottom-0 -mx-3 mt-auto border-t bg-inherit px-3 pt-2">
+    // Opaque and flush with the bottom edge: nothing in the sidebar shows through or under it.
+    <div data-cms-account className="sticky bottom-0 z-10 -mx-3 mt-auto bg-background">
+      <div className="border-t bg-muted/30 px-3 pb-3 pt-2">
       <DropdownMenu>
         <DropdownMenuTrigger className="flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-2 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring" aria-label={t("account_menu", { name: user.label })}>
             <PersonMark id={user.id} label={user.label} />
@@ -417,6 +419,8 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
               {t("account_title")}
             </DropdownMenuItem>
           ) : null}
+          {/* A label must sit inside a group (Base UI throws otherwise). */}
+          <DropdownMenuGroup>
           <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{t("account_theme")}</DropdownMenuLabel>
           {(
             [
@@ -431,6 +435,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
               {theme === v ? <span aria-hidden className="text-xs">✓</span> : null}
             </DropdownMenuItem>
           ))}
+          </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={() => setHelp(true)}>
             <Keyboard aria-hidden className="mr-2 h-4 w-4" />
@@ -451,6 +456,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
+      </div>
     </div>
   ) : null;
 
@@ -471,7 +477,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
   return (
     <ShellNavContext.Provider value={navCtx}>
       <div className={cn("flex min-h-screen bg-background text-foreground", className)}>
-        <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col overflow-y-auto border-r bg-muted/30 p-3 md:flex">
+        <aside className={cn("sticky top-0 hidden h-screen w-60 shrink-0 flex-col overflow-y-auto border-r bg-muted/30 px-3 pt-3 md:flex", user ? "pb-0" : "pb-3")}>
           {brand}
           {nav}
           {!me && !meError ? (
@@ -494,7 +500,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
             side="left"
-            className="flex w-[min(18rem,85vw)] flex-col overflow-y-auto p-3"
+            className={cn("flex w-[min(18rem,85vw)] flex-col overflow-y-auto px-3 pt-3", user ? "pb-0" : "pb-3")}
             {...({
               // Radix sheets: where focus goes when the sheet closes.
               onCloseAutoFocus: (e: Event) => {

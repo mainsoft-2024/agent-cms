@@ -5,7 +5,7 @@
 "use client";
 
 import * as React from "react";
-import { Bot, Check, Copy, Download, FileText, ImageOff, Lightbulb, Link as LinkIcon, Menu, Paperclip, Pencil, TriangleAlert, Info } from "lucide-react";
+import { Bot, Check, ChevronDown, Copy, Download, FileText, ImageOff, Lightbulb, Link as LinkIcon, Menu, Paperclip, Pencil, TriangleAlert, Info } from "lucide-react";
 import { inspectHtml, parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -853,5 +853,45 @@ export function MarkdownPreview({ title, summary, body, className, components, o
       {summary ? <p className="mb-4 mt-0 text-muted-foreground">{summary}</p> : null}
       <Blocks blocks={blocks} components={components} lines={lines} />
     </article>
+  );
+}
+
+
+/** Classes that size or place a select in its row: they go on the wrapper, the rest on the select. */
+const LAYOUT_CLASS = /^(?:[a-z0-9]+:)*(?:w-|max-w-|min-w-|flex-|basis-|grow|shrink|self-|col-|row-|order-|m[trblxy]?-|-m[trblxy]?-)/;
+
+/**
+ * A native `<select>` with our own arrow. Browsers draw their own arrow from the page's
+ * color scheme (iOS Safari drew it white on a light page): this one follows the text color.
+ * Width classes in `className` go on the wrapper, so it sits in a row like a plain select.
+ */
+export function NativeSelect({ className, children, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  const tokens = cn(className).split(/\s+/).filter(Boolean);
+  const outer = tokens.filter((c) => LAYOUT_CLASS.test(c));
+  const inner = tokens.filter((c) => !LAYOUT_CLASS.test(c));
+  return (
+    <span className={cn("relative inline-flex min-w-0 max-w-full", outer)}>
+      <select {...props} className={cn(inner, "w-full min-w-0 cursor-pointer appearance-none truncate pr-8 text-foreground disabled:cursor-not-allowed [&>option]:bg-background [&>option]:text-foreground")}>
+        {children}
+      </select>
+      <ChevronDown aria-hidden className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+    </span>
+  );
+}
+
+
+/** A screen with nothing in it yet: what goes here, why it matters, and the one thing to do next. */
+export function EmptyState({ icon: Icon, title, text, action, className }: { icon?: React.ElementType; title: React.ReactNode; text?: React.ReactNode; action?: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("mx-auto my-8 flex w-full max-w-md flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-10 text-center", className)}>
+      {Icon ? (
+        <span className="mb-1 grid h-10 w-10 place-items-center rounded-full bg-muted text-muted-foreground">
+          <Icon aria-hidden className="h-5 w-5" />
+        </span>
+      ) : null}
+      <p className="text-sm font-medium">{title}</p>
+      {text ? <p className="text-sm text-muted-foreground">{text}</p> : null}
+      {action ? <div className="mt-2">{action}</div> : null}
+    </div>
   );
 }

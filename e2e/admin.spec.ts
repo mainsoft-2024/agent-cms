@@ -97,7 +97,7 @@ test("search misses reach the app's own screen through onSearchMiss", async ({ p
   await expect
     .poll(async () => {
       await page.goto("/admin/misses");
-      return page.getByRole("cell", { name: q }).count();
+      return page.getByRole("listitem").filter({ hasText: q }).count();
     })
     .toBe(1);
   await expect(page.getByRole("link", { name: "Search misses" })).toBeVisible();
