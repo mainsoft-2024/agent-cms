@@ -114,10 +114,25 @@ import { eventStream } from "./events";
 import { openApiDocument } from "./openapi";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
+/** What the handler needs from the CMS's own sign-in (`createAuth` from `@mainsoft/agent-cms/auth`). */
+export interface HandlerAuth {
+  resolveUser(req: Request): Promise<Extract<Actor, { kind: "user" }> | null>;
+  handle(req: Request, seg: string[]): Promise<Response>;
+  confirmed(req: Request): Promise<boolean>;
+  hasSession(req: Request): Promise<boolean>;
+  describe(): { passwords: boolean; passkeys: boolean; sso: { label: string } | null; mail: boolean; adminPath: string };
+}
+
 export interface CmsHandlerOptions {
   cms: CmsLike;
-  /** The signed-in app user, if any. */
-  resolveUser: (req: Request) => Promise<Extract<Actor, { kind: "user" }> | null>;
+  /** The signed-in app user, if any. Not needed with `auth` (the CMS's own sign-in answers it). */
+  resolveUser?: (req: Request) => Promise<Extract<Actor, { kind: "user" }> | null>;
+  /**
+   * The CMS's own sign-in (`createAuth` from `@mainsoft/agent-cms/auth`): adds `/auth/*` (sign-in,
+   * passkeys, two-step, SSO, account) and `/users/*` (people and invitations), and reads the
+   * session cookie when `resolveUser` is not given.
+   */
+  auth?: HandlerAuth;
   /** Mount point, used to find the sub-path. Default "/api/cms". */
   basePath?: string;
   /** Refuse PATCH and DELETE of a document without If-Match / expectedVersion (428). Default false. */
@@ -211,7 +226,7 @@ export function sameSite(req: Request, trusted: readonly string[] = []): boolean
   return own.some((h) => !!h && h.toLowerCase() === from.toLowerCase());
 }
 
-export async function resolveActor(cms: CmsLike, req: Request, resolveUser: CmsHandlerOptions["resolveUser"], trustedOrigins?: readonly string[], ipOf: (req: Request) => string | null = clientIp): Promise<Actor> {
+export async function resolveActor(cms: CmsLike, req: Request, resolveUser: NonNullable<CmsHandlerOptions["resolveUser"]>, trustedOrigins?: readonly string[], ipOf: (req: Request) => string | null = clientIp): Promise<Actor> {
   const core = coreOf(cms);
   const limited = async (who: string, perMinute: number | null) => {
     const v = await core.limits.check(who, perMinute);
@@ -333,6 +348,11 @@ const wire = (d: CmsDoc) => d;
 
 export function createCmsHandler(opts: CmsHandlerOptions) {
   const core: CmsCore = coreOf(opts.cms);
+  const resolveUser = opts.resolveUser ?? opts.auth?.resolveUser.bind(opts.auth) ?? (async () => null);
+  /** Making or rotating keys with a session of the CMS's own sign-in needs a recent confirmation. */
+  const confirmFirst = async (req: Request, actor: Actor) => {
+    if (opts.auth && actor.kind === "user" && (await opts.auth.hasSession(req)) && !(await opts.auth.confirmed(req))) throw new CmsError("reauth_required", {}, { status: 401, messages: core.messages });
+  };
   const base = (opts.basePath ?? "/api/cms").replace(/\/$/, "");
 
   return async function handler(req: Request): Promise<Response> {
@@ -385,8 +405,15 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const r = await core.ax.write(link.actor, link.collection, link.slug, text, { expectedVersion: link.version, note: "uploaded file" });
         return json(r);
       }
+      if ((seg[0] === "auth" || seg[0] === "users") && opts.auth) {
+        // Signing in rides on cookies too: a page elsewhere may not post here (login CSRF).
+        if (m !== "GET" && m !== "HEAD" && !sameSite(req, opts.trustedOrigins)) throw new CmsError("cross_site", {}, { messages: core.messages });
+        note({ kind: "user", via: "auth" });
+        return await opts.auth.handle(req, seg[0] === "auth" ? seg.slice(1) : seg);
+      }
+      if (seg[0] === "auth" || seg[0] === "users") throw new CmsError("auth_off", {}, { messages: core.messages });
       const client = req.headers.get("x-agent-cms-client");
-      const who = await resolveActor(core, req, opts.resolveUser, opts.trustedOrigins, opts.clientIp);
+      const who = await resolveActor(core, req, resolveUser, opts.trustedOrigins, opts.clientIp);
       const actor: Actor = { ...who, via: seg[0] === "mcp" ? (client === "cli" ? "cli" : "mcp") : client === "cli" ? "cli" : "rest" };
       note({ kind: actor.kind, via: actor.via ?? null });
       const q = url.searchParams;
@@ -413,6 +440,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           dashboard: actor.kind !== "anonymous",
           automations: core.isAdmin(actor),
           roles: core.isAdmin(actor),
+          /** The CMS's own sign-in, when it is on: how people sign in, and whether this caller manages people. */
+          auth: opts.auth ? { ...opts.auth.describe(), people: core.isAdmin(actor) && actor.kind === "user" } : null,
           nav: core.plugins.nav.filter((n) => !n.admin || core.isAdmin(actor)).map(({ label, href, plugin }) => ({ label, href, plugin })),
           plugins: Object.fromEntries(await Promise.all(core.plugins.names.map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
           collections: core
@@ -445,7 +474,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         // The address people open, not the one the server listens on (see sameSite).
         const host = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || req.headers.get("host");
         const proto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(":", "");
-        return json(openApiDocument(core, { basePath: base, origin: host ? `${proto}://${host}` : url.origin, actor }), 200, { "cache-control": "private, max-age=60" });
+        return json(openApiDocument(core, { basePath: base, origin: host ? `${proto}://${host}` : url.origin, actor, auth: !!opts.auth }), 200, { "cache-control": "private, max-age=60" });
       }
 
       if (seg[0] === "search" && m === "GET") {
@@ -524,10 +553,12 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (seg.length === 1 && m === "GET") return json({ keys: await core.listKeys(actor) });
         if (seg.length === 1 && m === "POST") {
           const b = await body(req, z.object({ name: z.string(), scopes: z.array(z.enum(KEY_SCOPES)).min(1), collections: z.array(z.string()).nullable().optional(), expiresAt: z.string().nullable().optional(), rateLimit: z.number().nullable().optional(), allowedIps: z.array(z.string().max(60)).max(50).nullable().optional() }));
+          await confirmFirst(req, actor);
           return json(await core.createKey(actor, b), 201);
         }
         if (seg.length === 3 && seg[2] === "rotate" && m === "POST") {
           const b = await body(req, z.object({ graceMinutes: z.number().int().min(0).max(10080).optional() }), true);
+          await confirmFirst(req, actor);
           return json(await core.rotateKey(actor, seg[1], b), 201);
         }
         if (seg.length === 2 && m === "DELETE") {

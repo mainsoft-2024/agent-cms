@@ -119,6 +119,8 @@ export function createRoles(ctx: RolesContext) {
   return {
     /** Call before deciding anything: refreshes the roles kept in memory (every 15 seconds, or now after a change). */
     load,
+    /** The roles a person is in (from memory: call `load` first). */
+    of: (userId: string) => rolesOf(userId),
     isAdmin,
     /**
      * What the roles say about one operation: true or false when the person is in a role,

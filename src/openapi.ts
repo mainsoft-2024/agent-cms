@@ -34,7 +34,7 @@ export interface ApiRoute {
   /** Success status. Default 200. */
   status?: number;
   /** Only present when this part of the CMS is switched on. */
-  needs?: "media" | "cron" | "preview";
+  needs?: "media" | "cron" | "preview" | "auth";
   /** The answer is a `text/event-stream` that stays open. */
   stream?: boolean;
 }
@@ -77,7 +77,7 @@ const C = "/collections/{collection}";
 const D = `${C}/{slug}`;
 
 /** Every route of the handler. Collection routes are written once here and repeated per collection in the document. */
-export const API_ROUTES: readonly ApiRoute[] = [
+const BASE_ROUTES: readonly ApiRoute[] = [
   { method: "get", path: "/_me", summary: "Who am I, and what may I do", tag: "session", auth: "public", returns: any },
   { method: "get", path: "/openapi.json", summary: "This document", tag: "session", auth: "public", returns: any },
   { method: "get", path: "/search", summary: "Search published documents", tag: "search", auth: "public", query: { q: "The question or words", collections: "Comma-separated collections. Default: all you may read", limit: "1 to 20, default 8", miss: "1: tell the app when nothing is found (onSearchMiss)" }, returns: obj({ empty: { type: "boolean" }, hits: arr(ref("SearchHit")) }) },
@@ -282,15 +282,60 @@ export interface OpenApiOptions {
   origin?: string;
   /** Whose view: collections this actor cannot read are left out. Default: anonymous. */
   actor?: Actor;
+  /** The handler has the CMS's own sign-in: list `/auth/*` and `/users/*`. */
+  auth?: boolean;
 }
 
 /** The OpenAPI 3.1 document for this CMS as it is configured. */
+// The CMS's own sign-in (`createAuth`): what it needs in bodies.
+const credential = z.object({ id: z.string(), rawId: z.string().optional(), type: z.literal("public-key"), response: z.record(z.unknown()) }).passthrough().describe("What navigator.credentials.create/get returned, with ArrayBuffers as base64url");
+const AUTH_ROUTES: readonly ApiRoute[] = [
+  { method: "get", path: "/auth/state", summary: "Is setup needed, which ways to sign in, who is signed in", tag: "sign-in", auth: "public", returns: any, needs: "auth" },
+  { method: "post", path: "/auth/setup", summary: "Make the first admin with the setup code the server printed", tag: "sign-in", auth: "public", body: z.object({ code: z.string(), email: z.string(), name: z.string().optional(), password: z.string().optional() }), returns: any, status: 201, needs: "auth" },
+  { method: "post", path: "/auth/login", summary: "Sign in with email and password (may answer `mfa: true` with a ticket)", tag: "sign-in", auth: "public", body: z.object({ email: z.string(), password: z.string() }), returns: any, needs: "auth" },
+  { method: "post", path: "/auth/mfa", summary: "Finish signing in with a two-step code or a recovery code", tag: "sign-in", auth: "public", body: z.object({ ticket: z.string(), code: z.string().optional(), recovery: z.string().optional(), remember: z.boolean().optional() }), returns: any, needs: "auth" },
+  { method: "post", path: "/auth/logout", summary: "Sign out this browser", tag: "sign-in", auth: "public", body: z.object({}), returns: OK, needs: "auth" },
+  { method: "post", path: "/auth/reset/request", summary: "Mail a password reset link (the same answer whether the account exists or not)", tag: "sign-in", auth: "public", body: z.object({ email: z.string() }), returns: any, needs: "auth" },
+  { method: "get", path: "/auth/reset", summary: "Whose reset link this is", tag: "sign-in", auth: "public", query: { token: "From the link" }, returns: any, needs: "auth" },
+  { method: "post", path: "/auth/reset", summary: "Set a new password with a reset link; ends every session", tag: "sign-in", auth: "public", body: z.object({ token: z.string(), password: z.string() }), returns: any, needs: "auth" },
+  { method: "get", path: "/auth/invite/{id}", summary: "Who an invitation is for", tag: "sign-in", auth: "public", returns: any, needs: "auth" },
+  { method: "post", path: "/auth/invite/{id}", summary: "Accept an invitation (a password, or none and add a passkey next)", tag: "sign-in", auth: "public", body: z.object({ name: z.string().optional(), password: z.string().optional() }), returns: any, status: 201, needs: "auth" },
+  { method: "post", path: "/auth/passkey/options", summary: "Options for navigator.credentials (login, register or reauth)", tag: "sign-in", auth: "public", body: z.object({ purpose: z.enum(["login", "register", "reauth"]) }), returns: any, needs: "auth" },
+  { method: "post", path: "/auth/passkey/verify", summary: "Check what the browser's passkey sent back", tag: "sign-in", auth: "public", body: z.object({ challengeId: z.string(), credential, label: z.string().optional() }), returns: any, needs: "auth" },
+  { method: "get", path: "/auth/oidc/start", summary: "Go to the single sign-on provider", tag: "sign-in", auth: "public", query: { next: "Admin path to come back to" }, returns: any, status: 303, needs: "auth" },
+  { method: "get", path: "/auth/oidc/callback", summary: "Where the provider sends the browser back", tag: "sign-in", auth: "public", returns: any, status: 303, needs: "auth" },
+  { method: "post", path: "/auth/reauth", summary: "Confirm it is you with the password (10 minutes)", tag: "sign-in", auth: "read", body: z.object({ password: z.string() }), returns: OK, needs: "auth" },
+  { method: "get", path: "/auth/policy", summary: "The sign-in policy", tag: "people", auth: "admin", returns: any, needs: "auth" },
+  { method: "patch", path: "/auth/policy", summary: "Require two-step sign-in for everyone", tag: "people", auth: "admin", body: z.object({ requireMfa: z.boolean() }), returns: any, needs: "auth" },
+  { method: "get", path: "/auth/me", summary: "My account: profile, preferences, passkeys, two-step", tag: "account", auth: "read", returns: any, needs: "auth" },
+  { method: "patch", path: "/auth/me", summary: "Change my name, theme or language", tag: "account", auth: "read", body: z.object({ name: z.string().nullable().optional(), prefs: z.object({ theme: z.enum(["light", "dark", "system"]).optional(), locale: z.string().optional() }).optional() }), returns: any, needs: "auth" },
+  { method: "post", path: "/auth/me/password", summary: "Change my password (ends my other sessions)", tag: "account", auth: "read", body: z.object({ current: z.string().optional(), password: z.string() }), returns: any, needs: "auth" },
+  { method: "get", path: "/auth/me/sessions", summary: "Where I am signed in", tag: "account", auth: "read", returns: any, needs: "auth" },
+  { method: "delete", path: "/auth/me/sessions", summary: "Sign out everywhere else", tag: "account", auth: "read", returns: any, needs: "auth" },
+  { method: "delete", path: "/auth/me/sessions/{id}", summary: "Sign out one device", tag: "account", auth: "read", returns: any, needs: "auth" },
+  { method: "post", path: "/auth/me/totp", summary: "Start two-step setup (no code: secret and QR), or confirm it (code: recovery codes)", tag: "account", auth: "read", body: z.object({ code: z.string().optional() }), returns: any, needs: "auth" },
+  { method: "delete", path: "/auth/me/totp", summary: "Turn two-step sign-in off (confirm first)", tag: "account", auth: "read", returns: OK, needs: "auth" },
+  { method: "post", path: "/auth/me/recovery", summary: "New recovery codes (the old ones stop working)", tag: "account", auth: "read", body: z.object({}), returns: any, needs: "auth" },
+  { method: "patch", path: "/auth/me/passkeys/{id}", summary: "Rename a passkey", tag: "account", auth: "read", body: z.object({ label: z.string() }), returns: any, needs: "auth" },
+  { method: "delete", path: "/auth/me/passkeys/{id}", summary: "Remove a passkey (confirm first)", tag: "account", auth: "read", returns: any, needs: "auth" },
+  { method: "get", path: "/users", summary: "People and open invitations", tag: "people", auth: "admin", query: { q: "Search by name or email" }, returns: any, needs: "auth" },
+  { method: "post", path: "/users/invite", summary: "Invite people by email (links for 7 days)", tag: "people", auth: "admin", body: z.object({ emails: z.array(z.string()).min(1).max(50), roleId: z.string().nullable().optional(), admin: z.boolean().optional() }), returns: any, status: 201, needs: "auth" },
+  { method: "delete", path: "/users/invites/{id}", summary: "Withdraw an invitation", tag: "people", auth: "admin", returns: OK, needs: "auth" },
+  { method: "post", path: "/users/invites/{id}/resend", summary: "Send an invitation again (a new link)", tag: "people", auth: "admin", body: z.object({}), returns: any, needs: "auth" },
+  { method: "patch", path: "/users/{id}", summary: "Change a person: name, role, admin, switched off (ends their sessions)", tag: "people", auth: "admin", body: z.object({ name: z.string().nullable().optional(), disabled: z.boolean().optional(), admin: z.boolean().optional(), roleId: z.string().nullable().optional() }), returns: any, needs: "auth" },
+  { method: "post", path: "/users/{id}/reset-link", summary: "A password reset link for someone (mailed when mail is set up)", tag: "people", auth: "admin", body: z.object({}), returns: any, needs: "auth" },
+  { method: "delete", path: "/users/{id}/sessions", summary: "Sign someone out everywhere", tag: "people", auth: "admin", returns: any, needs: "auth" },
+];
+
+/** Every REST route. The ones marked `needs: "auth"` exist when the handler has the CMS's own sign-in. */
+export const API_ROUTES: readonly ApiRoute[] = [...BASE_ROUTES, ...AUTH_ROUTES];
+
 export function openApiDocument(cms: CmsLike, o: OpenApiOptions = {}): Json {
   const core = coreOf(cms);
   const actor: Actor = o.actor ?? { kind: "anonymous" };
   const base = (o.basePath ?? "/api/cms").replace(/\/$/, "");
   const cols = core.collections().filter((c) => core.can(actor, c.slug, "read"));
-  const on = { media: core.assets.describe(actor) !== null, cron: !!core.cronSecret, preview: core.previewEnabled() };
+  const on = { media: core.assets.describe(actor) !== null, cron: !!core.cronSecret, preview: core.previewEnabled(), auth: !!o.auth };
   const schemas: Json = { ...SCHEMAS };
   const paths: Record<string, Json> = {};
   const param = (name: string, values?: string[]): Json => ({ name, in: "path", required: true, schema: values ? { type: "string", enum: values } : name === "n" ? { type: "integer", minimum: 1 } : { type: "string" } });

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased (0.16.0, first part: sign-in of its own)
+
+- **`@mainsoft/agent-cms/auth`**: `createAuth({ cms, origin, sendMail, oidc })` and `createCmsHandler({ cms, auth })`. People, passwords (scrypt, common ones refused), passkeys (WebAuthn written here: ES256, EdDSA, RS256), two-step codes (TOTP with a QR code of our own, recovery codes, trusted devices), OpenID Connect with PKCE, invitations, password resets, a setup code for the first admin, devices list and remote sign-out, confirmation before sensitive actions, `requireMfa` policy, login limits. No schema change (`cms_records`).
+- REST `/auth/*` and `/users/*` (in `/openapi.json` when sign-in is on); `_me.auth`. Making or rotating API keys with a session of this sign-in needs a confirmation in the last 10 minutes.
+- The roles screen finds people from this sign-in.
+- Fix: the events stream holds its request, so a collected `Request` can no longer keep a closed stream subscribed.
+- Not yet: the sign-in, people and account screens, the standalone server (`serve`, `dev`) and the Docker example.
+
 ## 0.15.0
 
 Agents edit documents the way coding agents edit code, HTML is kept exactly as written, and markdown grows tables, task lists, toggles, columns, italic and strike. **Schema 8** (one column: `cms_documents.body_format`); run `npx @mainsoft/agent-cms migrate apply` or the step in `migrate check`. See [UPGRADE-0.15.md](UPGRADE-0.15.md).

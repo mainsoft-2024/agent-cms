@@ -16,6 +16,7 @@ export default defineConfig([
       agent: "src/agent.ts",
       markdown: "src/markdown.ts",
       html: "src/html.ts",
+      auth: "src/auth/index.ts",
       frontmatter: "src/frontmatter.ts",
       types: "src/types.ts",
       tables: "src/tables.ts",
