@@ -404,3 +404,22 @@ test("openapi: with sign-in on, every /auth and /users route is answered", async
   const doc = await b.call("/openapi.json");
   assert.ok(doc.body.paths["/auth/login"] && doc.body.paths["/users/invite"]);
 });
+
+test("qr: our encoder's codes read back with an independent decoder, short to long, Korean included", async () => {
+  const { default: jsQR } = await import("jsqr");
+  const { encodeQr } = await import("./auth/qr");
+  for (const text of ["hi", "otpauth://totp/Test%20CMS%3Apark%40example.com?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Test%20CMS&algorithm=SHA1&digits=6&period=30", "한국어 텍스트 ".repeat(10), "x".repeat(300), "y".repeat(1200)]) {
+    const q = encodeQr(text);
+    const s = 4;
+    const n = (q.size + 8) * s;
+    const px = new Uint8ClampedArray(n * n * 4).fill(255);
+    q.modules.forEach((row, y) => row.forEach((dark, x) => {
+      if (!dark) return;
+      for (let a = 0; a < s; a++) for (let b = 0; b < s; b++) {
+        const i = (((y + 4) * s + a) * n + ((x + 4) * s + b)) * 4;
+        px[i] = px[i + 1] = px[i + 2] = 0;
+      }
+    }));
+    assert.equal(jsQR(px, n, n)?.data, text, `version ${q.version}`);
+  }
+});
