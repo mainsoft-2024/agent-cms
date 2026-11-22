@@ -348,3 +348,23 @@ PR #24. 스키마 7. 검증: 단위 166개(159 통과, 7은 실제 저장소가 
 - 93의 나머지 훅(필드 단위, 목록과 검색의 `afterRead`, `beforeRead`), 92의 플러그인 표를 `migrate`가 실행하기, 134의 편집기 안 확장 자리, 80의 검색·색인 지표
 - 131의 나머지(Notion, Contentful, Strapi), 화면의 zip 가져오기, 프레임워크별 예제 앱(Hono, Express)과 CI, 다른 언어 클라이언트 예제
 - 113의 나머지(미디어 권한, 필드 단위 권한), 자동화의 에이전트 도구
+
+## 0.16.0 진행 상황 (2026-11-22, 브랜치 `agents/auth-016`)
+
+계획: `.slash/workspace/plans/c-rest-standalone-auth.plan.md`, 시안 `standalone-auth` v1(승인됨).
+
+한 것 (122 자체 로그인, 서버 쪽):
+- `@mainsoft/agent-cms/auth`의 `createAuth`, `createCmsHandler({ cms, auth })`. 스키마 변경 없음(`cms_records`: auth_user, auth_session, auth_passkey, auth_token, auth_policy, auth_fails).
+- 비밀번호: scrypt N=2^17 r=8 p=1, 파라미터를 해시에 기록하고 약하면 다음 로그인 때 다시 해시. 12자 이상, 흔한 비밀번호 1만 개·이메일 이름·연속 글자 거절. 없는 계정도 같은 시간.
+- 패스키: 라이브러리 없이 WebAuthn(CBOR, COSE, ES256/EdDSA/RS256, 출처·챌린지·rpId·카운터 확인). 소프트웨어 인증기로 테스트.
+- 2단계: TOTP(RFC 6238 벡터로 확인, 같은 코드 재사용 거절), 자체 QR 인코더(독립 디코더 jsqr로 확인), 복구 코드 10개, 30일 기기 신뢰.
+- SSO: OIDC 코드 흐름 + PKCE, state·nonce, 디스커버리·JWKS 캐시와 키 교체 대응, 도메인 제한, 초대된 사람만 또는 자동 생성, 기본 역할.
+- 첫 관리자 설정 코드(로그에 출력, 15분), 초대(7일, 역할·관리자), 재설정(1시간, 계정 유무 숨김), 세션 30일·최대 90일·`__Host-` 쿠키, 기기 목록·원격 로그아웃, 10분 본인 확인(키 만들기·교체, 2단계 끄기, 패스키 삭제, 사람 끄기·관리자 지정), `requireMfa` 정책, 로그인 잠금(이메일 15분/10회, 주소 15분/50회), 로그인 CSRF 거절, 감사 로그 `auth.*`.
+- REST `/auth/*`, `/users/*`(OpenAPI 목록 포함), `_me.auth`, 역할 화면의 사람 찾기 연결.
+- 테스트 `src/auth.test.ts` 12개.
+
+아직 안 한 것 (0.16.0 안에서):
+- 화면: cms-login(설정·로그인·2단계·초대·재설정), cms-people, cms-account, 셸 계정 메뉴, 어두운 테마.
+- 단독 서버 `serve`/`dev`(101, 115), 미리 빌드한 어드민, 보안 헤더, healthz, Docker compose, CLI `user create`.
+- 실제 브라우저(Chrome 가상 인증기)로 패스키 확인.
+- 그 뒤 0.17.0: 75, 76, 77, 78, 82, 90, 104, 106, 21, 73, 93/92/134/80 나머지, 113, 131(Notion, zip), 27.
