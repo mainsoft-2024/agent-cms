@@ -32,5 +32,6 @@ const CmsBlockEditor = lazy(() => import("@/components/cms/cms-block-editor"));
 | Duplicate, delete, copy as markdown | The handle's menu, `Ctrl/⌘ D`, `Delete`, `Ctrl/⌘ C` |
 | Images | Paste or drop them (they go to the media library), or `/image` |
 | Undo, redo | `Ctrl/⌘ Z`, `Ctrl/⌘ Shift Z` |
+| Full screen | The **Full screen** button in the body bar, or `Ctrl/⌘ Shift F`; `Esc` leaves. The fields fold under the top bar (**Fields** opens them), and the bar fades while you type |
 
 - The editor header has a **Blocks / Markdown** switch; the choice is remembered in the browser. The status line shows words and reading time.

@@ -163,6 +163,56 @@ test("blocks: the preview opens in its own window and follows the typing", async
   await expect(page.getByRole("button", { name: "Preview in a new window" })).toHaveAttribute("aria-pressed", "false");
 });
 
+test("blocks: full screen covers the admin, keeps the fields one click away, and Esc leaves it", async ({ page, request }) => {
+  const slug = await open(page, request, "First line.\n\nSecond line.");
+  const nav = page.getByRole("navigation").first();
+  await expect(nav).toBeVisible();
+  await page.getByRole("button", { name: "Full screen", exact: true }).click();
+  const region = page.getByRole("region", { name: "Full screen editing" });
+  await expect(region).toBeVisible();
+  // Covers the window: the sidebar is under it, the fields are folded away, the page behind does not scroll.
+  const box = await region.boundingBox();
+  const vp = page.viewportSize()!;
+  expect(box && Math.round(box.x) === 0 && Math.round(box.width) === vp.width && Math.round(box.height) === vp.height).toBe(true);
+  await expect(page.locator("#cms-focus-fields")).toBeHidden();
+  expect(await page.evaluate(() => document.documentElement.style.overflow)).toBe("hidden");
+  await page.screenshot(shot("96-focus"));
+
+  // Typing works and fades the bar; Esc inside the text selects the block, it does not leave.
+  await line(page, "p", "Second line.").click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" Typed in full screen.");
+  await expect(page.getByRole("button", { name: "Leave full screen" }).locator("xpath=..")).toHaveClass(/opacity-0/);
+  await page.mouse.move(400, 300);
+  await page.mouse.move(420, 320);
+  await expect(page.getByRole("button", { name: "Leave full screen" }).locator("xpath=..")).not.toHaveClass(/opacity-0/);
+
+  // The fields open under the bar and keep what was typed.
+  await page.getByRole("button", { name: "Fields" }).click();
+  await expect(page.locator("#cms-focus-fields")).toBeVisible();
+  await page.screenshot(shot("97-focus-fields"));
+
+  // Save from the bar.
+  await page.keyboard.press(`${mod}+s`);
+  await expect.poll(async () => ((await (await request.get(`${api}/collections/posts/${slug}?draft=1`)).json()) as { doc: { body: string } }).doc.body, { timeout: 10_000 }).toContain("Typed in full screen.");
+
+  // Esc while typing selects the block (editor), a second Esc with no text focus leaves full screen.
+  await line(page, "p", "First line.").click();
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press("Escape");
+  await expect(region).toHaveCount(0);
+  await expect(nav).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.style.overflow)).toBe("");
+
+  // The shortcut goes both ways, even from inside the text.
+  await line(page, "p", "First line.").click();
+  await page.keyboard.press(`${mod}+Shift+f`);
+  await expect(page.getByRole("region", { name: "Full screen editing" })).toBeVisible();
+  await page.keyboard.press(`${mod}+Shift+f`);
+  await expect(page.getByRole("region", { name: "Full screen editing" })).toHaveCount(0);
+});
+
 test("blocks: Korean typing (IME) lands as one word @mobile", async ({ page, request }) => {
   await open(page, request, "가");
   await line(page, "p", "가").click();

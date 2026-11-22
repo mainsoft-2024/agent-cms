@@ -449,6 +449,7 @@ export function ShortcutsDialog({ open, onOpenChange }: { open: boolean; onOpenC
       rows: [
         [[mod, "S"], t("sc_save")],
         [[mod, "Shift", "P"], t("sc_publish")],
+        [[mod, "Shift", "F"], t("sc_focus")],
         [[mod, "B"], t("sc_bold")],
         [[mod, "I"], t("sc_italic")],
         [[mod, "K"], t("sc_link")],

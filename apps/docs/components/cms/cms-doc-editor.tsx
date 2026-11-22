@@ -10,7 +10,7 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { AppWindow, ArrowUpDown, Bot, Columns2, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, MessageSquare, MoreHorizontal } from "lucide-react";
+import { AppWindow, ArrowUpDown, Bot, Columns2, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Monitor, SlidersHorizontal } from "lucide-react";
 import { isCmsRemoteError, type CollectionSchema, type CommentThread, type DocRelease } from "@mainsoft/agent-cms/client";
 import { mergeDocs, resolveDocMerge, splitLines } from "@mainsoft/agent-cms/diff";
 import { docState, type CmsDoc, type AutosaveState, type Presence } from "@mainsoft/agent-cms/types";
@@ -30,7 +30,7 @@ import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-
 import { pasteAsMarkdown } from "./cms-paste";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText } from "./cms-parts";
-import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, type DocContent } from "./use-cms";
+import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type DocContent } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
 type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
@@ -133,7 +133,7 @@ function takeStatus(collection: string, slug: string): string | null {
 }
 
 export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className }: CmsDocEditorProps) {
-  const { client, t, locale, me, baseUrl, slots } = useCms();
+  const { client, t, locale, me, baseUrl, slots, toast } = useCms();
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
   /** Where the cursor last was in the body (null: the person never put it there). */
   const caretRef = React.useRef<[number, number] | null>(null);
@@ -143,6 +143,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   // The markdown view can show the preview beside the text; the block view is one column (it looks like the page already).
   const [sidePreview, setSidePreview] = useLocalStorage<boolean>("cms-side-preview", true);
   const [previewWindow, setPreviewWindow] = React.useState(false);
+  // Full screen editing: the editor covers the admin (sidebar, header, fields and comments step aside).
+  const [focus, setFocusState] = React.useState(false);
+  const [focusFields, setFocusFields] = React.useState(false);
+  const [screenFull, setScreenFull] = React.useState(false);
+  const [barQuiet, setBarQuiet] = React.useState(false);
+  const focusButton = React.useRef<HTMLButtonElement | null>(null);
   const insertRef = React.useRef<((md: string) => void) | null>(null);
   const pickWaiter = React.useRef<((md: string | null) => void) | null>(null);
   const mobile = useIsMobile();
@@ -302,6 +308,15 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     for (const p of problems) (out[problemKey(p.path)] ??= []).push(p);
     return out;
   }, [problems]);
+
+  // Field problems while the fields are folded away in full screen: a dot on the button, and the fields open
+  // by themselves when a new error appears (the save that failed points at them).
+  const fieldErrors = problems.filter((p) => p.severity === "error" && problemKey(p.path) !== "body").length;
+  const lastFieldErrors = React.useRef(0);
+  React.useEffect(() => {
+    if (focus && fieldErrors > lastFieldErrors.current) setFocusFields(true);
+    lastFieldErrors.current = fieldErrors;
+  }, [focus, fieldErrors]);
 
   // ── agent changes ──
   const pending = changes.filter((c) => !reviewed[c.id]);
@@ -579,6 +594,76 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     const k = keys.current;
     if (k.canPublish && !k.busy) void publishRef.current();
   });
+
+  const setFocus = React.useCallback(
+    (on: boolean) => {
+      setFocusState(on);
+      setBarQuiet(false);
+      if (on) toast(t("focus_entered", { keys: `${modLabel()}+Shift+F` }), { tone: "info", duration: 2500 });
+      else {
+        setFocusFields(false);
+        if (typeof document !== "undefined" && document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+        // Back where the person started (unless they are in the middle of the text).
+        requestAnimationFrame(() => {
+          const a = document.activeElement as HTMLElement | null;
+          if (!a || a === document.body) focusButton.current?.focus();
+        });
+      }
+    },
+    [t, toast],
+  );
+  const focusRef = React.useRef(focus);
+  focusRef.current = focus;
+  useShortcut(mode.kind === "edit" && !mobile && "mod+shift+f", () => setFocus(!focusRef.current), { inFields: true });
+  // Esc leaves full screen, but never while typing, and never when it closes a menu or a dialog first.
+  useShortcut(focus && "escape", () => {
+    if (document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return;
+    setFocus(false);
+  });
+  React.useEffect(() => {
+    if (!focus) return;
+    // The page behind does not scroll under the editor.
+    const html = document.documentElement;
+    const before = html.style.overflow;
+    html.style.overflow = "hidden";
+    const onFs = () => setScreenFull(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => {
+      html.style.overflow = before;
+      document.removeEventListener("fullscreenchange", onFs);
+    };
+  }, [focus]);
+  React.useEffect(() => {
+    if (mobile && focus) setFocus(false);
+  }, [mobile, focus, setFocus]);
+  // While the person types, the bar fades so only the text is left; moving the mouse brings it back.
+  React.useEffect(() => {
+    if (!focus) return;
+    const type = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.key === "Escape" || e.key === "Tab") return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.(".cms-blocks, #cms-editor-body")) setBarQuiet(true);
+    };
+    let last = 0;
+    const move = (e: MouseEvent) => {
+      if (Math.abs(e.movementX) + Math.abs(e.movementY) < 3) return;
+      const now = Date.now();
+      if (now - last < 100) return;
+      last = now;
+      setBarQuiet(false);
+    };
+    document.addEventListener("keydown", type);
+    document.addEventListener("mousemove", move);
+    return () => {
+      document.removeEventListener("keydown", type);
+      document.removeEventListener("mousemove", move);
+    };
+  }, [focus]);
+  const toggleScreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    // The whole page, not the editor box: dialogs and menus open on the page and must stay visible.
+    else void document.documentElement.requestFullscreen?.().catch(() => undefined);
+  };
 
   // ── a copy in this browser: survives a lost connection and a closed tab ──
   // Scoped by CMS mount and person: a shared browser never offers someone else's copy.
@@ -977,6 +1062,22 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           </Button>
         ) : null}
         <BodyCount body={content.body} />
+        {!mobile && !focus ? (
+          <Button
+            ref={focusButton}
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-pressed={false}
+            title={`${t("focus_enter")} (${modLabel()}+Shift+F)`}
+            aria-keyshortcuts="Control+Shift+F Meta+Shift+F"
+            className="-my-1 h-7 gap-1.5 px-2 text-xs text-foreground"
+            onClick={() => setFocus(true)}
+          >
+            <Maximize2 aria-hidden className="h-3.5 w-3.5" />
+            <span className="sr-only xl:not-sr-only">{t("focus_enter")}</span>
+          </Button>
+        ) : null}
       </div>
       <ConfirmDialog
         open={!!checks}
@@ -1251,8 +1352,42 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   // Wide screens: the editor is as tall as the window, so the text and the preview scroll side by side
   // (and follow each other). Under a top bar of your own, pass e.g. className="h-[calc(100dvh-4rem)]".
   return (
-    <div ref={rootRef} className={cn("relative flex h-dvh min-h-0 flex-none flex-col overflow-y-auto", className)}>
+    <div
+      ref={rootRef}
+      data-focus={focus ? "" : undefined}
+      role={focus ? "region" : undefined}
+      aria-label={focus ? t("focus_bar") : undefined}
+      className={cn("relative flex h-dvh min-h-0 flex-none flex-col overflow-y-auto", className, focus && "fixed inset-0 z-40 h-dvh w-screen max-w-none bg-background")}
+    >
       <div ref={headRef} className="sticky top-0 z-20 bg-background">
+        {focus ? (
+          <div
+            className={cn(
+              "flex h-12 items-center gap-2 border-b px-3 transition-opacity duration-300 motion-reduce:transition-none focus-within:opacity-100 hover:opacity-100",
+              barQuiet && "opacity-0",
+            )}
+          >
+            <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={() => setFocus(false)} title={`${t("focus_exit")} (Esc)`}>
+              <Minimize2 aria-hidden className="h-4 w-4" />
+              <span className="hidden md:inline">{t("focus_exit")}</span>
+            </Button>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>
+              <bdi>{title}</bdi>
+            </span>
+            <span className="hidden items-center gap-1.5 lg:flex">{stateBits}</span>
+            <Button type="button" variant="ghost" size="sm" className={cn("gap-1.5", focusFields && "bg-muted")} aria-pressed={focusFields} aria-controls="cms-focus-fields" onClick={() => setFocusFields((v) => !v)}>
+              <SlidersHorizontal aria-hidden className="h-4 w-4" />
+              <span className="hidden md:inline">{focusFields ? t("focus_fields_hide") : t("focus_fields")}</span>
+              {fieldErrors && !focusFields ? <span aria-label={t("problems_n", { n: fieldErrors })} className="h-2 w-2 rounded-full bg-destructive" /> : null}
+            </Button>
+            {typeof document !== "undefined" && document.fullscreenEnabled ? (
+              <Button type="button" variant="ghost" size="icon" aria-pressed={screenFull} aria-label={screenFull ? t("focus_screen_off") : t("focus_screen")} title={screenFull ? t("focus_screen_off") : t("focus_screen")} onClick={toggleScreen}>
+                <Monitor aria-hidden className="h-4 w-4" />
+              </Button>
+            ) : null}
+            {saveButtons()}
+          </div>
+        ) : (
         <PageHeader title={title} crumbs={[schema.label]} after={stateBits}>
           <People people={others} className="mr-1" />
           {doc && canWrite ? (
@@ -1291,26 +1426,30 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           ) : null}
           {saveButtons()}
         </PageHeader>
+        )}
       </div>
-      {strips}
+      {focus ? null : strips}
       {agentBanner || restoreBanner ? (
         <div className="flex flex-col gap-2 px-6 pt-2.5">
           {restoreBanner}
           {agentBanner}
         </div>
       ) : null}
-      <div className="border-b px-6 py-3.5">{form}</div>
+      {/* In full screen the fields fold away under the bar; they stay mounted so nothing typed is lost. */}
+      <div id="cms-focus-fields" className={cn("border-b px-6 py-3.5", focus && "mx-auto w-full max-w-[780px] border-x-0", focus && !focusFields && "hidden")}>
+        {form}
+      </div>
       {sideBySide ? (
         <div ref={rowRef} className={cn("flex min-h-[360px] divide-x", rowHeight === null ? "flex-1" : "shrink-0")} style={rowHeight === null ? undefined : { height: rowHeight }}>
           {bodyPane}
           {previewPane(true)}
-          {commentsOpen ? comments(() => setCommentsOpen(false)) : null}
+          {commentsOpen && !focus ? comments(() => setCommentsOpen(false)) : null}
         </div>
       ) : (
         // One column: the body grows with its text and the page scrolls (the header and the status line stay).
         <div ref={rowRef} className="flex min-h-[360px] flex-1 divide-x">
           {bodyPane}
-          {commentsOpen ? <div className="sticky top-0 flex max-h-dvh w-80 shrink-0 flex-col self-start">{comments(() => setCommentsOpen(false))}</div> : null}
+          {commentsOpen && !focus ? <div className="sticky top-0 flex max-h-dvh w-80 shrink-0 flex-col self-start">{comments(() => setCommentsOpen(false))}</div> : null}
         </div>
       )}
       {previewWindow ? <PreviewWindow title={content.title} summary={content.summary} body={content.body} name={`cms-preview-${collection}-${currentSlug ?? "new"}`} onClosed={() => setPreviewWindow(false)} /> : null}

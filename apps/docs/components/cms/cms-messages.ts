@@ -917,6 +917,15 @@ export const en = {
   blk_read_min: "{n} min read",
   blk_outline: "Outline",
   blk_outline_empty: "Headings appear here",
+  focus_enter: "Full screen",
+  focus_exit: "Leave full screen",
+  focus_bar: "Full screen editing",
+  focus_fields: "Fields",
+  focus_fields_hide: "Hide fields",
+  focus_screen: "Use the whole screen",
+  focus_screen_off: "Leave the whole screen",
+  focus_entered: "Full screen. Press Esc or {keys} to leave.",
+  sc_focus: "Full screen editing",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1820,6 +1829,15 @@ export const ko: CmsMessages = {
   blk_read_min: "{n}분 분량",
   blk_outline: "목차",
   blk_outline_empty: "제목을 쓰면 여기에 보임",
+  focus_enter: "전체화면",
+  focus_exit: "전체화면 끝내기",
+  focus_bar: "전체화면 편집",
+  focus_fields: "필드",
+  focus_fields_hide: "필드 숨기기",
+  focus_screen: "모니터 전체 쓰기",
+  focus_screen_off: "모니터 전체 끝내기",
+  focus_entered: "전체화면. Esc나 {keys}로 끝냄",
+  sc_focus: "전체화면 편집",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;
