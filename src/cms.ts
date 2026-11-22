@@ -2731,8 +2731,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (isDoc(out)) return forCaller(a[0], out) as unknown as R;
       // `{ doc, … }` (patch and friends): the document inside.
       if (out && typeof out === "object" && isDoc((out as { doc?: unknown }).doc)) {
-        const d = (out as unknown as { doc: CmsDoc }).doc;
-        return { ...(out as object), doc: forCaller(a[0], d) } as unknown as R;
+        const d = forCaller(a[0], (out as unknown as { doc: CmsDoc }).doc);
+        // A receipt says nothing of the content: a diff of the saved body would.
+        return { ...(out as object), doc: d, ...(d.receipt && "diff" in (out as object) ? { diff: "" } : {}) } as unknown as R;
       }
       return out;
     };
