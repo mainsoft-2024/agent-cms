@@ -102,7 +102,7 @@ test("blocks: markdown shortcuts, the toolbar, Enter and Backspace, undo", async
   await expect(md).toHaveValue("Start\n\nHeading\n\n- one\n- two\n\n- [ ] task\n\nSay **hi** and `code` *now*");
 });
 
-test("blocks: the slash menu, source blocks edited in place, block selection", async ({ page, request }) => {
+test("blocks: the slash menu makes real columns, block selection", async ({ page, request }) => {
   await open(page, request, "First.\n\nSecond.");
   await line(page, "p", "First.").click();
   await page.keyboard.press("End");
@@ -113,21 +113,22 @@ test("blocks: the slash menu, source blocks edited in place, block selection", a
   await page.screenshot(shot("91-blocks-slash"));
   await page.keyboard.type("colu");
   await page.keyboard.press("Enter");
-  // A new columns block opens as markdown to fill in.
-  const src = page.locator("[data-cms-source=columns] textarea");
-  await expect(src).toBeVisible();
-  await src.fill(":::columns\n:::col\nLeft side\n:::col\nRight side\n:::");
-  await page.keyboard.press("Escape");
-  await expect(page.locator("[data-cms-source=columns]")).toContainText("Right side");
+  // Two columns with a line in each; the caret is in the first.
+  await expect(page.locator(".cms-blocks [data-col-id]")).toHaveCount(2);
+  await page.keyboard.type("Left side");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.type("Right side");
+  await expect(page.locator(".cms-blocks [data-col-id]").nth(1)).toContainText("Right side");
 
   // Esc selects the block, Shift+↓ adds the next, Delete removes both, undo brings them back.
   await line(page, "p", "First.").click();
   await page.keyboard.press("Escape");
   await page.keyboard.press("Shift+ArrowDown");
-  await expect(page.locator(".cms-blocks [data-block-id].bg-primary\\/10")).toHaveCount(2);
+  await expect(page.locator(".cms-blocks [data-block-id][aria-selected=true]")).toHaveCount(2);
   await page.keyboard.press("Delete");
   await expect(line(page, "p", "First.")).toHaveCount(0);
-  await expect(page.locator("[data-cms-source=columns]")).toHaveCount(0);
+  // A column left alone is a plain block again.
+  await expect(page.locator(".cms-blocks [data-col-id]")).toHaveCount(0);
   await page.keyboard.press(`${mod}+z`);
   await expect(line(page, "p", "First.")).toBeVisible();
   const md = await markdown(page);
@@ -143,7 +144,7 @@ test("blocks: moving a block with the keyboard and the handle menu", async ({ pa
   await expect.poll(texts).toEqual(["Gamma", "Alpha", "Beta"]);
   await line(page, "p", "Beta").hover();
   await page.locator('[data-block-type=p]:has-text("Beta") button[aria-label^="Drag to move"]').click();
-  await page.getByRole("menuitem", { name: /Heading/ }).first().click();
+  await page.getByRole("option", { name: /Heading/ }).first().click();
   await expect(line(page, "h2", "Beta")).toBeVisible();
 });
 

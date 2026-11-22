@@ -221,6 +221,10 @@
         {
           "path": "registry/cms/cms-blocks-inline.ts",
           "type": "registry:lib"
+        },
+        {
+          "path": "registry/cms/cms-blocks-tree.ts",
+          "type": "registry:lib"
         }
       ]
     },

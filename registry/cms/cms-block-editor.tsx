@@ -2,29 +2,97 @@
 // agent-cms: the block editor (Notion-style) for the document body.
 // Written for this CMS, no editor library: every block is its own small
 // editable element, and every change goes through plain functions
-// (cms-blocks-convert.ts, cms-blocks-inline.ts) that are tested in node.
+// (cms-blocks-convert.ts, cms-blocks-tree.ts, cms-blocks-inline.ts) that are
+// tested in node.
 //
 // The body is still stored as markdown. This editor reads markdown, shows
 // blocks, and writes markdown back:
 // - opening a document and not touching it never changes a byte of it;
 // - a block that was not touched writes its original text back;
-// - what has no block of its own (HTML, columns, toggles, tables with
-//   alignment...) is drawn as it will look and edited as markdown in place.
+// - what has no block of its own (HTML, page links, callouts with several
+//   paragraphs...) is drawn as it will look and edited as markdown in place.
 //
 // What it does: / menu, markdown typed by hand (`## `, `- `, `1. `, `[] `,
-// `> `, `**bold**`, `` `code` ``...), a toolbar over selected text, links,
-// block handles (drag to move, menu to turn into / duplicate / delete),
-// selecting blocks with Esc, Shift and dragging across them, copy and paste
-// as markdown, pasted or dropped images uploaded to the media library,
-// its own undo history, Korean and other IME input.
+// `> `, `>> `, `**bold**`, `` `code` ``...), a toolbar over selected text,
+// links, blocks inside blocks (nested lists with Tab and Shift+Tab, toggles,
+// columns), tables edited cell by cell, pictures with captions; block
+// handles: drag to move (a picture of what moves follows the pointer, the
+// page scrolls along, drop beside a block to make columns, Alt copies),
+// click for a menu you can search (turn into, duplicate, move, indent, copy,
+// delete); selecting blocks with Esc, Shift, dragging across them or drawing
+// a box from the margin; copy and paste as markdown, pasted or dropped images
+// uploaded to the media library, its own undo history, Korean and other IME
+// input.
 //
 // Install: npx @mainsoft/agent-cms add cms-block-editor
 // Use: <CmsProvider slots={{ blockEditor: CmsBlockEditor }}> (load it lazily).
 
 import * as React from "react";
-import { Bold, Check, ChevronDown, Code, Copy, CopyPlus, ExternalLink, GripVertical, Heading2, Heading3, ImageIcon, Info, Italic, Link as LinkIcon, List, ListChecks, ListOrdered, Minus, MoveDown, MoveUp, Pencil, Pilcrow, Plus, Quote, Strikethrough, Table, Trash2, Unlink, Columns2, CodeXml, ListCollapse } from "lucide-react";
+import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  ArrowDownToLine,
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  ArrowUpToLine,
+  Bold,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Code,
+  Columns2,
+  Columns3,
+  CodeXml,
+  Copy,
+  CopyPlus,
+  ExternalLink,
+  GripVertical,
+  Heading2,
+  Heading3,
+  ImageIcon,
+  IndentDecrease,
+  IndentIncrease,
+  Info,
+  Italic,
+  Link as LinkIcon,
+  List,
+  ListChecks,
+  ListCollapse,
+  ListOrdered,
+  Minus,
+  MoreHorizontal,
+  MoveDown,
+  MoveUp,
+  Pencil,
+  Pilcrow,
+  Plus,
+  Quote,
+  Search,
+  Strikethrough,
+  Table,
+  Trash2,
+  Unlink,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
-import { blockPlain, blocksToClipboard, blocksToMarkdown, isList, isText, markdownToBlocks, newId, sameMarkdown, type EBlock, type TextBlock, type TextType, type Tone } from "./cms-blocks-convert";
+import {
+  blockPlain,
+  blocksToClipboard,
+  blocksToMarkdown,
+  childrenOf,
+  holdsBlocks,
+  isList,
+  isText,
+  markdownToBlocks,
+  newId,
+  sameMarkdown,
+  type EBlock,
+  type TableAlign,
+  type TableBlock,
+  type TextBlock,
+  type TextType,
+  type Tone,
+} from "./cms-blocks-convert";
 import {
   APP_LINK,
   autoFormat,
@@ -45,12 +113,33 @@ import {
   type Mark,
   type Span,
 } from "./cms-blocks-inline";
+import {
+  accepts,
+  ancestors,
+  byId,
+  cloneBlocks,
+  indent as indentBlocks,
+  insertAfter as insertAfterIn,
+  isInside,
+  makeColumns,
+  moveTo,
+  normalize,
+  outdent as outdentBlocks,
+  reachable,
+  removeBlocks as removeFrom,
+  roots,
+  siblings,
+  subtree,
+  unwrap,
+  type Where,
+} from "./cms-blocks-tree";
 import { MarkdownPreview, NativeSelect } from "./cms-parts";
 import { pasteAsMarkdown } from "./cms-paste";
 import { isApple, useCms, type BlockEditorProps } from "./use-cms";
 
 type T = ReturnType<typeof useCms>["t"];
 type Key = Parameters<T>[0];
+type Icon = React.ComponentType<{ className?: string }>;
 
 // ── history ───────────────────────────────────────────────────────────────────
 
@@ -84,14 +173,16 @@ interface Item {
   label: Key;
   hint: Key;
   group: Key;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: Icon;
   words: string;
   /** Turn the current (empty) block into this, or make it below. */
-  make: () => EBlock | "media";
+  make: () => EBlock | EBlock[] | "media";
 }
 
 const text = (type: TextType, extra: Partial<TextBlock> = {}): TextBlock => ({ id: newId(), type, spans: [], ...extra });
 const source = (md: string, kind: string): EBlock => ({ id: newId(), type: "source", md, kind });
+const emptyRow = (n: number) => Array.from({ length: n }, () => [] as Span[]);
+const newTable = (): EBlock => ({ id: newId(), type: "table", align: [null, null, null], head: emptyRow(3), rows: [emptyRow(3), emptyRow(3)] });
 
 const ITEMS: Item[] = [
   { key: "p", label: "blk_t_p", hint: "blk_t_p_text", group: "blk_group_basic", icon: Pilcrow, words: "text paragraph plain 텍스트 문단 본문", make: () => text("p") },
@@ -100,27 +191,33 @@ const ITEMS: Item[] = [
   { key: "bullet", label: "blk_t_bullet", hint: "blk_t_bullet_text", group: "blk_group_basic", icon: List, words: "bullet list ul - 글머리 목록 리스트", make: () => text("bullet") },
   { key: "number", label: "blk_t_number", hint: "blk_t_number_text", group: "blk_group_basic", icon: ListOrdered, words: "numbered list ol 1. 번호 목록 순서", make: () => text("number") },
   { key: "todo", label: "blk_t_todo", hint: "blk_t_todo_text", group: "blk_group_basic", icon: ListChecks, words: "todo task check checkbox [] 할 일 체크", make: () => text("todo", { checked: false }) },
+  { key: "toggle", label: "blk_t_toggle", hint: "blk_t_toggle_text", group: "blk_group_basic", icon: ListCollapse, words: "toggle details collapse fold >> 접기 토글 펼치기", make: () => text("toggle") },
   { key: "quote", label: "blk_t_quote", hint: "blk_t_quote_text", group: "blk_group_basic", icon: Quote, words: "quote blockquote > 인용", make: () => text("quote") },
   { key: "callout", label: "blk_t_callout", hint: "blk_t_callout_text", group: "blk_group_basic", icon: Info, words: "callout note tip warning 알림 참고 팁 주의", make: () => text("callout", { tone: "note" }) },
   { key: "hr", label: "blk_t_hr", hint: "blk_t_hr_text", group: "blk_group_basic", icon: Minus, words: "divider rule hr line --- 구분선 선", make: () => ({ id: newId(), type: "hr" }) },
   { key: "media", label: "blk_slash_media", hint: "blk_slash_media_text", group: "blk_group_media", icon: ImageIcon, words: "image picture photo file media 이미지 사진 그림 파일 미디어", make: () => "media" },
+  { key: "table", label: "blk_t_table", hint: "blk_t_table_text", group: "blk_group_advanced", icon: Table, words: "table grid rows columns 표 테이블", make: newTable },
+  { key: "columns", label: "blk_slash_columns", hint: "blk_slash_columns_text", group: "blk_group_advanced", icon: Columns2, words: "columns two side 2단 단 칼럼 나란히", make: () => makeColumns(2) },
+  { key: "columns3", label: "blk_slash_columns3", hint: "blk_slash_columns3_text", group: "blk_group_advanced", icon: Columns3, words: "columns three side 3단 단 칼럼 나란히", make: () => makeColumns(3) },
   { key: "code", label: "blk_t_code", hint: "blk_t_code_text", group: "blk_group_advanced", icon: Code, words: "code snippet ``` 코드", make: () => ({ id: newId(), type: "code", text: "", lang: "" }) },
-  { key: "table", label: "blk_t_table", hint: "blk_t_table_text", group: "blk_group_advanced", icon: Table, words: "table grid rows columns 표 테이블", make: () => source("|  |  |\n| --- | --- |\n|  |  |", "table") },
-  { key: "toggle", label: "blk_t_toggle", hint: "blk_t_toggle_text", group: "blk_group_advanced", icon: ListCollapse, words: "toggle details collapse 접기 토글", make: () => source(":::toggle \n\n:::", "toggle") },
-  { key: "columns", label: "blk_slash_columns", hint: "blk_slash_columns_text", group: "blk_group_advanced", icon: Columns2, words: "columns two side 2단 단 칼럼", make: () => source(":::columns\n:::col\n\n:::col\n\n:::", "columns") },
   { key: "html", label: "blk_slash_html", hint: "blk_slash_html_text", group: "blk_group_advanced", icon: CodeXml, words: "html embed iframe markup 임베드", make: () => source(":::html\n\n:::", "html") },
 ];
 
-const TURN_INTO: { type: TextType; label: Key; icon: React.ComponentType<{ className?: string }> }[] = [
-  { type: "p", label: "blk_t_p", icon: Pilcrow },
-  { type: "h2", label: "blk_t_h2", icon: Heading2 },
-  { type: "h3", label: "blk_t_h3", icon: Heading3 },
-  { type: "bullet", label: "blk_t_bullet", icon: List },
-  { type: "number", label: "blk_t_number", icon: ListOrdered },
-  { type: "todo", label: "blk_t_todo", icon: ListChecks },
-  { type: "quote", label: "blk_t_quote", icon: Quote },
-  { type: "callout", label: "blk_t_callout", icon: Info },
+type TurnType = TextType | "code";
+const TURN_INTO: { type: TurnType; label: Key; icon: Icon; digit: string }[] = [
+  { type: "p", label: "blk_t_p", icon: Pilcrow, digit: "0" },
+  { type: "h2", label: "blk_t_h2", icon: Heading2, digit: "2" },
+  { type: "h3", label: "blk_t_h3", icon: Heading3, digit: "3" },
+  { type: "todo", label: "blk_t_todo", icon: ListChecks, digit: "4" },
+  { type: "bullet", label: "blk_t_bullet", icon: List, digit: "5" },
+  { type: "number", label: "blk_t_number", icon: ListOrdered, digit: "6" },
+  { type: "toggle", label: "blk_t_toggle", icon: ListCollapse, digit: "7" },
+  { type: "code", label: "blk_t_code", icon: Code, digit: "8" },
+  { type: "quote", label: "blk_t_quote", icon: Quote, digit: "" },
+  { type: "callout", label: "blk_t_callout", icon: Info, digit: "" },
 ];
+/** ⌘⌥ + digit turns blocks into a kind (as in Notion). */
+const DIGIT_TYPE: Record<string, TurnType> = Object.fromEntries(TURN_INTO.filter((x) => x.digit).map((x) => [x.digit, x.type]));
 
 function matchItems(items: Item[], q: string, t: T): Item[] {
   const query = q.trim().toLowerCase();
@@ -153,13 +250,56 @@ function lineShortcut(b: TextBlock, caret: number): { type: TextType; strip: num
   if (b.type === "p" && (m = /^(\d{1,9})[.)] $/.exec(head))) return { type: "number", strip: head.length, extra: Number(m[1]) !== 1 ? { start: Number(m[1]) } : {} };
   if ((b.type === "p" || b.type === "bullet") && (m = /^(?:[-*+] )?\[( |x)?\] $/i.exec(b.type === "bullet" ? `- ${head}` : head))) return { type: "todo", strip: head.length, extra: { checked: (m[1] ?? "").toLowerCase() === "x" } };
   if (b.type === "p" && /^> $/.test(head)) return { type: "quote", strip: 2 };
+  if (b.type === "p" && /^>> $/.test(head)) return { type: "toggle", strip: 3 };
   if (b.type === "p" && (m = /^> ?\[!(note|tip|warning)\] $/i.exec(head))) return { type: "callout", strip: head.length, extra: { tone: m[1].toLowerCase() as Tone } };
   return null;
 }
 
+/** The element that scrolls the editor (for scrolling while dragging); null: the page. */
+function scrollerOf(el: HTMLElement | null): HTMLElement | null {
+  for (let cur = el?.parentElement ?? null; cur && cur !== document.body; cur = cur.parentElement) {
+    const s = getComputedStyle(cur);
+    if (/(auto|scroll|overlay)/.test(s.overflowY) && cur.scrollHeight > cur.clientHeight + 1) return cur;
+  }
+  return null;
+}
+
+const MOD = () => (isApple() ? "⌘" : "Ctrl+");
+const ALT = () => (isApple() ? "⌥" : "Alt+");
+
 // ── the editor ────────────────────────────────────────────────────────────────
 
-type Menu = { id: string; query: string; from: number; x: number; y: number; index: number } | null;
+/** `opened`: the menu came from the + button (closing it without a pick takes back what + wrote). */
+type Menu = { id: string; query: string; from: number; x: number; y: number; index: number; opened?: "fresh" | "slash" } | null;
+type Box = { left: number; top: number; width: number; height: number };
+type DropAt = { id: string; where: Where; box: Box };
+interface Drag {
+  ids: string[];
+  from: string;
+  handle: HTMLElement;
+  x0: number;
+  y0: number;
+  x: number;
+  y: number;
+  started: boolean;
+  copy: boolean;
+  ghost: HTMLElement | null;
+  at: DropAt | null;
+  raf: number;
+}
+interface Marquee {
+  x0: number;
+  y0: number;
+  started: boolean;
+  base: string[];
+  onRoot: boolean;
+}
+
+/** Toggles that start open: the empty ones (so their "empty" hint shows). */
+function initialOpen(list: readonly EBlock[]): Set<string> {
+  const kids = childrenOf(list);
+  return new Set(list.filter((b) => b.type === "toggle" && !(kids.get(b.id) ?? []).length).map((b) => b.id));
+}
 
 export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, resolveFileUrl, onPickMedia, insertRef, id, describedBy }: BlockEditorProps) {
   const { t, toast } = useCms();
@@ -176,16 +316,36 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
   const pendingFocus = React.useRef<Focus | null>(null);
   const focused = React.useRef<Focus | null>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
-  const [selected, setSelected] = React.useState<string[]>([]);
+  const [selected, setSelectedState] = React.useState<string[]>([]);
+  const selectedRef = React.useRef<string[]>([]);
+  const setSelected = (ids: string[]) => {
+    selectedRef.current = ids;
+    setSelectedState(ids);
+  };
   const anchor = React.useRef<string | null>(null);
   const [menu, setMenu] = React.useState<Menu>(null);
   const [editingSource, setEditingSource] = React.useState<string | null>(null);
   const [toolbar, setToolbar] = React.useState<{ id: string; start: number; end: number; x: number; y: number; link: ReturnType<typeof linkAt> } | null>(null);
   const [linkEdit, setLinkEdit] = React.useState<{ id: string; start: number; end: number; href: string; x: number; y: number } | null>(null);
-  const [drop, setDrop] = React.useState<{ id: string; after: boolean } | null>(null);
-  const dragging = React.useRef<string[] | null>(null);
+  const [fileDrop, setFileDrop] = React.useState<{ id: string; after: boolean } | null>(null);
   const [blockMenu, setBlockMenu] = React.useState<{ id: string; x: number; y: number } | null>(null);
+  /** Where the caret was when the block menu opened from the text (Esc puts it back). */
+  const menuFrom = React.useRef<Focus | null>(null);
   const [focusId, setFocusId] = React.useState<string | null>(null);
+  const [open, setOpenState] = React.useState<Set<string>>(() => initialOpen(blocks));
+  const openRef = React.useRef(open);
+  const setOpen = (fn: (s: Set<string>) => void) => {
+    const n = new Set(openRef.current);
+    fn(n);
+    openRef.current = n;
+    setOpenState(n);
+  };
+  const [dragging, setDragging] = React.useState<{ ids: string[]; copy: boolean } | null>(null);
+  const [dropBox, setDropBox] = React.useState<(Box & { side: boolean }) | null>(null);
+  const dragRef = React.useRef<Drag | null>(null);
+  const hoverToggle = React.useRef<{ id: string; timer: number } | null>(null);
+  const [marquee, setMarquee] = React.useState<Box | null>(null);
+  const marqueeRef = React.useRef<Marquee | null>(null);
   const editable = !readOnly;
 
   // ── state changes ──
@@ -247,27 +407,43 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     past.current = [];
     future.current = [];
     setSelected([]);
+    openRef.current = initialOpen(blocksRef.current);
+    setOpenState(openRef.current);
     setBlocksState(blocksRef.current);
   }, [value]);
 
-  // Put the caret where the last change wants it.
+  // Put the caret where the last change wants it (opening the toggles it is inside).
   React.useLayoutEffect(() => {
     const f = pendingFocus.current;
     if (!f) return;
-    pendingFocus.current = null;
     const el = els.current.get(f.id);
-    if (!el) return;
+    if (!el) {
+      const closed = ancestors(blocksRef.current, f.id).filter((a) => a.type === "toggle" && !openRef.current.has(a.id));
+      if (closed.length) setOpen((s) => closed.forEach((a) => s.add(a.id)));
+      else pendingFocus.current = null;
+      return;
+    }
+    pendingFocus.current = null;
     el.focus({ preventScroll: true });
     if (el.isContentEditable) {
       setSelectionIn(el, f.start, f.end ?? f.start);
       if (f.plain) leaveMarks(el);
-    }
-    else if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) el.setSelectionRange(f.start, f.end ?? f.start);
+    } else if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) el.setSelectionRange(f.start, f.end ?? f.start);
     el.scrollIntoView({ block: "nearest" });
   });
 
-  const indexOf = (bid: string) => blocksRef.current.findIndex((b) => b.id === bid);
+  const find = (bid: string) => blocksRef.current.find((b) => b.id === bid);
   const replace = (bid: string, make: (b: EBlock) => EBlock | EBlock[]) => blocksRef.current.flatMap((b) => (b.id === bid ? make(b) : [b]));
+  /** Blocks the arrow keys can reach, in order. */
+  const visible = () => reachable(blocksRef.current, openRef.current);
+  const neighbour = (bid: string, dir: -1 | 1) => {
+    const v = visible();
+    const i = v.findIndex((b) => b.id === bid);
+    return i < 0 ? undefined : v[i + dir];
+  };
+  const kidsOf = (bid: string) => blocksRef.current.filter((b) => b.parent === bid);
+  /** The column a block sits in ("" when none). */
+  const columnOf = (bid: string) => ancestors(blocksRef.current, bid).find((a) => a.type === "col")?.id ?? "";
 
   // ── the screen can put markdown where the caret is ──
   React.useEffect(() => {
@@ -282,14 +458,20 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     };
   });
 
-  /** Put blocks below one block; an empty text line is replaced. */
+  /** Put blocks below one block (after what is inside it); an empty text line is replaced. */
   const insertAfter = (bid: string | undefined, made: EBlock[], focusLast = true) => {
     const list = blocksRef.current;
-    const at = bid ? list.findIndex((b) => b.id === bid) : list.length - 1;
-    const cur = list[at];
-    const empty = cur && cur.type === "p" && !plain((cur as TextBlock).spans).trim();
-    const next = empty ? [...list.slice(0, at), ...made, ...list.slice(at + 1)] : [...list.slice(0, at + 1), ...made, ...list.slice(at + 1)];
-    const last = made[made.length - 1];
+    const cur = bid ? list.find((b) => b.id === bid) : list[list.length - 1];
+    const empty = cur && cur.type === "p" && !plain((cur as TextBlock).spans).trim() && !kidsOf(cur.id).length;
+    let next: EBlock[];
+    if (cur && empty) {
+      const ids = new Set(made.map((b) => b.id));
+      const placed = made.map((b) => (!b.parent || !ids.has(b.parent) ? ({ ...b, parent: cur.parent } as EBlock) : b));
+      const at = list.indexOf(cur);
+      next = normalize([...list.slice(0, at), ...placed, ...list.slice(at + 1)]);
+    } else next = insertAfterIn(list, cur?.id, made);
+    const tops = made.filter((b) => !b.parent || !made.some((x) => x.id === b.parent));
+    const last = [...made].reverse().find((b) => isText(b) || b.type === "code") ?? tops[tops.length - 1];
     commit(next, focusLast ? focusOf(last, "end") : undefined);
   };
 
@@ -297,12 +479,16 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     if (!b) return null;
     if (isText(b)) return { id: b.id, start: where === "start" ? 0 : spansLength(b.spans) };
     if (b.type === "code") return { id: b.id, start: where === "start" ? 0 : b.text.length };
+    if (b.type === "columns" || b.type === "col") {
+      const first = blocksRef.current.find((x) => isInside(blocksRef.current, x.id, b.id) && (isText(x) || x.type === "code"));
+      return first ? focusOf(first, where) : null;
+    }
     return { id: b.id, start: 0 };
   };
 
   const focusBlock = (b: EBlock | undefined, where: "start" | "end") => {
     if (!b) return;
-    if (!isText(b) && b.type !== "code") {
+    if (!isText(b) && b.type !== "code" && b.type !== "table") {
       selectOnly(b.id);
       return;
     }
@@ -312,15 +498,20 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
 
   // ── uploads ──
   const uploadInto = React.useCallback(
-    async (files: File[], afterId: string | undefined) => {
+    async (files: File[], afterId: string | undefined, before = false) => {
       if (!uploadFile || !files.length) return;
       const made = files.map((f) => ({ id: newId(), type: "media" as const, target: "", alt: "", pending: f.name }));
-      insertAfter(afterId, made as EBlock[], false);
+      if (before && afterId) {
+        const ref = find(afterId);
+        const list = blocksRef.current;
+        const at = list.findIndex((b) => b.id === afterId);
+        commit(normalize([...list.slice(0, at), ...made.map((m) => ({ ...m, parent: ref?.parent }) as EBlock), ...list.slice(at)]));
+      } else insertAfter(afterId, made as EBlock[], false);
       for (const [k, f] of files.entries()) {
         const bid = made[k].id;
         try {
           const target = await uploadFile(f);
-          const next = blocksRef.current.map((b) => (b.id === bid ? ({ id: bid, type: "media", target, alt: "" } as EBlock) : b));
+          const next = blocksRef.current.map((b) => (b.id === bid ? ({ id: bid, parent: b.parent, type: "media", target, alt: "" } as EBlock) : b));
           blocksRef.current = next;
           setBlocksState(next);
           emit(next);
@@ -347,7 +538,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     rootRef.current?.focus({ preventScroll: true });
   };
   const selectRange = (from: string, to: string) => {
-    const list = blocksRef.current;
+    const list = visible();
     const a = list.findIndex((b) => b.id === from);
     const b = list.findIndex((x) => x.id === to);
     if (a < 0 || b < 0) return;
@@ -357,46 +548,78 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
 
   const removeBlocks = (ids: string[], announce = true) => {
     const list = blocksRef.current;
-    const first = list.findIndex((b) => ids.includes(b.id));
-    const next = list.filter((b) => !ids.includes(b.id));
-    const neighbour = next[Math.max(0, first - 1)];
+    const top = roots(list, ids);
+    const before = neighbour(top[0], -1);
+    const next = removeFrom(list, top);
     setSelected([]);
-    commit(next.length ? next : [text("p")], next.length ? focusOf(neighbour, "end") : null);
-    if (announce && ids.length > 1) toast(t("blk_deleted_n", { n: ids.length }), { action: { label: t("undo"), run: () => undo() } });
+    const keep = before && next.some((b) => b.id === before.id) ? before : next[0];
+    commit(next.length ? next : [text("p")], next.length ? focusOf(keep, "end") : null);
+    const count = top.reduce((n, r) => n + subtree(list, r).filter((b) => b.type !== "col" && b.type !== "columns").length, 0);
+    if (announce && count > 1) toast(t("blk_deleted_n", { n: count }), { action: { label: t("undo"), run: () => undo() } });
   };
 
-  const moveBlocks = (ids: string[], dir: -1 | 1) => {
-    const list = [...blocksRef.current];
-    const idx = list.map((b, i) => (ids.includes(b.id) ? i : -1)).filter((i) => i >= 0);
-    if (!idx.length) return;
-    const lo = idx[0];
-    const hi = idx[idx.length - 1];
-    if ((dir < 0 && lo === 0) || (dir > 0 && hi === list.length - 1)) return;
-    const part = list.splice(lo, hi - lo + 1);
-    list.splice(lo + dir, 0, ...part);
-    commit(list, focused.current && ids.includes(focused.current.id) ? focused.current : undefined);
+  /** Move blocks one place up or down among their siblings; at the edge, out of what they sit in. */
+  const moveVertical = (ids: string[], dir: -1 | 1) => {
+    const list = blocksRef.current;
+    const top = roots(list, ids);
+    if (!top.length) return;
+    const edge = dir < 0 ? top[0] : top[top.length - 1];
+    const sibs = siblings(list, edge);
+    const i = sibs.findIndex((b) => b.id === edge);
+    const map = byId(list);
+    const parent = map.get(map.get(edge)?.parent ?? "");
+    let next: EBlock[] | null = null;
+    if (dir < 0 && i > 0) next = moveTo(list, top, sibs[i - 1].id, "before");
+    else if (dir > 0 && i >= 0 && i < sibs.length - 1) next = moveTo(list, top, sibs[i + 1].id, "after");
+    else if (parent && parent.type !== "col") next = moveTo(list, top, parent.id, dir < 0 ? "before" : "after");
+    if (next) commit(next, focused.current && ids.includes(focused.current.id) ? focused.current : undefined);
   };
 
   const duplicate = (ids: string[]) => {
     const list = blocksRef.current;
-    const lastIdx = Math.max(...ids.map((x) => list.findIndex((b) => b.id === x)));
-    const copies = list.filter((b) => ids.includes(b.id)).map((b) => ({ ...b, id: newId(), orig: undefined, gap: undefined }) as EBlock);
-    commit([...list.slice(0, lastIdx + 1), ...copies, ...list.slice(lastIdx + 1)]);
-    setSelected(copies.map((c) => c.id));
+    const top = roots(list, ids);
+    if (!top.length) return;
+    const copies = cloneBlocks(top.flatMap((r) => subtree(list, r)));
+    const next = insertAfterIn(list, top[top.length - 1], copies);
+    commit(next);
+    const ids2 = new Set(copies.map((c) => c.id));
+    setSelected(copies.filter((c) => !c.parent || !ids2.has(c.parent)).map((c) => c.id));
   };
 
-  const turnInto = (bid: string, type: TextType) => {
-    const next = replace(bid, (b) => {
-      if (isText(b)) return { ...b, type, ...(type === "todo" ? { checked: !!b.checked } : {}), ...(type === "callout" ? { tone: b.tone ?? "note" } : {}) };
-      if (b.type === "code") return { id: b.id, type, spans: b.text ? [{ text: b.text }] : [] } as TextBlock;
+  const turnInto = (ids: string[], type: TurnType) => {
+    const set = new Set(ids);
+    let next = blocksRef.current.map((b) => {
+      if (!set.has(b.id)) return b;
+      if (type === "code") {
+        if (isText(b)) return { id: b.id, parent: b.parent, type: "code", text: plain(b.spans), lang: "" } as EBlock;
+        return b;
+      }
+      if (isText(b)) return { ...b, type, checked: type === "todo" ? !!b.checked : undefined, tone: type === "callout" ? (b.tone ?? "note") : undefined, start: type === "number" ? b.start : undefined, newList: undefined } as TextBlock;
+      if (b.type === "code") return { id: b.id, parent: b.parent, type, spans: b.text ? [{ text: b.text }] : [] } as TextBlock;
       return b;
     });
-    const b = next.find((x) => x.id === bid);
-    commit(next, focusOf(b, "end"));
+    next = normalize(next);
+    if (type === "toggle") setOpen((s) => ids.forEach((x) => s.add(x)));
+    const one = ids.length === 1 ? next.find((x) => x.id === ids[0]) : undefined;
+    commit(next, one ? focusOf(one, "end") : undefined);
+  };
+
+  const indentIds = (ids: string[], out: boolean) => {
+    const next = out ? outdentBlocks(blocksRef.current, ids) : indentBlocks(blocksRef.current, ids);
+    if (!next) return false;
+    // Going inside a closed toggle: open it so the block stays in sight.
+    if (!out)
+      for (const x of ids) {
+        const p = next.find((b) => b.id === x)?.parent;
+        if (p && next.find((b) => b.id === p)?.type === "toggle") setOpen((s) => s.add(p));
+      }
+    commit(next, focused.current && ids.includes(focused.current.id) ? { ...focused.current } : undefined);
+    return true;
   };
 
   const copyBlocks = async (ids: string[], cut = false) => {
-    const md = blocksToClipboard(blocksRef.current.filter((b) => ids.includes(b.id)));
+    const list = blocksRef.current;
+    const md = blocksToClipboard(roots(list, ids).flatMap((r) => subtree(list, r)));
     try {
       await navigator.clipboard.writeText(md);
       if (!cut) toast(t("blk_copied"), { tone: "ok" });
@@ -419,14 +642,15 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       next = { ...next, type: sc.type, spans: sliceSpans(spans, sc.strip), ...sc.extra };
       caret = 0;
       rerender = true;
+      if (sc.type === "toggle") setOpen((s) => s.add(b.id));
     } else if (b.type === "p" && plain(spans) === "---" && data === "-") {
-      const rule: EBlock = { id: newId(), type: "hr" };
-      const after = text("p");
+      const rule: EBlock = { id: newId(), parent: b.parent, type: "hr" };
+      const after = text("p", { parent: b.parent });
       commit(replace(b.id, () => [rule, after]), { id: after.id, start: 0 });
       return;
     } else if (b.type === "p" && /^```[\w+-]*$/.test(plain(spans)) && data === "`" && plain(spans).length === 3) {
-      const code: EBlock = { id: b.id, type: "code", text: "", lang: "" };
-      commit(replace(b.id, () => code), { id: b.id, start: 0 });
+      const code: EBlock = { id: b.id, parent: b.parent, type: "code", text: "", lang: "" };
+      commit(normalize(replace(b.id, () => code)), { id: b.id, start: 0 });
       return;
     } else if (data && /[*~`_]/.test(data)) {
       const f = autoFormat(spans, caret);
@@ -439,7 +663,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     }
     if (rerender) {
       (el as HTMLElement & { _spans?: Span[] })._spans = undefined;
-      commit(replace(b.id, () => next), { id: b.id, start: caret, plain: true }, undefined);
+      commit(normalize(replace(b.id, () => next)), { id: b.id, start: caret, plain: true }, undefined);
     } else {
       (el as HTMLElement & { _spans?: Span[] })._spans = next.spans;
       commit(replace(b.id, () => next), undefined, `type:${b.id}`);
@@ -450,13 +674,13 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     const m = /(^|\s)\/([^\s/]{0,24})$/.exec(before);
     if (m && editable) {
       const r = caretRect();
-      setMenu((old) => ({ id: b.id, query: m[2], from: caret - m[2].length - 1, x: r?.left ?? 0, y: r?.bottom ?? 0, index: old?.id === b.id ? Math.min(old.index, 50) : 0 }));
+      setMenu((old) => ({ id: b.id, query: m[2], from: caret - m[2].length - 1, x: r?.left ?? 0, y: r?.bottom ?? 0, index: old?.id === b.id ? Math.min(old.index, 50) : 0, opened: old?.id === b.id && !m[2] ? old.opened : undefined }));
     } else if (menu) setMenu(null);
   };
 
   const applyItem = (item: Item) => {
     if (!menu) return;
-    const b = blocksRef.current.find((x) => x.id === menu.id);
+    const b = find(menu.id);
     setMenu(null);
     if (!b || !isText(b)) return;
     // Take the "/query" out of the line.
@@ -474,22 +698,41 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       });
       return;
     }
-    if (isText(made)) {
+    if (!Array.isArray(made) && isText(made)) {
       // A text kind turns the line into it, keeping what was written.
-      const turned = { ...b, ...made, id: b.id, spans, orig: b.orig, gap: b.gap } as TextBlock;
-      commit(replace(b.id, () => turned), { id: b.id, start: menu.from });
+      const turned = { ...b, ...made, id: b.id, parent: b.parent, spans, orig: b.orig, gap: b.gap } as TextBlock;
+      if (made.type === "toggle") setOpen((s) => s.add(b.id));
+      commit(normalize(replace(b.id, () => turned)), { id: b.id, start: menu.from });
       return;
     }
-    const after: EBlock[] = made.type === "hr" ? [made, text("p")] : [made];
-    const next = emptyNow ? replace(b.id, () => after) : replace(b.id, (x) => [{ ...(x as TextBlock), spans }, ...after]);
-    if (made.type === "source") setEditingSource(made.id);
-    commit(next, made.type === "hr" ? { id: after[1].id, start: 0 } : made.type === "code" ? { id: made.id, start: 0 } : made.type === "source" ? { id: made.id, start: made.md.indexOf("\n") > 0 && made.kind === "toggle" ? 9 : 0 } : undefined);
+    const group = Array.isArray(made) ? made : [made];
+    if (group[0].type === "hr") group.push(text("p"));
+    const ids = new Set(group.map((x) => x.id));
+    const placed = group.map((x) => (!x.parent || !ids.has(x.parent) ? ({ ...x, parent: b.parent } as EBlock) : x));
+    const list = blocksRef.current;
+    const at = list.findIndex((x) => x.id === b.id);
+    const next = emptyNow && !kidsOf(b.id).length ? normalize([...list.slice(0, at), ...placed, ...list.slice(at + 1)]) : insertAfterIn(replace(b.id, (x) => ({ ...(x as TextBlock), spans })), b.id, placed);
+    const first = group[0];
+    if (first.type === "source") setEditingSource(first.id);
+    const focusTarget = first.type === "hr" ? group[1] : first.type === "columns" ? group.find((x) => x.type === "p") : first.type === "table" || first.type === "code" ? first : undefined;
+    commit(next, focusTarget ? focusOf(focusTarget, "start") : undefined);
   };
 
   const menuItems = React.useMemo(() => {
     const all = onPickMedia ? ITEMS : ITEMS.filter((i) => i.key !== "media");
     return menu ? matchItems(all, menu.query, t) : [];
   }, [menu, onPickMedia, t]);
+
+  /** Where a new line goes when Enter is pressed at the end of `b`: inside it when what is inside shows. */
+  const lineAfter = (list: EBlock[], b: TextBlock, fresh: TextBlock): EBlock[] => {
+    const inside = kidsOf(b.id);
+    const intoToggle = b.type === "toggle" && openRef.current.has(b.id);
+    if (intoToggle || (isList(b) && inside.length)) {
+      const at = list.findIndex((x) => x.id === b.id) + 1;
+      return normalize([...list.slice(0, at), { ...fresh, parent: b.id }, ...list.slice(at)]);
+    }
+    return insertAfterIn(list, b.id, [fresh]);
+  };
 
   // ── keys in a text block ──
   const onTextKey = (b: TextBlock, el: HTMLElement, e: React.KeyboardEvent) => {
@@ -518,7 +761,23 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       }
       if (e.key === "Escape") {
         e.preventDefault();
+        if (menu.opened && !menu.query) undo();
         setMenu(null);
+        return;
+      }
+    }
+
+    if (e.key === "Tab" && !mod && !e.altKey) {
+      // Tab nests where it can; elsewhere (a line that cannot nest) it moves focus on, as usual.
+      if (indentIds([b.id], e.shiftKey) || isList(b) || (b as EBlock).parent) e.preventDefault();
+      return;
+    }
+
+    if (mod && e.altKey && /^Digit\d$/.test(e.code)) {
+      const type = DIGIT_TYPE[e.code.slice(5)];
+      if (type) {
+        e.preventDefault();
+        turnInto([b.id], type);
         return;
       }
     }
@@ -541,6 +800,13 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
         openLink(b, sel.start, sel.end);
         return;
       }
+      if (k === "/") {
+        e.preventDefault();
+        const r = el.getBoundingClientRect();
+        menuFrom.current = { id: b.id, start: sel.start, end: sel.end };
+        setBlockMenu({ id: b.id, x: r.left, y: r.bottom + 4 });
+        return;
+      }
       if (k === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
@@ -554,7 +820,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       }
       if (k === "a" && sel.start === 0 && sel.end === len && len > 0) {
         e.preventDefault();
-        setSelected(list.map((x) => x.id));
+        setSelected(visible().map((x) => x.id));
         rootRef.current?.focus({ preventScroll: true });
         return;
       }
@@ -565,12 +831,17 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       }
       if (e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         e.preventDefault();
-        moveBlocks([b.id], e.key === "ArrowUp" ? -1 : 1);
+        moveVertical([b.id], e.key === "ArrowUp" ? -1 : 1);
         return;
       }
       if (e.key === "Enter" && b.type === "todo") {
         e.preventDefault();
         commit(replace(b.id, (x) => ({ ...(x as TextBlock), checked: !(x as TextBlock).checked })));
+        return;
+      }
+      if (e.key === "Enter" && b.type === "toggle") {
+        e.preventDefault();
+        setOpen((s) => (s.has(b.id) ? s.delete(b.id) : s.add(b.id)));
         return;
       }
     }
@@ -592,15 +863,17 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     if (e.key === "Enter") {
       e.preventDefault();
       const isEmpty = !plain(b.spans).trim();
-      // An empty list item, quote or callout ends it.
+      // An empty list item inside another one goes out a level; elsewhere an empty list item, quote or callout ends it.
       if (isEmpty && b.type !== "p") {
-        commit(replace(b.id, (x) => ({ ...(x as TextBlock), type: "p", checked: undefined, start: undefined, tone: undefined })), { id: b.id, start: 0 });
+        const parent = b.parent ? find(b.parent) : undefined;
+        if (isList(b) && parent && ["bullet", "number", "todo", "toggle"].includes(parent.type) && indentIds([b.id], true)) return;
+        commit(normalize(replace(b.id, (x) => ({ ...(x as TextBlock), type: "p", checked: undefined, start: undefined, tone: undefined }))), { id: b.id, start: 0 });
         return;
       }
       // ``` then Enter: a code block.
       const m = /^```([\w+-]*)$/.exec(plain(b.spans));
       if (b.type === "p" && m) {
-        commit(replace(b.id, () => ({ id: b.id, type: "code", text: "", lang: m[1] })), { id: b.id, start: 0 });
+        commit(replace(b.id, () => ({ id: b.id, parent: b.parent, type: "code", text: "", lang: m[1] })), { id: b.id, start: 0 });
         return;
       }
       const left = sliceSpans(b.spans, 0, sel.start);
@@ -608,65 +881,78 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       const kind: TextType = isList(b) ? b.type : "p";
       // At the very start of a line with text: a new line above, the caret stays.
       if (sel.start === 0 && sel.end === 0 && len > 0) {
-        const above = text(kind, kind === "todo" ? { checked: false } : {});
-        commit([...list.slice(0, i), above, ...list.slice(i)], { id: b.id, start: 0 });
+        const above = text(kind, { parent: b.parent, ...(kind === "todo" ? { checked: false } : {}) });
+        commit(normalize([...list.slice(0, i), above, ...list.slice(i)]), { id: b.id, start: 0 });
         return;
       }
       const below = text(kind, { spans: right, ...(kind === "todo" ? { checked: false } : {}) });
-      commit([...list.slice(0, i), { ...b, spans: left }, below, ...list.slice(i + 1)], { id: below.id, start: 0 });
+      const withLeft = replace(b.id, () => ({ ...b, spans: left }));
+      commit(lineAfter(withLeft, { ...b, spans: left }, below), { id: below.id, start: 0 });
       return;
     }
 
     if (e.key === "Backspace" && sel.collapsed && sel.start === 0) {
-      // A heading, list item, quote or callout becomes text first (like in Notion).
+      // A heading, list item, quote, callout or toggle becomes text first (like in Notion).
       if (b.type !== "p") {
         e.preventDefault();
-        commit(replace(b.id, (x) => ({ ...(x as TextBlock), type: "p", checked: undefined, start: undefined, tone: undefined, newList: undefined })), { id: b.id, start: 0 });
+        commit(normalize(replace(b.id, (x) => ({ ...(x as TextBlock), type: "p", checked: undefined, start: undefined, tone: undefined, newList: undefined }))), { id: b.id, start: 0 });
         return;
       }
-      const prev = list[i - 1];
+      // Text inside a list item or toggle goes out a level.
+      const parent = b.parent ? find(b.parent) : undefined;
+      if (parent && parent.type !== "col" && parent.type !== "columns") {
+        e.preventDefault();
+        indentIds([b.id], true);
+        return;
+      }
+      const prev = neighbour(b.id, -1);
       if (!prev) return;
       e.preventDefault();
+      // Not across the edge of a column (that would take the layout apart).
+      if (columnOf(b.id) !== columnOf(prev.id)) return;
       if (isText(prev)) {
         const at = spansLength(prev.spans);
-        const merged = { ...prev, spans: [...prev.spans, ...b.spans] } as TextBlock;
-        commit([...list.slice(0, i - 1), merged, ...list.slice(i + 1)], { id: prev.id, start: at });
+        const merged = replace(prev.id, () => ({ ...prev, spans: [...prev.spans, ...b.spans] }) as TextBlock);
+        commit(unwrap(merged, b.id), { id: prev.id, start: at });
       } else if (!len) {
-        commit([...list.slice(0, i), ...list.slice(i + 1)]);
+        commit(unwrap(list, b.id));
         selectOnly(prev.id);
       } else selectOnly(prev.id);
       return;
     }
 
     if (e.key === "Delete" && sel.collapsed && sel.start === len) {
-      const nextB = list[i + 1];
+      const nextB = neighbour(b.id, 1);
       if (!nextB) return;
       e.preventDefault();
+      if (columnOf(b.id) !== columnOf(nextB.id)) return;
       if (isText(nextB)) {
-        const merged = { ...b, spans: [...b.spans, ...nextB.spans] } as TextBlock;
-        commit([...list.slice(0, i), merged, ...list.slice(i + 2)], { id: b.id, start: len });
+        const merged = replace(b.id, () => ({ ...b, spans: [...b.spans, ...nextB.spans] }) as TextBlock);
+        commit(unwrap(merged, nextB.id), { id: b.id, start: len });
       } else selectOnly(nextB.id);
       return;
     }
 
-    if ((e.key === "ArrowUp" || (e.key === "ArrowLeft" && sel.collapsed && sel.start === 0)) && !e.shiftKey && i > 0) {
-      if (e.key === "ArrowLeft" || onEdgeLine(el, "top")) {
+    if ((e.key === "ArrowUp" || (e.key === "ArrowLeft" && sel.collapsed && sel.start === 0)) && !e.shiftKey) {
+      const prev = neighbour(b.id, -1);
+      if (prev && (e.key === "ArrowLeft" || onEdgeLine(el, "top"))) {
         e.preventDefault();
-        focusBlock(list[i - 1], "end");
+        focusBlock(prev, "end");
       }
       return;
     }
-    if ((e.key === "ArrowDown" || (e.key === "ArrowRight" && sel.collapsed && sel.start === len)) && !e.shiftKey && i < list.length - 1) {
-      if (e.key === "ArrowRight" || onEdgeLine(el, "bottom")) {
+    if ((e.key === "ArrowDown" || (e.key === "ArrowRight" && sel.collapsed && sel.start === len)) && !e.shiftKey) {
+      const nx = neighbour(b.id, 1);
+      if (nx && (e.key === "ArrowRight" || onEdgeLine(el, "bottom"))) {
         e.preventDefault();
-        focusBlock(list[i + 1], "start");
+        focusBlock(nx, "start");
       }
       return;
     }
     if (e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && ((e.key === "ArrowUp" && sel.start === 0) || (e.key === "ArrowDown" && sel.end === len))) {
       // Shift past the edge of a block selects blocks.
       e.preventDefault();
-      const other = list[i + (e.key === "ArrowUp" ? -1 : 1)];
+      const other = neighbour(b.id, e.key === "ArrowUp" ? -1 : 1);
       anchor.current = b.id;
       setSelected(other ? (e.key === "ArrowUp" ? [other.id, b.id] : [b.id, other.id]) : [b.id]);
       rootRef.current?.focus({ preventScroll: true });
@@ -692,7 +978,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
 
   const applyLink = (href: string | null) => {
     if (!linkEdit) return;
-    const b = blocksRef.current.find((x) => x.id === linkEdit.id);
+    const b = find(linkEdit.id);
     setLinkEdit(null);
     if (!b || !isText(b)) return;
     const spans = setLink(b.spans, linkEdit.start, linkEdit.end, href ? href.trim() : null);
@@ -733,41 +1019,40 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       commit(replace(b.id, (x) => ({ ...(x as TextBlock), spans })), { id: b.id, start: sel.start + spansLength(piece) });
       return;
     }
-    // Several lines: blocks.
+    // Several lines: blocks (with what is inside them).
     const made = markdownToBlocks(trimmed).map((x) => ({ ...x, orig: undefined, gap: undefined })) as EBlock[];
     if (!made.length) return;
-    const first = made[0];
+    const madeIds = new Set(made.map((x) => x.id));
+    const isTop = (x: EBlock) => !x.parent || !madeIds.has(x.parent);
+    const placed = made.map((x) => (isTop(x) ? ({ ...x, parent: b.parent } as EBlock) : x));
+    const first = placed[0];
     const out: EBlock[] = [];
-    if (isText(first) && (left.length || b.type !== "p")) {
+    if (isText(first) && isTop(first) && (left.length || b.type !== "p") && !made.some((x) => x.parent === first.id)) {
       out.push({ ...b, spans: [...left, ...first.spans] });
-      made.shift();
+      placed.shift();
     } else if (left.length) out.push({ ...b, spans: left });
-    out.push(...made);
-    const last = out[out.length - 1];
-    let focus: Focus | null = focusOf(last, "end");
+    out.push(...placed);
+    // The text after the caret joins the last pasted block only when that is a line of text at
+    // this level with nothing inside it; otherwise it gets a line of its own.
+    const lastTop = out[out.length - 1];
+    const joinable = lastTop && isText(lastTop) && lastTop.parent === b.parent && !out.some((x) => x.parent === lastTop.id);
+    let focus: Focus | null = focusOf([...out].reverse().find((x) => isText(x)) ?? lastTop, "end");
     if (right.length) {
-      if (last && isText(last)) {
-        focus = { id: last.id, start: spansLength(last.spans) };
-        out[out.length - 1] = { ...last, spans: [...last.spans, ...right] };
-      } else out.push({ ...text(b.type === "p" ? "p" : b.type), spans: right });
+      if (joinable && lastTop && isText(lastTop)) {
+        focus = { id: lastTop.id, start: spansLength(lastTop.spans) };
+        const k = out.indexOf(lastTop);
+        out[k] = { ...lastTop, spans: [...lastTop.spans, ...right] };
+      } else out.push({ ...text(b.type === "p" ? "p" : b.type), parent: b.parent, spans: right });
     }
     if (!out.length) return;
-    commit([...list.slice(0, i), ...out, ...list.slice(i + 1)], focus);
-  };
-
-  const onDropFiles = (e: React.DragEvent, bid: string) => {
-    const files = Array.from(e.dataTransfer.files ?? []);
-    if (!files.length || !uploadFile) return false;
-    e.preventDefault();
-    void uploadInto(files, bid);
-    return true;
+    commit(normalize([...list.slice(0, i), ...out, ...list.slice(i + 1)]), focus);
   };
 
   // ── keys while blocks are selected ──
   const onRootKey = (e: React.KeyboardEvent) => {
     if (!selected.length || e.target !== rootRef.current) return;
     const mod = isApple() ? e.metaKey : e.ctrlKey;
-    const list = blocksRef.current;
+    const list = visible();
     const first = list.findIndex((b) => b.id === selected[0]);
     const last = list.findIndex((b) => b.id === selected[selected.length - 1]);
     if (e.key === "Escape") {
@@ -780,12 +1065,30 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       removeBlocks(selected);
       return;
     }
-    if (e.key === "Enter") {
+    if (e.key === "Tab") {
+      if (indentIds(selected, e.shiftKey)) e.preventDefault();
+      return;
+    }
+    if (e.key === "Enter" && !mod) {
       e.preventDefault();
       const b = list[first];
       setSelected([]);
       if (b?.type === "source") setEditingSource(b.id);
       focusBlock(b, "end");
+      return;
+    }
+    if (mod && e.altKey && /^Digit\d$/.test(e.code)) {
+      const type = DIGIT_TYPE[e.code.slice(5)];
+      if (type) {
+        e.preventDefault();
+        turnInto(selected, type);
+        return;
+      }
+    }
+    if (mod && e.key === "/") {
+      e.preventDefault();
+      const r = rootRef.current?.querySelector(`[data-block-id="${selected[0]}"]`)?.getBoundingClientRect();
+      if (r) setBlockMenu({ id: selected[0], x: r.left, y: r.bottom + 4 });
       return;
     }
     if (mod && e.key.toLowerCase() === "c") {
@@ -816,7 +1119,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     }
     if (mod && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       e.preventDefault();
-      moveBlocks(selected, e.key === "ArrowUp" ? -1 : 1);
+      moveVertical(selected, e.key === "ArrowUp" ? -1 : 1);
       return;
     }
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
@@ -840,9 +1143,11 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     if (!selected.length || e.target !== rootRef.current || e.key.length !== 1 || e.metaKey || e.ctrlKey) return;
     e.preventDefault();
     const list = blocksRef.current;
-    const first = list.findIndex((b) => b.id === selected[0]);
-    const fresh = text("p", { spans: [{ text: e.key }] });
-    const next = [...list.slice(0, first), fresh, ...list.slice(first).filter((b) => !selected.includes(b.id))];
+    const top = roots(list, selected);
+    const firstB = find(top[0]);
+    const at = list.findIndex((b) => b.id === top[0]);
+    const fresh = text("p", { parent: firstB?.parent, spans: [{ text: e.key }] });
+    const next = removeFrom([...list.slice(0, at), fresh, ...list.slice(at)], top);
     setSelected([]);
     commit(next, { id: fresh.id, start: 1 });
   };
@@ -850,13 +1155,15 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
   const onRootCopy = (e: React.ClipboardEvent) => {
     if (!selected.length || e.target !== rootRef.current) return;
     e.preventDefault();
-    e.clipboardData.setData("text/plain", blocksToClipboard(blocksRef.current.filter((b) => selected.includes(b.id))));
+    const list = blocksRef.current;
+    e.clipboardData.setData("text/plain", blocksToClipboard(roots(list, selected).flatMap((r) => subtree(list, r))));
   };
 
   // ── dragging across blocks selects them (the browser cannot select across separate editable parts) ──
   const pointer = React.useRef<{ id: string; x: number; y: number } | null>(null);
   const onPointerDownBlock = (bid: string, e: React.PointerEvent) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || dragRef.current) return;
+    if ((e.target as HTMLElement).closest("[data-cms-handle]")) return;
     if (e.shiftKey && (selected.length || focused.current)) {
       e.preventDefault();
       selectRange(anchor.current ?? selected[0] ?? focused.current!.id, bid);
@@ -866,28 +1173,6 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     pointer.current = { id: bid, x: e.clientX, y: e.clientY };
     if (selected.length) setSelected([]);
   };
-  React.useEffect(() => {
-    const move = (e: PointerEvent) => {
-      const p = pointer.current;
-      if (!p || !(e.buttons & 1)) return;
-      const under = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest<HTMLElement>("[data-block-id]");
-      const over = under?.dataset.blockId;
-      if (over && over !== p.id && rootRef.current?.contains(under!)) {
-        anchor.current = p.id;
-        window.getSelection()?.removeAllRanges();
-        (document.activeElement as HTMLElement | null)?.blur?.();
-        rootRef.current?.focus({ preventScroll: true });
-        selectRange(p.id, over);
-      }
-    };
-    const up = () => (pointer.current = null);
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    return () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-  });
 
   // ── the toolbar over selected text ──
   const updateToolbar = React.useCallback(() => {
@@ -939,57 +1224,509 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     return () => window.removeEventListener("mousedown", close);
   }, [blockMenu, linkEdit]);
 
-  // ── drag to move ──
-  const onDragStartHandle = (bid: string, e: React.DragEvent) => {
-    const ids = selected.includes(bid) ? selected : [bid];
-    dragging.current = ids;
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", blocksToClipboard(blocksRef.current.filter((b) => ids.includes(b.id))));
-    const row = els.current.get(bid)?.closest("[data-block-id]");
-    if (row) e.dataTransfer.setDragImage(row, 20, 12);
+  // ── drag to move (pointer events: a picture follows the pointer, the page scrolls along) ──
+  /** Where would blocks land if dropped at (x, y)? */
+  const dropAt = (x: number, y: number, ids: string[], copy = false): DropAt | null => {
+    const root = rootRef.current;
+    if (!root) return null;
+    const list = blocksRef.current;
+    const map = byId(list);
+    // A copy can land anywhere, a move not inside what moves.
+    const banned = (bid: string) => !copy && (ids.includes(bid) || ids.some((r) => isInside(list, bid, r, map)));
+    const movingCols = ids.some((i) => map.get(i)?.type === "columns");
+    const movers = roots(list, ids).map((i) => map.get(i)!).filter(Boolean);
+    // An empty toggle or column says "drop here".
+    const under = document.elementFromPoint(x, y) as HTMLElement | null;
+    const into = under?.closest<HTMLElement>("[data-drop-into]");
+    if (into && root.contains(into)) {
+      const tid = into.dataset.dropInto!;
+      const tb = map.get(tid);
+      if (tb && !banned(tid) && movers.every((m) => accepts(tb, m))) {
+        const r = into.getBoundingClientRect();
+        return { id: tid, where: "last-child", box: { left: r.left, top: r.top, width: r.width, height: r.height } };
+      }
+    }
+    // Nowhere near the editor (the sidebar, the toolbar): no drop.
+    const area = root.getBoundingClientRect();
+    if (x < area.left - 24 || x > area.right + 24 || y < area.top - 48 || y > area.bottom + 48) return null;
+    const rows = Array.from(root.querySelectorAll<HTMLElement>("[data-block-id]")).filter((el) => !banned(el.dataset.blockId!) && el.getClientRects().length);
+    // The block under the pointer first (the innermost); the gutter beside it only when there is none.
+    const pickIn = (pad: number) => {
+      let found: HTMLElement | null = null;
+      let foundArea = Infinity;
+      for (const el of rows) {
+        const r = el.getBoundingClientRect();
+        if (y >= r.top && y <= r.bottom && x >= r.left - pad && x <= r.right + pad && r.width * r.height < foundArea) {
+          found = el;
+          foundArea = r.width * r.height;
+        }
+      }
+      return found;
+    };
+    let best = pickIn(0) ?? pickIn(96);
+    if (!best) {
+      let dist = Infinity;
+      for (const el of rows) {
+        const r = el.getBoundingClientRect();
+        const d = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+        if (d < dist) (dist = d), (best = el);
+      }
+    }
+    if (!best) return null;
+    const bid = best.dataset.blockId!;
+    const b = map.get(bid);
+    if (!b) return null;
+    const r = best.getBoundingClientRect();
+    const wrap = best.closest<HTMLElement>("[data-block-wrap]")?.getBoundingClientRect() ?? r;
+    const anc = ancestors(list, bid, map);
+    const sideOk = !movingCols && b.type !== "columns" && !movers.some((m) => m.type === "col") && (anc.length === 0 || (anc.length === 2 && anc[0].type === "col" && b.parent === anc[0].id));
+    const line = (top: number, left = r.left, width = r.width): Box => ({ left, top: top - 1, width, height: 3 });
+    // Beside a block (the pointer near its right edge, or just inside its left edge, not at its top or bottom): columns.
+    const middle = y > r.top + r.height * 0.2 && y < r.bottom - r.height * 0.2;
+    if (sideOk && middle && x > r.right - Math.min(72, r.width * 0.2)) return { id: bid, where: "right", box: { left: r.right + 2, top: r.top, width: 3, height: r.height } };
+    if (sideOk && middle && x >= r.left + 4 && x < r.left + Math.min(24, r.width * 0.08)) return { id: bid, where: "left", box: { left: r.left - 5, top: r.top, width: 3, height: r.height } };
+    const lower = y > r.top + r.height / 2;
+    if (lower) {
+      const kids = list.filter((k) => k.parent === bid);
+      const toggleOpen = b.type === "toggle" && openRef.current.has(bid);
+      const nest = (toggleOpen || (isList(b) && x > r.left + 44)) && movers.every((m) => accepts(b, m));
+      if (nest) return { id: bid, where: "first-child", box: line(r.bottom, r.left + 24, r.width - 24) };
+      // Below a block with blocks inside it that show: after all of them.
+      const showsKids = kids.length && (b.type !== "toggle" || openRef.current.has(bid));
+      // Below the last block inside a toggle or list item, with the pointer out to the left: after that toggle or item (as in Notion).
+      let at = b;
+      let atRow = r;
+      for (;;) {
+        const parent = at.parent ? map.get(at.parent) : undefined;
+        if (!parent || parent.type === "col" || parent.type === "columns" || x >= atRow.left - 8) break;
+        const sibs = list.filter((k) => k.parent === parent.id);
+        if (sibs[sibs.length - 1]?.id !== at.id) break;
+        const pRow = root.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(parent.id)}"]`);
+        if (!pRow || banned(parent.id)) break;
+        at = parent;
+        atRow = pRow.getBoundingClientRect();
+      }
+      if (at !== b) {
+        const w = root.querySelector<HTMLElement>(`[data-block-wrap="${CSS.escape(at.id)}"]`)?.getBoundingClientRect() ?? atRow;
+        return { id: at.id, where: "after", box: line(w.bottom, atRow.left, atRow.width) };
+      }
+      return { id: bid, where: "after", box: line(showsKids ? wrap.bottom : r.bottom) };
+    }
+    return { id: bid, where: "before", box: line(r.top) };
   };
-  const onDragOverBlock = (bid: string, e: React.DragEvent) => {
-    if (!dragging.current && !e.dataTransfer.types.includes("Files")) return;
+
+  const startHandle = (bid: string, e: React.PointerEvent) => {
+    if (e.button !== 0 || !editable) return;
+    e.preventDefault();
+    const ids = selectedRef.current.includes(bid) ? selectedRef.current : [bid];
+    dragRef.current = { ids, from: bid, handle: e.currentTarget as HTMLElement, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, started: false, copy: e.altKey, ghost: null, at: null, raf: 0 };
+  };
+
+  React.useEffect(() => {
+    const endDrag = () => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      if (!d) return;
+      cancelAnimationFrame(d.raf);
+      d.ghost?.remove();
+      document.documentElement.style.removeProperty("cursor");
+      document.body.style.removeProperty("user-select");
+      setDragging(null);
+      setDropBox(null);
+    };
+    const place = (d: Drag) => {
+      if (d.ghost) {
+        const w = d.ghost.offsetWidth;
+        d.ghost.style.transform = `translate(${Math.max(8, Math.min(d.x + 14, window.innerWidth - w - 8))}px, ${d.y + 10}px)`;
+      }
+      d.at = dropAt(d.x, d.y, d.ids, d.copy);
+      // Resting on a closed toggle opens it after a moment, so blocks can go inside.
+      const over = (document.elementFromPoint(d.x, d.y) as HTMLElement | null)?.closest<HTMLElement>("[data-block-type=toggle]")?.dataset.blockId;
+      if (over && !openRef.current.has(over) && !d.ids.includes(over)) {
+        if (hoverToggle.current?.id !== over) {
+          if (hoverToggle.current) clearTimeout(hoverToggle.current.timer);
+          hoverToggle.current = {
+            id: over,
+            timer: window.setTimeout(() => {
+              hoverToggle.current = null;
+              if (dragRef.current) setOpen((s) => s.add(over));
+            }, 650),
+          };
+        }
+      } else if (hoverToggle.current && hoverToggle.current.id !== over) {
+        clearTimeout(hoverToggle.current.timer);
+        hoverToggle.current = null;
+      }
+      setDropBox(d.at ? { ...d.at.box, side: d.at.where === "left" || d.at.where === "right" } : null);
+    };
+    const scroll = () => {
+      const d = dragRef.current;
+      if (!d || !d.started) return;
+      const scroller = scrollerOf(rootRef.current);
+      const top = scroller ? Math.max(0, scroller.getBoundingClientRect().top) : 0;
+      const bottom = scroller ? Math.min(window.innerHeight, scroller.getBoundingClientRect().bottom) : window.innerHeight;
+      const edge = 64;
+      let dy = 0;
+      if (d.y < top + edge) dy = -Math.ceil((top + edge - d.y) / 3);
+      else if (d.y > bottom - edge) dy = Math.ceil((d.y - (bottom - edge)) / 3);
+      if (dy) {
+        if (scroller) scroller.scrollTop += dy;
+        else window.scrollBy(0, dy);
+        place(d);
+      }
+      d.raf = requestAnimationFrame(scroll);
+    };
+    const move = (e: PointerEvent) => {
+      // Dragging across blocks from inside text selects them.
+      const p = pointer.current;
+      if (p && !dragRef.current && e.buttons & 1) {
+        const under = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest<HTMLElement>("[data-block-id]");
+        const over = under?.dataset.blockId;
+        if (over && over !== p.id && rootRef.current?.contains(under!) && under!.dataset.blockType !== "columns") {
+          anchor.current = p.id;
+          window.getSelection()?.removeAllRanges();
+          (document.activeElement as HTMLElement | null)?.blur?.();
+          rootRef.current?.focus({ preventScroll: true });
+          selectRange(p.id, over);
+        }
+      }
+      // A box drawn from the margin selects the blocks it touches.
+      const mq = marqueeRef.current;
+      if (mq && e.buttons & 1) {
+        if (!mq.started && Math.hypot(e.clientX - mq.x0, e.clientY - mq.y0) > 5) {
+          mq.started = true;
+          (document.activeElement as HTMLElement | null)?.blur?.();
+          window.getSelection()?.removeAllRanges();
+          document.body.style.userSelect = "none";
+        }
+        if (mq.started) {
+          const box = { left: Math.min(mq.x0, e.clientX), top: Math.min(mq.y0, e.clientY), width: Math.abs(e.clientX - mq.x0), height: Math.abs(e.clientY - mq.y0) };
+          setMarquee(box);
+          const hit = new Set(mq.base);
+          for (const el of Array.from(rootRef.current?.querySelectorAll<HTMLElement>("[data-block-id]") ?? [])) {
+            if (el.dataset.blockType === "columns") continue;
+            const r = el.getBoundingClientRect();
+            if (r.right > box.left && r.left < box.left + box.width && r.bottom > box.top && r.top < box.top + box.height) hit.add(el.dataset.blockId!);
+          }
+          setSelected(visible().filter((b) => hit.has(b.id)).map((b) => b.id));
+          rootRef.current?.focus({ preventScroll: true });
+        }
+        return;
+      }
+      const d = dragRef.current;
+      if (!d) return;
+      d.x = e.clientX;
+      d.y = e.clientY;
+      d.copy = e.altKey;
+      if (!d.started) {
+        if (Math.hypot(d.x - d.x0, d.y - d.y0) < 5) return;
+        d.started = true;
+        setMenu(null);
+        setToolbar(null);
+        setBlockMenu(null);
+        (document.activeElement as HTMLElement | null)?.blur?.();
+        window.getSelection()?.removeAllRanges();
+        d.ghost = makeGhost(rootRef.current, d.ids);
+        document.documentElement.style.cursor = "grabbing";
+        document.body.style.userSelect = "none";
+        setDragging({ ids: d.ids, copy: d.copy });
+        d.raf = requestAnimationFrame(scroll);
+      }
+      setDragging((g) => (g && g.copy !== d.copy ? { ...g, copy: d.copy } : g));
+      place(d);
+    };
+    const up = (e: PointerEvent) => {
+      pointer.current = null;
+      const mq = marqueeRef.current;
+      if (mq) {
+        marqueeRef.current = null;
+        setMarquee(null);
+        document.body.style.removeProperty("user-select");
+        // A plain click on the empty space under the last block: go there.
+        if (!mq.started && mq.onRoot && editable) {
+          const last = blocksRef.current.filter((b) => !b.parent).pop();
+          if (last && isText(last) && !plain(last.spans) && !kidsOf(last.id).length) focusBlock(last, "end");
+          else {
+            const fresh = text("p");
+            commit([...blocksRef.current, fresh], { id: fresh.id, start: 0 });
+          }
+        }
+        return;
+      }
+      const d = dragRef.current;
+      if (!d) return;
+      if (!d.started) {
+        // A click on the handle: the block's menu.
+        endDrag();
+        const r = d.handle.getBoundingClientRect();
+        if (!selectedRef.current.includes(d.from)) selectOnly(d.from);
+        setBlockMenu({ id: d.from, x: r.left, y: r.bottom + 4 });
+        return;
+      }
+      d.x = e.clientX;
+      d.y = e.clientY;
+      const copy = e.altKey;
+      const at = dropAt(d.x, d.y, d.ids, copy);
+      endDrag();
+      if (!at) return;
+      const before = new Set(blocksRef.current.map((b) => b.id));
+      const next = moveTo(blocksRef.current, d.ids, at.id, at.where, copy);
+      if (!next) return;
+      if (at.where === "first-child" || at.where === "last-child") {
+        const tb = next.find((b) => b.id === at.id);
+        if (tb?.type === "toggle") setOpen((s) => s.add(at.id));
+      }
+      commit(next);
+      const fresh = next.filter((b) => !before.has(b.id) && b.type !== "col" && b.type !== "columns");
+      const freshIds = new Set(fresh.map((b) => b.id));
+      setSelected(copy ? fresh.filter((b) => !b.parent || !freshIds.has(b.parent)).map((b) => b.id) : roots(next, d.ids));
+      rootRef.current?.focus({ preventScroll: true });
+    };
+    const key = (e: KeyboardEvent) => {
+      const d = dragRef.current;
+      if (e.key === "Escape" && d?.started) {
+        e.preventDefault();
+        e.stopPropagation();
+        endDrag();
+      }
+      // Alt pressed or let go without moving: the preview says copy or move at once.
+      if (e.key === "Alt" && d?.started && d.copy !== (e.type === "keydown")) {
+        e.preventDefault();
+        d.copy = e.type === "keydown";
+        setDragging((g) => (g ? { ...g, copy: d.copy } : g));
+        place(d);
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", endDrag);
+    window.addEventListener("keydown", key, true);
+    window.addEventListener("keyup", key, true);
+    return () => {
+      window.removeEventListener("keyup", key, true);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", endDrag);
+      window.removeEventListener("keydown", key, true);
+    };
+  });
+
+  /** A box drawn from the margin or the empty space between blocks. */
+  const onRootPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || e.pointerType === "touch") return;
+    const at = e.target as HTMLElement;
+    const root = rootRef.current;
+    if (!root) return;
+    const blank = at === root || at.matches("[data-block-wrap],[data-kids],[data-col-id],[data-block-type=columns]");
+    if (!blank) return;
+    e.preventDefault();
+    marqueeRef.current = { x0: e.clientX, y0: e.clientY, started: false, base: e.shiftKey ? selectedRef.current : [], onRoot: at === root };
+    if (!e.shiftKey && selectedRef.current.length) setSelected([]);
+  };
+
+  // ── files dropped from the computer ──
+  const onFileDragOver = (bid: string, e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files") || !uploadFile) return;
     e.preventDefault();
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const after = e.clientY > r.top + r.height / 2;
-    setDrop((d) => (d?.id === bid && d.after === after ? d : { id: bid, after }));
+    setFileDrop((d) => (d?.id === bid && d.after === after ? d : { id: bid, after }));
   };
-  const onDropBlock = (bid: string, e: React.DragEvent) => {
-    const d = drop;
-    setDrop(null);
-    if (!dragging.current) {
-      onDropFiles(e, bid);
-      return;
-    }
+  const onFileDrop = (bid: string, e: React.DragEvent) => {
+    const d = fileDrop;
+    setFileDrop(null);
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (!files.length || !uploadFile) return;
     e.preventDefault();
-    const ids = dragging.current;
-    dragging.current = null;
-    if (!d || ids.includes(bid)) return;
-    const list = blocksRef.current;
-    const moving = list.filter((b) => ids.includes(b.id));
-    const rest = list.filter((b) => !ids.includes(b.id));
-    const at = rest.findIndex((b) => b.id === bid) + (d.after ? 1 : 0);
-    commit([...rest.slice(0, at), ...moving, ...rest.slice(at)]);
-    setSelected(ids);
+    void uploadInto(files, bid, d ? !d.after : false);
   };
 
-  // ── numbering of numbered lists ──
+  // ── numbering of numbered lists (per level) ──
+  const kids = React.useMemo(() => childrenOf(blocks), [blocks]);
   const numbers = React.useMemo(() => {
     const out: Record<string, number> = {};
-    let n = 0;
-    let prev: EBlock | null = null;
-    for (const b of blocks) {
-      if (b.type === "number") {
-        n = prev?.type === "number" && !b.newList ? n + 1 : b.start || 1;
-        out[b.id] = n;
+    for (const sibs of kids.values()) {
+      let n = 0;
+      let prev: EBlock | null = null;
+      for (const b of sibs) {
+        if (b.type === "number") {
+          n = prev?.type === "number" && !b.newList ? n + 1 : (b.start ?? 1);
+          out[b.id] = n;
+        }
+        prev = b;
       }
-      prev = b;
     }
     return out;
-  }, [blocks]);
+  }, [kids]);
 
   const onlyEmpty = blocks.length === 1 && isText(blocks[0]) && !plain(blocks[0].spans);
+  const dragged = React.useMemo(() => {
+    if (!dragging || dragging.copy) return new Set<string>();
+    const list = blocksRef.current;
+    return new Set(roots(list, dragging.ids).flatMap((r) => subtree(list, r).map((b) => b.id)));
+  }, [dragging]);
+
+  const addChild = (parentId: string) => {
+    const fresh = text("p", { parent: parentId });
+    const list = blocksRef.current;
+    const at = list.findIndex((b) => b.id === parentId) + 1;
+    commit(normalize([...list.slice(0, at), fresh, ...list.slice(at)]), { id: fresh.id, start: 0 });
+  };
+
+  const blockMap = React.useMemo(() => byId(blocks), [blocks]);
+  const rowProps = (b: EBlock) => ({
+    inCol: !!b.parent && blockMap.get(b.parent)?.type === "col",
+    block: b,
+    t,
+    editable,
+    selected: selected.includes(b.id),
+    dimmed: dragged.has(b.id),
+    fileDrop: (fileDrop?.id === b.id ? (fileDrop.after ? "after" : "before") : null) as "after" | "before" | null,
+    number: numbers[b.id],
+    open: open.has(b.id),
+    placeholder: onlyEmpty ? t("blk_placeholder") : focusId === b.id ? (b.type === "toggle" ? t("blk_t_toggle") : t("blk_placeholder_line")) : undefined,
+    editingSource: editingSource === b.id,
+    resolveFileUrl,
+  });
+
+  const handlers = (b: EBlock): RowHandlers => ({
+    register: (el) => {
+      if (el) els.current.set(b.id, el);
+      else els.current.delete(b.id);
+    },
+    onFocus: (start) => {
+      focused.current = { id: b.id, start };
+      anchor.current = b.id;
+      setFocusId(b.id);
+      if (selectedRef.current.length) setSelected([]);
+    },
+    onBlur: () => {
+      setFocusId((f) => (f === b.id ? null : f));
+      if (menu?.id === b.id) setTimeout(() => setMenu((m) => (m?.id === b.id && !rootRef.current?.contains(document.activeElement) ? null : m)), 150);
+    },
+    onPointerDown: (e) => onPointerDownBlock(b.id, e),
+    onTextInput: (el, data) => {
+      const cur = find(b.id);
+      if (cur && isText(cur)) onTextInput(cur, el, data);
+    },
+    onTextKey: (el, e) => {
+      const cur = find(b.id);
+      if (cur && isText(cur)) onTextKey(cur, el, e);
+    },
+    onTextPaste: (el, e) => {
+      const cur = find(b.id);
+      if (cur && isText(cur)) onTextPaste(cur, el, e);
+    },
+    onChange: (nb, group) => commit(replace(b.id, () => nb), undefined, group),
+    onToggleTodo: () => commit(replace(b.id, (x) => ({ ...(x as TextBlock), checked: !(x as TextBlock).checked }))),
+    onToggleOpen: () => setOpen((s) => (s.has(b.id) ? s.delete(b.id) : s.add(b.id))),
+    onSourceEdit: (on) => setEditingSource(on ? b.id : null),
+    onSelect: () => selectOnly(b.id),
+    onRemove: () => removeBlocks([b.id]),
+    onExit: (where) => {
+      if (where === "next") {
+        const nb = neighbour(b.id, 1);
+        if (nb) focusBlock(nb, "start");
+        else {
+          const fresh = text("p", { parent: find(b.id)?.parent });
+          commit(insertAfterIn(blocksRef.current, b.id, [fresh]), { id: fresh.id, start: 0 });
+        }
+      } else focusBlock(neighbour(b.id, -1), "end");
+    },
+    onUndo: (redoIt) => (redoIt ? redo() : undo()),
+    onPickMedia: onPickMedia
+      ? () =>
+          void onPickMedia().then((md) => {
+            if (!md) return;
+            const made = markdownToBlocks(md)[0];
+            if (made && made.type === "media") commit(replace(b.id, (x) => ({ ...(x as EBlock), target: made.target, alt: (x as { alt?: string }).alt || made.alt }) as EBlock));
+          })
+      : undefined,
+    onAdd: (e) => {
+      const above = e.altKey;
+      const list = blocksRef.current;
+      const cur = find(b.id);
+      if (cur && isText(cur) && !plain(cur.spans) && !above) {
+        const withSlash = { ...cur, spans: [{ text: "/" }] };
+        commit(replace(cur.id, () => withSlash), { id: cur.id, start: 1 });
+        requestAnimationFrame(() => {
+          const r = els.current.get(cur.id)?.getBoundingClientRect();
+          setMenu({ id: cur.id, query: "", from: 0, x: r?.left ?? 0, y: r?.bottom ?? 0, index: 0, opened: "slash" });
+        });
+        return;
+      }
+      const fresh = text("p", { spans: [{ text: "/" }], parent: cur?.parent });
+      const next = above ? normalize([...list.slice(0, list.findIndex((x) => x.id === b.id)), fresh, ...list.slice(list.findIndex((x) => x.id === b.id))]) : insertAfterIn(list, b.id, [fresh]);
+      commit(next, { id: fresh.id, start: 1 });
+      requestAnimationFrame(() => {
+        const r = els.current.get(fresh.id)?.getBoundingClientRect();
+        setMenu({ id: fresh.id, query: "", from: 0, x: r?.left ?? 0, y: r?.bottom ?? 0, index: 0, opened: "fresh" });
+      });
+    },
+    onHandleDown: (e) => startHandle(b.id, e),
+    onHandleKey: (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        if (!selectedRef.current.includes(b.id)) selectOnly(b.id);
+        setBlockMenu({ id: b.id, x: r.left, y: r.bottom + 4 });
+      }
+    },
+    onMenuButton: (e) => {
+      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      if (focused.current?.id === b.id) menuFrom.current = { ...focused.current };
+      if (!selectedRef.current.includes(b.id)) selectOnly(b.id);
+      setBlockMenu({ id: b.id, x: Math.max(8, r.right - 256), y: r.bottom + 4 });
+    },
+    onFileDragOver: (e) => onFileDragOver(b.id, e),
+    onFileDragLeave: () => setFileDrop((d) => (d?.id === b.id ? null : d)),
+    onFileDrop: (e) => onFileDrop(b.id, e),
+    onTone: (tone) => commit(replace(b.id, (x) => ({ ...(x as TextBlock), tone }))),
+  });
+
+  const renderLevel = (parent: string): React.ReactNode => (kids.get(parent) ?? []).map((b) => renderBlock(b));
+  const renderBlock = (b: EBlock): React.ReactNode => {
+    const inside = kids.get(b.id) ?? [];
+    if (b.type === "columns") {
+      const cols = inside.filter((c) => c.type === "col");
+      return (
+        <div key={b.id} data-block-wrap={b.id}>
+          <BlockRow {...rowProps(b)} {...handlers(b)}>
+            <div className="flex gap-9 max-sm:flex-col max-sm:gap-1">
+              {cols.map((c) => {
+                const items = kids.get(c.id) ?? [];
+                return (
+                  <div key={c.id} data-col-id={c.id} className={cn("min-w-0 flex-1 rounded-md", dragged.has(c.id) && "opacity-40")}>
+                    {items.length ? (
+                      items.map(renderBlock)
+                    ) : (
+                      <EmptyDrop id={c.id} label={t("blk_col_empty")} editable={editable} onClick={() => addChild(c.id)} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </BlockRow>
+        </div>
+      );
+    }
+    const showKids = b.type === "toggle" ? open.has(b.id) : inside.length > 0 && holdsBlocks(b);
+    return (
+      <div key={b.id} data-block-wrap={b.id}>
+        <BlockRow {...rowProps(b)} {...handlers(b)} />
+        {showKids ? (
+          <div data-kids={b.id} role="group" className={cn(b.type === "toggle" ? "pl-7" : "pl-6", b.type === "number" && "pl-7")}>
+            {inside.length ? renderLevel(b.id) : <EmptyDrop id={b.id} label={t("blk_toggle_empty")} editable={editable} onClick={() => addChild(b.id)} />}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const menuIds = blockMenu ? (selected.includes(blockMenu.id) ? selected : [blockMenu.id]) : [];
+  React.useEffect(() => {
+    if (!blockMenu) menuFrom.current = null;
+  }, [blockMenu]);
 
   return (
     <div
@@ -999,145 +1736,44 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       tabIndex={-1}
       role="group"
       aria-label={t("blk_body")}
-      className="cms-blocks relative flex min-h-[360px] flex-1 flex-col pb-24 pt-2 outline-none"
+      className="cms-blocks relative flex min-h-[360px] flex-1 flex-col pb-24 pt-2 outline-none sm:-ml-16 sm:-mr-10 sm:pl-16 sm:pr-10"
       onKeyDown={onRootKey}
       onKeyPress={onRootKeyPress}
       onCopy={onRootCopy}
-      onMouseDown={(e) => {
-        // A click on the empty space under the last block goes to the end.
-        if (e.target === rootRef.current && editable) {
-          const last = blocksRef.current[blocksRef.current.length - 1];
-          if (last && isText(last) && !plain(last.spans)) focusBlock(last, "end");
-          else {
-            const fresh = text("p");
-            commit([...blocksRef.current, fresh], { id: fresh.id, start: 0 });
-          }
-          e.preventDefault();
-        }
-      }}
+      onPointerDown={onRootPointerDown}
     >
       {selected.length ? (
         <div className="sr-only" aria-live="polite">
           {t("blk_selected_n", { n: selected.length })}
         </div>
       ) : null}
-      {blocks.map((b) => (
-        <BlockRow
-          key={b.id}
-          block={b}
-          t={t}
-          editable={editable}
-          selected={selected.includes(b.id)}
-          drop={drop?.id === b.id ? (drop.after ? "after" : "before") : null}
-          number={numbers[b.id]}
-          placeholder={onlyEmpty ? t("blk_placeholder") : focusId === b.id ? t("blk_placeholder_line") : undefined}
-          editingSource={editingSource === b.id}
-          resolveFileUrl={resolveFileUrl}
-          register={(el) => {
-            if (el) els.current.set(b.id, el);
-            else els.current.delete(b.id);
-          }}
-          onFocus={(start) => {
-            focused.current = { id: b.id, start };
-            setFocusId(b.id);
-            if (selected.length) setSelected([]);
-          }}
-          onBlur={() => {
-            setFocusId((f) => (f === b.id ? null : f));
-            if (menu?.id === b.id) setTimeout(() => setMenu((m) => (m?.id === b.id && !rootRef.current?.contains(document.activeElement) ? null : m)), 150);
-          }}
-          onPointerDown={(e) => onPointerDownBlock(b.id, e)}
-          onTextInput={(el, data) => isText(b) && onTextInput(b, el, data)}
-          onTextKey={(el, e) => isText(b) && onTextKey(b, el, e)}
-          onTextPaste={(el, e) => isText(b) && onTextPaste(b, el, e)}
-          onChange={(nb, group) => commit(replace(b.id, () => nb), undefined, group)}
-          onToggleTodo={() => isText(b) && commit(replace(b.id, (x) => ({ ...(x as TextBlock), checked: !(x as TextBlock).checked })))}
-          onSourceEdit={(on) => setEditingSource(on ? b.id : null)}
-          onSelect={() => selectOnly(b.id)}
-          onRemove={() => removeBlocks([b.id])}
-          onExit={(where) => {
-            const i = indexOf(b.id);
-            if (where === "next") {
-              const nb = blocksRef.current[i + 1];
-              if (nb) focusBlock(nb, "start");
-              else {
-                const fresh = text("p");
-                commit([...blocksRef.current, fresh], { id: fresh.id, start: 0 });
-              }
-            } else focusBlock(blocksRef.current[i - 1], "end");
-          }}
-          onUndo={(redoIt) => (redoIt ? redo() : undo())}
-          onPickMedia={
-            onPickMedia
-              ? () =>
-                  void onPickMedia().then((md) => {
-                    if (!md) return;
-                    const made = markdownToBlocks(md)[0];
-                    if (made && made.type === "media") commit(replace(b.id, (x) => ({ ...(x as EBlock), target: made.target, alt: (x as { alt?: string }).alt || made.alt }) as EBlock));
-                  })
-              : undefined
-          }
-          onAdd={() => {
-            const fresh = text("p");
-            const i = indexOf(b.id);
-            const list = blocksRef.current;
-            const cur = list[i];
-            if (cur && isText(cur) && !plain(cur.spans)) {
-              pendingFocus.current = { id: cur.id, start: 0 };
-              const withSlash = { ...cur, spans: [{ text: "/" }] };
-              commit(replace(cur.id, () => withSlash), { id: cur.id, start: 1 });
-              const r = els.current.get(cur.id)?.getBoundingClientRect();
-              setMenu({ id: cur.id, query: "", from: 0, x: r?.left ?? 0, y: r?.bottom ?? 0, index: 0 });
-              return;
-            }
-            const withSlash = { ...fresh, spans: [{ text: "/" }] };
-            commit([...list.slice(0, i + 1), withSlash, ...list.slice(i + 1)], { id: fresh.id, start: 1 });
-            requestAnimationFrame(() => {
-              const r = els.current.get(fresh.id)?.getBoundingClientRect();
-              setMenu({ id: fresh.id, query: "", from: 0, x: r?.left ?? 0, y: r?.bottom ?? 0, index: 0 });
-            });
-          }}
-          onHandleClick={(e) => {
-            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-            if (!selected.includes(b.id)) selectOnly(b.id);
-            setBlockMenu({ id: b.id, x: r.left, y: r.bottom + 4 });
-          }}
-          onDragStart={(e) => onDragStartHandle(b.id, e)}
-          onDragOver={(e) => onDragOverBlock(b.id, e)}
-          onDragLeave={() => setDrop((d) => (d?.id === b.id ? null : d))}
-          onDrop={(e) => onDropBlock(b.id, e)}
-          onDragEnd={() => {
-            dragging.current = null;
-            setDrop(null);
-          }}
-          onTone={(tone) => commit(replace(b.id, (x) => ({ ...(x as TextBlock), tone })))}
-        />
-      ))}
+      {renderLevel("")}
 
-      {menu && menuItems ? (
-        <SlashMenu t={t} items={menuItems} index={menu.index} x={menu.x} y={menu.y} onPick={applyItem} onHover={(index) => setMenu({ ...menu, index })} />
-      ) : null}
+      {dropBox ? <div aria-hidden data-cms-drop-line className={cn("pointer-events-none fixed z-50 rounded-full bg-sky-500 dark:bg-sky-400", dropBox.side && "shadow-[0_0_0_3px_rgb(14_165_233/0.18)]")} style={{ left: dropBox.left, top: dropBox.top, width: dropBox.width, height: dropBox.height }} /> : null}
+      {marquee ? <div aria-hidden className="pointer-events-none fixed z-40 rounded-sm border border-sky-500/40 bg-sky-500/10" style={marquee} /> : null}
 
-      {toolbar && !menu && !linkEdit ? (
+      {menu && menuItems ? <SlashMenu t={t} items={menuItems} index={menu.index} x={menu.x} y={menu.y} onPick={applyItem} onHover={(index) => setMenu({ ...menu, index })} /> : null}
+
+      {toolbar && !menu && !linkEdit && !dragging ? (
         <Toolbar
           t={t}
           at={toolbar}
           block={blocks.find((b) => b.id === toolbar.id) as TextBlock | undefined}
           onMark={(m) => {
-            const b = blocksRef.current.find((x) => x.id === toolbar.id);
+            const b = find(toolbar.id);
             if (b && isText(b)) format(b, m, toolbar.start, toolbar.end);
           }}
           onLink={() => {
-            const b = blocksRef.current.find((x) => x.id === toolbar.id);
+            const b = find(toolbar.id);
             if (b && isText(b)) openLink(b, toolbar.start, toolbar.end);
           }}
           onUnlink={() => {
-            const b = blocksRef.current.find((x) => x.id === toolbar.id);
+            const b = find(toolbar.id);
             if (!b || !isText(b) || !toolbar.link) return;
             const spans = setLink(b.spans, toolbar.link.from, toolbar.link.to, null);
             commit(replace(b.id, (x) => ({ ...(x as TextBlock), spans })), { id: b.id, start: toolbar.start });
           }}
-          onTurn={(type) => turnInto(toolbar.id, type)}
+          onTurn={(type) => turnInto([toolbar.id], type)}
           resolveFileUrl={resolveFileUrl}
         />
       ) : null}
@@ -1148,26 +1784,40 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
         <BlockMenu
           t={t}
           at={blockMenu}
-          block={blocks.find((b) => b.id === blockMenu.id)}
-          count={selected.length > 1 && selected.includes(blockMenu.id) ? selected.length : 1}
-          onClose={() => setBlockMenu(null)}
+          blocks={menuIds.map((x) => blocks.find((b) => b.id === x)).filter((b): b is EBlock => !!b)}
+          canIndent={!!indentBlocks(blocks, menuIds)}
+          canOutdent={!!outdentBlocks(blocks, menuIds)}
+          onClose={() => {
+            setBlockMenu(null);
+            const back = menuFrom.current;
+            menuFrom.current = null;
+            if (back && find(back.id)) {
+              setSelected([]);
+              pendingFocus.current = back;
+              setBlocksState([...blocksRef.current]);
+            } else rootRef.current?.focus({ preventScroll: true });
+          }}
           onTurn={(type) => {
             setBlockMenu(null);
             setSelected([]);
-            turnInto(blockMenu.id, type);
+            turnInto(menuIds, type);
           }}
           onDuplicate={() => {
             setBlockMenu(null);
-            duplicate(selected.includes(blockMenu.id) ? selected : [blockMenu.id]);
+            duplicate(menuIds);
           }}
-          onMove={(dir) => moveBlocks(selected.includes(blockMenu.id) ? selected : [blockMenu.id], dir)}
+          onMove={(dir) => moveVertical(menuIds, dir)}
+          onIndent={(out) => {
+            setBlockMenu(null);
+            indentIds(menuIds, out);
+          }}
           onCopy={() => {
             setBlockMenu(null);
-            void copyBlocks(selected.includes(blockMenu.id) ? selected : [blockMenu.id]);
+            void copyBlocks(menuIds);
           }}
           onDelete={() => {
             setBlockMenu(null);
-            removeBlocks(selected.includes(blockMenu.id) ? selected : [blockMenu.id]);
+            removeBlocks(menuIds);
           }}
         />
       ) : null}
@@ -1175,6 +1825,67 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
   );
 }
 
+/** The picture of the blocks being dragged that follows the pointer. */
+function makeGhost(root: HTMLElement | null, ids: string[]): HTMLElement | null {
+  if (!root) return null;
+  const box = document.createElement("div");
+  box.setAttribute("aria-hidden", "true");
+  const width = Math.min(root.getBoundingClientRect().width, 560);
+  Object.assign(box.style, {
+    position: "fixed",
+    left: "0",
+    top: "0",
+    width: `${width}px`,
+    maxHeight: "220px",
+    overflow: "hidden",
+    pointerEvents: "none",
+    zIndex: "60",
+    opacity: "0.72",
+    borderRadius: "8px",
+    boxShadow: "0 8px 28px rgba(0,0,0,.18)",
+    padding: "4px 8px",
+  } satisfies Partial<CSSStyleDeclaration>);
+  box.className = "bg-background text-foreground";
+  for (const bid of ids.slice(0, 4)) {
+    const wrap = root.querySelector(`[data-block-wrap="${CSS.escape(bid)}"]`);
+    if (!wrap) continue;
+    const copy = wrap.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll("[data-block-id],[data-block-wrap],[data-col-id],[data-kids],[data-drop-into]").forEach((el) => {
+      el.removeAttribute("data-block-id");
+      el.removeAttribute("data-block-wrap");
+      el.removeAttribute("data-col-id");
+      el.removeAttribute("data-kids");
+      el.removeAttribute("data-drop-into");
+    });
+    copy.removeAttribute("data-block-wrap");
+    copy.querySelectorAll("[contenteditable]").forEach((el) => el.setAttribute("contenteditable", "false"));
+    copy.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+    box.appendChild(copy);
+  }
+  if (ids.length > 4) {
+    const more = document.createElement("div");
+    more.textContent = `+${ids.length - 4}`;
+    more.style.cssText = "font-size:12px;opacity:.7;padding:2px 0";
+    box.appendChild(more);
+  }
+  document.body.appendChild(box);
+  return box;
+}
+
+/** "Empty toggle / column": click to write, drop blocks here. */
+function EmptyDrop({ id, label, editable, onClick }: { id: string; label: string; editable: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      data-drop-into={id}
+      disabled={!editable}
+      onClick={onClick}
+      className="my-0.5 flex min-h-8 w-full items-center rounded-md px-2 py-1 text-left text-sm text-muted-foreground/70 hover:bg-muted/50 hover:text-muted-foreground disabled:hover:bg-transparent"
+    >
+      {label}
+    </button>
+  );
+}
 // ── helpers that read the page ────────────────────────────────────────────────
 
 /**
@@ -1230,18 +1941,10 @@ function onEdgeLine(el: HTMLElement, edge: "top" | "bottom"): boolean {
   return edge === "top" ? r.top - box.top < line * 0.8 : box.bottom - r.bottom < line * 0.8;
 }
 
+
 // ── one block ─────────────────────────────────────────────────────────────────
 
-interface RowProps {
-  block: EBlock;
-  t: T;
-  editable: boolean;
-  selected: boolean;
-  drop: "before" | "after" | null;
-  number?: number;
-  placeholder?: string;
-  editingSource: boolean;
-  resolveFileUrl?: (target: string) => string;
+interface RowHandlers {
   register: (el: HTMLElement | null) => void;
   onFocus: (start: number) => void;
   onBlur: () => void;
@@ -1251,83 +1954,121 @@ interface RowProps {
   onTextPaste: (el: HTMLElement, e: React.ClipboardEvent) => void;
   onChange: (b: EBlock, group?: string) => void;
   onToggleTodo: () => void;
+  onToggleOpen: () => void;
   onSourceEdit: (on: boolean) => void;
   onSelect: () => void;
   onRemove: () => void;
   onExit: (where: "prev" | "next") => void;
   onUndo: (redo: boolean) => void;
   onPickMedia?: () => void;
-  onAdd: () => void;
-  onHandleClick: (e: React.MouseEvent) => void;
-  onDragStart: (e: React.DragEvent) => void;
-  onDragOver: (e: React.DragEvent) => void;
-  onDragLeave: () => void;
-  onDrop: (e: React.DragEvent) => void;
-  onDragEnd: () => void;
+  onAdd: (e: React.MouseEvent) => void;
+  onHandleDown: (e: React.PointerEvent) => void;
+  onHandleKey: (e: React.KeyboardEvent) => void;
+  onMenuButton: (e: React.MouseEvent) => void;
+  onFileDragOver: (e: React.DragEvent) => void;
+  onFileDragLeave: () => void;
+  onFileDrop: (e: React.DragEvent) => void;
   onTone: (tone: Tone) => void;
 }
 
-const BlockRow = React.memo(function BlockRow(p: RowProps) {
+interface RowProps extends RowHandlers {
+  block: EBlock;
+  t: T;
+  editable: boolean;
+  selected: boolean;
+  dimmed: boolean;
+  fileDrop: "before" | "after" | null;
+  number?: number;
+  open: boolean;
+  /** Directly inside a column: a smaller handle that fits the gap between columns. */
+  inCol?: boolean;
+  placeholder?: string;
+  editingSource: boolean;
+  resolveFileUrl?: (target: string) => string;
+  children?: React.ReactNode;
+}
+
+/** How far down the handle sits, so it lines up with the first line of text. */
+const HANDLE_TOP: Partial<Record<EBlock["type"], string>> = { h2: "top-7", h3: "top-[18px]", columns: "top-1.5", table: "top-2.5", code: "top-1.5", callout: "top-2", media: "top-2" };
+
+function BlockRow(p: RowProps) {
   const { block: b, t, editable } = p;
   const pad = b.type === "h2" ? "pt-6" : b.type === "h3" ? "pt-4" : "";
   return (
     <div
       data-block-id={b.id}
       data-block-type={b.type}
-      className={cn("group/blk relative -mx-2 flex items-start gap-0.5 rounded-md px-2", pad, p.selected && "bg-primary/10 ring-1 ring-primary/30")}
+      aria-selected={p.selected || undefined}
+      className={cn("group/blk relative rounded-md transition-[opacity,background-color]", editable && b.type !== "columns" && "max-sm:focus-within:pr-7 max-sm:aria-selected:pr-7", pad, p.selected && "bg-sky-500/[0.13] dark:bg-sky-400/[0.16]", p.dimmed && "opacity-35")}
       onPointerDown={p.onPointerDown}
-      onDragOver={p.onDragOver}
-      onDragLeave={p.onDragLeave}
-      onDrop={p.onDrop}
+      onDragOver={p.onFileDragOver}
+      onDragLeave={p.onFileDragLeave}
+      onDrop={p.onFileDrop}
     >
-      {p.drop ? <div aria-hidden className={cn("pointer-events-none absolute inset-x-2 h-0.5 rounded bg-primary", p.drop === "before" ? "-top-px" : "-bottom-px")} /> : null}
+      {p.fileDrop ? <div aria-hidden className={cn("pointer-events-none absolute inset-x-0 h-0.5 rounded bg-primary", p.fileDrop === "before" ? "-top-px" : "-bottom-px")} /> : null}
       {editable ? (
-        <div className={cn("flex shrink-0 select-none items-center opacity-0 transition-opacity group-hover/blk:opacity-100 group-focus-within/blk:opacity-100 max-sm:hidden", b.type === "h2" ? "mt-1.5" : b.type === "h3" ? "mt-0.5" : "mt-0.5", p.selected && "opacity-100")} contentEditable={false}>
-          <button type="button" tabIndex={-1} aria-label={t("blk_add_below")} title={t("blk_add_below")} className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={p.onAdd}>
-            <Plus className="size-4" />
-          </button>
+        <div
+          contentEditable={false}
+          data-cms-handle
+          className={cn(
+            // Only the buttons take the pointer: the margin around them stays free for drawing a selection box.
+            "pointer-events-none absolute right-full flex select-none items-center gap-0.5 pr-1.5 opacity-0 transition-opacity duration-100 group-hover/blk:opacity-100 group-focus-within/blk:opacity-100 max-sm:hidden [&>button]:pointer-events-auto",
+            HANDLE_TOP[b.type] ?? "top-0.5",
+            (p.selected || p.dimmed) && "opacity-100",
+            b.type === "columns" && "group-hover/blk:opacity-0 group-focus-within/blk:opacity-0 hover:!opacity-100"
+          )}
+        >
+          {p.inCol ? null : (
+            <button type="button" tabIndex={-1} aria-label={t("blk_add_below")} title={t("blk_add_hint")} className="flex size-6 items-center justify-center rounded text-muted-foreground/80 hover:bg-muted hover:text-foreground" onClick={p.onAdd}>
+              <Plus className="size-4" />
+            </button>
+          )}
           <button
             type="button"
-            draggable
             aria-label={t("blk_handle")}
-            title={t("blk_handle")}
-            className="flex h-6 w-4 cursor-grab items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground active:cursor-grabbing"
-            onClick={p.onHandleClick}
-            onDragStart={p.onDragStart}
-            onDragEnd={p.onDragEnd}
+            title={t("blk_handle_hint")}
+            aria-haspopup="menu"
+            className="flex h-6 w-[18px] cursor-grab touch-none items-center justify-center rounded text-muted-foreground/80 hover:bg-muted hover:text-foreground active:cursor-grabbing"
+            onPointerDown={p.onHandleDown}
+            onKeyDown={p.onHandleKey}
           >
             <GripVertical className="size-4" />
           </button>
         </div>
       ) : null}
-      <div className="min-w-0 flex-1">
-        <BlockBody {...p} />
-      </div>
+      {editable && b.type !== "columns" ? (
+        // Phones have no margin for the handle: a menu button shows on the block being edited.
+        <button
+          type="button"
+          contentEditable={false}
+          aria-label={t("blk_options")}
+          aria-haspopup="menu"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={p.onMenuButton}
+          className="absolute -right-1 top-0.5 hidden size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted max-sm:group-focus-within/blk:flex max-sm:group-aria-selected/blk:flex"
+        >
+          <GripVertical className="size-4" />
+        </button>
+      ) : null}
+      {p.children ?? <BlockBody {...p} />}
     </div>
   );
-});
+}
 
 function BlockBody(p: RowProps) {
   const { block: b, t } = p;
   if (isText(b)) return <TextBody {...p} block={b} />;
   if (b.type === "code") return <CodeBody {...p} block={b} />;
+  if (b.type === "table") return <TableBody {...p} block={b} />;
   if (b.type === "hr")
     return (
-      <button
-        type="button"
-        ref={p.register}
-        aria-label={t("blk_t_hr")}
-        className="block w-full py-3 outline-none"
-        onKeyDown={(e) => keysOnObject(e, p)}
-        onFocus={() => p.onFocus(0)}
-        onBlur={p.onBlur}
-        onClick={p.onSelect}
-      >
+      <button type="button" ref={p.register} aria-label={t("blk_t_hr")} className="block w-full py-3 outline-none" onKeyDown={(e) => keysOnObject(e, p)} onFocus={() => p.onFocus(0)} onBlur={p.onBlur} onClick={p.onSelect}>
         <hr className="border-t-2" />
       </button>
     );
   if (b.type === "media") return <MediaBody {...p} block={b} />;
-  return <SourceBody {...p} block={b} />;
+  if (b.type === "source") return <SourceBody {...p} block={b} />;
+  return null;
 }
 
 /** Keys on a block that is not text (divider, image, drawn source): move, delete, undo. */
@@ -1360,6 +2101,7 @@ const TEXT_CLASS: Record<TextType, string> = {
   bullet: "text-[15px] leading-7",
   number: "text-[15px] leading-7",
   todo: "text-[15px] leading-7",
+  toggle: "text-[15px] leading-7",
 };
 
 const TONE_STYLE: Record<Tone, string> = {
@@ -1368,19 +2110,25 @@ const TONE_STYLE: Record<Tone, string> = {
   warning: "bg-amber-500/10 border-amber-500/40",
 };
 
-function TextBody(p: RowProps & { block: TextBlock }) {
-  const { block: b, t, editable } = p;
+/** An editable piece of formatted text (a block's line, a table cell). */
+function useSpansElement(spans: Span[]) {
   const ref = React.useRef<HTMLDivElement & { _spans?: Span[] }>(null);
   const composing = React.useRef(false);
   // Draw the spans unless they came from this element's own typing.
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el || composing.current) return;
-    if (el._spans === b.spans) return;
-    el._spans = b.spans;
-    const html = spansToHtml(b.spans);
+    if (el._spans === spans) return;
+    el._spans = spans;
+    const html = spansToHtml(spans);
     if (el.innerHTML !== html) el.innerHTML = html;
-  }, [b.spans]);
+  }, [spans]);
+  return { ref, composing };
+}
+
+function TextBody(p: RowProps & { block: TextBlock }) {
+  const { block: b, t, editable } = p;
+  const { ref, composing } = useSpansElement(b.spans);
   const setRef = (el: HTMLDivElement | null) => {
     (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
     p.register(el);
@@ -1438,6 +2186,24 @@ function TextBody(p: RowProps & { block: TextBlock }) {
       }}
     />
   );
+  if (b.type === "toggle")
+    return (
+      <div className="relative flex items-start gap-1">
+        <button
+          type="button"
+          contentEditable={false}
+          aria-expanded={p.open}
+          aria-label={p.open ? t("blk_toggle_close") : t("blk_toggle_open")}
+          title={p.open ? t("blk_toggle_close") : t("blk_toggle_open")}
+          onClick={p.onToggleOpen}
+          onMouseDown={(e) => e.preventDefault()}
+          className="mt-[5px] flex size-6 shrink-0 items-center justify-center rounded text-foreground/70 hover:bg-muted"
+        >
+          <ChevronRight className={cn("size-4 transition-transform duration-150", p.open && "rotate-90")} />
+        </button>
+        <div className="relative min-w-0 flex-1">{editableEl}</div>
+      </div>
+    );
   if (b.type === "bullet" || b.type === "number" || b.type === "todo")
     return (
       <div className="relative flex items-start gap-2">
@@ -1488,6 +2254,459 @@ function TextBody(p: RowProps & { block: TextBlock }) {
   return <div className="relative">{editableEl}</div>;
 }
 
+// ── tables ────────────────────────────────────────────────────────────────────
+
+/** One table cell: formatted text on one line. */
+function CellText({
+  spans,
+  editable,
+  label,
+  align,
+  head,
+  register,
+  onSpans,
+  onKey,
+  onFocusCell,
+}: {
+  spans: Span[];
+  editable: boolean;
+  label: string;
+  align: TableAlign;
+  head: boolean;
+  register?: (el: HTMLElement | null) => void;
+  onSpans: (s: Span[]) => void;
+  onKey: (e: React.KeyboardEvent<HTMLDivElement>, el: HTMLDivElement) => void;
+  onFocusCell: () => void;
+}) {
+  const { ref, composing } = useSpansElement(spans);
+  return (
+    <div
+      ref={(el) => {
+        (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
+        register?.(el);
+      }}
+      role="textbox"
+      aria-label={label}
+      contentEditable={editable}
+      suppressContentEditableWarning
+      spellCheck
+      className={cn(
+        "min-h-[1.6rem] whitespace-pre-wrap break-words px-2 py-1.5 outline-none [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[0.88em]",
+        head && "font-semibold",
+        align === "center" ? "text-center" : align === "right" ? "text-right" : "text-left"
+      )}
+      onFocus={onFocusCell}
+      onCompositionStart={() => (composing.current = true)}
+      onCompositionEnd={(e) => {
+        composing.current = false;
+        const s = domToSpans(e.currentTarget);
+        (e.currentTarget as HTMLDivElement & { _spans?: Span[] })._spans = s;
+        onSpans(s);
+      }}
+      onInput={(e) => {
+        const ne = e.nativeEvent as InputEvent;
+        if (composing.current || ne.isComposing) return;
+        const s = domToSpans(e.currentTarget).map((x) => ({ ...x, text: x.text.replace(/\n/g, " ") }));
+        (e.currentTarget as HTMLDivElement & { _spans?: Span[] })._spans = s;
+        onSpans(s);
+      }}
+      onBeforeInput={(e) => {
+        const ne = e.nativeEvent as InputEvent;
+        if (/^format|insertParagraph|insertLineBreak/.test(ne.inputType)) e.preventDefault();
+      }}
+      onPaste={(e) => {
+        e.preventDefault();
+        const one = e.clipboardData.getData("text/plain").replace(/\s*\n\s*/g, " ");
+        document.execCommand("insertText", false, one);
+      }}
+      onKeyDown={(e) => onKey(e, e.currentTarget)}
+    />
+  );
+}
+
+type TableMenu = { kind: "row" | "col" | "cell"; row: number; col: number; x: number; y: number; back?: HTMLElement | null } | null;
+
+function TableBody(p: RowProps & { block: TableBlock }) {
+  const { block: b, t, editable } = p;
+  const cells = React.useRef(new Map<string, HTMLDivElement>());
+  const [menu, setMenu] = React.useState<TableMenu>(null);
+  const width = Math.max(1, b.head.length, ...b.rows.map((r) => r.length));
+  const fill = (r: Span[][]) => Array.from({ length: width }, (_, k) => r[k] ?? []);
+  const head = fill(b.head);
+  const rows = b.rows.map(fill);
+  const align: TableAlign[] = Array.from({ length: width }, (_, k) => b.align[k] ?? null);
+  const save = (next: Partial<TableBlock>, group?: string) => p.onChange({ ...b, head, rows, align, ...next } as TableBlock, group);
+
+  // Focus moves at once (keys typed right after Tab land in the new cell); a cell that is
+  // not drawn yet (a row just added) gets it as soon as it is.
+  const pendingCell = React.useRef<{ r: number; c: number; at: "start" | "end" } | null>(null);
+  const putCaret = (el: HTMLDivElement, at: "start" | "end") => {
+    el.focus({ preventScroll: true });
+    const len = (el.textContent ?? "").replace(/\u200b/g, "").length;
+    setSelectionIn(el, at === "end" ? len : 0);
+    el.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  const focusCell = (r: number, c: number, at: "start" | "end" = "end") => {
+    const el = cells.current.get(`${r}:${c}`);
+    if (el) putCaret(el, at);
+    else pendingCell.current = { r, c, at };
+  };
+  React.useLayoutEffect(() => {
+    const want = pendingCell.current;
+    if (!want) return;
+    const el = cells.current.get(`${want.r}:${want.c}`);
+    if (!el) return;
+    pendingCell.current = null;
+    putCaret(el, want.at);
+  });
+
+  const setCell = (r: number, c: number, spans: Span[]) => {
+    if (r < 0) save({ head: head.map((x, k) => (k === c ? spans : x)) }, `cell:${b.id}:${r}:${c}`);
+    else save({ rows: rows.map((row, i) => (i === r ? row.map((x, k) => (k === c ? spans : x)) : row)) }, `cell:${b.id}:${r}:${c}`);
+  };
+  const addRow = (at: number) => save({ rows: [...rows.slice(0, at), emptyRow(width), ...rows.slice(at)] });
+  const addCol = (at: number) =>
+    save({
+      head: [...head.slice(0, at), [], ...head.slice(at)],
+      rows: rows.map((r) => [...r.slice(0, at), [], ...r.slice(at)]),
+      align: [...align.slice(0, at), null, ...align.slice(at)],
+    });
+  const delRow = (i: number) => save({ rows: rows.filter((_, k) => k !== i) });
+  const delCol = (c: number) => {
+    if (width <= 1) return p.onRemove();
+    save({ head: head.filter((_, k) => k !== c), rows: rows.map((r) => r.filter((_, k) => k !== c)), align: align.filter((_, k) => k !== c) });
+  };
+
+  const onKey = (r: number, c: number) => (e: React.KeyboardEvent<HTMLDivElement>, el: HTMLDivElement) => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const mod = isApple() ? e.metaKey : e.ctrlKey;
+    const sel = selectionIn(el) ?? { start: 0, end: 0, collapsed: true };
+    const len = (el.textContent ?? "").replace(/\u200b/g, "").length;
+    const last = rows.length - 1;
+    if (e.key === "Tab") {
+      e.preventDefault();
+      if (e.shiftKey) {
+        if (c > 0) focusCell(r, c - 1);
+        else if (r > -1) focusCell(r - 1, width - 1);
+        else p.onExit("prev");
+      } else if (c < width - 1) focusCell(r, c + 1, "start");
+      else if (r < last) focusCell(r + 1, 0, "start");
+      else {
+        addRow(rows.length);
+        focusCell(rows.length, 0, "start");
+      }
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (mod) return p.onExit("next");
+      if (r < last) focusCell(r + 1, c);
+      else {
+        addRow(rows.length);
+        focusCell(rows.length, c);
+      }
+      return;
+    }
+    if (e.key === "Enter") return e.preventDefault();
+    if (e.key === "ArrowUp" && !e.shiftKey) {
+      e.preventDefault();
+      if (r > -1) focusCell(r - 1, c);
+      else p.onExit("prev");
+      return;
+    }
+    if (e.key === "ArrowDown" && !e.shiftKey) {
+      e.preventDefault();
+      if (r < last) focusCell(r + 1, c);
+      else p.onExit("next");
+      return;
+    }
+    if (e.key === "ArrowLeft" && sel.collapsed && sel.start === 0 && !e.shiftKey && c > 0) {
+      e.preventDefault();
+      focusCell(r, c - 1);
+      return;
+    }
+    if (e.key === "ArrowRight" && sel.collapsed && sel.start === len && !e.shiftKey && c < width - 1) {
+      e.preventDefault();
+      focusCell(r, c + 1, "start");
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      p.onSelect();
+      return;
+    }
+    if (mod && !e.altKey && e.key === "/") {
+      // The row and column actions from the keyboard.
+      e.preventDefault();
+      const rr = el.getBoundingClientRect();
+      setMenu({ kind: "cell", row: r, col: c, x: rr.left, y: rr.bottom + 2, back: el });
+      return;
+    }
+    if (mod && !e.altKey) {
+      const k = e.key.toLowerCase();
+      const marks: Record<string, Mark> = { b: "b", i: "i", e: "code" };
+      if (marks[k] && sel.start !== sel.end) {
+        e.preventDefault();
+        const cur = r < 0 ? head[c] : rows[r][c];
+        setCell(r, c, toggleMark(cur, sel.start, sel.end, marks[k]));
+        requestAnimationFrame(() => setSelectionIn(el, sel.start, sel.end));
+        return;
+      }
+      if (k === "z") {
+        e.preventDefault();
+        p.onUndo(e.shiftKey);
+      }
+    }
+  };
+
+  const cell = (r: number, c: number, spans: Span[]) => (
+    <CellText
+      spans={spans}
+      editable={editable}
+      head={r < 0}
+      align={align[c]}
+      label={r < 0 ? t("blk_table_head_cell", { col: c + 1 }) : t("blk_table_cell", { row: r + 1, col: c + 1 })}
+      register={(el) => {
+        if (el) cells.current.set(`${r}:${c}`, el as HTMLDivElement);
+        else cells.current.delete(`${r}:${c}`);
+        if (r === -1 && c === 0) p.register(el);
+      }}
+      onSpans={(s) => setCell(r, c, s)}
+      onKey={onKey(r, c)}
+      onFocusCell={() => p.onFocus(0)}
+    />
+  );
+
+  const menuButton = (kind: "row" | "col", index: number, cls: string) =>
+    editable ? (
+      <button
+        type="button"
+        tabIndex={-1}
+        contentEditable={false}
+        aria-label={kind === "row" ? t("blk_table_row_menu") : t("blk_table_col_menu")}
+        title={kind === "row" ? t("blk_table_row_menu") : t("blk_table_col_menu")}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={(e) => {
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          setMenu({ kind, row: kind === "row" ? index : -1, col: kind === "col" ? index : 0, x: r.left, y: r.bottom + 2, back: cells.current.get(kind === "row" ? `${index}:0` : `-1:${index}`) });
+        }}
+        className={cn("absolute z-[1] flex items-center justify-center rounded bg-background/95 text-muted-foreground opacity-0 shadow-sm ring-1 ring-border transition-opacity hover:text-foreground", cls)}
+      >
+        <MoreHorizontal className="size-3.5" />
+      </button>
+    ) : null;
+
+  React.useEffect(() => {
+    if (!menu) return;
+    const close = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest("[data-cms-pop]")) setMenu(null);
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [menu]);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+  // The menu takes the focus; Esc closes it and gives the focus back to the cell.
+  React.useEffect(() => {
+    if (menu) menuRef.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+  }, [menu]);
+  const closeMenu = () => {
+    const back = menu?.back;
+    setMenu(null);
+    if (back?.isConnected) back.focus();
+  };
+
+  const menuItem = (label: string, Icon: Icon, run: () => void, danger?: boolean) => (
+    <button
+      role="menuitem"
+      type="button"
+      className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none hover:bg-muted focus-visible:bg-muted", danger && "text-destructive")}
+      onClick={() => {
+        closeMenu();
+        run();
+      }}
+    >
+      <Icon className="size-4" />
+      {label}
+    </button>
+  );
+  const rowItems = (i: number) => (
+    <>
+      {menuItem(t("blk_table_above"), ArrowUpToLine, () => addRow(i))}
+      {menuItem(t("blk_table_below"), ArrowDownToLine, () => addRow(i + 1))}
+      {menuItem(t("blk_table_del_row"), Trash2, () => delRow(i), true)}
+    </>
+  );
+  const colItems = (c: number) => (
+    <>
+      {menuItem(t("blk_table_align_left"), AlignLeft, () => save({ align: align.map((a, k) => (k === c ? "left" : a)) }))}
+      {menuItem(t("blk_table_align_center"), AlignCenter, () => save({ align: align.map((a, k) => (k === c ? "center" : a)) }))}
+      {menuItem(t("blk_table_align_right"), AlignRight, () => save({ align: align.map((a, k) => (k === c ? "right" : a)) }))}
+      <div className="my-1 h-px bg-border" />
+      {menuItem(t("blk_table_left"), ArrowLeftToLine, () => addCol(c))}
+      {menuItem(t("blk_table_right"), ArrowRightToLine, () => addCol(c + 1))}
+      {menuItem(t("blk_table_del_col"), Trash2, () => delCol(c), true)}
+    </>
+  );
+
+  return (
+    <div className="group/table relative my-2 flex items-stretch gap-1">
+      <div className="min-w-0 flex-1">
+        <div className="overflow-x-auto rounded-md border">
+          <table className="w-full min-w-max border-collapse text-[14px] leading-6">
+            <thead>
+              <tr className="bg-muted/50">
+                {head.map((s, c) => (
+                  <th key={c} className="group/th relative min-w-24 border-b border-r p-0 align-top font-normal last:border-r-0">
+                    {cell(-1, c, s)}
+                    {menuButton("col", c, cn("top-1.5 size-5 group-hover/th:opacity-100 focus:opacity-100", align[c] === "right" ? "left-1" : "right-1"))}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, r) => (
+                <tr key={r} className="group/tr">
+                  {row.map((s, c) => (
+                    <td key={c} className="relative min-w-24 border-b border-r p-0 align-top last:border-r-0 [tr:last-child_&]:border-b-0">
+                      {cell(r, c, s)}
+                      {c === 0 ? menuButton("row", r, "-left-0 top-1/2 h-5 w-3.5 -translate-y-1/2 group-hover/tr:opacity-100") : null}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {editable ? (
+          <button type="button" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => (addRow(rows.length), focusCell(rows.length, 0, "start"))} aria-label={t("blk_table_add_row")} title={t("blk_table_add_row")} className="mt-1 flex h-5 w-full items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted group-hover/table:opacity-100 focus-visible:opacity-100">
+            <Plus className="size-3.5" />
+          </button>
+        ) : null}
+      </div>
+      {editable ? (
+        <button type="button" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => (addCol(width), focusCell(-1, width, "start"))} aria-label={t("blk_table_add_col")} title={t("blk_table_add_col")} className="mb-6 flex w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted group-hover/table:opacity-100 focus-visible:opacity-100">
+          <Plus className="size-3.5" />
+        </button>
+      ) : null}
+      {menu ? (
+        <Floating x={menu.x} y={menu.y} className="w-52 p-1">
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label={menu.kind === "row" ? t("blk_table_row_menu") : t("blk_table_col_menu")}
+            onKeyDown={(e) => {
+              const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? []);
+              const i = items.indexOf(document.activeElement as HTMLElement);
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                closeMenu();
+              }
+            }}
+          >
+            {menu.kind === "row" ? rowItems(menu.row) : menu.kind === "col" ? colItems(menu.col) : (
+              <>
+                <div className="px-2 pb-1 pt-1 text-[11px] font-medium text-muted-foreground">{t("blk_table_col_menu")}</div>
+                {colItems(menu.col)}
+                {menu.row >= 0 ? (
+                  <>
+                    <div className="my-1 h-px bg-border" />
+                    <div className="px-2 pb-1 pt-1 text-[11px] font-medium text-muted-foreground">{t("blk_table_row_menu")}</div>
+                    {rowItems(menu.row)}
+                  </>
+                ) : null}
+              </>
+            )}
+          </div>
+        </Floating>
+      ) : null}
+    </div>
+  );
+}
+
+// ── pictures and files ────────────────────────────────────────────────────────
+
+function MediaBody(p: RowProps & { block: Extract<EBlock, { type: "media" }> & { pending?: string } }) {
+  const { block: b, t, editable } = p;
+  const name = decodeURIComponent(b.target.replace(/^asset:[a-z0-9]+\//i, "").split(/[?#]/)[0].split("/").pop() ?? "");
+  const isImage = /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(name) || /^https?:/.test(b.target);
+  const url = b.target ? (p.resolveFileUrl ? p.resolveFileUrl(b.target) : b.target) : "";
+  const exitOnEnter = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      p.onExit("next");
+    }
+  };
+  return (
+    <figure
+      ref={p.register as React.Ref<HTMLElement>}
+      tabIndex={0}
+      className="group/media my-2 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      onFocus={(e) => e.target === e.currentTarget && p.onFocus(0)}
+      onBlur={p.onBlur}
+      onKeyDown={(e) => {
+        if (e.target === e.currentTarget) keysOnObject(e, p);
+      }}
+    >
+      {b.pending ? (
+        <div className="flex h-32 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground" role="status">
+          {t("blk_media_uploading", { name: b.pending })}
+        </div>
+      ) : isImage && url ? (
+        <div className="relative w-fit max-w-full">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url} alt={b.alt} className="max-h-[480px] w-auto max-w-full rounded-lg border object-contain" draggable={false} />
+          {editable ? (
+            <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover/media:opacity-100 group-focus-within/media:opacity-100">
+              {p.onPickMedia ? (
+                <button type="button" className="rounded-md bg-background/90 px-2 py-1 text-xs font-medium shadow-sm ring-1 ring-border hover:bg-background" onClick={p.onPickMedia}>
+                  {t("blk_media_replace")}
+                </button>
+              ) : null}
+              <button type="button" aria-label={t("blk_delete")} className="rounded-md bg-background/90 px-1.5 py-1 shadow-sm ring-1 ring-border hover:bg-background" onClick={p.onRemove}>
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm">
+          <ImageIcon className="size-4 text-muted-foreground" />
+          <span className="truncate font-medium">{name || b.target}</span>
+          <span className="text-xs text-muted-foreground">{t("blk_media_file")}</span>
+        </div>
+      )}
+      {!b.pending ? (
+        <figcaption className="mt-1 space-y-0.5">
+          <input
+            aria-label={t("blk_caption")}
+            value={b.caption ?? ""}
+            readOnly={!editable}
+            placeholder={editable ? t("blk_caption_placeholder") : ""}
+            onChange={(e) => p.onChange({ ...b, caption: e.target.value || undefined }, `cap:${b.id}`)}
+            onKeyDown={exitOnEnter}
+            className={cn("h-7 w-full rounded bg-transparent px-1 text-sm text-muted-foreground outline-none placeholder:text-muted-foreground/50 focus:bg-muted/60", !b.caption && "opacity-0 focus:opacity-100 group-hover/media:opacity-100 [@media(hover:none)]:opacity-100")}
+          />
+          <label className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
+            <span className="shrink-0 font-medium">{t("blk_alt_short")}</span>
+            <input
+              aria-label={t("blk_alt")}
+              title={t("blk_alt_hint")}
+              value={b.alt}
+              readOnly={!editable}
+              placeholder={t("blk_alt_missing")}
+              onChange={(e) => p.onChange({ ...b, alt: e.target.value }, `alt:${b.id}`)}
+              onKeyDown={exitOnEnter}
+              className={cn("h-6 min-w-0 flex-1 rounded bg-transparent px-1 outline-none placeholder:text-amber-600/80 focus:bg-muted/60", !b.alt && "italic")}
+            />
+          </label>
+        </figcaption>
+      ) : null}
+    </figure>
+  );
+}
 function useGrow(ref: React.RefObject<HTMLTextAreaElement | null>, value: string) {
   React.useLayoutEffect(() => {
     const el = ref.current;
@@ -1560,74 +2779,6 @@ function CodeBody(p: RowProps & { block: Extract<EBlock, { type: "code" }> }) {
     </div>
   );
 }
-
-function MediaBody(p: RowProps & { block: Extract<EBlock, { type: "media" }> & { pending?: string } }) {
-  const { block: b, t, editable } = p;
-  const name = decodeURIComponent(b.target.replace(/^asset:[a-z0-9]+\//i, "").split(/[?#]/)[0].split("/").pop() ?? "");
-  const isImage = /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(name) || /^https?:/.test(b.target);
-  const url = b.target ? (p.resolveFileUrl ? p.resolveFileUrl(b.target) : b.target) : "";
-  return (
-    <figure
-      ref={p.register as React.Ref<HTMLElement>}
-      tabIndex={0}
-      className="group/media my-2 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      onFocus={() => p.onFocus(0)}
-      onBlur={p.onBlur}
-      onKeyDown={(e) => {
-        if (e.target === e.currentTarget) keysOnObject(e, p);
-      }}
-    >
-      {b.pending ? (
-        <div className="flex h-32 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground" role="status">
-          {t("blk_media_uploading", { name: b.pending })}
-        </div>
-      ) : isImage && url ? (
-        <div className="relative">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={url} alt={b.alt} className="max-h-[480px] w-auto max-w-full rounded-lg border object-contain" draggable={false} />
-          {editable ? (
-            <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover/media:opacity-100 group-focus-within/media:opacity-100">
-              {p.onPickMedia ? (
-                <button type="button" className="rounded-md bg-background/90 px-2 py-1 text-xs font-medium shadow-sm ring-1 ring-border hover:bg-background" onClick={p.onPickMedia}>
-                  {t("blk_media_replace")}
-                </button>
-              ) : null}
-              <button type="button" aria-label={t("blk_delete")} className="rounded-md bg-background/90 px-1.5 py-1 shadow-sm ring-1 ring-border hover:bg-background" onClick={p.onRemove}>
-                <Trash2 className="size-3.5" />
-              </button>
-            </div>
-          ) : null}
-        </div>
-      ) : (
-        <div className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm">
-          <ImageIcon className="size-4 text-muted-foreground" />
-          <span className="truncate font-medium">{name || b.target}</span>
-          <span className="text-xs text-muted-foreground">{t("blk_media_file")}</span>
-        </div>
-      )}
-      {!b.pending ? (
-        <figcaption className="mt-1.5 flex items-center gap-2">
-          <input
-            aria-label={t("blk_alt")}
-            title={t("blk_alt_hint")}
-            value={b.alt}
-            readOnly={!editable}
-            placeholder={t("blk_alt_missing")}
-            onChange={(e) => p.onChange({ ...b, alt: e.target.value }, `alt:${b.id}`)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                p.onExit("next");
-              }
-            }}
-            className={cn("h-7 w-full rounded bg-transparent px-1 text-sm text-muted-foreground outline-none placeholder:text-amber-600/80 focus:bg-muted/60", !b.alt && "italic")}
-          />
-        </figcaption>
-      ) : null}
-    </figure>
-  );
-}
-
 function SourceBody(p: RowProps & { block: Extract<EBlock, { type: "source" }> }) {
   const { block: b, t, editable } = p;
   const ref = React.useRef<HTMLTextAreaElement | null>(null);
@@ -1720,18 +2871,24 @@ function SourceBody(p: RowProps & { block: Extract<EBlock, { type: "source" }> }
 function Floating({ x, y, above, children, className, label }: { x: number; y: number; above?: boolean; children: React.ReactNode; className?: string; label?: string }) {
   const ref = React.useRef<HTMLDivElement>(null);
   const [pos, setPos] = React.useState({ left: x, top: y });
+  // Placed after every render: what is inside can grow or shrink (a filtered menu).
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const w = el.offsetWidth;
     const h = el.offsetHeight;
+    const vh = window.innerHeight;
     let left = above ? x - w / 2 : x;
     let top = above ? y - h - 8 : y + 4;
     left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
-    if (!above && top + h > window.innerHeight - 8) top = Math.max(8, y - h - 28);
+    if (!above && top + h > vh - 8) {
+      // Not enough room below: above if there is more room there, else as low as fits.
+      const up = y - h - 28;
+      top = up >= 8 && y - 28 > vh - y ? up : Math.max(8, vh - h - 8);
+    }
     if (above && top < 8) top = y + 28;
-    setPos({ left, top });
-  }, [x, y, above]);
+    if (pos.left !== left || pos.top !== top) setPos({ left, top });
+  });
   return (
     <div ref={ref} data-cms-pop role={label ? "toolbar" : undefined} aria-label={label} className={cn("fixed z-50 rounded-lg border bg-popover text-popover-foreground shadow-lg", className)} style={{ left: pos.left, top: pos.top }} onMouseDown={(e) => e.preventDefault()}>
       {children}
@@ -1799,7 +2956,7 @@ function Toolbar({
   onMark: (m: Mark) => void;
   onLink: () => void;
   onUnlink: () => void;
-  onTurn: (type: TextType) => void;
+  onTurn: (type: TurnType) => void;
   resolveFileUrl?: (target: string) => string;
 }) {
   const [turnOpen, setTurnOpen] = React.useState(false);
@@ -1914,74 +3071,147 @@ function LinkPopover({ t, at, onApply, onCancel }: { t: T; at: { href: string; x
   );
 }
 
+
+// ── the block menu (the handle, ⌘/) ───────────────────────────────────────────
+
+interface MenuAction {
+  key: string;
+  label: string;
+  icon: Icon;
+  run: () => void;
+  keys?: string;
+  danger?: boolean;
+  group: "turn" | "act" | "danger";
+  words?: string;
+}
+
 function BlockMenu({
   t,
   at,
-  block,
-  count,
+  blocks,
+  canIndent,
+  canOutdent,
   onClose,
   onTurn,
   onDuplicate,
   onMove,
+  onIndent,
   onCopy,
   onDelete,
 }: {
   t: T;
   at: { x: number; y: number };
-  block: EBlock | undefined;
-  count: number;
+  blocks: EBlock[];
+  canIndent: boolean;
+  canOutdent: boolean;
   onClose: () => void;
-  onTurn: (type: TextType) => void;
+  onTurn: (type: TurnType) => void;
   onDuplicate: () => void;
   onMove: (dir: -1 | 1) => void;
+  onIndent: (out: boolean) => void;
   onCopy: () => void;
   onDelete: () => void;
 }) {
-  const ref = React.useRef<HTMLDivElement>(null);
+  const [q, setQ] = React.useState("");
+  const [index, setIndex] = React.useState(0);
+  const list = React.useRef<HTMLDivElement>(null);
+  const count = blocks.filter((b) => b.type !== "col").length;
+  const turnable = blocks.length > 0 && blocks.every((b) => isText(b) || b.type === "code");
+  const mod = MOD();
+  const alt = ALT();
+  const current = blocks.length === 1 ? blocks[0].type : null;
+  const actions: MenuAction[] = [
+    ...(turnable
+      ? TURN_INTO.map((x) => ({
+          key: `turn-${x.type}`,
+          label: t(x.label),
+          icon: x.icon,
+          run: () => onTurn(x.type),
+          keys: x.digit ? `${mod}${alt}${x.digit}` : undefined,
+          group: "turn" as const,
+          words: `turn into ${x.type} 바꾸기`,
+        }))
+      : []),
+    { key: "duplicate", label: t("blk_duplicate"), icon: CopyPlus, run: onDuplicate, keys: `${mod}D`, group: "act", words: "duplicate copy 복제" },
+    { key: "up", label: t("blk_move_up"), icon: MoveUp, run: () => onMove(-1), keys: `${mod}⇧↑`, group: "act", words: "move up 위로" },
+    { key: "down", label: t("blk_move_down"), icon: MoveDown, run: () => onMove(1), keys: `${mod}⇧↓`, group: "act", words: "move down 아래로" },
+    ...(canIndent ? [{ key: "indent", label: t("blk_indent"), icon: IndentIncrease, run: () => onIndent(false), keys: "Tab", group: "act" as const, words: "indent nest 들여쓰기" }] : []),
+    ...(canOutdent ? [{ key: "outdent", label: t("blk_outdent"), icon: IndentDecrease, run: () => onIndent(true), keys: "⇧Tab", group: "act" as const, words: "outdent unnest 내어쓰기" }] : []),
+    { key: "copy", label: t("blk_copy_md"), icon: Copy, run: onCopy, keys: `${mod}C`, group: "act", words: "copy markdown clipboard 복사" },
+    { key: "delete", label: count > 1 ? `${t("blk_delete")} (${count})` : t("blk_delete"), icon: Trash2, run: onDelete, keys: "Del", danger: true, group: "danger", words: "delete remove 삭제 지우기" },
+  ];
+  const query = q.trim().toLowerCase();
+  const shown = query ? actions.filter((a) => `${a.label} ${a.words ?? ""}`.toLowerCase().includes(query)) : actions;
+  const pick = Math.min(index, Math.max(0, shown.length - 1));
+  React.useEffect(() => setIndex(0), [q]);
   React.useEffect(() => {
-    ref.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
-  }, []);
-  if (!block) return null;
-  const mod = isApple() ? "⌘" : "Ctrl+";
-  const item = (label: string, Icon: React.ComponentType<{ className?: string }>, run: () => void, keys?: string, danger?: boolean) => (
-    <button role="menuitem" type="button" className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none hover:bg-muted focus-visible:bg-muted", danger && "text-destructive")} onClick={run}>
-      <Icon className="size-4" />
-      <span className="grow text-left">{label}</span>
-      {keys ? <kbd className="text-[11px] text-muted-foreground">{keys}</kbd> : null}
-    </button>
-  );
+    list.current?.querySelector(`[data-index="${pick}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [pick]);
+  if (!blocks.length) return null;
+  let lastGroup = "";
   return (
-    <Floating x={at.x} y={at.y} className="w-60 p-1">
-      <div
-        ref={ref}
-        role="menu"
-        onKeyDown={(e) => {
-          const items = Array.from(ref.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? []);
-          const i = items.indexOf(document.activeElement as HTMLElement);
-          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-            e.preventDefault();
-            items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            onClose();
-          }
-        }}
-      >
-        {isText(block) && count === 1 ? (
-          <>
-            <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">{t("blk_turn_into")}</div>
-            {TURN_INTO.map((x) => (
-              <React.Fragment key={x.type}>{item(t(x.label), x.icon, () => onTurn(x.type))}</React.Fragment>
-            ))}
-            <div className="my-1 h-px bg-border" />
-          </>
-        ) : null}
-        {item(t("blk_duplicate"), CopyPlus, onDuplicate, `${mod}D`)}
-        {item(t("blk_move_up"), MoveUp, () => onMove(-1), `${mod}⇧↑`)}
-        {item(t("blk_move_down"), MoveDown, () => onMove(1), `${mod}⇧↓`)}
-        {item(t("blk_copy_md"), Copy, onCopy, `${mod}C`)}
-        <div className="my-1 h-px bg-border" />
-        {item(count > 1 ? `${t("blk_delete")} (${count})` : t("blk_delete"), Trash2, onDelete, "Del", true)}
+    <Floating x={at.x} y={at.y} className="w-64 p-1">
+      <div className="flex items-center gap-1.5 border-b px-2 pb-1.5 pt-1">
+        <Search className="size-3.5 shrink-0 text-muted-foreground" />
+        <input
+          autoFocus
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="cms-block-menu"
+          aria-activedescendant={shown[pick] ? `cms-block-menu-${shown[pick].key}` : undefined}
+          aria-label={t("blk_menu_search")}
+          placeholder={t("blk_menu_search")}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onMouseDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return;
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const n = shown.length || 1;
+              setIndex((pick + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              shown[pick]?.run();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+          className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/70"
+        />
+      </div>
+      <div ref={list} id="cms-block-menu" role="listbox" aria-label={t("blk_handle")} className="max-h-[min(20rem,calc(100dvh-8rem))] overflow-y-auto pt-1">
+        {shown.length ? (
+          shown.map((a, n) => {
+            const head = a.group !== lastGroup && a.group === "turn" ? (blocks.length > 1 ? t("blk_turn_n", { n: blocks.length }) : t("blk_turn_into")) : null;
+            const rule = a.group !== lastGroup && lastGroup !== "" && !query;
+            lastGroup = a.group;
+            const Ic = a.icon;
+            return (
+              <React.Fragment key={a.key}>
+                {rule ? <div className="my-1 h-px bg-border" /> : null}
+                {head ? <div className="px-2 pb-1 pt-1 text-[11px] font-medium text-muted-foreground">{head}</div> : null}
+                <div
+                  id={`cms-block-menu-${a.key}`}
+                  role="option"
+                  aria-selected={n === pick}
+                  data-index={n}
+                  className={cn("flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm", n === pick && "bg-accent text-accent-foreground", a.danger && "text-destructive")}
+                  onMouseEnter={() => setIndex(n)}
+                  onClick={a.run}
+                >
+                  <Ic className="size-4 shrink-0" />
+                  <span className="grow truncate">{a.label}</span>
+                  {a.group === "turn" && current && `turn-${current}` === a.key ? <Check className="size-3.5 text-primary" /> : null}
+                  {a.keys ? <kbd className="shrink-0 font-sans text-[11px] text-muted-foreground">{a.keys}</kbd> : null}
+                </div>
+              </React.Fragment>
+            );
+          })
+        ) : (
+          <div className="px-2 py-3 text-sm text-muted-foreground">{t("blk_menu_none")}</div>
+        )}
       </div>
     </Floating>
   );

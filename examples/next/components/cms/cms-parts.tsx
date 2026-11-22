@@ -662,6 +662,11 @@ function Block1({ b, components }: { b: Block; components?: BlockComponents }) {
           {b.items.map((it, k) => (
             <li key={k}>
               <Inlines items={it} />
+              {b.kids?.[k] ? (
+                <div className="[&>*:first-child]:mt-1 [&>*:last-child]:mb-0">
+                  <Blocks blocks={b.kids[k]!} components={components} />
+                </div>
+              ) : null}
             </li>
           ))}
         </L>
@@ -709,9 +714,16 @@ function Block1({ b, components }: { b: Block; components?: BlockComponents }) {
           {b.items.map((it, k) => (
             <li key={k} className="flex items-start gap-2">
               <input type="checkbox" checked={it.checked} readOnly disabled className="mt-1.5 h-4 w-4 shrink-0 accent-foreground" aria-label={it.checked ? "done" : "to do"} />
-              <span className={cn("min-w-0", it.checked && "text-muted-foreground line-through")}>
-                <Inlines items={it.inline} />
-              </span>
+              <div className="min-w-0 flex-1">
+                <span className={cn(it.checked && "text-muted-foreground line-through")}>
+                  <Inlines items={it.inline} />
+                </span>
+                {it.kids ? (
+                  <div className="[&>*:first-child]:mt-1 [&>*:last-child]:mb-0">
+                    <Blocks blocks={it.kids} components={components} />
+                  </div>
+                ) : null}
+              </div>
             </li>
           ))}
         </ul>

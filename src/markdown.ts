@@ -53,9 +53,12 @@ export type TableAlign = "left" | "center" | "right" | null;
 type BlockBody =
   | { t: "heading"; level: 2 | 3; id: string; text: string; inline: Inline[] }
   | { t: "p"; inline: Inline[] }
-  /** `start`: the first number of an ordered list when it is not 1. */
-  | { t: "list"; ordered: boolean; items: Inline[][]; start?: number }
-  | { t: "todo"; items: { checked: boolean; inline: Inline[] }[] }
+  /**
+   * `start`: the first number of an ordered list when it is not 1.
+   * `kids`: blocks nested under an item (lines indented under it), by item; only there when some item has them.
+   */
+  | { t: "list"; ordered: boolean; items: Inline[][]; start?: number; kids?: (Block[] | null)[] }
+  | { t: "todo"; items: { checked: boolean; inline: Inline[]; kids?: Block[] }[] }
   | { t: "quote"; callout: "note" | "tip" | "warning" | null; blocks: Block[] }
   | { t: "code"; lang: string; v: string }
   | { t: "hr" }
@@ -205,15 +208,24 @@ function tableCells(line: string): string[] {
   if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
   const cells: string[] = [];
   let cur = "";
-  let tick = false;
+  // Inside a code span: the length of the backtick run that opened it (0: not in code).
+  let tick = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
-    if (c === "\\" && s[i + 1] === "|") {
-      cur += "\\|";
+    if (c === "\\" && i + 1 < s.length && !tick) {
+      cur += c + s[i + 1];
       i++;
       continue;
     }
-    if (c === "`") tick = !tick;
+    if (c === "`") {
+      let n = 1;
+      while (s[i + n] === "`") n++;
+      if (!tick) tick = n;
+      else if (n === tick) tick = 0;
+      cur += s.slice(i, i + n);
+      i += n - 1;
+      continue;
+    }
     if (c === "|" && !tick) {
       cells.push(cur.trim());
       cur = "";
@@ -253,6 +265,37 @@ function closeOf(lines: string[], from: number, html: boolean): number {
   return lines.length;
 }
 
+/** A list item marker at the start of a line (after any indentation). */
+const LIST_MARK = /^\s*(?:[-*+]|\d+[.)])\s/;
+
+/** Leading spaces of a line (a tab counts as four). */
+function indentOf(line: string): number {
+  let n = 0;
+  for (const c of line) {
+    if (c === " ") n++;
+    else if (c === "\t") n += 4 - (n % 4);
+    else break;
+  }
+  return n;
+}
+
+/** A line without its first `cols` columns of indentation; the rest (tabs in code too) is kept as written. */
+export function stripIndent(line: string, cols: number): string {
+  let n = 0;
+  let i = 0;
+  while (i < line.length && n < cols && (line[i] === " " || line[i] === "\t")) {
+    n += line[i] === "\t" ? 4 - (n % 4) : 1;
+    i++;
+  }
+  return (n > cols ? " ".repeat(n - cols) : "") + line.slice(i);
+}
+
+/** Lines without the indentation they all share. */
+function dedent(lines: string[]): string {
+  const cut = Math.min(...lines.filter((l) => l.trim()).map(indentOf));
+  return lines.map((l) => (l.trim() ? stripIndent(l, cut) : "")).join("\n");
+}
+
 export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Block[] {
   const lines = source.replace(/\r/g, "").split("\n");
   const out: Block[] = [];
@@ -261,7 +304,7 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
   const used = new Map<string, number>();
   let para: string[] = [];
   let paraAt = [0, 0];
-  type ListAcc = { kind: "ul" | "ol" | "todo"; items: string[]; checks: boolean[]; start: number; from: number; to: number };
+  type ListAcc = { kind: "ul" | "ol" | "todo"; items: string[]; checks: boolean[]; start: number; from: number; to: number; indent: number; kids: (string[] | null)[] };
   let list: ListAcc | null = null;
 
   const uniqueId = (text: string) => {
@@ -289,10 +332,13 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
   const flushList = () => {
     if (!list) return;
     const l: ListAcc = list;
-    if (l.kind === "todo") push({ t: "todo", items: l.items.map((s, k) => ({ checked: l.checks[k], inline: parseInline(s) })) }, l.from, l.to);
+    const kids = l.kids.map((k) => (k ? parseMarkdown(dedent(k)) : null));
+    const any = kids.some((k) => k && k.length);
+    if (l.kind === "todo") push({ t: "todo", items: l.items.map((s, k) => (kids[k]?.length ? { checked: l.checks[k], inline: parseInline(s), kids: kids[k]! } : { checked: l.checks[k], inline: parseInline(s) })) }, l.from, l.to);
     else {
       const b: Block = { t: "list", ordered: l.kind === "ol", items: l.items.map(parseInline) };
       if (l.kind === "ol" && l.start !== 1) b.start = l.start;
+      if (any) b.kids = kids.map((k) => (k && k.length ? k : null));
       push(b, l.from, l.to);
     }
     list = null;
@@ -304,6 +350,31 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    // Lines indented under a list item: a nested list (and what follows it) belongs to that item.
+    if (list && line.trim()) {
+      const l: ListAcc = list;
+      const at = indentOf(line);
+      const last = l.kids.length - 1;
+      if (at >= l.indent + 2 && (l.kids[last] || LIST_MARK.test(line))) {
+        flushPara();
+        (l.kids[last] ??= []).push(line);
+        l.to = i;
+        continue;
+      }
+    }
+    if (list && !line.trim()) {
+      // A blank line then lines indented under the item: blocks inside the item (a paragraph, a toggle, a list...).
+      const l: ListAcc = list;
+      let k = i + 1;
+      while (k < lines.length && !lines[k].trim()) k++;
+      if (k < lines.length && indentOf(lines[k]) >= l.indent + 2) {
+        flushPara();
+        const last = l.kids.length - 1;
+        for (; i < k; i++) (l.kids[last] ??= []).push("");
+        i--;
+        continue;
+      }
+    }
     const fence = FENCE_OPEN.exec(line);
     if (fence) {
       flush();
@@ -428,9 +499,10 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
       flushPara();
       const kind = task ? "todo" : ol ? "ol" : "ul";
       if (list && list.kind !== kind) flushList();
-      if (!list) list = { kind, items: [], checks: [], start: ol ? Number(ol[1]) : 1, from: i, to: i };
+      if (!list) list = { kind, items: [], checks: [], start: ol ? Number(ol[1]) : 1, from: i, to: i, indent: indentOf(line), kids: [] };
       list.items.push(task ? task[2] : ol ? ol[2] : ul![1]);
       list.checks.push(task ? task[1] !== " " : false);
+      list.kids.push(null);
       list.to = i;
       continue;
     }
@@ -533,16 +605,27 @@ export function sameBlocks(a: Block[], b: Block[]): boolean {
 
 /** A table cell: `|` outside code gets a backslash; a line break becomes a space. */
 const cell = (items: Inline[]) => {
-  const md = inlineToMarkdown(items.map((i) => (i.t === "br" ? ({ t: "text", v: " " } as Inline) : i)));
+  const flat = items.map((i) => (i.t === "br" ? ({ t: "text", v: " " } as Inline) : i));
+  // A backtick in the text would start code to the cell splitter: always escaped in a cell.
+  const md = JSON.stringify(flat).includes("`") && flat.some((i) => "v" in i && i.t !== "code" && i.v.includes("`")) ? inlineMd(flat, true) : inlineToMarkdown(flat);
   let out = "";
-  let tick = false;
+  let tick = 0;
   for (let k = 0; k < md.length; k++) {
     const c = md[k];
     if (c === "\\" && k + 1 < md.length) {
       out += c + md[++k];
       continue;
     }
-    if (c === "`") tick = !tick;
+    if (c === "`") {
+      // Code spans open and close with backtick runs of the same length.
+      let n = 1;
+      while (md[k + n] === "`") n++;
+      if (!tick) tick = n;
+      else if (n === tick) tick = 0;
+      out += md.slice(k, k + n);
+      k += n - 1;
+      continue;
+    }
     out += c === "|" && !tick ? "\\|" : c;
   }
   return out;
@@ -555,9 +638,14 @@ function blockMd(b: Block): string {
     case "p":
       return inlineToMarkdown(b.inline);
     case "list":
-      return b.items.map((it, k) => `${b.ordered ? `${(b.start ?? 1) + k}.` : "-"} ${inlineToMarkdown(it)}`).join("\n");
+      return b.items
+        .map((it, k) => {
+          const mark = b.ordered ? `${(b.start ?? 1) + k}.` : "-";
+          return guard({ t: "list", ordered: b.ordered, items: [it], ...(b.ordered && (b.start ?? 1) + k !== 1 ? { start: (b.start ?? 1) + k } : {}) }, `${mark} ${inlineToMarkdown(it)}`) + nested(b.kids?.[k], mark.length + 1);
+        })
+        .join("\n");
     case "todo":
-      return b.items.map((it) => `- [${it.checked ? "x" : " "}] ${inlineToMarkdown(it.inline)}`).join("\n");
+      return b.items.map((it) => guard({ t: "todo", items: [{ checked: it.checked, inline: it.inline }] }, `- [${it.checked ? "x" : " "}] ${inlineToMarkdown(it.inline)}`) + nested(it.kids, 2)).join("\n");
     case "quote": {
       const inner = (b.callout ? `[!${b.callout}]\n` : "") + toMarkdown(b.blocks);
       return inner
@@ -591,6 +679,20 @@ function blockMd(b: Block): string {
   }
 }
 
+/** Blocks nested under a list item, indented under its text. */
+function nested(kids: Block[] | null | undefined, width: number): string {
+  if (!kids || !kids.length) return "";
+  const pad = " ".repeat(width);
+  // A nested list follows the item's line; anything else needs a blank line before it.
+  return (
+    (kids[0].t === "list" || kids[0].t === "todo" ? "\n" : "\n\n") +
+    toMarkdown(kids)
+      .split("\n")
+      .map((l) => (l ? pad + l : ""))
+      .join("\n")
+  );
+}
+
 /** A paragraph whose first character would start another kind of block gets a backslash. */
 function guard(b: Block, md: string): string {
   if (b.t !== "p" && b.t !== "heading" && b.t !== "list" && b.t !== "todo") return md;
@@ -614,7 +716,7 @@ function guard(b: Block, md: string): string {
 
 /** Markdown for a block tree, in the form `parseMarkdown` reads back to the same tree. */
 export function toMarkdown(blocks: Block[]): string {
-  return blocks.map((b) => guard(b, blockMd(b))).join("\n\n");
+  return blocks.map((b) => ((b.t === "list" && b.kids) || (b.t === "todo" && b.items.some((x) => x.kids)) ? blockMd(b) : guard(b, blockMd(b)))).join("\n\n");
 }
 
 export function extractToc(blocks: Block[]): TocItem[] {
@@ -758,6 +860,8 @@ export function htmlBlocks(blocks: Block[]): Extract<Block, { t: "html" }>[] {
       if (b.t === "html") out.push(b);
       else if (b.t === "quote" || b.t === "toggle") walk(b.blocks);
       else if (b.t === "columns") b.cols.forEach(walk);
+      else if (b.t === "list") b.kids?.forEach((k) => k && walk(k));
+      else if (b.t === "todo") b.items.forEach((x) => x.kids && walk(x.kids));
     }
   };
   walk(blocks);
