@@ -48,6 +48,8 @@
  *   agent-cms import <file> --from json|csv|wordpress|notion --collection c [--types post,page] [--folder f] [--dry-run] [--publish]
  *       content from somewhere else: a JSON list, a CSV sheet, a WordPress export file
  *   agent-cms openapi                    this app's REST API as an OpenAPI 3.1 document
+ *   agent-cms registry build --base-url https://site/r [--out public/r]
+ *       serve the admin screens from your own site: \`npx shadcn add https://site/r/cms-shell.json\`
  *   agent-cms retention [--dry-run]      delete what the retention rules allow (admin key); --dry-run only counts
  *   agent-cms call <tool> '<json args>'         (or --args-file args.json, or --args-file - for stdin)
  *   any command: --json-errors  one JSON line on stderr when it fails (code, kind, status, message, requestId)
@@ -59,7 +61,7 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { sha256 } from "./crypto";
 import { humanSize, type MediaOptions } from "./assets";
 import { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
@@ -71,7 +73,7 @@ import { docsFromNotion, filesFromDocs, filesFromSource, IMPORT_SOURCES, type Im
 import { unzip } from "./zip";
 import { imageSize } from "./net-guard";
 import { DEFAULT_ACCEPT, DEFAULT_MAX_FILE_SIZE } from "./storage";
-import { addItems, loadRegistry, type Registry } from "./registry";
+import { addItems, buildPublicRegistry, findRegistryDir, loadRegistry, type Registry } from "./registry";
 import { cmsDdl, cmsTables, SCHEMA_VERSION, schemaVersionSql, splitSql, upgradeSteps } from "./tables";
 import { VERSION } from "./version";
 
@@ -85,6 +87,8 @@ export interface CliIo {
   cwd?: string;
   /** Registry to use for `add` (tests). Default: the one shipped in the package. */
   registry?: Registry;
+  /** Tests: where `registry build` reads the built screens. */
+  registryDir?: { dir: string; built: boolean };
   /** Database for `doctor` / `migrate` (tests). Default: `db()` from agent-cms.config.ts. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db?: any;
@@ -96,7 +100,7 @@ export interface CliIo {
   run?: (cmd: string, args: string[], cwd: string) => number;
 }
 
-const WITH_VALUE = new Set(["--name", "--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--port", "--host", "--offset", "--limit", "--context", "--glob", "--args-file"]);
+const WITH_VALUE = new Set(["--base-url", "--out", "--name", "--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--port", "--host", "--offset", "--limit", "--context", "--glob", "--args-file"]);
 /** Switches without a value. Anything else that starts with "--" is refused before any request. */
 const SWITCHES = new Set(["--admin", "--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--fix", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--memory", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
 
@@ -166,13 +170,13 @@ export function parseEnvFile(text: string): Record<string, string> {
 
 const USAGE = `agent-cms ${VERSION}
 a server:      dev [--port 3000] [--memory] | serve [--port <n>] [--host <h>]
-in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync>
+in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync> | registry build
 with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import | openapi | retention
                read | grep | edit | pull | push | status
 options:       --env <file>  --json  --json-errors  --  (what follows is a file name, even if it starts with --)
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
-const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage", "serve", "dev", "user"]);
+const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage", "serve", "dev", "user", "registry"]);
 
 export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
   const out = io.out ?? ((l: string) => console.log(l));
@@ -544,9 +548,27 @@ async function importFiles(files: { path: string; text: string }[], dir: string 
 
 type LocalIo = CliIo & { cwd: string; out: (l: string) => void; err: (l: string) => void };
 
+/** `registry build`: the screens of this installed version as a shadcn registry for your own site. */
+function registryCmd(args: string[], argv: string[], io: LocalIo): number {
+  if (args[0] !== "build") {
+    io.err("[agent-cms] usage: npx @mainsoft/agent-cms registry build --base-url https://your.site/r [--out public/r]");
+    return 1;
+  }
+  const baseUrl = flag(argv, "base-url");
+  if (!baseUrl || !/^https?:\/\//.test(baseUrl)) {
+    io.err("[agent-cms] --base-url is needed: the address the JSON files will be served from, e.g. https://your.site/r");
+    return 1;
+  }
+  const out = resolve(io.cwd, flag(argv, "out") ?? "public/r");
+  const files = buildPublicRegistry(io.registryDir ?? findRegistryDir(), out, { baseUrl });
+  io.out(`[agent-cms] registry: ${files.length} files in ${relative(io.cwd, out) || "."} for ${baseUrl}`);
+  return 0;
+}
+
 async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo): Promise<number> {
   if (cmd === "init") return init(argv, io);
   if (cmd === "add") return add(args, argv, io);
+  if (cmd === "registry") return registryCmd(args, argv, io);
   const loaded = await loadConfig(io.cwd);
   if (cmd === "serve" || cmd === "dev") return serveCmd(cmd, argv, loaded?.config ?? null, io);
   if (cmd === "user") return userCmd(args, argv, loaded?.config ?? null, io);

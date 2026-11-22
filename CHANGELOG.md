@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.18.1
+
+- **`npx @mainsoft/agent-cms registry build --base-url https://your.site/r [--out public/r]`**: writes the admin screens of the installed version as a shadcn registry, so a site can serve them (`npx shadcn add https://your.site/r/cms-shell.json`) without a copy of this repository.
+- **Preview builds**: every change to the package on `main` is published as `<next patch>-next.<date>.<commit>` under the npm tag `next` (`npm i @mainsoft/agent-cms@next`). Releases stay on `latest`.
+
 ## 0.18.0
 
 One read policy for every copy of a document, exact event resume points, and server-side guards for releases and imports: the review findings from 0.17, after three review rounds. No schema change. See `UPGRADE-0.18.md`.

@@ -59,3 +59,7 @@ npx @mainsoft/agent-cms openapi > openapi.json
 ## 로컬 명령
 
 `init`, `doctor`, `migrate check | print | apply`, `add`는 서버 없이 프로젝트에서 돌아가요. [설치](/docs/install)와 [어드민 화면](/docs/admin-screens)을 보세요.
+
+## 내 사이트에서 화면 내려주기
+
+`npx @mainsoft/agent-cms registry build --base-url https://your.site/r`은 설치된 버전의 어드민 화면을 `public/r`에 씁니다(`--out`으로 바꿈). 그 폴더를 내려주면 `npx shadcn add https://your.site/r/cms-shell.json`으로 화면을 추가할 수 있습니다.

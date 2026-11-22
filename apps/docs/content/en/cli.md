@@ -58,3 +58,7 @@ npx @mainsoft/agent-cms openapi > openapi.json
 ## Local commands
 
 `init`, `doctor`, `migrate check | print | apply` and `add` work on your project, without a server. See [Install](/docs/install) and [Admin screens](/docs/admin-screens).
+
+## Serve the screens from your own site
+
+`npx @mainsoft/agent-cms registry build --base-url https://your.site/r` writes the admin screens of the installed version into `public/r` (change it with `--out`). Serve that folder and people add screens with `npx shadcn add https://your.site/r/cms-shell.json`.
