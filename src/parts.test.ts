@@ -315,10 +315,19 @@ test("korean screen text is written in 음슴체: no value ends a sentence with 
 
 test("messages: every placeholder in a translation exists in English, and the other way round", async () => {
   const names = (s: string) => new Set([...s.matchAll(/\{(\w+)(?:\|[^|}]*\|[^|}]*)?\}/g)].map((m) => m[1]));
-  const ui = await import("../registry/cms/cms-messages");
+  // The screens' catalog is read as text: importing it would need the built
+  // package (it imports @mainsoft/agent-cms/client), and CI tests before building.
+  const catalog = (src: string) => {
+    const out: Record<string, string> = {};
+    for (const m of src.matchAll(/^\s+([a-zA-Z_]\w*):\s*"((?:[^"\\]|\\.)*)"/gm)) out[m[1]] = JSON.parse(`"${m[2]}"`) as string;
+    return out;
+  };
+  const text = readFileSync(join(import.meta.dirname, "../registry/cms/cms-messages.ts"), "utf8");
+  const koAt = text.indexOf("export const ko");
+  const ui = { en: catalog(text.slice(text.indexOf("export const en"), koAt)), ko: catalog(text.slice(koAt)) };
   const srv = { en: (await import("./messages/en")).en as Record<string, string>, ko: (await import("./messages/ko")).ko as Record<string, string> };
   const bad: string[] = [];
-  for (const [where, en, ko] of [["registry", ui.en as Record<string, string>, ui.ko as Record<string, string>], ["server", srv.en, srv.ko]] as const) {
+  for (const [where, en, ko] of [["registry", ui.en, ui.ko], ["server", srv.en, srv.ko]] as const) {
     for (const [k, v] of Object.entries(ko)) {
       if (typeof v !== "string" || typeof en[k] !== "string") continue;
       const a = names(en[k]);

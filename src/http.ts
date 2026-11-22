@@ -548,7 +548,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       }
 
       if (seg[0] === "_events" && seg.length === 1 && m === "GET") {
-        return eventStream(core, actor, { collections: q.get("collections")?.split(",").filter(Boolean), since: q.get("since") ?? req.headers.get("last-event-id"), signal: req.signal });
+        return eventStream(core, actor, { collections: q.get("collections")?.split(",").filter(Boolean), since: q.get("since") ?? req.headers.get("last-event-id"), signal: req.signal, request: req });
       }
 
       if (seg[0] === "files" && seg[1] && seg.length <= 3 && (m === "GET" || m === "HEAD")) {
