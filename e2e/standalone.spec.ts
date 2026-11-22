@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
@@ -16,6 +16,8 @@ const PORT = 3400;
 // Passkeys need a host name (an IP address cannot be a WebAuthn RP id).
 const BASE = `http://localhost:${PORT}`;
 const SHOTS = process.env.E2E_SHOTS;
+// Run from the repository root (CI) or from e2e/.
+const BIN = [resolve(process.cwd(), "dist/bin.js"), resolve(process.cwd(), "../dist/bin.js")].find((p) => existsSync(p))!;
 let server: ChildProcess;
 let dir: string;
 let lines = "";
@@ -25,7 +27,7 @@ test.use({ baseURL: BASE });
 
 test.beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "agent-cms-serve-"));
-  server = spawn(process.execPath, [resolve(process.cwd(), "../dist/bin.js"), "dev", "--port", String(PORT), "--memory"], { cwd: dir, env: { ...process.env, PORT: String(PORT) } });
+  server = spawn(process.execPath, [BIN, "dev", "--port", String(PORT), "--memory"], { cwd: dir, env: { ...process.env, PORT: String(PORT) } });
   server.stdout!.on("data", (b: Buffer) => (lines += b.toString()));
   server.stderr!.on("data", (b: Buffer) => (lines += b.toString()));
   for (let i = 0; i < 100 && !/setup code [A-Z0-9-]+/.test(lines); i++) await new Promise((r) => setTimeout(r, 100));

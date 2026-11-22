@@ -84,30 +84,36 @@ test("automations: a published News post gets a keyword on the next cron call; a
 test("roles: make a role, allow writing in Blog, find a person by name, delete it", async ({ page, request }) => {
   await clear(request);
   await page.goto("/admin/roles");
-  await expect(page.getByText(/^No roles yet\./)).toBeVisible();
-  await page.getByRole("button", { name: "New role" }).click();
-  await page.getByLabel("Name", { exact: true }).fill("Writers");
+  await expect(page.getByText("No roles yet", { exact: true })).toBeVisible();
+  // The name first, with a starting point.
+  await page.getByRole("button", { name: "New role" }).first().click();
+  const dlg = page.getByRole("dialog", { name: "New role" });
+  await dlg.getByLabel("Name").fill("Writers");
+  await dlg.getByRole("radio", { name: /Nothing yet/ }).check();
+  await dlg.getByRole("button", { name: "Create role" }).click();
   await page.getByRole("checkbox", { name: "Blog: Write" }).click();
+  await expect(page.getByText("Unsaved changes")).toBeVisible();
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText("Saved.")).toBeVisible();
-  await page.getByLabel("Name or id").fill("park");
-  await page.getByRole("list", { name: "Name or id" }).getByRole("button", { name: "Park Jiwoo" }).click();
-  await expect(page.getByText("People 1")).toBeVisible();
+  await expect(page.getByText(/^Saved/).first()).toBeVisible();
+  // People by name, never an id.
+  await page.getByRole("combobox", { name: "Add a person" }).fill("park");
+  await page.getByRole("option", { name: /Park Jiwoo/ }).click();
+  await expect(page.getByRole("button", { name: "Remove Park Jiwoo" })).toBeVisible();
   const { roles } = (await (await request.get(`${api}/roles`)).json()) as { roles: { name: string; permissions: Record<string, Record<string, boolean>>; members: { id: string }[] }[] };
   expect(roles).toHaveLength(1);
-  expect([roles[0].name, roles[0].permissions.posts, roles[0].members.map((m) => m.id)]).toEqual(["Writers", { read: true, write: true }, ["u-park"]]);
+  expect([roles[0].name, roles[0].permissions.posts?.write, roles[0].members.map((m) => m.id)]).toEqual(["Writers", true, ["u-park"]]);
   if (shot("62-roles")) await page.screenshot(shot("62-roles"));
 
-  // The same name again is refused, with the reason on the screen.
-  await page.getByRole("button", { name: "New role" }).click();
-  await expect(page.getByLabel("Name", { exact: true })).toHaveValue("New role 2");
-  await page.getByLabel("Name", { exact: true }).fill("writers");
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText("The name writers is already used")).toBeVisible();
+  // The same name again is refused before anything is made.
+  await page.getByRole("button", { name: "New role" }).first().click();
+  await page.getByRole("dialog", { name: "New role" }).getByLabel("Name").fill("writers");
+  await expect(page.getByText("A role with this name already exists.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create role" })).toBeDisabled();
+  await page.keyboard.press("Escape");
 
   await clear(request);
   await page.reload();
-  await expect(page.getByText(/^No roles yet\./)).toBeVisible();
+  await expect(page.getByText("No roles yet", { exact: true })).toBeVisible();
 });
 
 test("import and export: a markdown file is shown first, then becomes a draft; the export holds it", async ({ page, request }) => {
@@ -115,11 +121,11 @@ test("import and export: a markdown file is shown first, then becomes a draft; t
   await page.goto("/admin/transfer");
   await page.getByLabel("Collection", { exact: true }).selectOption("guide");
   await page.getByLabel("Choose a file").setInputFiles({ name: `${slug}.md`, mimeType: "text/markdown", buffer: Buffer.from(`---\ntitle: Imported guide\n---\n\n## Step one\n\nFrom a file.\n`) });
-  const row = page.getByRole("row").filter({ hasText: `${slug}.md` });
+  const row = page.getByRole("listitem").filter({ hasText: `${slug}.md` });
   await expect(row).toContainText("New document");
   expect((await request.get(`${api}/collections/guide/${slug}?draft=1`)).status()).toBe(404);
   if (shot("63-import")) await page.screenshot(shot("63-import"));
-  await page.getByRole("button", { name: "Import" }).click();
+  await page.getByRole("button", { name: /^Import \d+$/ }).click();
   await expect(page.getByText(/^Imported 1 document/)).toBeVisible();
   const made = (await (await request.get(`${api}/collections/guide/${slug}?draft=1`)).json()) as { doc: { title: string; status: string; body: string } };
   expect([made.doc.title, made.doc.status]).toEqual(["Imported guide", "draft"]);
