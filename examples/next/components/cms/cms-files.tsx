@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { ChevronRight, Download, File as FileIcon, FileArchive, FileText, Film, Folder, FolderInput, FolderPlus, Image as ImageIcon, Link as LinkIcon, Music, Search, Trash2 } from "lucide-react";
+import { ChevronRight, Download, File as FileIcon, FileArchive, FileText, Film, Folder, FolderInput, FolderPlus, Image as ImageIcon, Link as LinkIcon, Music, Search, Trash2, FolderOpen } from "lucide-react";
 import type { AssetUsage, ShareTtl, StoreFile, StoreListing } from "@mainsoft/agent-cms/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { AssetPanel, NewFolderDialog, UsageList, type CmsMediaProps } from "./cms-media";
 import { kindName, SELECT_CLASS, storeLabel, UploadButton, UploadPanel, useUploads } from "./cms-media-picker";
 import { errorMessage, type T } from "./cms-messages";
-import { CodeBox, ConfirmDialog, PageHeader, Segmented, StatusText, DIALOG } from "./cms-parts";
+import { CodeBox, ConfirmDialog, PageHeader, Segmented, StatusText, DIALOG, NativeSelect } from "./cms-parts";
 import { fileSize } from "./cms-upload";
 import { formatUntil, useCms, useDebounced } from "./use-cms";
 
@@ -141,26 +141,31 @@ export function CmsFiles({ basePath = "/admin", docHref, className }: CmsFilesPr
       <div className="flex min-h-0 flex-1">
         <section className="flex min-w-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3 md:px-5">
-            <select aria-label={t("files_store")} className={cn(SELECT_CLASS, "max-w-[160px]")} value={store.name} onChange={(e) => go(e.target.value, "")}>
-              {stores.map((s) => (
-                <option key={s.name} value={s.name}>
-                  {storeLabel(s, t)}
-                </option>
-              ))}
-            </select>
+            {/* One store: its name is the path's first step. Several: the select names it, and the path starts at a folder icon. */}
+            {stores.length > 1 ? (
+              <NativeSelect aria-label={t("files_store")} className={cn(SELECT_CLASS, "max-w-[180px]")} value={store.name} onChange={(e) => go(e.target.value, "")}>
+                {stores.map((s) => (
+                  <option key={s.name} value={s.name}>
+                    {storeLabel(s, t)}
+                  </option>
+                ))}
+              </NativeSelect>
+            ) : null}
             <nav aria-label={t("files_path")} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-sm">
               {[storeLabel(store, t), ...parts].map((p, i) => {
                 const last = i === parts.length;
+                const icon = i === 0 && stores.length > 1;
+                const label = icon ? <FolderOpen aria-hidden className="h-4 w-4" /> : p;
                 return (
                   <React.Fragment key={i}>
                     {i ? <ChevronRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                     {last ? (
-                      <span aria-current="page" className="whitespace-nowrap font-medium">
-                        {p}
+                      <span aria-current="page" aria-label={icon ? p : undefined} className="inline-flex items-center whitespace-nowrap font-medium">
+                        {label}
                       </span>
                     ) : (
-                      <button type="button" className="whitespace-nowrap rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" onClick={() => go(store.name, parts.slice(0, i).join("/"))}>
-                        {p}
+                      <button type="button" aria-label={icon ? p : undefined} className="inline-flex items-center whitespace-nowrap rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" onClick={() => go(store.name, parts.slice(0, i).join("/"))}>
+                        {label}
                       </button>
                     )}
                   </React.Fragment>

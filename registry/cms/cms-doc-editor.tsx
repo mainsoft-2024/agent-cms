@@ -304,15 +304,29 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
 
   React.useEffect(() => () => autosave.cancel(), [autosave]);
 
+  // A new document starts empty: its required fields are not "wrong" yet. Their problems show once
+  // the person has typed in that field or tried to save, not the moment the page opens.
+  const [tried, setTried] = React.useState(false);
+  const shownProblems = React.useMemo(() => {
+    if (!isNew || tried) return problems;
+    const at = (c: DocContent, key: string): unknown => {
+      if (key.startsWith("fields.")) return (c.fields as Record<string, unknown> | undefined)?.[key.slice(7)];
+      return (c as unknown as Record<string, unknown>)[key];
+    };
+    return problems.filter((p) => {
+      const key = problemKey(p.path);
+      return JSON.stringify(at(content, key) ?? null) !== JSON.stringify(at(EMPTY, key) ?? null);
+    });
+  }, [problems, isNew, tried, content]);
   const byField = React.useMemo(() => {
     const out: Record<string, FieldProblem[]> = {};
-    for (const p of problems) (out[problemKey(p.path)] ??= []).push(p);
+    for (const p of shownProblems) (out[problemKey(p.path)] ??= []).push(p);
     return out;
-  }, [problems]);
+  }, [shownProblems]);
 
   // Field problems while the fields are folded away in full screen: a dot on the button, and the fields open
   // by themselves when a new error appears (the save that failed points at them).
-  const fieldErrors = problems.filter((p) => p.severity === "error" && problemKey(p.path) !== "body").length;
+  const fieldErrors = shownProblems.filter((p) => p.severity === "error" && problemKey(p.path) !== "body").length;
   const lastFieldErrors = React.useRef(0);
   React.useEffect(() => {
     if (focus && fieldErrors > lastFieldErrors.current) setFocusFields(true);
@@ -351,6 +365,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   unparsedRef.current = unparsed;
 
   const save = async (publish: boolean): Promise<CmsDoc | null> => {
+    setTried(true);
     if (unparsedRef.current.length) {
       setStatus({ text: t("fields_unparsed", { fields: unparsedRef.current.join(", ") }), tone: "error" });
       document.getElementById(`cms-editor-f-${unparsedRef.current[0]}`)?.focus();
@@ -1047,12 +1062,16 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   };
   const bodyErr = byField.body;
   const bodyInvalid = bodyErr?.some((e) => e.severity === "error");
+  // Beside the preview the bar is half as wide: buttons keep their icon and name it in a tooltip.
+  const compact = !mobile && !blocksOn && sidePreview;
+  const label = (text: string, wide: string) => <span className={compact ? "sr-only" : wide}>{text}</span>;
   const bodyPane = (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col">
       {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={doc.slug} canWrite={canWrite} onApplied={() => void client.get(collection, doc.slug, { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
-      <div className="flex items-center gap-1.5 border-b px-3 py-2 text-xs text-muted-foreground">
-        <FileText aria-hidden className="h-3.5 w-3.5" />
-        <Label htmlFor={bodyId} className="text-xs font-medium text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-1.5 border-b px-3 py-2 text-xs text-muted-foreground">
+        <FileText aria-hidden className={cn("h-3.5 w-3.5 shrink-0", BlockEditor && "hidden")} />
+        {/* With the Blocks / Markdown switch, the switch says what the box is. */}
+        <Label htmlFor={bodyId} className={cn("text-xs font-medium text-muted-foreground", BlockEditor && "sr-only")}>
           {blocksOn ? t("blk_body") : t("field_body")}
         </Label>
         <span className="flex-1" />
@@ -1074,25 +1093,25 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         {canWrite && sectionCount > 1 && !blocksOn ? (
           <Button type="button" variant="ghost" size="sm" aria-pressed={outline} aria-label={t("sections_order")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", outline && "bg-muted")} onClick={() => setOutline((v) => !v)}>
             <ArrowUpDown aria-hidden className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">{t("sections_order")}</span>
+            {label(t("sections_order"), "hidden sm:inline")}
           </Button>
         ) : null}
         {me?.media && canWrite ? (
-          <Button type="button" variant="ghost" size="sm" className="-my-1 h-7 gap-1.5 px-2 text-xs text-foreground" onClick={() => setPicking(true)}>
+          <Button type="button" variant="ghost" size="sm" title={t("media_insert_button")} className="-my-1 h-7 gap-1.5 px-2 text-xs text-foreground" onClick={() => setPicking(true)}>
             <ImagePlus aria-hidden className="h-3.5 w-3.5" />
-            {t("media_insert_button")}
+            {label(t("media_insert_button"), "")}
           </Button>
         ) : null}
         {!mobile && !blocksOn ? (
-          <Button type="button" variant="ghost" size="sm" aria-pressed={sidePreview} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", sidePreview && "bg-muted")} onClick={() => setSidePreview(!sidePreview)}>
+          <Button type="button" variant="ghost" size="sm" aria-pressed={sidePreview} title={t("blk_preview_side")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", sidePreview && "bg-muted")} onClick={() => setSidePreview(!sidePreview)}>
             <Columns2 aria-hidden className="h-3.5 w-3.5" />
-            <span className="hidden lg:inline">{t("blk_preview_side")}</span>
+            {label(t("blk_preview_side"), "hidden lg:inline")}
           </Button>
         ) : null}
         {!mobile ? (
-          <Button type="button" variant="ghost" size="sm" aria-pressed={previewWindow} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", previewWindow && "bg-muted")} onClick={() => setPreviewWindow((v) => !v)}>
+          <Button type="button" variant="ghost" size="sm" aria-pressed={previewWindow} title={t("blk_preview_window")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", previewWindow && "bg-muted")} onClick={() => setPreviewWindow((v) => !v)}>
             <AppWindow aria-hidden className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">{t("blk_preview_window")}</span>
+            {label(t("blk_preview_window"), "hidden md:inline")}
           </Button>
         ) : null}
         <BodyCount body={content.body} />
@@ -1109,7 +1128,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
             onClick={() => setFocus(true)}
           >
             <Maximize2 aria-hidden className="h-3.5 w-3.5" />
-            <span className="sr-only xl:not-sr-only">{t("focus_enter")}</span>
+            {label(t("focus_enter"), "sr-only xl:not-sr-only")}
           </Button>
         ) : null}
       </div>
@@ -1249,20 +1268,20 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const problemsFoot = (
     <div className="flex flex-col">
       <div className="flex flex-wrap items-center gap-3 border-t px-4 py-1.5 text-xs text-muted-foreground md:px-6">
-        {problems.length ? (
+        {shownProblems.length ? (
           <button type="button" className="inline-flex items-center gap-1.5 text-destructive hover:underline" aria-expanded={showProblems} aria-controls="cms-editor-problems" onClick={() => setShowProblems((v) => !v)}>
             <CircleAlert aria-hidden className="h-3.5 w-3.5" />
-            {t("problems_n", { n: problems.length })}
+            {t("problems_n", { n: shownProblems.length })}
             <ChevronDown aria-hidden className={cn("h-3 w-3 transition-transform", showProblems && "rotate-180")} />
           </button>
-        ) : (
+        ) : problems.length ? null : (
           <span className="inline-flex items-center gap-1.5">
             <CircleCheck aria-hidden className="h-3.5 w-3.5" />
             {t("problems_none")}
           </span>
         )}
         <span className="flex-1" />
-        <span role="status" className={cn(status?.tone === "error" && "text-destructive", status?.tone === "ok" && "text-green-700")}>
+        <span role="status" className={cn(status?.tone === "error" && "text-destructive", status?.tone === "ok" && "text-green-700 dark:text-green-400")}>
           {status?.text ?? ""}
         </span>
         <span role="status" className="inline-flex items-center gap-1.5">
@@ -1270,9 +1289,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           {autosaveText}
         </span>
       </div>
-      {problems.length && showProblems ? (
+      {shownProblems.length && showProblems ? (
         <ul id="cms-editor-problems" aria-label={t("problems_list")} className="border-t px-4 py-2 text-xs md:px-6">
-          {problems.map((p, i) => (
+          {shownProblems.map((p, i) => (
             <li key={i} className={cn("py-0.5", p.severity === "error" ? "text-destructive" : "text-amber-700")}>
               <span className="font-mono">{p.path}</span>: {p.message}
             </li>
@@ -1698,10 +1717,11 @@ function BodyCount({ body }: { body: string }) {
   const { t, locale } = useCms();
   const s = React.useMemo(() => bodyStats(body), [body]);
   const n = (x: number) => x.toLocaleString(locale);
+  // An empty body has no reading time; the count never wraps word by word in a narrow bar.
   return (
-    <span title={`${t("blk_words", { n: n(s.words) })} · ${t("blk_chars", { n: n(s.chars) })}`} className="tabular-nums">
-      <span className="hidden sm:inline">{t("blk_words", { n: n(s.words) })} · </span>
-      {t("blk_read_min", { n: n(s.minutes) })}
+    <span title={`${t("blk_words", { n: n(s.words) })} · ${t("blk_chars", { n: n(s.chars) })}`} className="shrink-0 whitespace-nowrap tabular-nums">
+      {t("blk_words", { n: n(s.words) })}
+      {s.words ? <span className="hidden sm:inline"> · {t("blk_read_min", { n: n(s.minutes) })}</span> : null}
     </span>
   );
 }

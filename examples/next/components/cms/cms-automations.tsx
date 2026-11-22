@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { ConfirmDialog, PageHeader, StatusText } from "./cms-parts";
+import { ConfirmDialog, PageHeader, StatusText, NativeSelect } from "./cms-parts";
 import { relativeTime, useAsync, useCms } from "./use-cms";
 
 const SELECT = "h-9 min-w-0 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -137,22 +137,22 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
       <fieldset className="flex flex-col gap-2 rounded-lg border p-3">
         <legend className="px-1 text-xs font-medium text-muted-foreground">{t("automation_when")}</legend>
         <div className="flex flex-wrap gap-2">
-          <select aria-label={t("automation_when")} className={SELECT} value={event} onChange={(e) => setEvent(e.target.value)}>
+          <NativeSelect aria-label={t("automation_when")} className={SELECT} value={event} onChange={(e) => setEvent(e.target.value)}>
             {lists.triggers.map((x) => (
               <option key={x} value={x}>
                 {t(`trigger.${x}` as never)}
               </option>
             ))}
-          </select>
+          </NativeSelect>
           {event.startsWith("schedule.") || event === "asset.uploaded" ? null : (
-            <select aria-label={t("automation_collection")} className={SELECT} value={collection} onChange={(e) => setCollection(e.target.value)}>
+            <NativeSelect aria-label={t("automation_collection")} className={SELECT} value={collection} onChange={(e) => setCollection(e.target.value)}>
               <option value="">{t("automation_any_collection")}</option>
               {cols.map((c) => (
                 <option key={c.slug} value={c.slug}>
                   {c.label}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           )}
         </div>
       </fieldset>
@@ -161,13 +161,13 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
         {conditions.map((c, i) => (
           <div key={i} className="flex flex-wrap items-center gap-2">
             <Input aria-label={t("automation_field")} placeholder={t("automation_field")} className="w-56 font-mono text-xs" value={c.field} onChange={(e) => patchAt(setConditions, i, { field: e.target.value })} />
-            <select aria-label={t("automation_condition")} className={SELECT} value={c.op} onChange={(e) => patchAt(setConditions, i, { op: e.target.value as AutomationCondition["op"] })}>
+            <NativeSelect aria-label={t("automation_condition")} className={SELECT} value={c.op} onChange={(e) => patchAt(setConditions, i, { op: e.target.value as AutomationCondition["op"] })}>
               {OPS.map((o) => (
                 <option key={o} value={o}>
                   {t(`cond.${o}` as never)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
             {c.op === "empty" || c.op === "not_empty" ? null : <Input aria-label={t("automation_value")} placeholder={t("automation_value")} className="w-40" value={c.value ?? ""} onChange={(e) => patchAt(setConditions, i, { value: e.target.value })} />}
             <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label={t("automation_remove_step")} onClick={() => setConditions((l) => l.filter((_, n) => n !== i))}>
               <X aria-hidden className="h-4 w-4" />
@@ -185,22 +185,22 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
           const opts = targets(a.type);
           return (
             <div key={i} className="flex flex-wrap items-center gap-2">
-              <select aria-label={t("automation_action")} className={SELECT} value={a.type} onChange={(e) => patchAt(setActions, i, { type: e.target.value, target: undefined, name: undefined, value: undefined })}>
+              <NativeSelect aria-label={t("automation_action")} className={SELECT} value={a.type} onChange={(e) => patchAt(setActions, i, { type: e.target.value, target: undefined, name: undefined, value: undefined })}>
                 {lists.actions.map((x) => (
                   <option key={x} value={x}>
                     {actionLabel(x)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
               {opts ? (
-                <select aria-label={t("automation_target")} className={SELECT} value={a.target ?? ""} onChange={(e) => patchAt(setActions, i, { target: e.target.value })}>
+                <NativeSelect aria-label={t("automation_target")} className={SELECT} value={a.target ?? ""} onChange={(e) => patchAt(setActions, i, { target: e.target.value })}>
                   <option value="">{t("automation_pick")}</option>
                   {opts.map((o) => (
                     <option key={o.id} value={o.id}>
                       {o.label}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               ) : null}
               {a.type === "add_keyword" ? <Input aria-label={t("automation_keyword")} placeholder={t("automation_keyword")} className="w-40" value={a.name ?? ""} onChange={(e) => patchAt(setActions, i, { name: e.target.value })} /> : null}
               {a.type === "set_field" ? (
@@ -231,14 +231,14 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
         ) : null}
         <div className="flex max-w-md flex-wrap items-center gap-2">
           {!collection && cols.length > 1 ? (
-            <select aria-label={t("automation_test_collection")} className="h-9 rounded-md border bg-background px-2 text-sm" value={testCol} onChange={(e) => setTestCol(e.target.value)}>
+            <NativeSelect aria-label={t("automation_test_collection")} className="h-9 rounded-md border bg-background px-2 text-sm" value={testCol} onChange={(e) => setTestCol(e.target.value)}>
               <option value="">{t("automation_test_collection")}</option>
               {cols.map((c) => (
                 <option key={c.slug} value={c.slug}>
                   {c.label}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           ) : null}
           <Input aria-label={t("automation_test_slug")} placeholder={t("automation_test_slug")} value={slug} onChange={(e) => setSlug(e.target.value)} />
           <Button

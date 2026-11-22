@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { errorMessage, type T } from "./cms-messages";
-import { Segmented, StatusText, DIALOG } from "./cms-parts";
+import { Segmented, StatusText, DIALOG, NativeSelect } from "./cms-parts";
 import { createUploader, fileSize, type UploadItem, type UploadTarget } from "./cms-upload";
 import { useCms, useDebounced } from "./use-cms";
 
@@ -394,7 +394,7 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
           </div>
           {tabs.length > 1 ? <Segmented label={t("media_kind")} value={kind} onChange={setKind} options={tabs} /> : null}
           {options.length > 1 ? (
-            <select
+            <NativeSelect
               aria-label={t("media_folder")}
               className={cn(SELECT_CLASS, "max-w-[200px]")}
               value={`${activeStore ?? ""}:${where.folder ?? ""}`}
@@ -408,7 +408,7 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
                   {o.label}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           ) : null}
         </div>
         <div className="min-h-[240px] flex-1 overflow-y-auto px-3.5 py-3">

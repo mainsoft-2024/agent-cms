@@ -20,7 +20,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { useReauth } from "./cms-auth-kit";
 import { errorMessage } from "./cms-messages";
-import { CodeBox, ConfirmDialog, DIALOG, PageHeader, PersonMark, Segmented, StatusText, copyText, relativeTimeShort } from "./cms-parts";
+import { CodeBox, ConfirmDialog, DIALOG, PageHeader, PersonMark, Segmented, StatusText, copyText, relativeTimeShort, NativeSelect } from "./cms-parts";
 import { useCms } from "./use-cms";
 
 type Tab = "all" | "active" | "invited" | "disabled";
@@ -258,14 +258,14 @@ function PersonRow({ u, me, roles, time, onRole, onAction }: { u: AuthUser; me: 
         {u.isAdmin ? (
           <span className="text-xs text-muted-foreground">{t("people_admin_all")}</span>
         ) : (
-          <select aria-label={t("people_role_of", { name: u.name || u.email })} className={cn(SELECT, "w-full max-w-[12rem]")} value={role} disabled={u.disabled} onChange={(e) => onRole(e.target.value || null)}>
+          <NativeSelect aria-label={t("people_role_of", { name: u.name || u.email })} className={cn(SELECT, "w-full max-w-[12rem]")} value={role} disabled={u.disabled} onChange={(e) => onRole(e.target.value || null)}>
             <option value="">{t("people_no_role")}</option>
             {roles.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.name}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         )}
       </span>
       <span className="hidden min-w-0 md:flex">
@@ -473,14 +473,14 @@ function InviteDialog({ open, onOpenChange, roles, mail, taken, onDone }: { open
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="cms-invite-role">{t("people_start_role")}</Label>
-              <select id="cms-invite-role" className={cn(SELECT, "h-9 w-full")} disabled={admin} value={admin ? "" : roleId} onChange={(e) => setRoleId(e.target.value)}>
+              <NativeSelect id="cms-invite-role" className={cn(SELECT, "h-9 w-full")} disabled={admin} value={admin ? "" : roleId} onChange={(e) => setRoleId(e.target.value)}>
                 <option value="">{t("people_no_role")}</option>
                 {roles.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.name}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
               <p className="text-xs text-muted-foreground">{admin ? t("people_admin_all") : role ? t("people_role_summary", { name: role.name, n: Object.values(role.permissions).filter((p) => p.write || p.publish).length }) : t("people_no_role_hint")}</p>
               <label className="mt-1 flex items-center gap-2 text-sm">
                 <Checkbox checked={admin} onCheckedChange={(v) => setAdmin(v === true)} />

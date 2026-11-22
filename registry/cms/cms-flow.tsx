@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { Segmented, StatusText, DIALOG } from "./cms-parts";
+import { Segmented, StatusText, DIALOG, NativeSelect } from "./cms-parts";
 import { formatZoned, personColor, relativeTime, useCms, zonedParts, zonedToIso } from "./use-cms";
 
 export const FLOW_SELECT = "h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -660,14 +660,14 @@ export function AddToReleaseDialog({ open, onOpenChange, collection, slug, publi
           </DialogHeader>
           <div className="grid gap-1.5">
             <Label htmlFor="cms-rel-pick">{t("nav_releases")}</Label>
-            <select id="cms-rel-pick" className={FLOW_SELECT} value={id} onChange={(e) => setId(e.target.value)}>
+            <NativeSelect id="cms-rel-pick" className={FLOW_SELECT} value={id} onChange={(e) => setId(e.target.value)}>
               {(list ?? []).map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}
                 </option>
               ))}
               <option value="">{t("release_new")}</option>
-            </select>
+            </NativeSelect>
           </div>
           {!id ? (
             <div className="grid gap-1.5">

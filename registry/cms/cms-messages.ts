@@ -446,7 +446,7 @@ export const en = {
   key_connect: "How to connect",
   scope_help: "read: read drafts, write: edit, publish: publish and delete, admin: keys and audit log",
   collections_help: "Leave all unchecked for every collection.",
-  no_keys: "No keys yet.",
+  no_keys: "No API keys yet",
 
   // audit
   audit_title: "Audit log",
@@ -1279,6 +1279,9 @@ export const en = {
   field_yes: "Yes",
   field_no: "No",
   field_empty_value: "Empty",
+  keys_empty_text: "A key lets a script, an agent or another app read or write here without signing in. Make one with only the scopes and collections it needs.",
+  release_empty_text: "A release groups changes to several documents so they go public at the same moment, now or at a set time.",
+  trash_none_text: "Deleted documents and files wait here for {days} days before they are removed for good.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1713,7 +1716,7 @@ export const ko: CmsMessages = {
   key_connect: "연결 방법",
   scope_help: "read: 초안 읽기, write: 수정, publish: 게시와 삭제, admin: 키와 감사 로그",
   collections_help: "모두 비워 두면 전체 컬렉션임.",
-  no_keys: "아직 키가 없음.",
+  no_keys: "아직 API 키 없음",
 
   audit_title: "감사 로그",
   audit_action: "동작: {value}",
@@ -2544,6 +2547,9 @@ export const ko: CmsMessages = {
   field_yes: "예",
   field_no: "아니오",
   field_empty_value: "비어 있음",
+  keys_empty_text: "키가 있으면 스크립트, 에이전트, 다른 앱이 로그인 없이 읽고 쓸 수 있음. 꼭 필요한 권한과 컬렉션만 골라 만들 것.",
+  release_empty_text: "릴리스는 여러 문서의 변경을 묶어 한 번에 공개함. 바로 또는 정한 시각에.",
+  trash_none_text: "지운 문서와 파일은 {days}일 동안 여기 있다가 완전히 지워짐.",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;

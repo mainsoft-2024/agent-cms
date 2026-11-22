@@ -2,12 +2,16 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { lazy, useState, type ReactNode } from "react";
 import { CmsCommand } from "@/components/cms/cms-command";
 import { ko } from "@/components/cms/cms-messages";
 import { CmsShell } from "@/components/cms/cms-shell";
 import { CmsProvider } from "@/components/cms/use-cms";
 import { LogoMark } from "@/components/site/logo-mark";
+
+// The block editor (one column, preview in a new window) is the largest part: loaded only when a document opens.
+const CmsBlockEditor = lazy(() => import("@/components/cms/cms-block-editor"));
+const slots = { blockEditor: CmsBlockEditor };
 
 /**
  * The admin: the copied screens as they are, themed only by the site's CSS
@@ -23,13 +27,14 @@ export function AdminFrame({ children, user }: { children: ReactNode; user: stri
   const known = collection && !["keys", "audit", "misses", "login", "media", "files", "releases", "trash", "webhooks", "dashboard", "automations", "roles", "transfer"].includes(collection) ? collection : undefined;
   const lang = useSearchParams().get("lang") === "ko" ? ko : undefined;
   return (
-    <CmsProvider baseUrl="/api/cms" messages={lang}>
+    <CmsProvider baseUrl="/api/cms" messages={lang} slots={slots}>
       <CmsShell
         title="agent-cms docs"
         logo={<LogoMark className="size-[22px] shrink-0" />}
         activeCollection={known}
         activeHref={path}
         LinkComponent={Link}
+        onNavigate={(h) => router.push(h)}
         onSearch={() => setOpen(true)}
         extraNav={[
           {

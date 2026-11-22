@@ -45,7 +45,7 @@ import {
   type Mark,
   type Span,
 } from "./cms-blocks-inline";
-import { MarkdownPreview } from "./cms-parts";
+import { MarkdownPreview, NativeSelect } from "./cms-parts";
 import { pasteAsMarkdown } from "./cms-paste";
 import { isApple, useCms, type BlockEditorProps } from "./use-cms";
 
@@ -1467,7 +1467,7 @@ function TextBody(p: RowProps & { block: TextBlock }) {
     const tone = b.tone ?? "note";
     return (
       <div className={cn("relative my-1 flex items-start gap-2.5 rounded-lg border px-3 py-2", TONE_STYLE[tone])}>
-        <select
+        <NativeSelect
           aria-label={t("blk_callout_tone")}
           value={tone}
           disabled={!editable}
@@ -1480,7 +1480,7 @@ function TextBody(p: RowProps & { block: TextBlock }) {
               {t(`blk_tone_${x}` as Key)}
             </option>
           ))}
-        </select>
+        </NativeSelect>
         <div className="relative min-w-0 flex-1">{editableEl}</div>
       </div>
     );

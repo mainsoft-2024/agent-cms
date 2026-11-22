@@ -87,6 +87,9 @@ test("admin: outsiders are refused, members edit and publish", async ({ page }) 
   await page.getByRole("button", { name: "Sign in (test)" }).click();
   await expect(page).toHaveURL(/\/admin\/docs$/);
   await page.getByRole("link", { name: "Security" }).first().click();
+  // The docs admin opens documents in the block editor (0.17.1); this test edits the markdown.
+  await expect(page.locator(".cms-blocks [role=textbox]").first()).toBeVisible();
+  await page.getByRole("button", { name: "Markdown", exact: true }).or(page.getByRole("radio", { name: "Markdown", exact: true })).first().click();
   const body = page.getByRole("textbox", { name: "Markdown", exact: true });
   const stamp = `Edited in the e2e test ${Date.now()}.`;
   await body.fill(`${await body.inputValue()}\n\n${stamp}`);
