@@ -3,7 +3,7 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
-import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp } from "./repo";
+import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp, NewChange, ChangeRow, DocPageQuery, DocPage } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
 import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsJob, CmsRecord, CmsRelease, CmsWebhook, WebhookDelivery, WebhookEvent, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
@@ -28,6 +28,16 @@ async function uniq<T>(p: Promise<T>, slug?: string): Promise<T> {
 export interface DrizzleRepoOptions {
   /** A table set from `cmsTables({ prefix, schema })`. Default: the `cms_*` tables. */
   tables?: CmsTables;
+  /**
+   * Whether the driver has transactions (0.17.0). `"auto"` (default) uses them and, on a driver
+   * that refuses them (`drizzle-orm/neon-http`), runs each change as separate statements and
+   * warns once. Every write still checks the version it read, so two saves never both win; what
+   * is lost is all-or-nothing when a statement fails half way (`doctor` finds and reports that).
+   * Prefer a driver with transactions (`@neondatabase/serverless` Pool, node-postgres, postgres.js).
+   */
+  transactions?: "auto" | boolean;
+  /** Told once when transactions turn out to be missing. Default `console.warn`. */
+  warn?: (message: string) => void;
 }
 
 export class DrizzleRepo implements CmsRepo {
@@ -37,7 +47,11 @@ export class DrizzleRepo implements CmsRepo {
     o: DrizzleRepoOptions = {}
   ) {
     this.t = o.tables ?? defaultTables;
+    this.txMode = o.transactions ?? "auto";
+    this.warn = o.warn ?? ((m) => console.warn(`[agent-cms] ${m}`));
   }
+  private txMode: "auto" | boolean;
+  private warn: (m: string) => void;
 
   private toDoc(r: typeof this.t.documents.$inferSelect): CmsDoc {
     return {
@@ -168,7 +182,21 @@ export class DrizzleRepo implements CmsRepo {
   }
 
   tx<T>(fn: (repo: CmsRepo) => Promise<T>): Promise<T> {
-    return this.db.transaction((t) => fn(new DrizzleRepo(t as unknown as Db, { tables: this.t })));
+    if (this.txMode === false) return fn(this);
+    let started = false;
+    const run = (async () =>
+      this.db.transaction((t) => {
+        started = true;
+        return fn(new DrizzleRepo(t as unknown as Db, { tables: this.t, transactions: true }));
+      }))();
+    if (this.txMode === true) return run;
+    return run.catch((e: unknown) => {
+      // neon-http and other one-request drivers refuse before running anything.
+      if (started || !/no transactions support|transactions? (are|is) not supported/i.test(e instanceof Error ? e.message : String(e))) throw e;
+      this.txMode = false;
+      this.warn("this database driver has no transactions: each change runs as separate statements (see DrizzleRepo `transactions`). A driver with transactions is safer: @neondatabase/serverless Pool, node-postgres or postgres.js.");
+      return fn(this);
+    });
   }
 
   async findDoc(collection: string, slug: string, o: FindOptions = {}) {
@@ -740,6 +768,61 @@ export class DrizzleRepo implements CmsRepo {
     const where = [eq(R.kind, q.kind), ...(q.id !== undefined ? [eq(R.id, q.id)] : []), ...(q.scope !== undefined ? [eq(R.scope, q.scope)] : []), ...(q.before !== undefined ? [lt(R.createdAt, new Date(q.before))] : [])];
     return (await this.db.delete(R).where(and(...where)).returning({ id: R.id })).length;
   }
+  async appendChange(c: NewChange) {
+    const [r] = await this.db
+      .insert(this.t.changes)
+      .values({ event: c.event, collection: c.collection, slug: c.slug, version: c.version, origin: c.origin, data: c.data, ...(c.at ? { at: new Date(c.at) } : {}) })
+      .returning({ seq: this.t.changes.seq });
+    return Number(r.seq);
+  }
+  async changesSince(seq: number, limit: number): Promise<ChangeRow[]> {
+    const C = this.t.changes;
+    const rows = await this.db.select().from(C).where(sql`${C.seq} > ${seq}`).orderBy(asc(C.seq)).limit(limit);
+    return rows.map((r) => ({ seq: Number(r.seq), at: r.at.toISOString(), event: r.event, collection: r.collection, slug: r.slug, version: r.version, origin: r.origin, data: r.data }));
+  }
+  async lastChange() {
+    const C = this.t.changes;
+    const [r] = await this.db.select({ n: sql<string | null>`max(${C.seq})::text` }).from(C);
+    return Number(r?.n ?? 0);
+  }
+  async pruneChanges(before: string) {
+    const C = this.t.changes;
+    return (await this.db.delete(C).where(lt(C.at, new Date(before))).returning({ seq: C.seq })).length;
+  }
+  cacheNamespace() {
+    return `${this.t.options.schema ?? "public"}.${this.t.options.prefix}`;
+  }
+  async findDocsByIds(ids: readonly string[]) {
+    const D = this.t.documents;
+    const ok = ids.filter((id) => this.uuidLike(id));
+    if (!ok.length) return [];
+    const rows = await this.db.select().from(D).where(and(inArray(D.id, ok), isNull(D.deletedAt)));
+    return rows.map((r) => this.toDoc(r));
+  }
+  async pageDocs(q: DocPageQuery): Promise<DocPage> {
+    const D = this.t.documents;
+    const conds: SQL[] = [isNull(D.deletedAt), eq(D.collection, q.collection)];
+    if (q.published) conds.push(isNotNull(D.publishedVersion), ne(D.status, "archived"), isNotNull(D.published));
+    if (q.statuses?.length) conds.push(inArray(D.status, q.statuses));
+    if (q.by) conds.push(eq(D.updatedByKind, q.by));
+    const title = q.published ? sql`(${D.published}->>'title')` : sql`${D.title}`;
+    const summary = q.published ? sql`(${D.published}->>'summary')` : sql`${D.summary}`;
+    const category = q.published ? sql`(${D.published}->>'category')` : sql`${D.category}`;
+    if (q.category) conds.push(sql`${category} = ${q.category}`);
+    const needle = q.q?.trim();
+    if (needle) {
+      const like = `%${needle.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
+      conds.push(sql`(${title} ilike ${like} or ${D.slug} ilike ${like} or coalesce(${summary}, '') ilike ${like})`);
+    }
+    // Milliseconds: the cursor carries a JavaScript time, the column may hold microseconds.
+    const key = q.published ? sql`date_trunc('milliseconds', coalesce(${D.publishedAt}, ${D.updatedAt}))` : sql`date_trunc('milliseconds', ${D.updatedAt})`;
+    const [{ n }] = await this.db.select({ n: sql<number>`count(*)::int` }).from(D).where(and(...conds));
+    const page = [...conds];
+    if (q.after && !this.uuidLike(q.after.id)) return { docs: [], total: Number(n) };
+    if (q.after) page.push(sql`(${key} < ${new Date(q.after.at)} or (${key} = ${new Date(q.after.at)} and ${D.id} < ${q.after.id}))`);
+    const rows = await this.db.select().from(D).where(and(...page)).orderBy(sql`${key} desc`, desc(D.id)).limit(q.limit);
+    return { docs: rows.map((r) => this.toDoc(r)), total: Number(n) };
+  }
   async versionsSince(since: string, limit: number): Promise<VersionStamp[]> {
     const V = this.t.versions;
     const rows = await this.db.select({ documentId: V.documentId, version: V.version, createdAt: V.createdAt, authorKind: V.authorKind, authorLabel: V.authorLabel, authorAgent: V.authorAgent }).from(V).where(gte(V.createdAt, new Date(since))).orderBy(desc(V.createdAt)).limit(limit);
@@ -758,7 +841,7 @@ export class DrizzleRepo implements CmsRepo {
       have.get(c.table_name)!.add(c.column_name);
     }
     const expected: Record<string, string[]> = {};
-    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries, records: this.t.records })) {
+    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries, records: this.t.records, changes: this.t.changes })) {
       expected[prefix + key] = Object.values(tbl).filter((c) => c && typeof c === "object" && "name" in c && "columnType" in c).map((c) => (c as { name: string }).name);
     }
     const missingTables = Object.keys(expected).filter((t) => !have.has(t));
@@ -788,6 +871,39 @@ export class DrizzleRepo implements CmsRepo {
         .where(sql`not exists (select 1 from ${D} d where d.id = ${V.documentId})`);
       orphanVersions = Number(ov?.n ?? 0);
     }
+    // 0.17.0: indexes, published pointers without their version, rows left behind.
+    let missingIndexes: string[] = [];
+    let publishedWithoutVersion = 0;
+    let orphanAssetRefs = 0;
+    let orphanComments = 0;
+    let changeRows: number | null = null;
+    if (!missingTables.length) {
+      const idx = await this.rows<{ indexname: string }>(sql`select indexname from pg_indexes where schemaname = coalesce(${sch}, current_schema()) and indexname like ${prefix.replace(/_/g, "\\_") + "%"}`);
+      const haveIdx = new Set(idx.map((r) => r.indexname));
+      missingIndexes = EXPECTED_INDEXES.map((n) => prefix + n).filter((n) => !haveIdx.has(n));
+      const D = this.t.documents;
+      const V = this.t.versions;
+      const [pv] = await this.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(D)
+        .where(sql`${D.publishedVersion} is not null and not exists (select 1 from ${V} v where v.document_id = ${D.id} and v.version = ${D.publishedVersion})`);
+      publishedWithoutVersion = Number(pv?.n ?? 0);
+      const R = this.t.assetRefs;
+      const A = this.t.assets;
+      const [ar] = await this.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(R)
+        .where(sql`not exists (select 1 from ${D} d where d.id = ${R.documentId}) or not exists (select 1 from ${A} a where a.id = ${R.assetId})`);
+      orphanAssetRefs = Number(ar?.n ?? 0);
+      const C = this.t.comments;
+      const [oc] = await this.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(C)
+        .where(sql`not exists (select 1 from ${D} d where d.id = ${C.documentId})`);
+      orphanComments = Number(oc?.n ?? 0);
+      const [cr] = await this.db.select({ n: sql<number>`count(*)::int` }).from(this.t.changes);
+      changeRows = Number(cr?.n ?? 0);
+    }
     return {
       schemaVersion: typeof found === "number" ? found : found == null ? null : Number(found),
       expectedSchemaVersion: SCHEMA_VERSION,
@@ -798,7 +914,25 @@ export class DrizzleRepo implements CmsRepo {
       gapsRows,
       badPublished,
       orphanVersions,
+      missingIndexes,
+      publishedWithoutVersion,
+      orphanAssetRefs,
+      orphanComments,
+      changeRows,
     };
+  }
+
+  /** Safe repairs for what `inspect` found: rows that point at nothing. Returns how many went per kind. */
+  async repair(): Promise<{ orphanVersions: number; orphanAssetRefs: number; orphanComments: number }> {
+    const D = this.t.documents;
+    const V = this.t.versions;
+    const R = this.t.assetRefs;
+    const A = this.t.assets;
+    const C = this.t.comments;
+    const ov = await this.db.delete(V).where(sql`not exists (select 1 from ${D} d where d.id = ${V.documentId})`).returning({ id: V.documentId });
+    const ar = await this.db.delete(R).where(sql`not exists (select 1 from ${D} d where d.id = ${R.documentId}) or not exists (select 1 from ${A} a where a.id = ${R.assetId})`).returning({ id: R.assetId });
+    const oc = await this.db.delete(C).where(sql`not exists (select 1 from ${D} d where d.id = ${C.documentId})`).returning({ id: C.id });
+    return { orphanVersions: ov.length, orphanAssetRefs: ar.length, orphanComments: oc.length };
   }
 }
 
@@ -815,4 +949,17 @@ export interface DoctorReport {
   /** Documents whose published pointer is broken. */
   badPublished: number;
   orphanVersions: number;
+  /** 0.17.0: indexes the DDL makes that the database does not have. */
+  missingIndexes?: string[];
+  /** Documents whose published version has no row in the version table. */
+  publishedWithoutVersion?: number;
+  /** File uses whose document or file is gone. */
+  orphanAssetRefs?: number;
+  /** Comments whose document is gone (deleted for good). */
+  orphanComments?: number;
+  /** Rows in the change log (null: no table). */
+  changeRows?: number | null;
 }
+
+/** Index names (without the prefix) the DDL creates; `doctor` reports the ones missing. */
+export const EXPECTED_INDEXES = ["changes_at_idx", "changes_doc_idx", "documents_list_idx", "documents_public_idx", "documents_trash_idx", "documents_updated_idx", "versions_created_idx", "audit_doc_idx", "jobs_done_idx", "assets_trash_idx", "comments_thread_idx"];

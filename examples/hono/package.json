@@ -1,0 +1,13 @@
+{
+  "name": "agent-cms-example-hono",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "tsx server.ts" },
+  "dependencies": {
+    "@mainsoft/agent-cms": "^0.17.0",
+    "hono": "^4.13.20", "@hono/node-server": "^2.1.11",
+    "drizzle-orm": "^0.45.2",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": { "tsx": "^4.20.0", "typescript": "^5.9.0" }
+}

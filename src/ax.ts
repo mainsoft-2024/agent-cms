@@ -8,7 +8,7 @@
  * One way for every kind of content: markdown bodies, HTML blocks, HTML
  * documents and fields (frontmatter lines) are all lines of one file.
  */
-import { randomBytes } from "node:crypto";
+import { base64url, randomBytes } from "./crypto";
 import type { CmsErrorCode, CmsErrorOptions, ErrorParams } from "./errors";
 import { isCmsError } from "./errors";
 import type { CmsRepo } from "./repo";
@@ -330,7 +330,7 @@ export function createAx(ctx: AxContext) {
       const method = o.method === "PUT" ? "PUT" : "GET";
       const { doc } = await docFor(actor, col, slug);
       if (method === "PUT") ctx.assert(actor, col, "write", doc);
-      const token = randomBytes(24).toString("base64url");
+      const token = base64url(randomBytes(24));
       const expiresAt = new Date(Date.parse(ctx.nowIso()) + RAW_TTL_MS).toISOString();
       const plain = JSON.parse(JSON.stringify(actor)) as Actor;
       await ctx.repo.insertRecord({ kind: "raw_link", key: token, scope: `${col}/${doc.slug}`, data: { collection: col, slug: doc.slug, method, version: doc.version, actor: plain, expiresAt }, at: ctx.nowIso() });

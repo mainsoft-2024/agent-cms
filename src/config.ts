@@ -14,6 +14,7 @@ import type { Cms } from "./cms";
 import type { ServeOptions } from "./serve";
 import type { MediaOptions } from "./assets";
 import type { CmsTablesOptions } from "./tables";
+import type { CmsPlugin } from "./plugin";
 
 export interface AgentCmsConfig {
   /** The app's Drizzle database (for `doctor` and `migrate`). */
@@ -23,6 +24,12 @@ export interface AgentCmsConfig {
   tables?: CmsTablesOptions;
   /** The same `media` the app passes to `createCms` (for `agent-cms storage check | cleanup`). */
   media?: MediaOptions | (() => MediaOptions | Promise<MediaOptions>);
+  /**
+   * The plugins the app passes to `createCms` (0.17.0): `migrate print | check | apply` include
+   * the SQL their tables need (`definePlugin({ sql })`), after the CMS tables.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  plugins?: readonly CmsPlugin<any>[];
   /** Where `agent-cms add` copies the admin screens. Default: `<components alias>/cms` from components.json. */
   ui?: { dir?: string };
   /**

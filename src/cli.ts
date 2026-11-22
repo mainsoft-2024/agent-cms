@@ -3,7 +3,9 @@
  *
  * In the app (local, no key needed):
  *   agent-cms init [--yes]                 config, API route, schema re-export, .env lines
- *   agent-cms doctor                       database check (tables, columns, schema version, data)
+ *   agent-cms user create <email> [--name N] [--admin]   a person for the CMS's own sign-in; prints a link to set the password
+ *   agent-cms user reset-link <email>       a password reset link (1 hour)
+ *   agent-cms doctor [--fix]               database check (tables, columns, indexes, schema version, data); --fix removes rows that point at nothing
  *   agent-cms migrate check | print | apply
  *       check: what is missing and the SQL to add it (exit 1 when behind)
  *       print: the full idempotent DDL; apply: run it
@@ -43,7 +45,7 @@
  *   agent-cms import <dir> [--dry-run] [--diff] [--on-conflict file-wins|db-wins|newest] [--publish] [--collection c]
  *       read them back (drafts; same address: a new version). `put <collection> <dir>` does the same for one folder.
  *       With `_assets/` in the folder (export --with-files) the files are uploaded too.
- *   agent-cms import <file> --from json|csv|wordpress --collection c [--types post,page] [--dry-run] [--publish]
+ *   agent-cms import <file> --from json|csv|wordpress|notion --collection c [--types post,page] [--folder f] [--dry-run] [--publish]
  *       content from somewhere else: a JSON list, a CSV sheet, a WordPress export file
  *   agent-cms openapi                    this app's REST API as an OpenAPI 3.1 document
  *   agent-cms retention [--dry-run]      delete what the retention rules allow (admin key); --dry-run only counts
@@ -55,7 +57,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { humanSize, type MediaOptions } from "./assets";
 import { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
@@ -63,7 +66,8 @@ import { createCmsCore } from "./cms";
 import { loadConfig, type AgentCmsConfig } from "./config";
 import { DrizzleRepo, type DoctorReport } from "./drizzle-repo";
 import { docFromMarkdown } from "./frontmatter";
-import { filesFromSource, IMPORT_SOURCES, type ImportSource } from "./import-sources";
+import { docsFromNotion, filesFromDocs, filesFromSource, IMPORT_SOURCES, type ImportSource } from "./import-sources";
+import { unzip } from "./zip";
 import { imageSize } from "./net-guard";
 import { DEFAULT_ACCEPT, DEFAULT_MAX_FILE_SIZE } from "./storage";
 import { addItems, loadRegistry, type Registry } from "./registry";
@@ -91,9 +95,9 @@ export interface CliIo {
   run?: (cmd: string, args: string[], cwd: string) => number;
 }
 
-const WITH_VALUE = new Set(["--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--port", "--host", "--offset", "--limit", "--context", "--glob", "--args-file"]);
+const WITH_VALUE = new Set(["--name", "--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--port", "--host", "--offset", "--limit", "--context", "--glob", "--args-file"]);
 /** Switches without a value. Anything else that starts with "--" is refused before any request. */
-const SWITCHES = new Set(["--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--memory", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
+const SWITCHES = new Set(["--admin", "--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--fix", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--memory", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
 
 /** Problems with the flags (unknown, missing value), or null. Checked before reading any settings. */
 export function checkFlags(argv: string[]): string | null {
@@ -167,7 +171,7 @@ with a key:    tools | collections | list | get | search | put | patch | publish
 options:       --env <file>  --json  --json-errors  --  (what follows is a file name, even if it starts with --)
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
-const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage", "serve", "dev"]);
+const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage", "serve", "dev", "user"]);
 
 export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
   const out = io.out ?? ((l: string) => console.log(l));
@@ -360,7 +364,20 @@ async function runRemote(cmd: string, args: string[], argv: string[], io: CliIo 
         // Content from somewhere else: a JSON list, a CSV sheet or a WordPress export file.
         if (!(IMPORT_SOURCES as readonly string[]).includes(from)) throw new CmsRemoteError(`--from must be one of: ${IMPORT_SOURCES.join(", ")}`, "usage");
         const collection = flag(argv, "collection");
-        const files = filesFromSource(from as ImportSource, read(args[0]), { collection, types: flag(argv, "types")?.split(",").map((t) => t.trim()).filter(Boolean) });
+        if (from === "notion") {
+          // A Notion export: the zip as downloaded, or the folder it unpacks to.
+          if (!collection) throw new CmsRemoteError("say where the pages go: --collection <name>", "usage");
+          const budget = { bytes: 2 * 1024 * 1024 * 1024, entries: 50_000 };
+          const entries = statSync(args[0]).isDirectory() ? walkDir(args[0]) : await unzip(new Uint8Array(readFileSync(args[0])), { budget });
+          // Notion puts a zip inside the zip for big exports (one level, same budget).
+          const inner = entries.filter((e) => /\.zip$/i.test(e.name));
+          for (const z of inner) entries.push(...(await unzip(z.data, { budget })));
+          const { docs, assets, skipped } = docsFromNotion(entries.filter((e) => !/\.zip$/i.test(e.name)));
+          if (!docs.length) throw new CmsRemoteError(`no pages (.md files) in ${args[0]}. In Notion: ⋯ → Export → "Markdown & CSV", include subpages`, "usage");
+          for (const sk of skipped.slice(0, 5)) err(`skipped ${sk}`);
+          return importFiles(filesFromDocs(docs, { collection }), null, collection, argv, env.AGENT_CMS_URL, env.AGENT_CMS_KEY, { ...io, out, err }, assets);
+        }
+        const files = filesFromSource(from as Exclude<ImportSource, "notion">, read(args[0]), { collection, types: flag(argv, "types")?.split(",").map((t) => t.trim()).filter(Boolean) });
         if (!collection && files.some((f) => !f.path.includes("/"))) throw new CmsRemoteError("say where the documents go: --collection <name>", "usage");
         return importFiles(files, null, undefined, argv, env.AGENT_CMS_URL, env.AGENT_CMS_KEY, { ...io, out, err });
       }
@@ -443,12 +460,46 @@ async function importDir(dir: string, collection: string | undefined, argv: stri
 }
 
 /** Send files to `/import` in batches and print one line per file. `dir` is where `_assets/` may be. */
-async function importFiles(files: { path: string; text: string }[], dir: string | null, collection: string | undefined, argv: string[], url: string, key: string, io: CliIo & { out: (l: string) => void; err: (l: string) => void }): Promise<number> {
+/** Every file under a folder, as zip-like entries (paths with "/"). */
+function walkDir(root: string, prefix = ""): { name: string; data: Uint8Array }[] {
+  const out: { name: string; data: Uint8Array }[] = [];
+  for (const e of readdirSync(join(root, prefix), { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${e.name}` : e.name;
+    if (e.isDirectory()) out.push(...walkDir(root, rel));
+    else if (e.isFile()) out.push({ name: rel, data: new Uint8Array(readFileSync(join(root, rel))) });
+  }
+  return out;
+}
+
+async function importFiles(files: { path: string; text: string }[], dir: string | null, collection: string | undefined, argv: string[], url: string, key: string, io: CliIo & { out: (l: string) => void; err: (l: string) => void }, extra: { id: string; name: string; data: Uint8Array }[] = []): Promise<number> {
   const rest = createRestClient({ url, fetch: io.fetch, headers: { authorization: `Bearer ${key}`, "x-agent-cms-client": "cli" } });
   const dryRun = argv.includes("--dry-run");
   const onConflict = flag(argv, "on-conflict") as "file-wins" | "db-wins" | "newest" | undefined;
   // Files exported with --with-files: upload the ones this CMS does not have and point the documents at the new ids.
   const assetMap: Record<string, string> = {};
+  // Files that came with the source (a Notion export): uploaded once, matched by name and size on a second run.
+  if (extra.length && !dryRun) {
+    const tmp = mkdtempSync(join(tmpdir(), "agent-cms-import-"));
+    const folder = flag(argv, "folder") ?? `imported/${collection ?? "files"}`;
+    try {
+      for (const a of extra) {
+        const same = (await rest.assets({ folder, q: a.name, limit: 50 }).catch(() => ({ assets: [] as { id: string; name: string; size: number }[] }))).assets.find((x) => x.name === a.name && x.size === a.data.length);
+        if (same) {
+          assetMap[a.id] = same.id;
+          continue;
+        }
+        // Its own folder, so the upload keeps the file's name.
+        mkdirSync(join(tmp, a.id));
+        const local = join(tmp, a.id, a.name.replace(/[\\/]/g, "_"));
+        writeFileSync(local, a.data);
+        const made = (await uploadFile(rest, local, { folder }, io)) as { id: string };
+        assetMap[a.id] = made.id;
+        io.out(`${a.name.padEnd(40)} uploaded as ${made.id}`);
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
   const manifestPath = dir ? join(dir, "_assets", "manifest.json") : null;
   if (manifestPath && existsSync(manifestPath) && !dryRun) {
     const { assets } = JSON.parse(readFileSync(manifestPath, "utf8")) as { assets: { id: string; name: string; key: string; store?: string; alt?: string; tags?: string[] }[] };
@@ -495,6 +546,7 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
   if (cmd === "add") return add(args, argv, io);
   const loaded = await loadConfig(io.cwd);
   if (cmd === "serve" || cmd === "dev") return serveCmd(cmd, argv, loaded?.config ?? null, io);
+  if (cmd === "user") return userCmd(args, argv, loaded?.config ?? null, io);
   const tables = cmsTables(loaded?.config.tables);
   const media = async () => io.media ?? (typeof loaded?.config.media === "function" ? await loaded.config.media() : loaded?.config.media);
   if (cmd === "storage" && (args[0] ?? "check") === "check") {
@@ -502,8 +554,10 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
     if (!m) return noMedia(io);
     return storageCheck(m, flag(argv, "origin"), io);
   }
+  const plugins = loaded?.config.plugins ?? [];
   if (cmd === "migrate" && args[0] === "print") {
     io.out(cmsDdl(tables));
+    for (const p of plugins) if (p.sql?.length) io.out(`\n-- plugin ${p.name}\n${p.sql.join(";\n").replace(/;?\s*$/, ";")}`);
     return 0;
   }
   let db = io.db;
@@ -543,6 +597,15 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
     let stale = 0;
     if (!report.missingTables.length && !report.missingColumns.length) stale = (await repo.listAssets({ status: "pending", createdBefore: new Date(Date.now() - 24 * 3600 * 1000).toISOString(), limit: 500 })).length;
     const failedJobs = report.missingTables.length ? 0 : (await repo.countJobs()).failed;
+    if (argv.includes("--fix")) {
+      if (report.missingTables.length || report.missingColumns.length) {
+        io.err("[agent-cms] doctor --fix repairs data only. Bring the schema up first: npx @mainsoft/agent-cms migrate check");
+        return 1;
+      }
+      const fixed = await repo.repair();
+      io.out(`[agent-cms] removed ${fixed.orphanVersions} version row(s), ${fixed.orphanAssetRefs} file use(s) and ${fixed.orphanComments} comment(s) that pointed at nothing.`);
+      return doctor(await repo.inspect(), tables.options, io, stale, failedJobs);
+    }
     return doctor(report, tables.options, io, stale, failedJobs);
   }
   if (cmd === "migrate") {
@@ -550,19 +613,34 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
     if (sub === "apply") {
       const { sql } = await import("drizzle-orm");
       for (const stmt of splitSql(cmsDdl(tables))) await db.execute(sql.raw(stmt));
-      io.out(`[agent-cms] schema is at v${SCHEMA_VERSION}.`);
+      for (const p of plugins) for (const stmt of p.sql ?? []) await db.execute(sql.raw(stmt));
+      const withPlugins = plugins.filter((p) => p.sql?.length).map((p) => p.name);
+      io.out(`[agent-cms] schema is at v${SCHEMA_VERSION}.${withPlugins.length ? ` Plugin tables: ${withPlugins.join(", ")}.` : ""}`);
       return 0;
     }
     if (sub === "check") {
       const r = await repo.inspect();
-      const pending = migrationSql(r, tables);
+      let pending = migrationSql(r, tables);
+      // Plugin tables: a plugin whose `CREATE TABLE` names a table the database lacks needs its SQL.
+      const { sql: q } = await import("drizzle-orm");
+      for (const p of plugins) {
+        const names = [...(p.sql ?? []).join("\n").matchAll(/create\s+table\s+(?:if\s+not\s+exists\s+)?((?:"[^"]+"|\w+)(?:\.(?:"[^"]+"|\w+))?)/gi)].map((m) => m[1].replace(/"/g, ""));
+        let missing = false;
+        for (const n of names) {
+          const [a, b] = n.includes(".") ? n.split(".") : [null, n];
+          const res = (await db.execute(q`select 1 from information_schema.tables where table_name = ${b} and table_schema = coalesce(${a}, current_schema())`)) as unknown as { rows?: unknown[] } | unknown[];
+          if (!(Array.isArray(res) ? res : (res.rows ?? [])).length) missing = true;
+        }
+        if (missing) pending = { sql: `${pending?.sql ?? ""}\n-- plugin ${p.name}\n${p.sql!.join(";\n").replace(/;?\s*$/, ";")}\n`, steps: [...(pending?.steps ?? []), `plugin ${p.name}: its tables`] };
+      }
       if (!pending) {
         io.out(`[agent-cms] schema is up to date (v${SCHEMA_VERSION}).`);
         return 0;
       }
       if (flag(argv, "format") === "step") for (const s of pending.steps) io.out(`- ${s}`);
       else io.out(pending.sql);
-      io.err(`[agent-cms] the database needs a migration (v${r.schemaVersion ?? "none"} -> v${SCHEMA_VERSION}). Put the SQL above in a migration, or run \`npx @mainsoft/agent-cms migrate apply\`.`);
+      const what = (r.schemaVersion ?? 0) >= SCHEMA_VERSION && !r.missingTables.length && !r.missingColumns.length && !r.missingIndexes?.length ? "plugin tables are missing" : `the database needs a migration (v${r.schemaVersion ?? "none"} -> v${SCHEMA_VERSION})`;
+      io.err(`[agent-cms] ${what}. Put the SQL above in a migration, or run \`npx @mainsoft/agent-cms migrate apply\`.`);
       return 1;
     }
     io.err(`unknown: migrate ${sub} (check | print | apply)`);
@@ -574,11 +652,13 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
 /** SQL that brings this database to the current schema, or null when it is current. */
 export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTables>): { sql: string; steps: string[] } | null {
   const current = r.schemaVersion ?? 0;
-  if (!r.missingTables.length && !r.missingColumns.length && current >= SCHEMA_VERSION) return null;
+  if (!r.missingTables.length && !r.missingColumns.length && current >= SCHEMA_VERSION && !r.missingIndexes?.length) return null;
   // Missing tables: the whole idempotent DDL (creates only what is missing).
-  if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence|jobs|webhooks|webhook_deliveries|records)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
+  if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence|jobs|webhooks|webhook_deliveries|records|changes)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
   // Steps are idempotent: re-run them all when columns are missing, else only the newer ones.
-  const steps = upgradeSteps(tables).filter((s) => s.version > current || r.missingColumns.length > 0 || r.missingTables.length > 0);
+  // A missing change log (0.17.0) alone needs only its own step, like a missing index.
+  const onlyLog = r.missingTables.length > 0 && r.missingTables.every((t) => t.endsWith("changes"));
+  const steps = upgradeSteps(tables).filter((s) => s.version > current || r.missingColumns.length > 0 || (r.missingTables.length > 0 && !onlyLog) || ((onlyLog || !!r.missingIndexes?.length) && s.version === 9));
   const meta = r.missingTables.some((t) => t.endsWith("meta"))
     ? `CREATE TABLE IF NOT EXISTS ${tables.options.schema ? `"${tables.options.schema}".` : ""}"${tables.options.prefix}meta" ("key" text PRIMARY KEY, "value" jsonb, "updated_at" timestamptz NOT NULL DEFAULT now());\n`
     : "";
@@ -601,7 +681,13 @@ function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, i
   if (r.schemaVersion === null || r.schemaVersion < r.expectedSchemaVersion) fail(`schema version ${r.schemaVersion ?? "unknown"}, this release needs ${r.expectedSchemaVersion} (npx @mainsoft/agent-cms migrate check)`);
   else ok(`schema version ${r.schemaVersion}`);
   if (r.badPublished) fail(`${r.badPublished} document(s) point at a published version that is missing`);
-  if (r.orphanVersions) warn(`${r.orphanVersions} version row(s) without a document`);
+  if (r.publishedWithoutVersion) fail(`${r.publishedWithoutVersion} document(s) are published at a version with no row in ${o.prefix}versions (republish them, or see "Repairs" in the operations guide)`);
+  if (r.orphanVersions) warn(`${r.orphanVersions} version row(s) without a document (npx @mainsoft/agent-cms doctor --fix)`);
+  if (r.orphanAssetRefs) warn(`${r.orphanAssetRefs} file use(s) point at a document or file that is gone (npx @mainsoft/agent-cms doctor --fix)`);
+  if (r.orphanComments) warn(`${r.orphanComments} comment(s) belong to a document that is gone (npx @mainsoft/agent-cms doctor --fix)`);
+  if (r.missingIndexes?.length) warn(`missing indexes: ${r.missingIndexes.join(", ")}. Lists and pruning get slow on big tables (npx @mainsoft/agent-cms migrate check prints the SQL)`);
+  else if (r.missingIndexes && !r.missingTables.length) ok("all indexes exist");
+  if (r.changeRows != null && r.changeRows > 1_000_000) warn(`the change log has ${r.changeRows} rows: is the cron call running? It prunes rows older than changes.keepDays`);
   if (staleUploads) warn(`${staleUploads === 500 ? "500+" : staleUploads} upload(s) started more than a day ago and never finished (npx @mainsoft/agent-cms storage cleanup)`);
   if (failedJobs) warn(`${failedJobs} background job(s) failed for good (GET /api/cms/jobs?state=failed shows why; POST /api/cms/jobs/<id>/retry tries again)`);
   if (r.legacyColumns.length) {
@@ -1001,8 +1087,48 @@ async function serveCmd(cmd: "serve" | "dev", argv: string[], config: AgentCmsCo
   }
   const { cms: _drop, ...rest } = server ?? ({} as NonNullable<typeof server>);
   void _drop;
-  const running = await startServer({ ...rest, cms, port, host: flag(argv, "host") ?? rest.host ?? (cmd === "dev" ? "127.0.0.1" : "0.0.0.0"), log: io.out });
+  const running = await startServer({ ...rest, metricsToken: rest.metricsToken ?? (process.env.CMS_METRICS_TOKEN || undefined), cms, port, host: flag(argv, "host") ?? rest.host ?? (cmd === "dev" ? "127.0.0.1" : "0.0.0.0"), log: io.out });
   stopOnSignals(running, io.out);
   await new Promise<void>((resolve) => running.server.once("close", () => resolve()));
   return 0;
+}
+
+/**
+ * People of the CMS's own sign-in, from the command line (0.17.0): for the first admin on a server
+ * without a terminal log, or a locked-out admin.
+ *   agent-cms user create <email> [--name "Kim"] [--admin]   prints a link to set the password
+ *   agent-cms user reset-link <email>                       prints a password reset link (1 hour)
+ */
+async function userCmd(args: string[], argv: string[], config: AgentCmsConfig | null, io: LocalIo): Promise<number> {
+  const [sub, email] = args;
+  if (!sub || !["create", "reset-link"].includes(sub) || !email) {
+    io.err('usage: npx @mainsoft/agent-cms user create <email> [--name "Name"] [--admin] | user reset-link <email>');
+    return 1;
+  }
+  const server = config?.server;
+  if (!server) {
+    io.err("[agent-cms] user needs `server: { cms }` in agent-cms.config.ts (the same CMS `serve` runs).");
+    return 1;
+  }
+  if (server.auth === false) {
+    io.err("[agent-cms] this CMS uses its app's sign-in (server.auth is false): add people there.");
+    return 1;
+  }
+  const { createAuth } = await import("./auth/index");
+  const cms = await server.cms();
+  const origin = flag(argv, "origin") ?? server.auth?.origin ?? process.env.CMS_ORIGIN ?? `http://localhost:${server.port ?? 3000}`;
+  const auth = createAuth({ ...(server.auth || {}), cms, origin, log: () => {} });
+  try {
+    if (sub === "create") {
+      const user = await auth.createUser({ email, name: flag(argv, "name") ?? null, isAdmin: argv.includes("--admin") });
+      io.out(`[agent-cms] made ${user.email}${argv.includes("--admin") ? " (admin)" : ""}. Send them this link to set a password (1 hour):`);
+    }
+    io.out(await auth.resetLink(email, origin));
+    return 0;
+  } catch (e) {
+    io.err(`[agent-cms] ${e instanceof Error ? e.message : String(e)}`);
+    return 1;
+  } finally {
+    await cms.settle?.().catch(() => undefined);
+  }
 }

@@ -19,7 +19,8 @@ import { createJobs, type JobsRun } from "./jobs";
 import { createOutbox, type OutEvent, type WebhookOptions } from "./outbox";
 import { PLUGIN_NAME, type CmsPlugin, type PluginNav, type PluginRoute, type PluginTool } from "./plugin";
 import { createSealer } from "./secrets";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { PUBLIC_EVENTS, type CacheAdapter, type CacheOptions, type ChangeEvent, type ChangesOptions } from "./changes";
+import { base64url, fromBase64url, fromUtf8, hex, hmacSha256, sha256, timingSafeEqual } from "./crypto";
 import type { z, ZodTypeAny } from "zod";
 import { fieldChanges, hunks, splitLines, unifiedDiff, type FieldChange, type Hunk } from "./diff";
 import { CmsError, formatMessage, isCmsError, type CmsErrorCode, type CmsErrorOptions, type Diagnostic, type ErrorParams, type Messages } from "./errors";
@@ -189,6 +190,17 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
   rateLimit?: RateLimitOptions;
   /** How long the audit log, read counts, revoked keys and webhook deliveries are kept. Default: forever. */
   retention?: RetentionOptions;
+  /**
+   * The change log that carries events between servers (0.17.0): how long it is kept, how often
+   * others look at it, a signal that wakes them (`./changes`).
+   */
+  changes?: ChangesOptions;
+  /**
+   * Cache what readers get (published documents and lists): `memoryCache()` from `./changes`, or
+   * any store with `get` and `set`. Emptied for a collection whenever its public copy changes, on
+   * this server at once and on the others within `changes.pollMs`. Default: no cache.
+   */
+  cache?: CacheAdapter | (CacheOptions & { store: CacheAdapter });
 }
 
 /** Second argument of `afterChange` hooks and `onChange` listeners. */
@@ -289,7 +301,7 @@ export interface DocDiff {
 const stable = (v: unknown): unknown =>
   Array.isArray(v) ? v.map(stable) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, stable((v as Record<string, unknown>)[k])])) : v;
 const stableJson = (v: unknown) => JSON.stringify(stable(v));
-const b64url = (b: Buffer | string) => Buffer.from(b).toString("base64url");
+const b64url = (b: Uint8Array | string) => base64url(b);
 
 function contentOf(doc: DocContent): DocContent {
   return {
@@ -310,10 +322,28 @@ export type CmsTelemetry =
   | ({ type: "event" } & OutEvent)
   | { type: "job"; kind: string; id: string; ok: boolean; attempt: number; ms: number; error?: string }
   | { type: "cron"; ms: number; jobs: JobsRun }
-  | { type: "error"; where: string; message: string };
+  | { type: "error"; where: string; message: string }
+  | { type: "cache"; collection: string; hit: boolean }
+  | { type: "search"; ms: number; q: string; hits: number; collections: number }
+  | { type: "index"; ms: number; documents: number; units: number };
+
+/** How long a missing change-log number may still be committing before it counts as rolled back. */
+const GAP_WAIT_MS = 5000;
+
+/** An event as subscribers hear it: with its number in the change log, and whether another server made it. */
+export type FeedEvent = OutEvent & { seq?: number; remote?: boolean };
+interface ChangeRowLike {
+  seq: number;
+  event: string;
+  collection: string | null;
+  slug: string | null;
+  version: number | null;
+  origin: string;
+  data: Record<string, unknown>;
+}
 
 /** First path segments the CMS uses itself. A plugin cannot take one of these names. */
-export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "grep", "raw", "retention", "_events", "auth", "users", "_stats", "_me", "_cron"]);
+export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "grep", "raw", "retention", "_events", "_changes", "auth", "users", "_stats", "_me", "_cron"]);
 
 /** Audit actions that are also events (webhooks, plugin listeners). */
 const EVENT_OF: Partial<Record<AuditAction, WebhookEvent>> = {
@@ -331,6 +361,61 @@ const EVENT_OF: Partial<Record<AuditAction, WebhookEvent>> = {
   "release.publish": "release.published",
 };
 
+/** Dotted paths in a fields object (`seo.title`). */
+function getPath(o: Record<string, unknown>, path: string): unknown {
+  let cur: unknown = o;
+  for (const k of path.split(".")) {
+    if (!cur || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string, unknown>)[k];
+  }
+  return cur;
+}
+function hasPath(o: Record<string, unknown>, path: string): boolean {
+  const keys = path.split(".");
+  let cur: unknown = o;
+  for (const k of keys) {
+    if (!cur || typeof cur !== "object" || !(k in (cur as object))) return false;
+    cur = (cur as Record<string, unknown>)[k];
+  }
+  return true;
+}
+function setPath(o: Record<string, unknown>, path: string, v: unknown) {
+  const keys = path.split(".");
+  let cur = o;
+  for (const k of keys.slice(0, -1)) {
+    if (!cur[k] || typeof cur[k] !== "object") cur[k] = {};
+    cur = cur[k] as Record<string, unknown>;
+  }
+  cur[keys[keys.length - 1]] = v;
+}
+function unsetPath(o: Record<string, unknown>, path: string) {
+  const keys = path.split(".");
+  let cur: unknown = o;
+  for (const k of keys.slice(0, -1)) {
+    if (!cur || typeof cur !== "object") return;
+    cur = (cur as Record<string, unknown>)[k];
+  }
+  if (cur && typeof cur === "object") delete (cur as Record<string, unknown>)[keys[keys.length - 1]];
+}
+
+/** A list cursor: the last row of the page (`k.` + base64url of `time|id`), or an old numeric offset. */
+function encodeCursor(at: string, id: string): string {
+  return `k.${base64url(`${at}|${id}`)}`;
+}
+function decodeCursor(c: string | null | undefined): { at: string; id: string } | null | "offset" {
+  if (!c) return null;
+  if (/^\d+$/.test(c)) return c === "0" ? null : "offset";
+  if (!c.startsWith("k.")) return null;
+  let text = "";
+  try {
+    text = fromUtf8(fromBase64url(c.slice(2)));
+  } catch {
+    return null;
+  }
+  const [at, id] = text.split("|");
+  return at && id && /^[A-Za-z0-9_-]{1,64}$/.test(id) && !Number.isNaN(Date.parse(at)) ? { at, id } : null;
+}
+
 export function createCmsCore(opts: CreateCmsOptions) {
   const repo = opts.repo;
   const now = opts.now ?? (() => new Date());
@@ -339,11 +424,20 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const minCoverage = opts.minCoverage ?? 0.5;
   const refreshMs = opts.searchRefreshMs ?? 60_000;
   const messages = opts.messages;
+  /** Listeners added at run time (`cms.onTelemetry`, e.g. the standalone server's `/metrics`). */
+  const telemetryListeners = new Set<(e: CmsTelemetry) => void>();
   const telemetry = (e: CmsTelemetry) => {
     try {
       opts.onEvent?.(e);
     } catch {
       // a broken listener must not break the CMS
+    }
+    for (const fn of telemetryListeners) {
+      try {
+        fn(e);
+      } catch {
+        // same
+      }
     }
   };
   const reportTo = opts.onError ?? ((err: unknown, where: string) => console.warn(`[agent-cms] ${where}:`, err));
@@ -363,9 +457,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const eventListeners: { event: WebhookEvent | "*"; fn: (e: OutEvent) => void | Promise<void>; plugin: string }[] = [];
   /** Tell the outside what happened. Never throws, never awaited by the write that caused it. */
   /** Listeners added at run time (the events stream): told about every event until they unsubscribe. */
-  const subscribers = new Set<(e: OutEvent) => void>();
-  function emitEvent(e: OutEvent) {
-    telemetry({ type: "event", ...e });
+  const subscribers = new Set<(e: FeedEvent) => void>();
+  function tellSubscribers(e: FeedEvent) {
     for (const fn of subscribers) {
       try {
         fn(e);
@@ -373,6 +466,31 @@ export function createCmsCore(opts: CreateCmsOptions) {
         report(err, "subscriber");
       }
     }
+  }
+  /** This process, in the change log (so it does not hear itself twice). */
+  const origin = `p${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+  const logChanges = opts.changes?.log !== false && typeof repo.appendChange === "function";
+  /** Change-log writes not finished yet (`settle()` waits for them before a shutdown). */
+  const inFlight = new Set<Promise<unknown>>();
+  /** The newest change this process has seen (its own or another's). */
+  let seenSeq = -1;
+  function emitEvent(e: OutEvent) {
+    telemetry({ type: "event", ...e });
+    if (logChanges) {
+      const data: Record<string, unknown> = { actor: e.actor ?? null, url: e.url ?? null, ...(e.detail ? { detail: e.detail } : {}) };
+      const pending = Promise.resolve(ensureSchema())
+        .then(() => repo.appendChange!({ event: e.event, collection: e.collection ?? null, slug: e.slug ?? null, version: e.version ?? null, origin, data, at: nowIso() }))
+        .then((seq) => {
+          tellSubscribers({ ...e, seq });
+          void Promise.resolve(opts.changes?.signal?.publish()).catch((err) => report(err, "change signal"));
+        })
+        .catch((err) => {
+          report(err, "change log");
+          tellSubscribers(e);
+        })
+        .finally(() => inFlight.delete(pending));
+      inFlight.add(pending);
+    } else tellSubscribers(e);
     void outbox.emit(e);
     void automations.onEvent(e);
     for (const l of eventListeners) {
@@ -382,6 +500,133 @@ export function createCmsCore(opts: CreateCmsOptions) {
         .catch((err) => report(err, `plugin ${l.plugin}: ${e.event}`));
     }
   }
+  // ── following the change log (other servers) and the read cache ───────────
+
+  const pollMs = Math.max(200, opts.changes?.pollMs ?? 2000);
+  const follow = { timer: null as ReturnType<typeof setTimeout> | null, unsignal: null as null | (() => void), busy: false, again: false, listening: false, closed: false };
+  const cacheStore: CacheAdapter | null = !opts.cache ? null : "store" in opts.cache && typeof (opts.cache as { store?: unknown }).store === "object" ? (opts.cache as { store: CacheAdapter }).store : (opts.cache as CacheAdapter);
+  const cacheTtl = Math.max(1000, (opts.cache && "ttlMs" in opts.cache ? (opts.cache as CacheOptions).ttlMs : undefined) ?? 300_000);
+  const wantFollow = () => logChanges && typeof repo.changesSince === "function" && (subscribers.size > 0 || !!cacheStore);
+  function rowEvent(r: ChangeRowLike): FeedEvent {
+    const d = r.data ?? {};
+    return { event: r.event as OutEvent["event"], collection: r.collection, slug: r.slug, version: r.version, actor: (d.actor as OutEvent["actor"]) ?? null, url: (d.url as string | null) ?? null, ...(d.detail ? { detail: d.detail as Record<string, unknown> } : {}), seq: r.seq, remote: r.origin !== origin } as FeedEvent;
+  }
+  async function pullChanges() {
+    if (follow.busy) {
+      follow.again = true;
+      return;
+    }
+    follow.busy = true;
+    try {
+      do {
+        follow.again = false;
+        await ensureSchema();
+        if (seenSeq < 0) {
+          seenSeq = (await repo.lastChange?.()) ?? 0;
+          break;
+        }
+        const rows = await repo.changesSince!(seenSeq, 200);
+        for (const r of rows) {
+          // Numbers are handed out before commit: a missing number younger than a few seconds may
+          // still arrive. Stop there and look again; an older gap is a rolled-back write.
+          if (r.seq !== seenSeq + 1 && Date.now() - Date.parse((r as { at?: string }).at ?? "") < GAP_WAIT_MS) {
+            follow.again = false;
+            break;
+          }
+          seenSeq = Math.max(seenSeq, r.seq);
+          if (r.origin === origin) continue;
+          if (r.collection) {
+            invalidate(r.collection);
+            index.dirty = true;
+          }
+          tellSubscribers(rowEvent(r));
+        }
+        if (rows.length === 200) follow.again = true;
+      } while (follow.again);
+    } catch (e) {
+      report(e, "change log follow");
+    } finally {
+      follow.busy = false;
+    }
+  }
+  /** Keep following while someone needs it (a stream is open or a cache is set). */
+  function keepFollowing() {
+    if (follow.closed || !wantFollow()) {
+      if (follow.timer) clearTimeout(follow.timer);
+      follow.timer = null;
+      follow.unsignal?.();
+      follow.unsignal = null;
+      follow.listening = false;
+      return;
+    }
+    const sig = opts.changes?.signal;
+    if (sig && !follow.listening) {
+      follow.listening = true;
+      void Promise.resolve(sig.subscribe(() => void pullChanges()))
+        .then((un) => {
+          if (follow.listening && !follow.closed) follow.unsignal = un;
+          else un();
+        })
+        .catch((e) => {
+          follow.listening = false;
+          report(e, "change signal");
+        });
+    }
+    if (follow.timer) return;
+    if (seenSeq < 0) void pullChanges();
+    follow.timer = setTimeout(() => {
+      follow.timer = null;
+      void pullChanges().finally(keepFollowing);
+    }, pollMs);
+    (follow.timer as { unref?: () => void }).unref?.();
+  }
+  /** Which CMS the cache belongs to (tables or a set name), so CMSs sharing one store never mix. */
+  const cacheNs = (opts.cache && "namespace" in opts.cache ? (opts.cache as CacheOptions).namespace : undefined) ?? repo.cacheNamespace?.() ?? `m${Math.random().toString(36).slice(2, 10)}`;
+  const cacheKey = (col: string, rest: string) => `agent-cms:${cacheNs}:${col}:${rest}`;
+  /** Set at once when this process changes a collection, so it never serves an older entry while the store catches up. */
+  const localGen = new Map<string, string>();
+  const newGen = () => Math.random().toString(36).slice(2, 10);
+  const GEN_TTL = 30 * 86_400_000;
+  /** Readers of this collection all see the same thing (no per-document read rule): it can be cached. */
+  const cacheable = (col: string) => !!cacheStore && !collection(col).access?.read;
+  function invalidate(col: string) {
+    if (!cacheStore) return;
+    const gen = newGen();
+    localGen.set(col, gen);
+    const p = Promise.resolve(cacheStore.set(cacheKey(col, "gen"), gen, GEN_TTL))
+      .catch((e) => report(e, "cache"))
+      .finally(() => {
+        inFlight.delete(p);
+        if (localGen.get(col) === gen) localGen.delete(col);
+      });
+    inFlight.add(p);
+  }
+  async function cached<T>(col: string, key: string, make: () => Promise<T>): Promise<T> {
+    if (!cacheStore || !cacheable(col)) return make();
+    keepFollowing();
+    let full: string;
+    try {
+      let gen = localGen.get(col) ?? (await cacheStore.get(cacheKey(col, "gen")));
+      if (typeof gen !== "string") {
+        gen = newGen();
+        await cacheStore.set(cacheKey(col, "gen"), gen, GEN_TTL);
+      }
+      full = cacheKey(col, `${gen}:${key}`);
+      const hit = await cacheStore.get(full);
+      if (hit !== undefined) {
+        telemetry({ type: "cache", collection: col, hit: true });
+        return hit as T;
+      }
+    } catch (e) {
+      report(e, "cache");
+      return make();
+    }
+    telemetry({ type: "cache", collection: col, hit: false });
+    const value = await make();
+    void Promise.resolve(cacheStore.set(full, value ?? null, cacheTtl)).catch((e) => report(e, "cache"));
+    return value;
+  }
+
   function urlOf(col: string | null | undefined, slug: string | null | undefined): string | null {
     try {
       return col && slug ? (collections.get(col)?.url?.({ slug }) ?? null) : null;
@@ -525,6 +770,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     actorRef,
     collection,
     canReadDoc: (actor, doc) => collections.has(doc.collection) && can(actor, doc.collection, "read", doc),
+    roleAllows: (actor, store, what) => roles.allows(actor, `media:${store}`, what === "write" ? "write" : "delete"),
     warn: warnOnce,
     ready: ensureSchema,
     trashDays,
@@ -633,6 +879,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   /** `beforeChange` hooks, one after another: each sees what the one before returned. */
   async function hooked(actor: Actor, col: string, prev: CmsDoc | null, content: DocContent): Promise<DocContent> {
     let cur = content;
+    if (collection(col).fieldAccess || collection(col).fieldHooks) cur = validate(col, await guardFields(actor, col, prev, cur));
     for (const fn of collection(col).hooks?.beforeChange ?? []) {
       const patch = await hook(fn, { collection: col, slug: cur.slug, content: cur, prev, actor });
       if (patch && typeof patch === "object") cur = validate(col, { ...cur, ...patch });
@@ -727,6 +974,16 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function get(actor: Actor, col: string, slug: string, o: { draft?: boolean } = {}): Promise<CmsDoc> {
     collection(col);
     await ensureSchema();
+    await beforeRead(actor, col, slug, !!o.draft);
+    if (!o.draft && cacheable(col)) {
+      assert(actor, col, "read");
+      const pub = await cached(col, `d:${slug}`, async () => {
+        const d = await repo.findDoc(col, slug);
+        return d ? publicView(d) : null;
+      });
+      if (!pub) throw fail("not_found", { collection: col, slug });
+      return read(actor, pub, false);
+    }
     const doc = await repo.findDoc(col, slug);
     if (!doc) throw fail("not_found", { collection: col, slug });
     if (o.draft && can(actor, col, "write", doc)) return read(actor, doc, true);
@@ -735,13 +992,85 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!pub) throw fail("not_found", { collection: col, slug });
     return read(actor, pub, false);
   }
-  /** `afterRead` hooks: each sees what the one before returned. */
-  async function read(actor: Actor, doc: CmsDoc, draft: boolean): Promise<CmsDoc> {
-    const fns = collection(doc.collection).hooks?.afterRead;
-    if (!fns?.length) return doc;
+  /** Field rules, then `afterRead` hooks: each sees what the one before returned. */
+  async function read(actor: Actor, doc: CmsDoc, draft: boolean, o: { list?: boolean } = {}): Promise<CmsDoc> {
+    const cfg = collection(doc.collection);
     let cur = doc;
-    for (const fn of fns) cur = (await hook((d: CmsDoc) => fn(d, { actor, draft }), cur)) ?? cur;
+    if (cfg.fieldAccess || cfg.fieldHooks) {
+      const fields = structuredClone(cur.fields ?? {}) as Record<string, unknown>;
+      const hidden = Object.entries(cfg.fieldAccess ?? {}).filter(([, rule]) => rule.read && !rule.read({ actor, doc })).map(([path]) => path);
+      for (const path of hidden) unsetPath(fields, path);
+      // The same values live in the published copy and the autosave copy: hide them there too.
+      if (hidden.length) {
+        const strip = <T extends { fields?: Record<string, unknown> } | null | undefined>(c: T): T => {
+          if (!c?.fields) return c;
+          const f = structuredClone(c.fields);
+          for (const path of hidden) unsetPath(f, path);
+          return { ...c, fields: f };
+        };
+        cur = { ...cur, published: strip(cur.published as never), ...(cur.autosave ? { autosave: { ...cur.autosave, content: strip(cur.autosave.content as never) } } : {}) } as CmsDoc;
+      }
+      for (const [path, h] of Object.entries(cfg.fieldHooks ?? {})) {
+        if (!h.afterRead || !hasPath(fields, path)) continue;
+        const v = await hook((x: unknown) => h.afterRead!(x, { actor, doc, draft }), getPath(fields, path));
+        if (v === undefined) unsetPath(fields, path);
+        else setPath(fields, path, v);
+      }
+      cur = { ...cur, fields };
+    }
+    const fns = cfg.hooks?.afterRead;
+    if (!fns?.length) return cur;
+    for (const fn of fns) cur = (await hook((d: CmsDoc) => fn(d, { actor, draft, ...(o.list ? { list: true } : {}) }), cur)) ?? cur;
     return cur;
+  }
+  async function beforeRead(actor: Actor, col: string, slug: string | null, draft: boolean) {
+    for (const fn of collection(col).hooks?.beforeRead ?? []) await hook(fn, { actor, collection: col, slug, draft });
+  }
+  /** Whether list rows need per-reader work (field rules or `afterRead`). */
+  const readsPerDoc = (col: string) => {
+    const c = collection(col);
+    return !!(c.fieldAccess || c.fieldHooks?.length || Object.values(c.fieldHooks ?? {}).some((h) => h.afterRead) || c.hooks?.afterRead?.length);
+  };
+  /** Field paths this actor may not see / not change in a document (for the admin form and saves). */
+  function fieldRulesFor(actor: Actor, col: string, doc: CmsDoc | null): { hidden: string[]; readOnly: string[] } {
+    const hidden: string[] = [];
+    const readOnly: string[] = [];
+    for (const [path, rule] of Object.entries(collection(col).fieldAccess ?? {})) {
+      if (doc && rule.read && !rule.read({ actor, doc })) hidden.push(path);
+      else if (rule.write && !rule.write({ actor, doc })) readOnly.push(path);
+    }
+    return { hidden, readOnly };
+  }
+  /**
+   * Before a save: fields this actor may not see keep their stored value (the form never had
+   * them); fields it may not change must be unchanged; field `beforeChange` hooks run.
+   */
+  async function guardFields(actor: Actor, col: string, prev: CmsDoc | null, content: DocContent, o: { hooks?: boolean } = {}): Promise<DocContent> {
+    const cfg = collection(col);
+    if (!cfg.fieldAccess && !cfg.fieldHooks) return content;
+    const fields = structuredClone(content.fields ?? {}) as Record<string, unknown>;
+    const before = (prev?.fields ?? {}) as Record<string, unknown>;
+    // On create there is no stored document: the rules look at the one being made.
+    const proposed = (prev ?? ({ collection: col, ...content, fields } as unknown as CmsDoc));
+    for (const [path, rule] of Object.entries(cfg.fieldAccess ?? {})) {
+      const canSee = !rule.read || rule.read({ actor, doc: proposed });
+      const canWrite = !rule.write || rule.write({ actor, doc: prev });
+      if (!canSee || !canWrite) {
+        const sent = hasPath(fields, path);
+        const same = JSON.stringify(getPath(fields, path) ?? null) === JSON.stringify(getPath(before, path) ?? null);
+        if (sent && !same && canSee) throw fail("forbidden_field", { field: path }, { status: 403 });
+        // Not sent, or sent by someone who cannot see it: keep what is stored.
+        if (hasPath(before, path)) setPath(fields, path, structuredClone(getPath(before, path)));
+        else unsetPath(fields, path);
+      }
+    }
+    for (const [path, h] of Object.entries(o.hooks === false ? {} : (cfg.fieldHooks ?? {}))) {
+      if (!h.beforeChange) continue;
+      const v = await hook((x: unknown) => h.beforeChange!(x, { actor, prev: getPath(before, path), doc: prev }), getPath(fields, path));
+      if (v === undefined) unsetPath(fields, path);
+      else setPath(fields, path, v);
+    }
+    return { ...content, fields };
   }
 
 
@@ -750,11 +1079,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await ensureSchema();
     const editor = !!o.drafts && can(actor, col, "write");
     if (!editor) assert(actor, col, "read");
+    await beforeRead(actor, col, null, editor);
     const rows = editor
       ? await repo.listDocs({ collection: col, statuses: o.status ? [o.status] : undefined })
-      : (await repo.listDocs({ collection: col, published: true })).map(publicView).filter((d): d is CmsDoc => !!d);
+      : await cached(col, "list", async () => (await repo.listDocs({ collection: col, published: true })).map(publicView).filter((d): d is CmsDoc => !!d));
     const q = o.q?.trim().toLowerCase();
-    return rows
+    const sorted = rows
+      .filter((d) => can(actor, col, "read", d))
       .filter((d) => !o.category || d.category === o.category)
       .filter((d) => !q || d.title.toLowerCase().includes(q) || d.slug.includes(q) || d.summary.toLowerCase().includes(q))
       .filter((d) => !editor || !o.by || d.updatedByKind === o.by)
@@ -766,6 +1097,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
         return o.state === "modified" ? s.modifiedSincePublish : s.state === o.state;
       })
       .sort((a, b) => (editor ? b.updatedAt.localeCompare(a.updatedAt) : (b.publishedAt ?? b.updatedAt).localeCompare(a.publishedAt ?? a.updatedAt)));
+    return readsPerDoc(col) ? Promise.all(sorted.map((d) => read(actor, d, editor, { list: true }))) : sorted;
   }
 
   function summaryOf(d: CmsDoc): DocSummary {
@@ -794,8 +1126,34 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   /** A page of list items without bodies. `cursor` comes from the previous page. */
   async function page(actor: Actor, col: string, o: ListOptions & { limit?: number; cursor?: string | null; hits?: boolean } = {}) {
-    const all = await list(actor, col, o);
     const limit = Math.max(1, Math.min(o.limit ?? 50, 200));
+    const keyset = decodeCursor(o.cursor);
+    const editor = !!o.drafts && can(actor, col, "write");
+    // In the database (0.17.0): filter, sort and cut there, and page by the last row, not by a count.
+    // A per-document read rule is checked in memory (the list path below), not in SQL.
+    if (typeof repo.pageDocs === "function" && !(editor && o.state) && keyset !== "offset" && !collection(col).access?.read) {
+      collection(col);
+      await ensureSchema();
+      if (!editor) assert(actor, col, "read");
+      await beforeRead(actor, col, null, editor);
+      const query = { collection: col, published: !editor, statuses: editor && o.status ? [o.status] : undefined, category: o.category || undefined, q: o.q?.trim() || undefined, by: editor ? o.by : undefined, limit: limit + 1, after: keyset };
+      const run = async () => {
+        const r = await repo.pageDocs!(query);
+        const rows = editor ? r.docs : r.docs.map(publicView).filter((d): d is CmsDoc => !!d);
+        const shown = readsPerDoc(col) ? await Promise.all(rows.slice(0, limit).map((d) => read(actor, d, editor, { list: true }))) : rows.slice(0, limit);
+        return { rows: shown.map(summaryOf), more: rows.length > limit, total: r.total };
+      };
+      const r = editor || readsPerDoc(col) ? await run() : await cached(col, `p:${JSON.stringify({ ...query, collection: undefined })}`, run);
+      const slice = r.rows;
+      if (o.hits && can(actor, col, "write")) {
+        const counts = await hitCounts(actor, col, 7);
+        for (const d of slice) d.hits7d = counts.get(d.id) ?? 0;
+      }
+      const last = slice.at(-1);
+      const at = last ? (editor ? last.updatedAt : (last.publishedAt ?? last.updatedAt)) : null;
+      return { docs: slice, total: r.total, nextCursor: r.more && last && at ? encodeCursor(at, last.id) : null };
+    }
+    const all = await list(actor, col, o);
     const offset = Math.max(0, Number(o.cursor ?? 0) || 0);
     const slice = all.slice(offset, offset + limit).map(summaryOf);
     if (o.hits && can(actor, col, "write")) {
@@ -874,7 +1232,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const target = doc ?? prev;
     if (!target) return;
     const info: ChangeInfo = { contentChanged: publicSig(prev) !== publicSig(doc) };
-    if (info.contentChanged) index.dirty = true;
+    if (info.contentChanged) {
+      index.dirty = true;
+      invalidate(target.collection);
+    }
     if (doc && !o.quiet && !doc.deletedAt && (!prev || doc.version !== prev.version)) {
       const by = doc.updatedByKind ? { kind: doc.updatedByKind, id: null, label: doc.updatedBy ?? "", agent: doc.updatedByAgent ?? null } : null;
       emitEvent({ event: prev ? "doc.updated" : "doc.created", actor: by, collection: doc.collection, slug: doc.slug, version: doc.version, url: urlOf(doc.collection, doc.slug) });
@@ -903,7 +1264,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   const hunkId = (v: number, h: { removed: string[]; added: string[] }) =>
-    createHash("sha256").update(`${v}\n${h.removed.join("\n")}\n--\n${h.added.join("\n")}`).digest("hex").slice(0, 12);
+    hex(sha256(`${v}\n${h.removed.join("\n")}\n--\n${h.added.join("\n")}`)).slice(0, 12);
 
   /** What a new version changed against the previous one. */
   function changeOf(v: number, prev: DocContent | null, next: DocContent): VersionChange {
@@ -1118,7 +1479,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function autosave(actor: Actor, col: string, slug: string, input: DocInput, baseVersion: number) {
     await ensureSchema();
     const cur = await editable(actor, col, slug);
-    const content = contentOf(merged(cur.autosave?.content ?? cur, input));
+    let content = contentOf(merged(cur.autosave?.content ?? cur, input));
+    if (collection(col).fieldAccess) {
+      // Only the access rules here (field hooks run on the real save): a draft copy cannot sneak a change in.
+      content = await guardFields(actor, col, cur, content, { hooks: false });
+    }
     if (JSON.stringify(content).length > LIMITS.body * 2) throw fail("body_too_large", {}, { status: 413 });
     const state = { content, at: nowIso(), by: actorRef(actor).label, baseVersion };
     // Keep updatedAt: an autosave is not a change anyone else sees.
@@ -1347,7 +1712,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   // ── preview links ─────────────────────────────────────────────────────────
 
   function sign(payload: string): string {
-    return createHmac("sha256", opts.previewSecret!).update(payload).digest("base64url");
+    return base64url(hmacSha256(opts.previewSecret!, payload));
   }
 
   /** A signed URL that shows this exact version of the draft, no sign-in needed, until it expires. */
@@ -1370,11 +1735,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
   function previewPayload(token: string): { c: string; s: string; v: number; exp: number; cm?: 1 } {
     if (!opts.previewSecret) throw fail("preview_disabled");
     const [payload, sig] = String(token).split(".");
-    const good = payload && sig ? Buffer.from(sign(payload)) : null;
-    if (!good || good.length !== Buffer.from(sig).length || !timingSafeEqual(good, Buffer.from(sig))) throw fail("preview_invalid");
+    if (!payload || !sig || !timingSafeEqual(sign(payload), sig)) throw fail("preview_invalid");
     let p: { c: string; s: string; v: number; exp: number; cm?: 1 };
     try {
-      p = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+      p = JSON.parse(fromUtf8(fromBase64url(payload)));
     } catch {
       throw fail("preview_invalid");
     }
@@ -1398,13 +1762,16 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const index = { built: null as SearchIndex | null, dirty: true, stamp: "", checkedAt: 0, building: null as Promise<SearchIndex> | null };
 
   async function buildIndex(): Promise<SearchIndex> {
+    const started = Date.now();
     const searchable = [...collections.values()].filter((c) => c.search?.enabled !== false).map((c) => c.slug);
     const docs = (await repo.listDocs({ published: true })).filter((d) => searchable.includes(d.collection));
     const units = docs.flatMap((d) => {
       const p = publicView(d);
       return p ? unitsOf({ ...p, publishedAt: p.publishedAt }) : [];
     });
-    return new SearchIndex(units);
+    const built = new SearchIndex(units);
+    telemetry({ type: "index", ms: Date.now() - started, documents: docs.length, units: units.length });
+    return built;
   }
 
   async function searchIndex(): Promise<SearchIndex> {
@@ -1443,11 +1810,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
     for (const c of cols) assert(actor, c, "read");
     if (o.logGap !== undefined) warnOnce("logGap", "search option logGap was renamed to reportMiss in 0.6.0");
     const reportMiss = o.reportMiss ?? o.logGap ?? false;
+    const started = Date.now();
     const idx = await searchIndex();
     const limit = Math.max(1, Math.min(o.limit ?? 5, 50));
     const raw = idx.search(query, { limit: limit + 3, perDoc: o.perDoc ?? 2, filter: (u) => cols.includes(u.collection) && (!o.filter || o.filter(u)) });
     const hits = raw.filter((h) => h.coverage >= minCoverage).slice(0, limit);
     const empty = hits.length === 0;
+    telemetry({ type: "search", ms: Date.now() - started, q: query.trim().slice(0, 200), hits: hits.length, collections: cols.length });
     if (empty && reportMiss && opts.onSearchMiss && query.trim()) {
       const e: SearchMissEvent = {
         query: query.trim().slice(0, 500),
@@ -1490,7 +1859,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
     baseAdmin,
     ready: ensureSchema,
     users: opts.users,
-    targets: () => [...collections.values()].map((c) => ({ slug: c.slug, label: c.label, coded: [...(c.access?.write ? (["write"] as const) : []), ...(c.access?.publish ? (["publish", "delete"] as const) : []), ...(c.managed ? (["write", "publish", "delete"] as const) : [])] })),
+    targets: () => [
+      ...[...collections.values()].map((c) => ({ slug: c.slug, label: c.label, coded: [...(c.access?.write ? (["write"] as const) : []), ...(c.access?.publish ? (["publish", "delete"] as const) : []), ...(c.managed ? (["write", "publish", "delete"] as const) : [])] })),
+      // 0.17.0: the media library as a target (`write` uploads and edits, `delete` moves and deletes), per store.
+      ...Object.entries(opts.media?.stores ?? {}).map(([name, st]) => ({ slug: `media:${name}`, label: Object.keys(opts.media?.stores ?? {}).length > 1 ? `Media · ${name}` : "Media", coded: [...(st.access?.write ? (["write"] as const) : []), ...(st.access?.delete ? (["delete"] as const) : [])], media: true })),
+    ],
   };
   const roles = createRoles(rolesCtx);
   /** An admin by the app's word, by a key's scope, or through a role marked "admin". */
@@ -1874,10 +2247,73 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** Request counting (`createCms({ rateLimit })`): `limits.check(who, perMinute)`. */
     limits: { check: limiter.check, anonymousPerMinute: opts.rateLimit?.anonymousPerMinute ?? null },
     /** Hear every event as it happens (the events stream uses this). Returns the function that stops it. */
-    subscribe(fn: (e: OutEvent) => void): () => void {
+    subscribe(fn: (e: FeedEvent) => void): () => void {
       subscribers.add(fn);
-      return () => void subscribers.delete(fn);
+      keepFollowing();
+      return () => {
+        subscribers.delete(fn);
+        keepFollowing();
+      };
     },
+    /**
+     * The change log (0.17.0): `since(actor, seq)` lists what `actor` may hear after `seq`, oldest
+     * first; `last()` is the newest number. `null` from `since` means `seq` is older than what the
+     * log keeps: reload everything.
+     */
+    changes: {
+      async last(): Promise<number> {
+        await ensureSchema();
+        return (await repo.lastChange?.()) ?? 0;
+      },
+      async since(actor: Actor, seq: number, o: { collections?: readonly string[]; limit?: number; hear: (e: FeedEvent) => boolean }): Promise<{ changes: ChangeEvent[]; last: number; more: boolean } | null> {
+        await ensureSchema();
+        if (!repo.changesSince) return { changes: [], last: 0, more: false };
+        const limit = Math.max(1, Math.min(o.limit ?? 200, 1000));
+        const out: ChangeEvent[] = [];
+        let after = Math.max(0, Math.floor(seq));
+        let first = true;
+        for (;;) {
+          const rows = await repo.changesSince(after, 500);
+          if (first && seq > 0 && rows.length && rows[0].seq > after + 1) {
+            // Rows after `seq` were pruned: the caller missed something it cannot get back.
+            const oldest = await repo.changesSince(0, 1);
+            if (oldest.length && oldest[0].seq > after + 1) return null;
+          }
+          first = false;
+          for (const r of rows) {
+            if (r.seq !== after + 1 && Date.now() - Date.parse((r as { at?: string }).at ?? "") < GAP_WAIT_MS) return { changes: out, last: after, more: true };
+            after = r.seq;
+            const e = rowEvent(r);
+            if (!o.hear(e)) continue;
+            out.push({ seq: r.seq, at: (r as { at?: string }).at ?? "", event: r.event, collection: r.collection, slug: r.slug, version: r.version, url: e.url ?? null, actor: (e.actor as ChangeEvent["actor"]) ?? null, ...(e.detail ? { detail: e.detail } : {}) });
+            if (out.length >= limit) return { changes: out, last: r.seq, more: true };
+          }
+          if (rows.length < 500) return { changes: out, last: Math.max(after, seq), more: false };
+        }
+      },
+    },
+    /**
+     * Waits for writes that run after a response (the change log, webhook queueing) and stops
+     * following other servers. Call before closing the database or ending the process.
+     */
+    async settle(): Promise<void> {
+      follow.closed = true;
+      while (inFlight.size) await Promise.allSettled([...inFlight]);
+      if (follow.timer) clearTimeout(follow.timer);
+      follow.timer = null;
+      follow.unsignal?.();
+      follow.unsignal = null;
+      follow.listening = false;
+    },
+    /** Also hear what `onEvent` hears (requests, events, errors, cache, search). Returns the function that stops it. */
+    onTelemetry(fn: (e: CmsTelemetry) => void): () => void {
+      telemetryListeners.add(fn);
+      return () => void telemetryListeners.delete(fn);
+    },
+    /** Field paths an actor may not see / not change (`fieldAccess`), for the admin form. */
+    fieldRulesFor,
+    /** Whether reads go through a cache (`createCms({ cache })`). */
+    cacheOn: !!cacheStore,
     /**
      * Documents as files, for agents (0.15.0): `read`, `grep`, `edit`, `write`, `file`, `rawLink`,
      * `rawOpen`, and suggestions (`suggestions`, `applySuggestion`, `rejectSuggestion`).
@@ -1899,9 +2335,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const byDoc = new Map<string, number[]>();
       for (const v of stamps) byDoc.set(v.documentId, [...(byDoc.get(v.documentId) ?? []), v.version]);
       const out: { collection: string; slug: string; version: number; at: string }[] = [];
+      // One query for all of them (0.17.0), not one per document.
+      const found = repo.findDocsByIds ? new Map((await repo.findDocsByIds([...byDoc.keys()])).map((d) => [d.id, d])) : null;
       for (const [id, versions] of byDoc) {
         if (out.length >= limit) break;
-        const doc = await repo.findDocById(id);
+        const doc = found ? (found.get(id) ?? null) : await repo.findDocById(id);
         if (!doc || !collections.has(doc.collection) || (o.collections?.length && !o.collections.includes(doc.collection))) continue;
         if (can(actor, doc.collection, "write", doc)) out.push({ collection: doc.collection, slug: doc.slug, version: doc.version, at: doc.updatedAt });
         else if (can(actor, doc.collection, "read", doc) && publicView(doc) && versions.includes(doc.publishedVersion as number)) out.push({ collection: doc.collection, slug: doc.slug, version: doc.publishedVersion as number, at: doc.updatedAt });
@@ -1928,7 +2366,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const scheduled = await flow.runScheduled();
       await automations.tick().catch((e) => report(e, "automations"));
       const ran = await jobs.run(o);
-      await Promise.all([jobs.prune(), outbox.prune(), retention.tick()]).catch((e) => report(e, "cron housekeeping"));
+      const keepDays = Math.max(1, opts.changes?.keepDays ?? 7);
+      const pruneChanges = repo.pruneChanges ? repo.pruneChanges(new Date(now().getTime() - keepDays * 86_400_000).toISOString()) : Promise.resolve(0);
+      await Promise.all([jobs.prune(), outbox.prune(), retention.tick(), pruneChanges]).catch((e) => report(e, "cron housekeeping"));
       telemetry({ type: "cron", ms: Date.now() - t0, jobs: ran });
       return { ...scheduled, jobs: ran };
     },

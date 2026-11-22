@@ -541,7 +541,25 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
    * approves their own request). Default: nobody.
    */
   review?: { agents?: "required"; everyone?: "required" };
+  /**
+   * Who may see and change single fields (113, 0.17.0), by path in `fields` (`price`, `seo.title`).
+   * `read: false` hides the value from that reader (and from the admin form); `write: false` makes
+   * it read-only: a save that changes it is refused with `forbidden_field`, and a save that leaves
+   * it out keeps the stored value. Runs on every read, so keep it fast.
+   */
+  fieldAccess?: Record<string, { read?: (a: { actor: Actor; doc: CmsDoc }) => boolean; write?: (a: { actor: Actor; doc: CmsDoc | null }) => boolean }>;
+  /**
+   * Hooks for single fields (93), by path in `fields`. `beforeChange` returns the value to store
+   * (normalise a phone number, fill a default); `afterRead` returns the value a reader gets
+   * (format, mask). Throw in `beforeChange` to refuse the save with your message.
+   */
+  fieldHooks?: Record<string, { beforeChange?: (value: unknown, ctx: { actor: Actor; prev: unknown; doc: CmsDoc | null }) => unknown | Promise<unknown>; afterRead?: (value: unknown, ctx: { actor: Actor; doc: CmsDoc; draft: boolean }) => unknown | Promise<unknown> }>;
   hooks?: {
+    /**
+     * Before anything is read from this collection (one document, a list, a page). Throw to refuse:
+     * the reader gets `hook_rejected` with your message (a paywall, a region rule, a maintenance window).
+     */
+    beforeRead?: Array<(ctx: { actor: Actor; collection: string; slug: string | null; draft: boolean }) => void | Promise<void>>;
     /**
      * Before the content is checked against the collection's rules (create, update, patch, restore).
      * Return fields to change them: fill a slug from the title, trim, set defaults. Throw to refuse.
@@ -552,10 +570,11 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
     /** After a document was deleted (moved to the trash, or gone when there is no trash). */
     afterDelete?: Array<(doc: CmsDoc) => void | Promise<void>>;
     /**
-     * Before a document leaves `get` (one document, not lists): return a changed copy to add or hide
-     * values for this reader. Runs for every reader, so keep it fast. Throw to refuse the read.
+     * Before a document leaves `get`, `list` or `page` (0.17.0: lists too, with `list: true`):
+     * return a changed copy to add or hide values for this reader. Runs for every document a
+     * reader gets, so keep it fast. Throw to refuse the read.
      */
-    afterRead?: Array<(doc: CmsDoc, ctx: { actor: Actor; draft: boolean }) => void | CmsDoc | Promise<void | CmsDoc>>;
+    afterRead?: Array<(doc: CmsDoc, ctx: { actor: Actor; draft: boolean; list?: boolean }) => void | CmsDoc | Promise<void | CmsDoc>>;
     /**
      * Before a save that makes a version (create, update, patch, restore; not autosave). Return
      * fields to change them (`{ keywords: [...] }`); the result is validated again. Throw to refuse:

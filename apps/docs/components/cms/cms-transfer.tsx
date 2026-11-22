@@ -7,7 +7,7 @@
 
 import * as React from "react";
 import { CircleAlert, Download, FileText, Upload } from "lucide-react";
-import type { ImportConflict, ImportItem, TransferFile } from "@mainsoft/agent-cms/client";
+import { docsFromNotion, filesFromDocs, unzip, type ImportConflict, type ImportItem, type TransferFile } from "@mainsoft/agent-cms/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -24,6 +24,24 @@ const CONFLICTS: ImportConflict[] = ["db-wins", "newest", "file-wins"];
 export async function readTransferFiles(picked: File[]): Promise<TransferFile[]> {
   const out: TransferFile[] = [];
   for (const f of picked) {
+    if (/\.zip$/i.test(f.name)) {
+      // A zip: an export folder zipped by hand (`<collection>/<slug>.md`) or a Notion export.
+      const budget = { bytes: 200 * 1024 * 1024, entries: 20_000 };
+      const entries = await unzip(new Uint8Array(await f.arrayBuffer()), { budget });
+      for (const inner of entries.filter((e) => /\.zip$/i.test(e.name))) entries.push(...(await unzip(inner.data, { budget })));
+      const md = entries.filter((e) => /\.(md|markdown|mdx)$/i.test(e.name) && !e.name.split("/").some((s) => s.startsWith(".") || s === "__MACOSX"));
+      if (md.some((e) => /\s[0-9a-f]{32}\.md$/i.test(e.name))) {
+        const { docs } = docsFromNotion(entries);
+        // Pictures in a Notion export need the command line (`import --from notion`) to be uploaded; the text comes in here.
+        out.push(...filesFromDocs(docs.map((d) => ({ ...d, body: d.body?.replace(/!\[([^\]]*)\]\(asset:ntn[a-z0-9]{9}\/[^)]*\)/g, "$1") }))));
+      } else {
+        const dec = new TextDecoder();
+        const root = md.length && md.every((e) => e.name.split("/").length > 2) ? `${md[0].name.split("/")[0]}/` : "";
+        out.push(...md.map((e) => ({ path: e.name.startsWith(root) ? e.name.slice(root.length) : e.name, text: dec.decode(e.data) })));
+      }
+      if (!out.length) throw new Error("no markdown files in the zip");
+      continue;
+    }
     const text = await f.text();
     if (/\.json$/i.test(f.name)) {
       const data = JSON.parse(text) as { files?: TransferFile[] };
@@ -165,7 +183,7 @@ export function CmsTransfer({ className }: { className?: string }) {
             }}
             className={cn("flex min-w-0 flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-6 text-center", dragging && "border-primary bg-primary/5", picked && "flex-row py-3 text-left")}
           >
-            <input ref={fileRef} type="file" multiple accept=".json,.md,.markdown,.mdx" className="sr-only" aria-label={t("transfer_choose")} onChange={(e) => (void pick(e.target.files), (e.target.value = ""))} />
+            <input ref={fileRef} type="file" multiple accept=".json,.md,.markdown,.mdx,.zip" className="sr-only" aria-label={t("transfer_choose")} onChange={(e) => (void pick(e.target.files), (e.target.value = ""))} />
             {picked ? (
               <>
                 <FileText aria-hidden className="h-5 w-5 shrink-0 text-muted-foreground" />
@@ -182,6 +200,7 @@ export function CmsTransfer({ className }: { className?: string }) {
                 <Download aria-hidden className="h-6 w-6 text-muted-foreground" />
                 <p className="text-sm font-medium">{t("transfer_drop")}</p>
                 <p className="max-w-md text-xs text-muted-foreground">{t("transfer_hint")}</p>
+                <p className="max-w-md break-words text-xs text-muted-foreground">{t("transfer_zip_note")}</p>
                 <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
                   {t("transfer_choose")}
                 </Button>

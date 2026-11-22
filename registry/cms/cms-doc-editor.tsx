@@ -30,7 +30,7 @@ import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-
 import { pasteAsMarkdown } from "./cms-paste";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, DIALOG } from "./cms-parts";
-import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type DocContent } from "./use-cms";
+import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type DocContent, type EditorSlotContext } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
 type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
@@ -152,7 +152,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const insertRef = React.useRef<((md: string) => void) | null>(null);
   const pickWaiter = React.useRef<((md: string | null) => void) | null>(null);
   const mobile = useIsMobile();
-  const schemaQ = useAsync(() => client.schema(collection), [client, collection]);
+  // With the slug: field rules (`fieldAccess`) may depend on the document.
+  const schemaQ = useAsync(() => client.schema(collection, { slug }), [client, collection, slug]);
   const schema = schemaQ.data;
 
   const [doc, setDoc] = React.useState<CmsDoc | null>(null);
@@ -1006,6 +1007,21 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         : undefined,
   };
   /** Put a file at the cursor: media on a line of its own, other files as a link. */
+  /** What editor slots (`slots.editorActions`, `editorPanel`, `fieldAddon`) get. */
+  const slotCtx: EditorSlotContext = {
+    collection,
+    slug: doc?.slug ?? null,
+    content,
+    setContent: (patch) => setContent({ ...content, ...patch }),
+    insertMarkdown: (md) => {
+      if (blocksOn && insertRef.current) return insertRef.current(md);
+      const [at, end] = caretRef.current ?? [content.body.length, content.body.length];
+      setContent({ ...content, body: `${content.body.slice(0, at)}${md}${content.body.slice(end)}` });
+    },
+    version: doc?.version ?? null,
+    published: !!doc && doc.publishedVersion !== null,
+    readOnly: !canWrite,
+  };
   const insertAsset = (a: Parameters<typeof assetMarkdown>[0]) => {
     if (pickWaiter.current) {
       pickWaiter.current(assetMarkdown(a));
@@ -1222,7 +1238,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
 
   const form = (
     <FieldGate.Provider value={fieldGate}>
-      <CmsFieldForm schema={schema} value={content} onChange={setContent} problems={byField} slugLocked={!!doc && doc.publishedVersion !== null} slugPrefix={slugPrefix} idPrefix="cms-editor" />
+      <CmsFieldForm schema={schema} value={content} onChange={setContent} problems={byField} slugLocked={!!doc && doc.publishedVersion !== null} slugPrefix={slugPrefix} idPrefix="cms-editor" slotContext={slotCtx} />
+      {slots.editorPanel ? <div className="mt-4 min-w-0">{slots.editorPanel(slotCtx)}</div> : null}
     </FieldGate.Provider>
   );
 
@@ -1444,6 +1461,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
+          {slots.editorActions?.(slotCtx)}
           {saveButtons()}
         </PageHeader>
         )}

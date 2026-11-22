@@ -68,7 +68,7 @@ export interface RolesContext {
   /** Admin by the app's word, a key's scope or the system (not through a role). */
   baseAdmin: (actor: Actor) => boolean;
   ready: () => Promise<void> | void;
-  targets: () => { slug: string; label: string; coded: RoleOp[] }[];
+  targets: () => { slug: string; label: string; coded: RoleOp[]; media?: boolean }[];
   users?: UsersOptions;
 }
 
@@ -161,7 +161,8 @@ export function createRoles(ctx: RolesContext) {
     for (const [target, ops] of Object.entries(i.permissions ?? cur?.permissions ?? {})) {
       if (!known.has(target)) throw fail("unknown_collection", { collection: target });
       const row: Partial<Record<RoleOp, boolean>> = {};
-      for (const op of ROLE_OPS) if (ops?.[op]) row[op] = true;
+      // A media store target takes `write` (upload, edit) and `delete` (move, delete) only.
+      for (const op of ROLE_OPS) if (ops?.[op] && (!target.startsWith("media:") || op === "write" || op === "delete")) row[op] = true;
       // Writing, publishing and deleting make no sense without reading.
       if (Object.keys(row).length) permissions[target] = { ...row, read: true };
     }
@@ -197,7 +198,7 @@ export function createRoles(ctx: RolesContext) {
       if (!mine.length) return undefined;
       return mine.some((r) => r.admin || !!r.permissions[target]?.[op]);
     },
-    async list(actor: Actor): Promise<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[] }[]; users: boolean }> {
+    async list(actor: Actor): Promise<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[]; media?: boolean }[]; users: boolean }> {
       admin(actor);
       await ctx.ready();
       await load(true);

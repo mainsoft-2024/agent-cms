@@ -229,6 +229,69 @@ export interface CmsRepo {
   deleteRecords(q: { kind: string; id?: string; scope?: string; before?: string }): Promise<number>;
   /** Versions made since an instant, newest first, without their content. */
   versionsSince(since: string, limit: number): Promise<VersionStamp[]>;
+
+  // ── 0.17.0: optional, so a repo written for an older version keeps working ──
+  /** Add a row to the change log (`cms_changes`) and return its number. */
+  appendChange?(c: NewChange): Promise<number>;
+  /** Rows after `seq`, oldest first. */
+  changesSince?(seq: number, limit: number): Promise<ChangeRow[]>;
+  /** The newest number (0 when empty). */
+  lastChange?(): Promise<number>;
+  /** Drop rows older than `before`; returns how many went. */
+  pruneChanges?(before: string): Promise<number>;
+  /** Several documents by id in one query (missing ones are left out). */
+  findDocsByIds?(ids: readonly string[]): Promise<CmsDoc[]>;
+  /** A name for this database's tables, so caches shared by several CMSs keep them apart. */
+  cacheNamespace?(): string;
+  /** One page of a list, filtered, sorted and cut in the database. */
+  pageDocs?(q: DocPageQuery): Promise<DocPage>;
+}
+
+/** A row of the change log. */
+export interface ChangeRow {
+  seq: number;
+  at: string;
+  event: string;
+  collection: string | null;
+  slug: string | null;
+  version: number | null;
+  origin: string;
+  data: Record<string, unknown>;
+}
+export type NewChange = Omit<ChangeRow, "seq" | "at"> & { at?: string };
+
+/**
+ * A page of documents. Editors (`published: false`) see rows as they are, newest change first;
+ * readers (`published: true`) the published copy, newest publish first. `after` is the last row
+ * of the previous page (keyset paging: a page never repeats or skips rows when others are added).
+ */
+export interface DocPageQuery {
+  collection: string;
+  published: boolean;
+  statuses?: DocStatus[];
+  category?: string;
+  /** Title, slug or summary contains (case-insensitive). On the published copy for readers. */
+  q?: string;
+  by?: "user" | "key" | "system";
+  limit: number;
+  after?: { at: string; id: string } | null;
+}
+export interface DocPage {
+  docs: CmsDoc[];
+  total: number;
+}
+
+/** Documents by id (not in the trash) in one query when the repo can, else one by one in parallel. */
+export async function docsById(repo: CmsRepo, ids: readonly string[]): Promise<Map<string, CmsDoc>> {
+  const uniq = [...new Set(ids)];
+  if (!uniq.length) return new Map();
+  const found = repo.findDocsByIds ? await repo.findDocsByIds(uniq) : (await Promise.all(uniq.map((id) => repo.findDocById(id)))).filter((d): d is CmsDoc => !!d);
+  return new Map(found.map((d) => [d.id, d]));
+}
+
+/** Sort key of a document in `pageDocs`. */
+export function pageKey(d: CmsDoc, published: boolean): string {
+  return published ? (d.publishedAt ?? d.updatedAt) : d.updatedAt;
 }
 
 /** In-memory repo for tests and examples. Starts at the current schema version. */
@@ -738,6 +801,53 @@ export class MemoryRepo implements CmsRepo {
     const n = this.records.length;
     this.records = this.records.filter((x) => !(x.kind === q.kind && (q.id === undefined || x.id === q.id) && (q.scope === undefined || x.scope === q.scope) && (q.before === undefined || x.createdAt < q.before)));
     return n - this.records.length;
+  }
+  private changes: ChangeRow[] = [];
+  async appendChange(c: NewChange) {
+    const seq = (this.changes.at(-1)?.seq ?? this.changeBase) + 1;
+    this.changes.push({ seq, at: c.at ?? new Date().toISOString(), event: c.event, collection: c.collection, slug: c.slug, version: c.version, origin: c.origin, data: structuredClone(c.data) });
+    return seq;
+  }
+  /** Numbers keep going after a prune, like a database sequence. */
+  private changeBase = 0;
+  async changesSince(seq: number, limit: number) {
+    return this.changes.filter((c) => c.seq > seq).slice(0, limit).map((c) => structuredClone(c));
+  }
+  async lastChange() {
+    return this.changes.at(-1)?.seq ?? this.changeBase;
+  }
+  async pruneChanges(before: string) {
+    const n = this.changes.length;
+    const last = this.changes.at(-1)?.seq ?? this.changeBase;
+    this.changes = this.changes.filter((c) => c.at >= before);
+    if (!this.changes.length) this.changeBase = last;
+    return n - this.changes.length;
+  }
+  async findDocsByIds(ids: readonly string[]) {
+    const out: CmsDoc[] = [];
+    for (const id of ids) {
+      const d = this.docs.get(id);
+      if (d) out.push(structuredClone(d));
+    }
+    return out;
+  }
+  async pageDocs(q: DocPageQuery): Promise<DocPage> {
+    const needle = q.q?.trim().toLowerCase();
+    const rows = [...this.docs.values()].filter((d) => {
+      if (d.deletedAt || d.collection !== q.collection) return false;
+      if (q.published && (d.publishedVersion === null || d.status === "archived" || !d.published)) return false;
+      if (q.statuses && !q.statuses.includes(d.status)) return false;
+      const view = q.published && d.published ? d.published : d;
+      if (q.category && (view.category ?? null) !== q.category) return false;
+      if (needle && !((view.title ?? "").toLowerCase().includes(needle) || d.slug.includes(needle) || (view.summary ?? "").toLowerCase().includes(needle))) return false;
+      if (q.by && d.updatedByKind !== q.by) return false;
+      return true;
+    });
+    const cmp = (a: CmsDoc, b: CmsDoc) => pageKey(b, q.published).localeCompare(pageKey(a, q.published)) || b.id.localeCompare(a.id);
+    rows.sort(cmp);
+    const after = q.after;
+    const start = after ? rows.filter((d) => { const k = pageKey(d, q.published); return k < after.at || (k === after.at && d.id < after.id); }) : rows;
+    return { docs: start.slice(0, q.limit).map((d) => structuredClone(d)), total: rows.length };
   }
   async versionsSince(since: string, limit: number) {
     const out: VersionStamp[] = [];

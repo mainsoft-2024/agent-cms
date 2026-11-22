@@ -174,8 +174,9 @@ export function parseInline(src: string): Inline[] {
       const href = g.href;
       const file = ASSET_TARGET.exec(href);
       if (file) out.push({ t: "file", asset: file[1], name: safeDecode(file[2] ?? ""), v: g.label });
-      // Only http(s), mailto and same-site paths: no javascript: or data: URLs.
-      else if (/^(https?:\/\/|mailto:|\/(?!\/)|#)/i.test(href)) out.push({ t: "link", href, v: g.label });
+      // Only http(s), mailto and same-site paths: no javascript: or data: URLs, and no `//host`
+      // or `/\host` (browsers read both as another site).
+      else if (/^(https?:\/\/|mailto:|\/(?![/\\])|#)/i.test(href) && !/[\s<>"`]/.test(href)) out.push({ t: "link", href, v: g.label });
       else text(g.label);
     } else if (g.strong !== undefined) out.push(wrap("strong", g.strong));
     else if (g.del !== undefined) out.push(wrap("del", g.del));

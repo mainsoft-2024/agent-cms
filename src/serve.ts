@@ -19,6 +19,8 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { timingSafeEqual } from "./crypto";
+import { createMetrics } from "./metrics";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +61,11 @@ export interface ServeOptions {
   adminDir?: string;
   /** Behind a proxy that sets X-Forwarded-For / -Proto. Default false. */
   trustProxy?: boolean;
+  /**
+   * Serve Prometheus numbers on `GET /metrics` for callers that send `Authorization: Bearer <this>`
+   * (at least 16 characters). Default: no `/metrics`.
+   */
+  metricsToken?: string;
 }
 
 export interface RunningServer {
@@ -138,6 +145,9 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
     res.end(readFileSync(file));
   }
 
+  if (o.metricsToken !== undefined && o.metricsToken.length < 16) throw new Error("[agent-cms] server.metricsToken must be at least 16 characters");
+  const metrics = o.metricsToken ? createMetrics() : null;
+  const unhear = metrics ? o.cms.onTelemetry(metrics.onEvent) : null;
   let stopping = false;
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const https = req.headers["x-forwarded-proto"] === "https" && !!o.trustProxy;
@@ -150,6 +160,15 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
         const ok = !stopping;
         res.writeHead(ok ? 200 : 503, { "content-type": "application/json", "cache-control": "no-store" });
         return res.end(JSON.stringify({ ok, version: VERSION }));
+      }
+      if (path === "/metrics" && metrics) {
+        const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
+        if (!m || !timingSafeEqual(m[1], o.metricsToken!)) {
+          res.writeHead(401, { "content-type": "text/plain; charset=utf-8", "www-authenticate": "Bearer", "cache-control": "no-store" });
+          return res.end("metrics need the token (server.metricsToken)\n");
+        }
+        res.writeHead(200, { "content-type": metrics.contentType, "cache-control": "no-store" });
+        return res.end(metrics.text());
       }
       if (path === basePath || path.startsWith(`${basePath}/`)) return await api(req, res);
       if (path === "/" && hasAdmin) {
@@ -208,6 +227,8 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
       server.close(() => (clearTimeout(force), resolve()));
       server.closeIdleConnections?.();
     });
+    unhear?.();
+    await o.cms.settle?.().catch(() => undefined);
   }
   return { server, url, stop };
 }

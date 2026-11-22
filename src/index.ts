@@ -112,3 +112,10 @@ export { docsFromCsv, docsFromJson, docsFromWordpress, filesFromDocs, filesFromS
 export { clientIp, createLimiter, ipAllowed, MemoryRateLimitStore, type RateLimitOptions, type RateLimitStore, type RateVerdict } from "./limits";
 export { type RetentionOptions, type RetentionReport } from "./retention";
 export { eventStream, type EventStreamOptions } from "./events";
+
+// 0.17.0: across servers, caching, metrics, tenants (also as their own entries)
+export { memoryCache, pgChangeSignal, postgresJsChangeSignal, type CacheAdapter, type CacheOptions, type ChangeEvent, type ChangeSignal, type ChangesOptions } from "./changes";
+export { createMetrics, routeOf, type Metrics } from "./metrics";
+export type { FeedEvent } from "./cms";
+export type { ChangeRow, DocPage, DocPageQuery, NewChange } from "./repo";
+export { EXPECTED_INDEXES } from "./drizzle-repo";

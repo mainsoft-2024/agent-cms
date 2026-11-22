@@ -23,7 +23,9 @@ import { useAsync, useCms } from "./use-cms";
 
 /** The columns, in the order a person grows into them. */
 const OPS: RoleOp[] = ["write", "publish", "delete", "html"];
-type Target = { slug: string; label: string; coded: RoleOp[] };
+type Target = { slug: string; label: string; coded: RoleOp[]; media?: boolean };
+/** A media store takes "upload and edit" (`write`) and "move and delete" (`delete`) only. */
+const applies = (tg: Target, op: RoleOp) => !tg.media || op === "write" || op === "delete";
 type Template = "viewer" | "editor" | "publisher" | "admin" | "empty";
 const TEMPLATES: { id: Template; ops: RoleOp[]; admin?: boolean }[] = [
   { id: "editor", ops: ["write"] },
@@ -35,7 +37,7 @@ const TEMPLATES: { id: Template; ops: RoleOp[]; admin?: boolean }[] = [
 
 function permsFor(targets: Target[], ops: RoleOp[]): RolePermissions {
   const out: RolePermissions = {};
-  for (const tg of targets) out[tg.slug] = Object.fromEntries(ops.filter((op) => !tg.coded.includes(op)).map((op) => [op, true]));
+  for (const tg of targets) out[tg.slug] = Object.fromEntries(ops.filter((op) => !tg.coded.includes(op) && applies(tg, op)).map((op) => [op, true]));
   return out;
 }
 const samePerms = (a: RolePermissions, b: RolePermissions) => {
@@ -300,7 +302,9 @@ function RoleForm({ role, targets, dirtyRef, onChanged, onDeleted }: { role: Cms
       if (!on && op === "write") (row.publish = false), (row.delete = false), (row.html = false);
       return { ...p, [slug]: row };
     });
-  const editable = (op: RoleOp) => targets.filter((tg) => !tg.coded.includes(op));
+  const editable = (op: RoleOp) => targets.filter((tg) => !tg.coded.includes(op) && applies(tg, op));
+  const docTargets = targets.filter((tg) => !tg.media);
+  const mediaTargets = targets.filter((tg) => tg.media);
   const column = (op: RoleOp) => {
     const list = editable(op);
     const n = list.filter((tg) => perms[tg.slug]?.[op]).length;
@@ -372,23 +376,37 @@ function RoleForm({ role, targets, dirtyRef, onChanged, onDeleted }: { role: Cms
                   </tr>
                 </thead>
                 <tbody>
-                  {targets.map((tg) => (
-                    <tr key={tg.slug} className="border-b last:border-0">
+                  {[...docTargets, ...mediaTargets].map((tg, i) => (
+                    <React.Fragment key={tg.slug}>
+                    {tg.media && i === docTargets.length ? (
+                      <tr className="border-b bg-muted/20">
+                        <th scope="rowgroup" colSpan={OPS.length + 1} className="px-3 py-1.5 text-left text-xs font-medium text-muted-foreground">
+                          {t("role_media_group")} <span className="font-normal">· {t("role_media_hint")}</span>
+                        </th>
+                      </tr>
+                    ) : null}
+                    <tr className="border-b last:border-0">
                       <th scope="row" className="max-w-[14rem] truncate px-3 py-2 text-left font-normal">
                         <bdi>{tg.label}</bdi>
                       </th>
                       {OPS.map((op) => (
                         <td key={op} className="px-2 py-2">
-                          {tg.coded.includes(op) ? (
+                          {!applies(tg, op) ? (
+                            <span className="text-xs text-muted-foreground" title={t("role_not_for_media")}>
+                              <span aria-hidden>—</span>
+                              <span className="sr-only">{t("role_not_for_media")}</span>
+                            </span>
+                          ) : tg.coded.includes(op) ? (
                             <span className="whitespace-nowrap text-xs text-muted-foreground" title={t("role_coded_hint")}>
                               {t("role_coded")}
                             </span>
                           ) : (
-                            <Checkbox aria-label={`${tg.label}: ${t(`role_${op}` as never)}`} checked={!!perms[tg.slug]?.[op]} onCheckedChange={(on) => set(tg.slug, op, on === true)} />
+                            <Checkbox aria-label={`${tg.label}: ${tg.media ? t(op === "write" ? "role_media_write" : "role_media_delete") : t(`role_${op}` as never)}`} checked={!!perms[tg.slug]?.[op]} onCheckedChange={(on) => set(tg.slug, op, on === true)} />
                           )}
                         </td>
                       ))}
                     </tr>
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>

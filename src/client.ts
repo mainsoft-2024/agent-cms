@@ -337,6 +337,8 @@ export interface SuggestionWire {
 }
 
 export interface CollectionSchema {
+  /** Fields (by path) this person cannot see or change (`fieldAccess`, 0.17.0). */
+  fieldRules?: { hidden: string[]; readOnly: string[] };
   /** Body formats this collection allows (0.15.0). */
   formats?: ("markdown" | "html")[];
   /** The person may add or change HTML blocks / run scripts in isolated HTML. */
@@ -461,7 +463,7 @@ export function createRestClient(opts: RestClientOptions) {
       resetLink: (id: string) => req<{ link: string; sent: boolean }>("POST", `/users/${enc(id)}/reset-link`, { body: {} }),
       endSessions: (id: string) => req<{ ended: number }>("DELETE", `/users/${enc(id)}/sessions`),
     },
-    schema: (c: string) => req<CollectionSchema>("GET", `/collections/${enc(c)}/_schema`),
+    schema: (c: string, o: { slug?: string | null } = {}) => req<CollectionSchema>("GET", `/collections/${enc(c)}/_schema${o.slug ? `?slug=${enc(o.slug)}` : ""}`),
     list: (c: string, q: ListQuery = {}) => req<{ docs: DocSummary[]; total: number; nextCursor: string | null }>("GET", `/collections/${enc(c)}`, { query: { fields: "summary", ...q } }),
     counts: (c: string) => req<{ counts: DocCounts }>("GET", `/collections/${enc(c)}/_counts`).then((r) => r.counts),
     get: (c: string, s: string, o: { draft?: boolean } = { draft: true }) => req<{ doc: CmsDoc }>("GET", doc(c, s), { query: { draft: o.draft } }).then((r) => r.doc),
@@ -548,7 +550,7 @@ export function createRestClient(opts: RestClientOptions) {
     /** Checks the conditions against one document and lists what would be done; nothing changes. */
     testAutomation: (id: string, target: { collection: string; slug: string }) =>
       req<{ matches: boolean; title: string; conditions: (AutomationCondition & { ok: boolean })[]; actions: { type: string; would: string }[] }>("POST", `/automations/${enc(id)}/test`, { body: target }),
-    roles: () => req<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[] }[]; users: boolean }>("GET", "/roles"),
+    roles: () => req<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[]; media?: boolean }[]; users: boolean }>("GET", "/roles"),
     createRole: (r: RoleInput) => req<{ role: CmsRole }>("POST", "/roles", { body: r }).then((x) => x.role),
     updateRole: (id: string, r: RoleInput) => req<{ role: CmsRole }>("PATCH", `/roles/${enc(id)}`, { body: r }).then((x) => x.role),
     removeRole: (id: string) => req<{ ok: true }>("DELETE", `/roles/${enc(id)}`),
@@ -615,3 +617,7 @@ export function createRestClient(opts: RestClientOptions) {
 }
 
 export type RestClient = ReturnType<typeof createRestClient>;
+
+// 0.17.0: reading zips and Notion exports in the browser (the admin's import tab).
+export { unzip } from "./zip";
+export { docsFromNotion, filesFromDocs, type NotionAsset } from "./import-sources";

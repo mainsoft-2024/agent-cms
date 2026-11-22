@@ -10,7 +10,7 @@ import type { createAssets } from "./assets";
 import type { AnyCollection } from "./cms";
 import { isCmsError, type CmsErrorCode, type CmsErrorOptions, type Diagnostic, type ErrorParams } from "./errors";
 import { sectionRanges } from "./patch";
-import type { CmsRepo } from "./repo";
+import { docsById, type CmsRepo } from "./repo";
 import { docState, type Actor, type ActorKind, type AuditAction, type AuditEntry, type CmsComment, type CmsDoc, type CmsRelease, type CmsVersion, type DocContent, type DocSummary, type Presence, type ReleaseItem, type ReviewRequest, type SavedFilter, type Schedule } from "./types";
 
 export interface FlowContext {
@@ -496,8 +496,9 @@ export function createFlow(ctx: FlowContext) {
 
   async function viewRelease(actor: Actor, rel: CmsRelease): Promise<ReleaseView> {
     const items: ReleaseView["items"] = [];
+    const docs = await docsById(repo, rel.items.filter((it) => known(it.collection)).map((it) => it.documentId));
     for (const it of rel.items) {
-      const doc = known(it.collection) ? await repo.findDocById(it.documentId) : null;
+      const doc = known(it.collection) ? (docs.get(it.documentId) ?? null) : null;
       items.push({ ...it, slug: doc?.slug ?? it.slug, title: doc?.title ?? it.title, currentVersion: doc?.version ?? null, stale: !!doc && doc.version !== it.version, state: doc ? docState(doc).state : null, canPublish: !!doc && can(actor, it.collection, "publish", doc) });
     }
     return { ...rel, items, canPublish: rel.state !== "published" && items.length > 0 && items.every((i) => i.canPublish) };

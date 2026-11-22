@@ -2,7 +2,7 @@
  * Webhooks, the sending side: who is registered, what goes out, retries, switching off an address
  * that keeps failing. Deliveries are jobs (jobs.ts), so they need the cron call to go out.
  */
-import { randomBytes, randomUUID } from "node:crypto";
+import { base64url, randomBytes, randomUUID } from "./crypto";
 import type { CmsErrorCode, CmsErrorOptions, ErrorParams } from "./errors";
 import type { CmsJobs } from "./jobs";
 import { assertPublicUrl, FetchGuardError, type ResolveHost } from "./net-guard";
@@ -167,7 +167,7 @@ export function createOutbox(ctx: OutboxContext) {
       await ctx.ready();
       const seal = sealer();
       const c = await checked({ ...input, events: input.events ?? [], collections: input.collections ?? [] });
-      const secret = `whsec_${randomBytes(24).toString("base64url")}`;
+      const secret = `whsec_${base64url(randomBytes(24))}`;
       const at = iso();
       const w = await repo.insertWebhook({ name: c.name!, url: c.url!, events: c.events!, collections: c.collections!, secretEnc: seal.seal(secret), enabled: input.enabled ?? true, createdBy: actor.kind === "anonymous" ? null : actor.label, createdAt: at, updatedAt: at });
       ctx.audit(actor, "webhook.create", { detail: { id: w.id, name: w.name, url: w.url } });

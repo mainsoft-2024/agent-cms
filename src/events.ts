@@ -11,19 +11,22 @@
  *   copy: published, unpublished, archived, deleted, restored;
  * - events without a collection (files, releases) go to admins.
  *
- * The stream is fed by this server process. Each message has an id (its time); a client that
- * reconnects sends it back (`Last-Event-ID`, or `?since=`) and first gets one `resync` message
- * listing the documents saved since then, by any process. Serverless hosts cut long responses:
- * `EventSource` reconnects by itself, and `resync` covers the gap.
+ * Since 0.17.0 the stream follows the change log (`cms_changes`), so it carries what every server
+ * did, not only this one. Each message's id is its number in the log; a client that reconnects
+ * sends it back (`Last-Event-ID`, or `?since=`) and first gets every event it missed, in order.
+ * When the log no longer reaches that far back (it keeps 7 days), or for an old time-based id, it
+ * gets one `resync` message instead (the documents saved since then, or `reset: true`: reload
+ * everything). Serverless hosts cut long responses: `EventSource` reconnects by itself.
  */
-import type { CmsCore } from "./cms";
+import type { CmsCore, FeedEvent } from "./cms";
+import { PUBLIC_EVENTS } from "./changes";
 import type { OutEvent } from "./outbox";
 import type { Actor } from "./types";
 
 export interface EventStreamOptions {
   /** Only these collections. Default: every collection the caller may read. */
   collections?: string[];
-  /** An ISO time (or the last event id): start with a `resync` of what was saved after it. */
+  /** The last event id (a number in the change log), or an ISO time: start with what came after it. */
   since?: string | null;
   /** Ends the stream (the request's `signal`). */
   signal?: AbortSignal;
@@ -38,8 +41,8 @@ export interface EventStreamOptions {
   heartbeatMs?: number;
 }
 
-const PUBLIC_EVENTS = new Set(["doc.published", "doc.unpublished", "doc.archived", "doc.deleted", "doc.restored"]);
 const RESYNC_MAX = 200;
+const REPLAY_MAX = 500;
 
 /** Whether `actor` may be told about `e`. */
 export function mayHear(core: CmsCore, actor: Actor, e: OutEvent, only?: readonly string[]): boolean {
@@ -54,6 +57,9 @@ export function mayHear(core: CmsCore, actor: Actor, e: OutEvent, only?: readonl
 }
 
 const frame = (event: string, id: string, data: unknown) => `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+/** Without an id frame line, so the client's last id stays the last real event. */
+const note = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+const publicEvent = ({ seq: _s, remote: _r, ...e }: FeedEvent) => e;
 
 export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions = {}): Response {
   for (const c of o.collections ?? []) {
@@ -73,8 +79,21 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
           stop();
         }
       };
+      // Events that arrive while the missed ones are being replayed wait here, so the order holds.
+      let queue: FeedEvent[] | null = [];
+      let lastSent = 0;
+      const replayed = new Set<number>();
+      const deliver = (e: FeedEvent) => {
+        if (!mayHear(core, actor, e, o.collections)) return;
+        if (e.seq !== undefined) {
+          if (replayed.has(e.seq)) return; // already sent from the log
+          lastSent = Math.max(lastSent, e.seq);
+        }
+        send(frame(e.event, e.seq !== undefined ? String(e.seq) : new Date().toISOString(), publicEvent(e)));
+      };
       const unsubscribe = core.subscribe((e) => {
-        if (mayHear(core, actor, e, o.collections)) send(frame(e.event, new Date().toISOString(), e));
+        if (queue) queue.push(e);
+        else deliver(e);
       });
       const beat = setInterval(() => send(": keep-alive\n\n"), o.heartbeatMs ?? 25_000);
       (beat as { unref?: () => void }).unref?.();
@@ -96,16 +115,37 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
       if (o.signal?.aborted) return stop();
       // How long the browser waits before it reconnects.
       send("retry: 3000\n\n");
-      const since = o.since && !Number.isNaN(Date.parse(o.since)) ? new Date(Date.parse(o.since)).toISOString() : null;
-      if (since) {
-        try {
+      const raw = o.since?.trim() || null;
+      try {
+        if (raw && /^\d+$/.test(raw)) {
+          const seq = Number(raw);
+          const missed = await core.changes.since(actor, seq, { collections: o.collections, limit: REPLAY_MAX, hear: (e) => mayHear(core, actor, e, o.collections) });
+          if (!missed) send(note("resync", { since: raw, documents: [], more: true, reset: true }));
+          else {
+            for (const c of missed.changes) {
+              lastSent = c.seq;
+              replayed.add(c.seq);
+              const { seq: id, at: _at, ...rest } = c;
+              send(frame(c.event, String(id), rest));
+            }
+            lastSent = Math.max(lastSent, missed.last);
+            if (missed.more) send(note("resync", { since: raw, documents: [], more: true, reset: true }));
+          }
+        } else if (raw && !Number.isNaN(Date.parse(raw))) {
+          const since = new Date(Date.parse(raw)).toISOString();
           const docs = await core.changedSince(actor, since, { collections: o.collections, limit: RESYNC_MAX });
-          send(frame("resync", new Date().toISOString(), { since, documents: docs, more: docs.length >= RESYNC_MAX }));
-        } catch (e) {
-          core.telemetry({ type: "error", where: "events resync", message: e instanceof Error ? e.message : String(e) });
+          send(note("resync", { since, documents: docs, more: docs.length >= RESYNC_MAX }));
         }
+      } catch (e) {
+        core.telemetry({ type: "error", where: "events resync", message: e instanceof Error ? e.message : String(e) });
       }
-      send(frame("ready", new Date().toISOString(), { collections: o.collections ?? null }));
+      // Where the log stands, read before live delivery starts: never a number past an event not sent yet.
+      if (!lastSent) lastSent = await core.changes.last().catch(() => 0);
+      const waiting = queue;
+      queue = null;
+      for (const e of waiting) deliver(e);
+      send(frame("ready", String(lastSent), { collections: o.collections ?? null, last: lastSent }));
+      void held;
     },
     cancel() {
       stop();
