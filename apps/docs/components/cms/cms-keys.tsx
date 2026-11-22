@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { CircleCheck, Plus, KeyRound } from "lucide-react";
+import { CircleCheck, Plus, KeyRound, X } from "lucide-react";
 import type { CmsKey, KeyScope } from "@mainsoft/agent-cms/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,21 @@ import { cmsUrl, formatDate, relativeTime, useAsync, useCms, useIsMobile } from 
 
 const SCOPES: KeyScope[] = ["read", "write", "publish", "admin"];
 type Expiry = "none" | "30" | "90" | "365" | "custom";
+/** Start from the least a key needs; "custom" opens the scope boxes. */
+type Preset = "read" | "write" | "publish" | "custom";
+/** What scopes add up to in a collection, as the server applies them. */
+function effective(scopes: readonly string[]): ("read" | "write" | "publish" | "html")[] {
+  const admin = scopes.includes("admin");
+  const out: ("read" | "write" | "publish" | "html")[] = [];
+  if (admin || scopes.some((x) => x === "read" || x === "write" || x === "publish")) out.push("read");
+  if (admin || scopes.includes("write")) out.push("write");
+  if (admin || scopes.includes("publish")) out.push("publish");
+  if (admin || scopes.includes("html")) out.push("html");
+  return out;
+}
+const PRESETS: Record<Exclude<Preset, "custom">, KeyScope[]> = { read: ["read"], write: ["read", "write"], publish: ["read", "write", "publish"] };
+/** Looks like an IPv4 or IPv6 address or range (the server has the last word). */
+export const looksLikeRange = (v: string) => /^(\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?|[0-9a-f:]*:[0-9a-f:.]*(\/\d{1,3})?)$/i.test(v);
 
 export interface CmsKeysProps {
   /** Name of the MCP server in the copied config. Default "agent-cms". */
@@ -224,19 +239,23 @@ export function CmsKeys({ mcpServerName = "agent-cms", className }: CmsKeysProps
 function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; onCreated: (r: { key: CmsKey; secret: string }) => void }) {
   const { client, t, me } = useCms();
   const [name, setName] = React.useState("");
-  const [scopes, setScopes] = React.useState<KeyScope[]>(["read", "write"]);
+  const [preset, setPreset] = React.useState<Preset>("read");
+  const [scopes, setScopes] = React.useState<KeyScope[]>(["read"]);
   const [cols, setCols] = React.useState<string[]>([]);
   const [expiry, setExpiry] = React.useState<Expiry>("none");
   const [date, setDate] = React.useState("");
   const [rate, setRate] = React.useState("");
   const [ips, setIps] = React.useState("");
+  const [chips, setChips] = React.useState<string[]>([]);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (open) {
       setName("");
-      setScopes(["read", "write"]);
+      setPreset("read");
+      setScopes(["read"]);
+      setChips([]);
       setCols([]);
       setExpiry("none");
       setDate("");
@@ -265,7 +284,7 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
     setBusy(true);
     setError(null);
     try {
-      const allowedIps = ips.split(/[\s,]+/).filter(Boolean);
+      const allowedIps = [...new Set([...chips, ...ips.split(/[\s,]+/).filter(Boolean)])];
       const r = await client.createKey({ name: name.trim(), scopes, collections: cols.length ? cols : null, expiresAt: expiresAt(), ...(rate.trim() ? { rateLimit: Number(rate) } : {}), ...(allowedIps.length ? { allowedIps } : {}) });
       onCreated(r);
     } catch (err) {
@@ -276,6 +295,27 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
   };
 
   const toggle = <T,>(list: T[], v: T, on: boolean) => (on ? [...list.filter((x) => x !== v), v] : list.filter((x) => x !== v));
+  const choose = (p: Preset) => {
+    setPreset(p);
+    if (p !== "custom") setScopes(PRESETS[p]);
+  };
+  /** Typed text becomes chips at a comma, a space, Enter or when leaving the box. */
+  const commit = (text: string) => {
+    const parts = text.split(/[\s,]+/).filter(Boolean);
+    if (parts.length) setChips((c) => [...new Set([...c, ...parts])]);
+    setIps("");
+  };
+  const colLabel = (slug: string) => me?.collections.find((c) => c.slug === slug)?.label ?? slug;
+  // One sentence that says what the key will be able to do, as chosen so far.
+  const summary = [
+    // What the key can effectively do in its collections (the server's rules: writing or publishing
+    // also reads; admin does all of it), then what admin adds across the whole CMS.
+    t("key_sum_can", { what: effective(scopes).map((x) => t(`key_scope_word.${x}` as never)).join(", ") || t("key_scope_word.none"), where: cols.length ? cols.map(colLabel).join(", ") : t("key_sum_all_cols") }),
+    scopes.includes("admin") ? t("key_sum_admin_all") : "",
+    expiry === "none" ? t("key_sum_forever") : expiry === "custom" ? (date ? t("key_sum_until", { date }) : "") : t("key_sum_days", { n: Number(expiry) }),
+    rate.trim() ? t("key_per_minute", { n: Number(rate) }) : "",
+    chips.length || ips.trim() ? t("key_sum_from", { list: [...chips, ...ips.split(/[\s,]+/).filter(Boolean)].join(", ") }) : t("key_sum_anywhere"),
+  ].filter(Boolean).join(" · ");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -291,22 +331,41 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
             </Label>
             <Input id="cms-key-name" value={name} required maxLength={60} autoComplete="off" onChange={(e) => setName(e.target.value)} />
           </div>
-          <fieldset className="flex flex-col gap-1.5" aria-describedby="cms-key-scopes-help">
-            <legend className="mb-1.5 text-xs font-medium text-muted-foreground">{t("key_scopes")}</legend>
-            <div className="flex flex-wrap gap-x-4 gap-y-2">
-              {SCOPES.map((s) => (
-                <div key={s} className="flex items-center gap-1.5">
-                  <Checkbox id={`cms-key-scope-${s}`} checked={scopes.includes(s)} onCheckedChange={(v) => setScopes((x) => toggle(x, s, v === true))} />
-                  <Label htmlFor={`cms-key-scope-${s}`} className="font-normal">
-                    {s}
-                  </Label>
-                </div>
-              ))}
-            </div>
-            <p id="cms-key-scopes-help" className="text-xs text-muted-foreground">
-              {t("scope_help")}
-            </p>
-          </fieldset>
+          <div className="flex flex-col gap-1.5">
+            <span id="cms-key-access" className="text-xs font-medium text-muted-foreground">
+              {t("key_access")}
+            </span>
+            <Segmented
+              labelledBy="cms-key-access"
+              value={preset}
+              onChange={choose}
+              options={[
+                { value: "read", label: t("key_preset_read") },
+                { value: "write", label: t("key_preset_write") },
+                { value: "publish", label: t("key_preset_publish") },
+                { value: "custom", label: t("key_preset_custom") },
+              ]}
+            />
+            <p className="text-xs text-muted-foreground">{t(`key_preset_${preset}_text` as never)}</p>
+          </div>
+          {preset === "custom" ? (
+            <fieldset className="flex flex-col gap-1.5" aria-describedby="cms-key-scopes-help">
+              <legend className="mb-1.5 text-xs font-medium text-muted-foreground">{t("key_scopes")}</legend>
+              <div className="flex flex-wrap gap-x-4 gap-y-2">
+                {SCOPES.map((sc) => (
+                  <div key={sc} className="flex items-center gap-1.5">
+                    <Checkbox id={`cms-key-scope-${sc}`} checked={scopes.includes(sc)} onCheckedChange={(v) => setScopes((x) => toggle(x, sc, v === true))} />
+                    <Label htmlFor={`cms-key-scope-${sc}`} className="font-normal">
+                      {sc}
+                    </Label>
+                  </div>
+                ))}
+              </div>
+              <p id="cms-key-scopes-help" className="text-xs text-muted-foreground">
+                {t("scope_help")}
+              </p>
+            </fieldset>
+          ) : null}
           <fieldset className="flex flex-col gap-1.5" aria-describedby="cms-key-cols-help">
             <legend className="mb-1.5 text-xs font-medium text-muted-foreground">{t("key_collections")}</legend>
             <div className="flex flex-wrap gap-x-4 gap-y-2">
@@ -359,12 +418,40 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
               <Label htmlFor="cms-key-ips" className="text-xs font-medium text-muted-foreground">
                 {t("key_ips")}
               </Label>
-              <Input id="cms-key-ips" placeholder="203.0.113.0/24" aria-describedby="cms-key-ips-hint" value={ips} onChange={(e) => setIps(e.target.value)} />
+              {/* Chips: each address or range on its own, removable; a doubtful one is marked before sending. */}
+              <div className="flex min-h-9 min-w-0 flex-wrap items-center gap-1 rounded-md border border-input bg-background px-1.5 py-1 focus-within:ring-2 focus-within:ring-ring">
+                {chips.map((c) => (
+                  <span key={c} className={cn("inline-flex max-w-full items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs", !looksLikeRange(c) && "bg-destructive/10 text-destructive")} title={looksLikeRange(c) ? undefined : t("key_ip_doubtful")}>
+                    <span className="truncate">{c}</span>
+                    <button type="button" className="rounded outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" aria-label={t("key_ip_remove", { ip: c })} onClick={() => setChips((x) => x.filter((y) => y !== c))}>
+                      <X aria-hidden className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  id="cms-key-ips"
+                  className="h-7 min-w-[8rem] flex-1 bg-transparent px-1 font-mono text-sm outline-none placeholder:text-muted-foreground"
+                  placeholder={chips.length ? "" : "203.0.113.0/24"}
+                  aria-describedby="cms-key-ips-hint"
+                  value={ips}
+                  onChange={(e) => (/[\s,]$/.test(e.target.value) ? commit(e.target.value) : setIps(e.target.value))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && ips.trim()) {
+                      e.preventDefault();
+                      commit(ips);
+                    } else if (e.key === "Backspace" && !ips && chips.length) setChips((x) => x.slice(0, -1));
+                  }}
+                  onBlur={() => ips.trim() && commit(ips)}
+                />
+              </div>
             </div>
             <p id="cms-key-ips-hint" className="text-xs text-muted-foreground sm:col-span-2">
               {t("key_ips_hint")}
             </p>
           </div>
+          <p role="status" className="rounded-md bg-muted/60 px-3 py-2 text-xs [overflow-wrap:anywhere]">
+            <span className="font-medium">{t("key_summary")}</span> {summary}
+          </p>
           {error ? <StatusText tone="error">{error}</StatusText> : null}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

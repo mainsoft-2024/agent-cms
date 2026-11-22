@@ -149,7 +149,9 @@ test("list: mobile cards, long press enters selection mode with the bulk bar", a
 test("empty: new document plus the agent guide (CLI, MCP URL, key link)", async () => {
   const s = makeServer();
   renderWith(s, <CmsDocList collection="notices" onNewDocument={() => {}} keysHref="/admin/keys" />);
-  await screen.findByRole("heading", { name: "No documents yet" });
+  await screen.findByRole("heading", { name: /^Nothing in .+ yet$/ });
+  // The agent setup is folded under the person's path; it opens with one click.
+  await userEvent.click(screen.getByText("Write with an agent"));
   assert.ok(screen.getByText("npx @mainsoft/agent-cms put notices ./post.md"));
   // An absolute baseUrl wins over appUrl.
   assert.ok(screen.getByText("http://localhost/api/cms/mcp"));
@@ -157,6 +159,6 @@ test("empty: new document plus the agent guide (CLI, MCP URL, key link)", async 
   assert.deepEqual(await axeViolations(), []);
   cleanup();
   renderWith(s, <CmsEmpty collection="notices" />, { messages: ko });
-  await screen.findByRole("heading", { name: "아직 문서가 없음" });
-  assert.ok(screen.getByRole("heading", { name: "에이전트로 쓰기" }));
+  await screen.findByRole("heading", { name: /에 아직 문서 없음$|^아직 문서가 없음$/ });
+  assert.ok(screen.getByText("에이전트로 쓰기"));
 });

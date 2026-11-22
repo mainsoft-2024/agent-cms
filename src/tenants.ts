@@ -66,21 +66,109 @@ export interface TenantHandlerOptions {
   create: (tenant: string) => TenantRequestHandler | Promise<TenantRequestHandler>;
   /** Tenants kept in memory; the one used least recently is dropped first. Default 200. */
   max?: number;
-  /** Told when a tenant's handler is dropped from memory (close what `create` opened). */
+  /**
+   * Told when a tenant's handler is dropped from memory (close what `create` opened). Called
+   * once the tenant's requests in progress have finished, streams included, or after `drainMs`.
+   */
   dispose?: (tenant: string) => void | Promise<void>;
+  /** Told when `dispose` fails (default: a console warning). */
+  onError?: (err: unknown, tenant: string) => void;
+  /** How long a dropped tenant's requests in progress may still run before `dispose` anyway. Default 30 s. */
+  drainMs?: number;
 }
 
 const notFound = () => new Response(JSON.stringify({ error: "not_found", message: "No such site" }), { status: 404, headers: { "content-type": "application/json; charset=utf-8" } });
 
 /** One request handler for every tenant: finds the tenant, makes its CMS on first use, passes the request on. */
-export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandler & { tenants(): string[]; forget(tenant: string): Promise<void> } {
+export function createTenantHandler(opts: TenantHandlerOptions): TenantRequestHandler & { tenants(): string[]; forget(tenant: string): Promise<void> } {
+  const report = opts.onError ?? ((e: unknown, tenant: string) => console.warn(`[agent-cms] tenant ${tenant}: dispose failed:`, e));
+  // A reporter that throws itself never turns teardown into a failure.
+  const o = {
+    ...opts,
+    onError: (e: unknown, tenant: string) => {
+      try {
+        report(e, tenant);
+      } catch {
+        // nothing more to do
+      }
+    },
+  };
   const max = Math.max(1, o.max ?? 200);
   const live = new Map<string, Promise<TenantRequestHandler>>();
-  async function forget(tenant: string) {
-    if (!live.delete(tenant)) return;
-    await Promise.resolve(o.dispose?.(tenant)).catch(() => {});
+  // Requests in progress per handler (until the response body has been read or cancelled).
+  const busy = new Map<Promise<TenantRequestHandler>, { n: number; idle: (() => void)[] }>();
+  const drainMs = o.drainMs ?? 30_000;
+  // A tenant being dropped: a new request for it waits until the old one is disposed, so
+  // `dispose(tenant)` never closes what a replacement just opened.
+  const draining = new Map<string, Promise<void>>();
+  function forget(tenant: string): Promise<void> {
+    const h = live.get(tenant);
+    if (!h || !live.delete(tenant)) return draining.get(tenant) ?? Promise.resolve();
+    const done = drain(tenant, h).finally(() => draining.get(tenant) === done && draining.delete(tenant));
+    draining.set(tenant, done);
+    return done;
   }
-  async function handlerOf(tenant: string): Promise<TenantRequestHandler> {
+  async function drain(tenant: string, h: Promise<TenantRequestHandler>) {
+    // Wait for what that handler is still answering (a long upload, an events stream) first.
+    const b = busy.get(h);
+    if (b?.n) {
+      await new Promise<void>((done) => {
+        const t = setTimeout(done, drainMs);
+        (t as { unref?: () => void }).unref?.();
+        b.idle.push(() => (clearTimeout(t), done()));
+      });
+    }
+    busy.delete(h);
+    // A dispose that throws at once or rejects later is reported, never left unhandled.
+    try {
+      await o.dispose?.(tenant);
+    } catch (e) {
+      o.onError?.(e, tenant);
+    }
+  }
+  function enter(h: Promise<TenantRequestHandler>) {
+    const b = busy.get(h) ?? { n: 0, idle: [] };
+    busy.set(h, b);
+    b.n++;
+    let left = false;
+    return () => {
+      if (left) return;
+      left = true;
+      if (--b.n === 0) for (const f of b.idle.splice(0)) f();
+    };
+  }
+  /** The response, with its body watched so the request counts as finished only when the body is done. */
+  function watched(res: Response, leave: () => void): Response {
+    if (!res.body) {
+      leave();
+      return res;
+    }
+    const reader = res.body.getReader();
+    const body = new ReadableStream<Uint8Array>({
+      async pull(c) {
+        try {
+          const r = await reader.read();
+          if (r.done) {
+            leave();
+            c.close();
+          } else c.enqueue(r.value);
+        } catch (e) {
+          leave();
+          c.error(e);
+        }
+      },
+      async cancel(reason) {
+        // Counted as finished only once the handler's own body has stopped.
+        try {
+          await reader.cancel(reason);
+        } finally {
+          leave();
+        }
+      },
+    });
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+  }
+  function handlerOfPromise(tenant: string): Promise<TenantRequestHandler> {
     const have = live.get(tenant);
     if (have) {
       live.delete(tenant);
@@ -91,19 +179,31 @@ export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandl
     live.set(tenant, made);
     // A tenant that failed to start is tried again on the next request.
     made.catch(() => live.get(tenant) === made && live.delete(tenant));
-    while (live.size > max) void forget(live.keys().next().value as string);
+    while (live.size > max) void forget(live.keys().next().value as string).catch((e) => o.onError?.(e, tenant));
     return made;
   }
   const handle = async (req: Request): Promise<Response> => {
     const raw = await o.resolve(req);
     if (!raw || !TENANT_ID.test(raw)) return notFound();
     let h: TenantRequestHandler;
+    let made: Promise<TenantRequestHandler>;
+    // Wait out a drop of this tenant in progress before making a new handler for it.
+    while (draining.has(raw) && !live.has(raw)) await draining.get(raw);
+    made = handlerOfPromise(raw);
+    // Counted from now, not from when the handler is ready: a drop meanwhile waits for this request.
+    const leave = enter(made);
     try {
-      h = await handlerOf(raw);
+      h = await made;
     } catch {
+      leave();
       return notFound();
     }
-    return h(req);
+    try {
+      return watched(await h(req), leave);
+    } catch (e) {
+      leave();
+      throw e;
+    }
   };
   return Object.assign(handle, { tenants: () => [...live.keys()], forget });
 }

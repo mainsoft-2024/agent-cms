@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { ConfirmDialog, PageHeader, StatusText, NativeSelect } from "./cms-parts";
+import { ConfirmDialog, PageHeader, StatusText, NativeSelect, DocPicker, type DocOption } from "./cms-parts";
 import { relativeTime, useAsync, useCms } from "./use-cms";
 
 const SELECT = "h-9 min-w-0 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -85,12 +85,29 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
   const [status, setStatus] = React.useState<{ text: string; tone: "ok" | "error" | "muted" }>({ text: "", tone: "muted" });
   const [busy, setBusy] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
-  const [slug, setSlug] = React.useState("");
   const [testCol, setTestCol] = React.useState("");
   const runs = useAsync<AutomationRun[]>(() => client.automationRuns(auto.id, 20), [client, auto.id, auto.updatedAt]);
   const hooks = useAsync(() => (me?.webhooks ? client.webhooks().then((r) => r.webhooks) : Promise.resolve([])), [client, me?.webhooks]);
   const releases = useAsync(() => client.releases().then((r) => r.filter((x) => x.state !== "published"), () => []), [client]);
   const cols = me?.collections ?? [];
+  const [testDoc, setTestDoc] = React.useState<DocOption | null>(null);
+  // The collection the test document comes from: the rule's own, the only one, or the one picked.
+  const testColSlug = collection || (cols.length === 1 ? cols[0].slug : testCol);
+  // The picked document is the test target, collection and slug together. Another collection (or
+  // a different rule) clears it, so the test never runs a slug against a collection it is not from.
+  React.useEffect(() => {
+    setTestDoc((d) => (d && d.collection !== testColSlug ? null : d));
+  }, [testColSlug]);
+  const testColLabel = cols.find((c) => c.slug === testColSlug)?.label;
+  // Changes only with the collection: the picker starts over (and drops old options) when it does.
+  const searchDocs = React.useCallback(
+    async (q: string): Promise<DocOption[]> => {
+      if (!testColSlug) return [];
+      const r = await client.list(testColSlug, { q: q.trim() || undefined, limit: 20 });
+      return r.docs.map((d) => ({ collection: testColSlug, slug: d.slug, title: d.title, sub: testColLabel }));
+    },
+    [client, testColSlug, testColLabel]
+  );
 
   async function run(fn: () => Promise<string>) {
     setBusy(true);
@@ -224,12 +241,12 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
         <h2 id="cms-auto-test" className="text-xs font-medium text-muted-foreground">
           {t("automation_test")}
         </h2>
-        <p className="text-xs text-muted-foreground">{t("automation_test_text")}</p>
+        <p className="text-xs text-muted-foreground">{t(event.startsWith("schedule.") ? "automation_test_schedule" : "automation_test_text")}</p>
         {/* The test runs the saved rule: with unsaved changes it would test something else than what is shown. */}
         {unsaved ? (
           <p className="text-xs text-amber-700 dark:text-amber-400">{t("automation_test_save_first")}</p>
         ) : null}
-        <div className="flex max-w-md flex-wrap items-center gap-2">
+        <div className={cn("flex max-w-md flex-wrap items-center gap-2", event.startsWith("schedule.") && "hidden")}>
           {!collection && cols.length > 1 ? (
             <NativeSelect aria-label={t("automation_test_collection")} className="h-9 rounded-md border bg-background px-2 text-sm" value={testCol} onChange={(e) => setTestCol(e.target.value)}>
               <option value="">{t("automation_test_collection")}</option>
@@ -240,19 +257,27 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
               ))}
             </NativeSelect>
           ) : null}
-          <Input aria-label={t("automation_test_slug")} placeholder={t("automation_test_slug")} value={slug} onChange={(e) => setSlug(e.target.value)} />
+          <DocPicker
+            label={t("automation_test_doc")}
+            placeholder={t("automation_test_doc_hint")}
+            value={testDoc}
+            disabled={!testColSlug}
+            onPick={(d) => setTestDoc(d)}
+            search={searchDocs}
+          />
           <Button
             type="button"
             variant="outline"
             disabled={
               busy ||
-              !slug.trim() ||
-              !(collection || (cols.length === 1 ? cols[0] : testCol)) ||
+              !testDoc ||
+              testDoc.collection !== testColSlug ||
               unsaved
             }
             onClick={() =>
               run(async () => {
-                const r = await client.testAutomation(auto.id, { collection: collection || (cols.length === 1 ? cols[0].slug : testCol), slug: slug.trim() });
+                if (!testDoc) return "";
+                const r = await client.testAutomation(auto.id, { collection: testDoc.collection, slug: testDoc.slug });
                 return r.matches ? t("automation_test_match", { title: r.title, actions: r.actions.map((a) => actionLabel(a.type)).join(", ") || "—" }) : t("automation_test_nomatch", { title: r.title });
               })
             }

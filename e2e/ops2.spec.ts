@@ -71,7 +71,8 @@ test("automations: a published News post gets a keyword on the next cron call; a
   expect(other.doc.keywords).toEqual([]);
   if (shot("61-automations")) await page.screenshot(shot("61-automations"));
 
-  await page.getByLabel("Document address (slug)").fill(`eng-${stamp}`);
+  await page.getByRole("combobox", { name: "Document to try it on" }).fill(`eng-${stamp}`);
+  await page.getByRole("option", { name: new RegExp(`eng-${stamp}`) }).click();
   await page.getByRole("button", { name: "Try it" }).click();
   await expect(page.getByText(/does not match the conditions, so it would be skipped\.$/)).toBeVisible();
 

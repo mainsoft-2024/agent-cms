@@ -634,6 +634,11 @@ test("db: a driver without transactions (neon-http) still saves, once, with a wa
     await assert.rejects(cms.update(admin, "guide", "a", { title: "C" }, { expectedVersion: 1 }), (e: unknown) => isCmsError(e) && e.code === "conflict_version");
     // transactions: true does not hide the error.
     await assert.rejects(new DrizzleRepo(noTx, { transactions: true }).tx(async () => 1), /No transactions support/);
+    // What must be all or nothing (a release) is refused rather than done half way.
+    const rel = await cms.releases.create(admin, { name: "Launch" });
+    await cms.releases.add(admin, rel.id, [{ collection: "guide", slug: "a" }]);
+    await assert.rejects(cms.releases.publish(admin, rel.id), (e: unknown) => isCmsError(e) && e.code === "transactions_required");
+    assert.equal((await cms.get(admin, "guide", "a", { draft: true })).publishedVersion, 1, "nothing went out");
   } finally {
     await close();
   }
@@ -675,6 +680,35 @@ test("db: migrate check / apply include plugin tables from the config", async ()
     out.length = 0;
     assert.equal(await runCli(["migrate", "check"], io), 0);
     assert.match(out.join("\n"), /up to date/);
+    // The plugin's SQL changes after it was applied: its table exists, so check says a migration is needed.
+    // (A second folder: the config loader keeps modules it has loaded.)
+    const dir2 = mkdtempSync(join(tmpdir(), "acms-plug2-"));
+    writeFileSync(join(dir2, "agent-cms.config.mjs"), `export default { plugins: [{ name: "stars", sql: ['CREATE TABLE IF NOT EXISTS "stars" ("doc" text PRIMARY KEY, "n" integer NOT NULL DEFAULT 0, "by" text)'] }] };`);
+    err.length = 0;
+    const io2 = { ...io, cwd: dir2 };
+    assert.equal(await runCli(["migrate", "check"], io2), 1);
+    assert.match(err.join("\n"), /plugin stars: its SQL changed since it was applied/);
+    // After the person's own ALTER TABLE, apply records the new SQL and check is quiet again.
+    await run(db, 'ALTER TABLE "stars" ADD COLUMN IF NOT EXISTS "by" text');
+    assert.equal(await runCli(["migrate", "apply"], io2), 0);
+    assert.equal(await runCli(["migrate", "check"], io2), 0);
+  } finally {
+    await close();
+  }
+});
+
+test("db: versions in pages come from the database, newest first", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const repo = new DrizzleRepo(db);
+    const cms = createCms({ repo, collections: [guide] });
+    await cms.create(admin, "guide", { slug: "a", title: "v1", body: "x" });
+    for (let n = 2; n <= 5; n++) await cms.update(admin, "guide", "a", { title: `v${n}` });
+    const p1 = await cms.versionPage(admin, "guide", "a", { limit: 2, summary: true });
+    assert.deepEqual([p1.versions.map((v) => v.version), p1.total, p1.nextCursor], [[5, 4], 5, "v.4"]);
+    const p3 = await cms.versionPage(admin, "guide", "a", { limit: 3, cursor: "v.4" });
+    assert.deepEqual([p3.versions.map((v) => v.version), p3.nextCursor], [[3, 2, 1], null]);
   } finally {
     await close();
   }

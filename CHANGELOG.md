@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.18.0
+
+One read policy for every copy of a document, exact event resume points, and server-side guards for releases and imports: the review findings from 0.17, after three review rounds. No schema change. See `UPGRADE-0.18.md`.
+
+### Changed
+- Hidden fields (`fieldAccess`) are removed from every copy, each judged on its own version: published and autosave copies (and the autosave answer), versions, diffs, conflicts, preview links and their file lists, file usage, diagnostics, publish check results, search, grep and the documents writes return. A throwing publish check shows a fixed message (`check_failed`).
+- Write answers follow what the caller may see (publish-only callers get the published copy or only the state); schedule and release diagnostics are redacted like publish checks; trying an automation refuses conditions on hidden fields (`forbidden_field`).
+- Readers are judged on the published copy, which no longer carries the draft's review, schedule or last editor (status `published`); editors see drafts only of documents they may edit. Review queue, presence, tab counts, dashboard and file usage follow the same selection.
+- API keys follow per-document `access` rules.
+- Change numbers are handed out in commit order on PostgreSQL and told in that order by every server; `ready` gives the resume point; every numbered frame carries `seq`; when the log cannot replay, `resync` with `reset: true` and a `ready` without id; events the log could not take have no id.
+- Change log rows are written inside the write's transaction (create, update, direct publish, unpublish, archive, version restore, delete); a failed log write rolls the change back.
+- Versions are paged in the database (cursor `v.<n>`).
+- Releases: hidden items are counted, not shown or named; whole-release changes need an admin or someone who sees every item (`forbidden_release`); adding to a scheduled release needs publish permission; every change is a compare-and-set on the release's revision (`release_changed`); the scheduler publishes only the revision still scheduled and due; publishing needs transactions (`transactions_required`).
+- Import separates the save from the publish (`publishError`, `documentId`); publish takes `documentId` (`document_replaced`) and writes only the version it checked.
+- Suggestions are bound to their document and to what their author could see; preview links to the document id; search verifies the indexed copy.
+
+### Added
+- Audit log server filters (`group`, `who`, `actorId`, `collection`, `slug`, `since`, `until`); trash search (`q`); plugin SQL checksums in `migrate`; tenant drain (`drainMs`, `onError`); `CmsRepo.changesInCommitOrder`.
+- Admin: audit timeline on phones and filters; dashboard skeleton, retry and per-document totals; document picker for trying automations; grouped webhook events with "Every event / Only these", masked secrets, delivery words; key presets (read-only first), address chips and an effective-access summary; trash search, exact times and restore failures that stay; import results with "Publish these again"; empty collection puts the person first; release hidden-item note.
+
+### Known limits
+- Scheduled, release, trash-restore, review and file events are logged after their commit (best effort); drivers without transactions can report an error after a save; pre-0.18 preview links stay address-bound until they expire; plugin checksums compare SQL text only; `drainMs` is a cutoff; restricted search looks at a bounded candidate set.
 ## 0.17.1
 
 Fixes for the admin on phones and on the Base UI flavour of the components (the docs site's admin), found from screenshots of the live site and by a wider layout check. No schema change.

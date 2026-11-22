@@ -110,7 +110,7 @@ import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
 import { clientIp, ipAllowed } from "./limits";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
-import { eventStream, mayHear } from "./events";
+import { eventStream, hearAs } from "./events";
 import { openApiDocument } from "./openapi";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
@@ -514,7 +514,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const Items = z.array(z.object({ kind: z.enum(["document", "asset"]), id: z.string().max(60) })).min(1).max(200);
         const kind = q.get("kind");
         if (seg.length === 1 && m === "GET") {
-          const all = await core.trash.list(actor, { kind: kind === "document" || kind === "asset" ? kind : undefined });
+          const all = await core.trash.list(actor, { kind: kind === "document" || kind === "asset" ? kind : undefined, q: q.get("q")?.slice(0, 200) || undefined });
           const p = slicePage(all.items, q);
           return json({ ...all, items: p.items, total: all.items.length, nextCursor: p.nextCursor });
         }
@@ -556,6 +556,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             cursor: q.get("cursor"),
             limit: Number(q.get("limit") ?? 50) || 50,
             action: q.get("action") ?? undefined,
+            actionPrefix: q.get("group") ? `${q.get("group")!.slice(0, 40)}.` : undefined,
+            actorId: q.get("actorId")?.slice(0, 200) || undefined,
+            who: q.get("who")?.slice(0, 120) || undefined,
+            collection: q.get("collection") ?? undefined,
+            slug: q.get("slug") ?? undefined,
+            since: q.get("since") ?? undefined,
+            until: q.get("until") ?? undefined,
             outcome: outcome === "ok" || outcome === "denied" || outcome === "failed" ? outcome : undefined,
             actorKind: (["user", "key", "system", "anonymous"] as const).find((k) => k === q.get("actorKind")),
           })
@@ -600,7 +607,10 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         for (const c of q.get("collections")?.split(",").filter(Boolean) ?? []) core.assertCan(actor, c, "read");
         const only = q.get("collections")?.split(",").filter(Boolean);
         const since = Math.max(0, Math.floor(Number(q.get("since") ?? 0)) || 0);
-        const r = await core.changes.since(actor, since, { collections: only, limit: Number(q.get("limit") ?? 200) || 200, hear: (e) => mayHear(core, actor, e, only) });
+        // A position past the end of this log comes from another database: start over.
+        const end = await core.changes.last();
+        if (since > end) return json({ changes: [], last: end, more: false, reset: true });
+        const r = await core.changes.since(actor, since, { collections: only, limit: Number(q.get("limit") ?? 200) || 200, hear: (e) => hearAs(core, actor, e, only) });
         if (!r) return json({ changes: [], last: await core.changes.last(), more: false, reset: true });
         return json({ ...r, reset: false });
       }
@@ -898,11 +908,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json(await core.diff(actor, col, slug, a, b));
           }
           if (m === "POST" && ["publish", "archive", "unarchive", "unpublish"].includes(action)) {
-            const b = await body(req, z.object({ version: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional() }), true);
+            const b = await body(req, z.object({ version: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), documentId: z.string().max(64).optional() }), true);
             const o = { expectedVersion: expected(b.expectedVersion) };
             const doc =
               action === "publish"
-                ? await core.publish(actor, col, slug, { ...o, version: b.version })
+                ? await core.publish(actor, col, slug, { ...o, version: b.version, documentId: b.documentId })
                 : action === "archive"
                   ? await core.archive(actor, col, slug, o)
                   : action === "unarchive"
@@ -933,10 +943,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (slug && seg[3] === "versions") {
           if (seg.length === 4 && m === "GET") {
             // Newest first in pages when asked (`limit`, `cursor`); everything, oldest first, otherwise (as before 0.17.0).
-            const all = q.get("fields") === "summary" ? await core.versionList(actor, col, slug) : await core.versions(actor, col, slug);
-            if (!q.get("limit")) return json({ versions: all, nextCursor: null });
-            const p = slicePage([...all].reverse(), q);
-            return json({ versions: p.items, total: all.length, nextCursor: p.nextCursor });
+            const summary = q.get("fields") === "summary";
+            if (!q.get("limit")) return json({ versions: summary ? await core.versionList(actor, col, slug) : await core.versions(actor, col, slug), nextCursor: null });
+            // Pages come from the database, newest first; `cursor` is the version number to continue below.
+            const p = await core.versionPage(actor, col, slug, { limit: Math.max(1, Math.min(Number(q.get("limit")) || 100, 500)), cursor: q.get("cursor"), summary });
+            return json(p);
           }
           const n = Number(seg[4]);
           if (!Number.isInteger(n) || n < 1) throw new CmsError("invalid_version", {}, { messages: core.messages });

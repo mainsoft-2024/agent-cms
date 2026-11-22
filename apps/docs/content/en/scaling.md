@@ -20,7 +20,7 @@ const cms = createCms({ repo, collections, cache: memoryCache({ max: 2000 }), ch
 
 On serverless hosts there is no long-lived listener: followers poll. Clients can poll too: `GET /api/cms/_changes?since=<last>` returns `{ changes, last, more, reset }`. `reset: true` means the log no longer reaches back that far: reload.
 
-The events stream (`/_events`) uses the same numbers as message ids. A browser that reconnects sends its last id and gets the events it missed, in order.
+The events stream (`/_events`) uses the same numbers as message ids. A browser that reconnects sends its last id and gets the events it missed, in order. Since 0.18 the numbers are handed out in commit order (a short lock on the log at the end of each write), so a resume point never passes a change that is still committing; a custom repository says so with `changesInCommitOrder: true`, otherwise the CMS waits up to 15 seconds at a missing number.
 
 ## Read cache
 
@@ -37,6 +37,8 @@ Lists are filtered, sorted and cut in the database; the cursor is the last row (
 ## Edge
 
 The core and the REST handler need no Node built-ins: run them on Vercel Edge or Cloudflare Workers with a driver that works there (`neon-http`, `neon-serverless`). Webhooks need Node's crypto for their sealed secret (Workers: `nodejs_compat`).
+
+Webhook addresses are checked against private networks before each delivery. Without `node:dns` (Edge) the name is resolved with DNS over HTTPS at `https://cloudflare-dns.com/dns-query`: the host names your webhooks call are sent there. Where that is not acceptable, run deliveries on Node, or keep webhooks off on Edge.
 
 ## Several sites
 

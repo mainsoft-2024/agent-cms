@@ -48,7 +48,16 @@ export interface ImportItem {
   /** Why it was skipped or failed. */
   reason: string | null;
   diff?: string;
+  /** The document's id once saved: "publish again" checks it is still the same document. */
+  documentId?: string | null;
+  /** Published by this import (with `publish`). */
   published?: boolean;
+  /**
+   * Saved, but publishing it failed (the save stands): why. Import again with `publish` and
+   * `only` set to these paths to publish just them; documents already saved come out `same`
+   * and are only published.
+   */
+  publishError?: string | null;
 }
 
 export interface TransferContext {
@@ -59,12 +68,12 @@ export interface TransferContext {
   ready: () => Promise<void> | void;
   message: (e: unknown) => string;
   collections: () => string[];
-  can: (actor: Actor, collection: string, what: "read" | "write" | "publish") => boolean;
+  can: (actor: Actor, collection: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) => boolean;
   list: (actor: Actor, collection: string, o: { drafts?: boolean }) => Promise<CmsDoc[]>;
   diagnose: (actor: Actor, collection: string, input: DocInput, o: { slug?: string }) => Promise<Diagnostic[]>;
   create: (actor: Actor, collection: string, input: DocInput, o: { note?: string }) => Promise<CmsDoc>;
   update: (actor: Actor, collection: string, slug: string, input: DocInput, o: { note?: string; expectedVersion?: number }) => Promise<CmsDoc>;
-  publish: (actor: Actor, collection: string, slug: string) => Promise<CmsDoc>;
+  publish: (actor: Actor, collection: string, slug: string, o?: { version?: number; expectedVersion?: number; documentId?: string }) => Promise<CmsDoc>;
   assetsOf: (actor: Actor, docs: CmsDoc[]) => Promise<{ id: string; store: string; key: string; name: string; alt: string; tags: string[] }[]>;
 }
 
@@ -123,8 +132,11 @@ export function createTransfer(ctx: TransferContext) {
           item.title = doc.title ?? name;
           const cur = await ctx.repo.findDoc(col, item.slug);
           const wasPublic = data.status === "published";
-          item.fromVersion = cur?.version ?? null;
+          // Compared with (and diffed against) only when this person may edit that document; until
+          // then nothing about it (its version, whether it is in the trash) is said.
+          if (cur && !ctx.can(actor, col, "write", cur)) throw fail("forbidden_write", { collection: col });
           if (cur?.deletedAt) throw fail("slug_in_trash", { slug: item.slug });
+          item.fromVersion = cur?.version ?? null;
           item.diagnostics = await ctx.diagnose(actor, col, doc, { slug: cur ? item.slug : undefined });
           const same = !!cur && stable({ t: cur.title, s: cur.summary, b: cur.body.trim(), c: cur.category, k: cur.keywords, f: { ...cur.fields, ...(doc.fields ?? {}) } }) === stable({ t: doc.title ?? cur.title, s: doc.summary ?? cur.summary, b: (doc.body ?? "").trim(), c: doc.category === undefined ? cur.category : doc.category, k: doc.keywords ?? cur.keywords, f: cur.fields });
           if (o.diff && cur && !same) item.diff = unifiedDiff(cur.body, doc.body ?? "", { from: `v${cur.version}`, to: f.path });
@@ -140,13 +152,30 @@ export function createTransfer(ctx: TransferContext) {
             item.reason = item.diagnostics.find((d) => d.severity === "error")!.message;
             continue;
           }
-          if (o.dryRun || (o.only && !o.only.includes(f.path)) || item.change === "same" || item.change === "skip") continue;
-          const note = "import";
-          const saved = cur ? await ctx.update(actor, col, item.slug, doc, { note, expectedVersion: cur.version }) : await ctx.create(actor, col, doc, { note });
-          item.toVersion = saved.version;
-          if (o.publish && wasPublic && ctx.can(actor, col, "publish")) {
-            await ctx.publish(actor, col, item.slug);
-            item.published = true;
+          // A document saved by an earlier run whose publish failed: publishing is all that is left.
+          const publishLeft = item.change === "same" && !!o.publish && wasPublic && !!cur && cur.publishedVersion !== cur.version && cur.status !== "archived";
+          if (o.dryRun || (o.only && !o.only.includes(f.path)) || item.change === "skip" || (item.change === "same" && !publishLeft)) continue;
+          if (item.change !== "same") {
+            const note = "import";
+            const saved = cur ? await ctx.update(actor, col, item.slug, doc, { note, expectedVersion: cur.version }) : await ctx.create(actor, col, doc, { note });
+            item.toVersion = saved.version;
+            item.documentId = saved.id;
+          } else if (cur) {
+            item.toVersion = cur.version;
+            item.documentId = cur.id;
+          }
+          // Publishing is its own step: when it fails the save stands and the item says so.
+          if (o.publish && wasPublic) {
+            try {
+              if (!ctx.can(actor, col, "publish")) throw fail("forbidden_publish", { collection: col });
+              // Exactly what this import saved: an edit made meanwhile is a conflict, not published.
+              await ctx.publish(actor, col, item.slug, { version: item.toVersion ?? cur?.version, expectedVersion: item.toVersion ?? cur?.version, documentId: item.documentId ?? undefined });
+              item.published = true;
+              item.publishError = null;
+            } catch (e) {
+              item.published = false;
+              item.publishError = ctx.message(e);
+            }
           }
         } catch (e) {
           item.change = "error";
@@ -155,7 +184,7 @@ export function createTransfer(ctx: TransferContext) {
         }
       }
       const applied = !o.dryRun;
-      if (applied) ctx.audit(actor, "import.run", { detail: { files: mds.length, created: items.filter((i) => i.change === "new" && i.toVersion).length, updated: items.filter((i) => i.change === "update" && i.toVersion).length, failed: items.filter((i) => i.change === "error").length } });
+      if (applied) ctx.audit(actor, "import.run", { detail: { files: mds.length, created: items.filter((i) => i.change === "new" && i.toVersion).length, updated: items.filter((i) => i.change === "update" && i.toVersion).length, failed: items.filter((i) => i.change === "error").length, published: items.filter((i) => i.published).length, publishFailed: items.filter((i) => i.publishError).length } });
       return { items: o.only && applied ? items.filter((i) => o.only!.includes(i.path)) : items, applied };
     },
   };

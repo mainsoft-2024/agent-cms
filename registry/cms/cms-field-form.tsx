@@ -430,6 +430,8 @@ function AssetField({ spec, id, value, onChange, invalid, describedBy: by }: { s
 // ── the whole form ───────────────────────────────────────────────────────────
 
 export interface CmsFieldFormProps {
+  /** Nothing can be changed (the person may not edit this document). */
+  disabled?: boolean;
   schema: CollectionSchema;
   value: DocContent;
   onChange: (next: DocContent) => void;
@@ -445,7 +447,7 @@ export interface CmsFieldFormProps {
   slotContext?: import("./use-cms").EditorSlotContext;
 }
 
-export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocked, slugPrefix, idPrefix = "cms", className, slotContext }: CmsFieldFormProps) {
+export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocked, slugPrefix, idPrefix = "cms", className, slotContext, disabled }: CmsFieldFormProps) {
   const { t, slots } = useCms();
   const specs = React.useMemo(() => fieldSpecs(schema), [schema]);
   const set = <K extends keyof DocContent>(k: K, v: DocContent[K]) => onChange({ ...value, [k]: v });
@@ -487,7 +489,8 @@ export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocke
   const kwErr = problems.keywords;
 
   return (
-    <div className={cn("grid grid-cols-1 gap-x-3 gap-y-3 md:grid-cols-2 xl:grid-cols-3", className)}>
+    // A disabled fieldset turns off every control inside it, slots included.
+    <fieldset disabled={disabled} className={cn("m-0 grid min-w-0 grid-cols-1 gap-x-3 gap-y-3 border-0 p-0 md:grid-cols-2 xl:grid-cols-3", className)}>
       {text("title", t("field_title"))}
       {text("slug", t("field_slug"), { mono: true, disabled: slugLocked, help: slugLocked ? t("field_slug_locked") : undefined })}
       {schema.categories?.length ? (
@@ -517,6 +520,6 @@ export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocke
       <FieldShell id={kwId} label={t("field_keywords")} errors={kwErr}>
         <TagsInput id={kwId} value={value.keywords} onChange={(v) => set("keywords", v)} invalid={kwErr?.some((e) => e.severity === "error")} describedBy={describedBy({ id: kwId, errors: kwErr })} />
       </FieldShell>
-    </div>
+    </fieldset>
   );
 }

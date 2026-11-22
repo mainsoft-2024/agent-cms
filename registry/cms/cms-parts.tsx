@@ -5,7 +5,7 @@
 "use client";
 
 import * as React from "react";
-import { Bot, Check, ChevronDown, Copy, Download, FileText, ImageOff, Lightbulb, Link as LinkIcon, Menu, Paperclip, Pencil, TriangleAlert, Info } from "lucide-react";
+import { Bot, Check, ChevronDown, Copy, Download, FileText, ImageOff, Lightbulb, Link as LinkIcon, Menu, Paperclip, Pencil, TriangleAlert, Info, X } from "lucide-react";
 import { inspectHtml, parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -328,9 +328,13 @@ export function CopyButton({ value, label, className }: { value: string; label?:
 }
 
 /** Monospace value with a copy button (key secrets, URLs, commands). */
-export function CodeBox({ value, label, className, multiline, secret }: { value: string; label?: string; className?: string; multiline?: boolean; /** Hidden on screen (and from screen readers) until Show is pressed; Copy still copies it. */ secret?: string }) {
+export function CodeBox({ value, label, className, multiline, secret, revealed, focusOnShow }: { value: string; label?: string; className?: string; multiline?: boolean; /** Hidden on screen (and from screen readers) until Show is pressed; Copy still copies it. */ secret?: string; /** Start with the secret shown (it was just asked for). */ revealed?: boolean; /** Move focus to the Hide button when it appears (the control that revealed it went away). */ focusOnShow?: boolean }) {
   const { t } = useCms();
-  const [shown, setShown] = React.useState(false);
+  const [shown, setShown] = React.useState(!!revealed);
+  const toggleRef = React.useRef<HTMLButtonElement>(null);
+  React.useEffect(() => {
+    if (focusOnShow) toggleRef.current?.focus();
+  }, [focusOnShow]);
   const masked = secret && !shown ? value.split(secret).join(`${secret.slice(0, 4)}${"•".repeat(12)}${secret.slice(-4)}`) : value;
   return (
     <div className={cn("flex w-full min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted/50 px-3 py-2", className)}>
@@ -338,7 +342,7 @@ export function CodeBox({ value, label, className, multiline, secret }: { value:
         {masked}
       </code>
       {secret ? (
-        <Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2 font-sans text-xs" aria-pressed={shown} onClick={() => setShown((v) => !v)}>
+        <Button ref={toggleRef} type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2 font-sans text-xs" aria-pressed={shown} onClick={() => setShown((v) => !v)}>
           {shown ? t("hide") : t("show")}
         </Button>
       ) : null}
@@ -892,6 +896,145 @@ export function EmptyState({ icon: Icon, title, text, action, className }: { ico
       <p className="text-sm font-medium">{title}</p>
       {text ? <p className="text-sm text-muted-foreground">{text}</p> : null}
       {action ? <div className="mt-2">{action}</div> : null}
+    </div>
+  );
+}
+
+export interface DocOption {
+  collection: string;
+  slug: string;
+  title: string;
+  /** A short second line: the collection's name, a status. */
+  sub?: string;
+}
+
+/**
+ * Find a document by its title (or slug) and pick it: a combobox, so nobody has to know
+ * or type a slug. Arrow keys move, Enter picks (not while a Korean/Japanese word is still
+ * being composed), Escape closes. An answer to an older query is never shown.
+ */
+export function DocPicker({ search, value, onPick, label, placeholder, disabled, className }: {
+  search: (q: string) => Promise<DocOption[]>;
+  value: DocOption | null;
+  onPick: (d: DocOption | null) => void;
+  label: string;
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const { t } = useCms();
+  const id = React.useId();
+  const [q, setQ] = React.useState("");
+  const [open, setOpen] = React.useState(false);
+  const [found, setFound] = React.useState<DocOption[]>([]);
+  /** The query and source the shown options answer: an option is picked only while both still hold. */
+  const answered = React.useRef<{ q: string; search: unknown } | null>(null);
+  const [state, setState] = React.useState<"idle" | "busy" | "failed">("idle");
+  const [active, setActive] = React.useState(0);
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!open) return;
+    let live = true;
+    setState("busy");
+    const timer = setTimeout(
+      () =>
+        search(q).then(
+          (list) => {
+            if (!live) return;
+            answered.current = { q, search };
+            setFound(list);
+            setState("idle");
+            setActive(0);
+          },
+          () => live && setState("failed")
+        ),
+      q ? 180 : 0
+    );
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [q, open, search, tick]);
+  // A new source (another collection) starts empty: options from the old one are never offered.
+  React.useEffect(() => setFound([]), [search]);
+  const choose = (d: DocOption | undefined) => {
+    // While a new answer is on its way the old options stay visible but cannot be picked.
+    if (!d || state !== "idle" || answered.current?.q !== q || answered.current?.search !== search) return;
+    onPick(d);
+    setQ("");
+    setOpen(false);
+  };
+  if (value)
+    return (
+      <div className={cn("flex h-9 w-full max-w-md min-w-0 items-center gap-2 rounded-md border px-3 text-sm", className)}>
+        <FileText aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate">
+          {value.title || value.slug}
+          {value.sub ? <span className="ml-1.5 text-xs text-muted-foreground">{value.sub}</span> : null}
+        </span>
+        <button type="button" disabled={disabled} className="rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" aria-label={t("doc_pick_other")} onClick={() => onPick(null)}>
+          <X aria-hidden className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  return (
+    <div className={cn("relative w-full max-w-md", className)}>
+      <input
+        role="combobox"
+        aria-label={label}
+        aria-expanded={open && found.length > 0}
+        aria-controls={`${id}-list`}
+        aria-autocomplete="list"
+        aria-activedescendant={open && found[active] ? `${id}-o${active}` : undefined}
+        autoComplete="off"
+        disabled={disabled}
+        placeholder={placeholder ?? label}
+        value={q}
+        onChange={(e) => (setQ(e.target.value), setOpen(true))}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 120)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") (e.preventDefault(), setOpen(true), setActive((a) => Math.min(a + 1, Math.max(found.length - 1, 0))));
+          else if (e.key === "ArrowUp") (e.preventDefault(), setActive((a) => Math.max(a - 1, 0)));
+          else if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229 && open && found.length) (e.preventDefault(), choose(found[active]));
+          else if (e.key === "Escape" && open) (e.preventDefault(), e.stopPropagation(), setOpen(false));
+        }}
+        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+      />
+      {open ? (
+        <div className="absolute inset-x-0 top-full z-50 mt-1 overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md">
+          <ul id={`${id}-list`} role="listbox" aria-label={label} className="max-h-72 overflow-y-auto p-1">
+            {found.map((d, i) => (
+              <li
+                key={`${d.collection}/${d.slug}`}
+                id={`${id}-o${i}`}
+                role="option"
+                aria-selected={i === active}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                aria-disabled={state !== "idle" || undefined}
+                onClick={() => choose(d)}
+                className={cn("flex cursor-pointer flex-col rounded px-2 py-1.5 text-sm", i === active && "bg-accent", state !== "idle" && "cursor-default opacity-50")}
+              >
+                <span className="truncate">{d.title || d.slug}</span>
+                <span className="truncate text-xs text-muted-foreground">{[d.sub, d.slug].filter(Boolean).join(" · ")}</span>
+              </li>
+            ))}
+          </ul>
+          <div aria-live="polite" className="px-3 py-2 text-xs text-muted-foreground empty:hidden">
+            {state === "busy" && !found.length ? t("loading") : null}
+            {state === "failed" ? (
+              <span className="flex items-center gap-2">
+                {t("doc_pick_failed")}
+                <button type="button" className="underline underline-offset-2" onMouseDown={(e) => e.preventDefault()} onClick={() => setTick((n) => n + 1)}>
+                  {t("retry")}
+                </button>
+              </span>
+            ) : null}
+            {state === "idle" && !found.length ? t("doc_pick_none") : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

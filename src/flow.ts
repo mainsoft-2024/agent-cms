@@ -25,6 +25,12 @@ export interface FlowContext {
   can: (actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) => boolean;
   assert: (actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) => void;
   isAdmin: (actor: Actor) => boolean;
+  /** Diagnostics about a checked copy as `actor` may see them (hidden fields redacted). */
+  /** A stored copy over its document with its own format and version. */
+  overlay: (doc: CmsDoc, copy: Partial<DocContent> | null | undefined, version: number | null | undefined) => CmsDoc;
+  diagnosticsFor: <D extends { path: string; code: string }>(actor: Actor, col: string, checked: CmsDoc | null | (CmsDoc | null)[], diags: D[]) => D[];
+  /** Whether the collection's rules decide per document (`access`). */
+  rulesPerDocument: (col: string) => boolean;
   ready: () => Promise<void> | void;
   /** The document as an editor sees it, or `not_found` / a permission error. */
   editable: (actor: Actor, col: string, slug: string) => Promise<CmsDoc>;
@@ -33,7 +39,8 @@ export interface FlowContext {
   unpublishIn: (r: CmsRepo, actor: Actor, doc: CmsDoc) => Promise<CmsDoc>;
   changed: (prev: CmsDoc | null, doc: CmsDoc | null, o?: { quiet?: boolean }) => void;
   /** Everything wrong with this content of `doc` (errors and warnings). */
-  problems: (doc: CmsDoc, c: DocContent, r: CmsRepo) => Promise<Diagnostic[]>;
+  /** With `actor`: findings as that person may see them (hidden fields redacted, per checked copy). */
+  problems: (doc: CmsDoc, c: DocContent, r: CmsRepo, actor?: Actor, version?: number) => Promise<Diagnostic[]>;
   needsReview: (actor: Actor, col: string) => boolean;
   assertReviewed: (r: CmsRepo, actor: Actor, doc: CmsDoc, n: number) => Promise<void>;
   summaryOf: (d: CmsDoc) => DocSummary;
@@ -43,7 +50,7 @@ export interface FlowContext {
   trashDays: number;
   assets: ReturnType<typeof createAssets>;
   /** The payload of a signed preview token (throws when it is bad or expired). */
-  previewPayload: (token: string) => { c: string; s: string; v: number; exp: number; cm?: 1 };
+  previewPayload: (token: string) => { c: string; s: string; i?: string; v: number; exp: number; cm?: 1 };
 }
 
 export interface TrashRef {
@@ -92,6 +99,8 @@ export interface BlockedItem {
   title: string;
   code: string;
   message: string;
+  /** An item the caller may not see (0.18.0): collection, slug and title are empty. */
+  hidden?: boolean;
 }
 
 export interface ScheduledRun {
@@ -144,7 +153,7 @@ export function createFlow(ctx: FlowContext) {
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw ctx.conflict(cur, o.expectedVersion, actor, col);
       if (publishAt) {
         await ctx.assertReviewed(r, actor, cur, cur.version);
-        const errors = errorsOf(await ctx.problems(cur, cur, r));
+        const errors = errorsOf(await ctx.problems(cur, cur, r, actor, cur.version));
         if (errors.length) throw fail(errors[0].code, errors[0].params, { diagnostics: errors });
       } else if (cur.publishedVersion === null) throw fail("not_published");
       const s: Schedule = { publishAt, unpublishAt, version: cur.version, by: who.label, byKind: who.kind, byId: who.id, byAgent: who.agent, at: nowIso() };
@@ -202,8 +211,12 @@ export function createFlow(ctx: FlowContext) {
         ctx.changed(prev, doc);
         out[what].push(`${d.collection}/${d.slug}`);
       } catch (e) {
-        // Nothing went out. The schedule is cleared so it does not fail again every minute.
-        await repo.updateDoc(d.id, { schedule: null, dueAt: null, updatedAt: d.updatedAt }).catch((err) => ctx.report(err, "runScheduled"));
+        // Nothing went out. The schedule is cleared so it does not fail again every minute, but
+        // only if it is still the schedule that failed (not one set again meanwhile).
+        await (async () => {
+          const now = await repo.findDocById(d.id);
+          if (now && now.schedule?.at === d.schedule!.at && now.version === d.version) await repo.updateDoc(d.id, { schedule: null, dueAt: null, updatedAt: now.updatedAt }, now.version);
+        })().catch((err) => ctx.report(err, "runScheduled"));
         const code = isCmsError(e) ? e.code : "internal";
         if (!isCmsError(e)) ctx.report(e, "runScheduled");
         audit(scheduler, "doc.schedule", { collection: d.collection, slug: d.slug, version: d.schedule.version, outcome: "failed", detail: { code, scheduledBy: d.schedule.by } });
@@ -213,12 +226,17 @@ export function createFlow(ctx: FlowContext) {
     for (const rel of await repo.listReleases()) {
       if (rel.state !== "scheduled" || !rel.publishAt || rel.publishAt > at) continue;
       try {
-        await publishRelease(scheduler, rel.id);
+        await publishRelease(scheduler, rel.id, { dueBy: at, revision: rel.updatedAt });
         out.releases.push({ id: rel.id, name: rel.name, ok: true });
       } catch (e) {
+        // Changed since it was listed (unscheduled, edited): not this run's to publish or to fail.
+        if (isCmsError(e) && e.code === "release_changed") continue;
         if (!isCmsError(e)) ctx.report(e, "runScheduled");
-        const message = ctx.message(e);
-        await repo.updateRelease(rel.id, { state: "open", publishAt: null, lastError: message }, "scheduled").catch((err) => ctx.report(err, "runScheduled"));
+        // What is stored and shown later is the kind of failure, not the scheduler's detailed text
+        // (it may name documents and fields the people reading the release cannot see).
+        const message = ctx.message(fail("release_failed", { code: isCmsError(e) ? e.code : "internal" }));
+        // Reopened only if it is still the revision that failed.
+        await repo.updateRelease(rel.id, { state: "open", publishAt: null, lastError: message, updatedAt: nextRevision(rel.updatedAt) }, { state: "scheduled", updatedAt: rel.updatedAt }).catch((err) => ctx.report(err, "runScheduled"));
         audit(scheduler, "release.publish", { outcome: "failed", detail: { id: rel.id, name: rel.name, code: isCmsError(e) ? e.code : "internal" } });
         out.releases.push({ id: rel.id, name: rel.name, ok: false, message });
       }
@@ -242,7 +260,7 @@ export function createFlow(ctx: FlowContext) {
   const purgeAt = (deletedAt: string) => (ctx.trashDays > 0 ? new Date(Date.parse(deletedAt) + ctx.trashDays * DAY).toISOString() : null);
 
   /** What is in the trash and this actor may see: documents of collections they edit, files of stores they read. */
-  async function trashList(actor: Actor, o: { kind?: TrashRef["kind"] } = {}): Promise<{ items: TrashItem[]; days: number; canPurge: boolean }> {
+  async function trashList(actor: Actor, o: { kind?: TrashRef["kind"]; q?: string } = {}): Promise<{ items: TrashItem[]; days: number; canPurge: boolean }> {
     await ctx.ready();
     if (actor.kind === "anonymous") throw fail("unauthorized");
     const items: TrashItem[] = [];
@@ -258,7 +276,11 @@ export function createFlow(ctx: FlowContext) {
       }
     }
     items.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
-    return { items, days: ctx.trashDays, canPurge: ctx.isAdmin(actor) };
+    // Find by title, place (collection / slug, store / key) or who deleted it. The trash is bounded
+    // by its keeping time, so it is filtered here rather than in the database.
+    const words = (o.q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = words.length ? items.filter((i) => { const text = `${i.title} ${i.where} ${i.deletedBy ?? ""}`.toLowerCase(); return words.every((w) => text.includes(w)); }) : items;
+    return { items: shown, days: ctx.trashDays, canPurge: ctx.isAdmin(actor) };
   }
 
   const refs = (v: unknown): TrashRef[] => (Array.isArray(v) ? v.filter((x): x is TrashRef => !!x && (x.kind === "document" || x.kind === "asset") && typeof x.id === "string").slice(0, 200) : []);
@@ -384,7 +406,8 @@ export function createFlow(ctx: FlowContext) {
     if (o.collection) assert(actor, o.collection, "write");
     const cols = (o.collection ? [ctx.collection(o.collection)] : ctx.collections()).filter((c) => can(actor, c.slug, "write"));
     const out: DocSummary[] = [];
-    for (const c of cols) for (const d of await repo.listDocs({ collection: c.slug })) if (d.review?.state === "requested") out.push(ctx.summaryOf(d));
+    // Each document by its own rules: only the ones this person may edit.
+    for (const c of cols) for (const d of await repo.listDocs({ collection: c.slug })) if (d.review?.state === "requested" && can(actor, c.slug, "write", d)) out.push(ctx.summaryOf(d));
     return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -455,7 +478,7 @@ export function createFlow(ctx: FlowContext) {
     if (!p.cm) throw fail("comments_off");
     ctx.collection(p.c);
     const doc = await repo.findDoc(p.c, p.s);
-    if (!doc) throw fail("not_found", { collection: p.c, slug: p.s });
+    if (!doc || (p.i && doc.id !== p.i)) throw fail("not_found", { collection: p.c, slug: p.s });
     return doc;
   }
 
@@ -494,20 +517,66 @@ export function createFlow(ctx: FlowContext) {
     return rel;
   }
 
+  /**
+   * Whether `actor` may see a release item (0.18.0): only items of documents they may edit. An item
+   * whose document is gone is shown only where that reveals nothing: to admins, or in a collection
+   * without per-document rules to someone who may write there.
+   */
+  function visibleItem(actor: Actor, it: ReleaseItem, doc: CmsDoc | null): boolean {
+    if (!known(it.collection)) return ctx.isAdmin(actor);
+    if (doc) return can(actor, it.collection, "write", doc);
+    return ctx.isAdmin(actor) || (!ctx.rulesPerDocument(it.collection) && can(actor, it.collection, "write"));
+  }
+  async function itemDocs(rels: readonly CmsRelease[]) {
+    const ids = [...new Set(rels.flatMap((r) => r.items.filter((i) => known(i.collection)).map((i) => i.documentId)))];
+    return docsById(repo, ids);
+  }
+  /** The release as `actor` may see it: their items, and a count of the rest. */
+  async function shownRelease(actor: Actor, rel: CmsRelease): Promise<CmsRelease> {
+    if (actor.kind === "system") return rel;
+    const docs = await itemDocs([rel]);
+    const mine = rel.items.filter((i) => visibleItem(actor, i, docs.get(i.documentId) ?? null));
+    return mine.length === rel.items.length ? rel : { ...rel, items: mine, hiddenItems: rel.items.length - mine.length };
+  }
+  /**
+   * Changing a whole release (its name, its time, deleting it, publishing it) is for admins and
+   * for people who can see every item in it: nobody acts on documents hidden from them.
+   */
+  async function assertManage(actor: Actor, rel: CmsRelease) {
+    if (actor.kind === "system" || ctx.isAdmin(actor)) return;
+    const docs = await itemDocs([rel]);
+    if (rel.items.some((i) => !visibleItem(actor, i, docs.get(i.documentId) ?? null))) throw fail("forbidden_release");
+  }
+
+  /** Failure text from before 0.18 may name anything; only admins see it as written. */
+  const safeLastError = (actor: Actor, rel: CmsRelease) => (rel.lastError && actor.kind !== "system" && !ctx.isAdmin(actor) ? ctx.message(fail("release_failed", { code: "error" })) : rel.lastError);
   async function viewRelease(actor: Actor, rel: CmsRelease): Promise<ReleaseView> {
     const items: ReleaseView["items"] = [];
-    const docs = await docsById(repo, rel.items.filter((it) => known(it.collection)).map((it) => it.documentId));
+    const docs = await itemDocs([rel]);
+    let hidden = 0;
     for (const it of rel.items) {
       const doc = known(it.collection) ? (docs.get(it.documentId) ?? null) : null;
+      // A document this person may not edit is counted, not shown (title, slug and versions stay private).
+      if (!visibleItem(actor, it, doc)) {
+        hidden++;
+        continue;
+      }
       items.push({ ...it, slug: doc?.slug ?? it.slug, title: doc?.title ?? it.title, currentVersion: doc?.version ?? null, stale: !!doc && doc.version !== it.version, state: doc ? docState(doc).state : null, canPublish: !!doc && can(actor, it.collection, "publish", doc) });
     }
-    return { ...rel, items, canPublish: rel.state !== "published" && items.length > 0 && items.every((i) => i.canPublish) };
+    return { ...rel, lastError: safeLastError(actor, rel), items, hiddenItems: hidden, canPublish: rel.state !== "published" && items.length > 0 && !hidden && items.every((i) => i.canPublish) };
   }
 
   async function releases(actor: Actor): Promise<CmsRelease[]> {
     await ctx.ready();
     needEditor(actor);
-    return repo.listReleases();
+    // The list carries each item's title and slug: only the ones this person may edit, with a count of the rest.
+    const all = await repo.listReleases();
+    const docs = await itemDocs(all);
+    return all.map((r) => {
+      const mine = r.items.filter((i) => visibleItem(actor, i, docs.get(i.documentId) ?? null));
+      const out = { ...r, lastError: safeLastError(actor, r) };
+      return mine.length === r.items.length ? out : { ...out, items: mine, hiddenItems: r.items.length - mine.length };
+    });
   }
 
   async function release(actor: Actor, id: string): Promise<ReleaseView> {
@@ -531,14 +600,39 @@ export function createFlow(ctx: FlowContext) {
   async function renameRelease(actor: Actor, id: string, input: { name: string }): Promise<ReleaseView> {
     needEditor(actor);
     const rel = await loadRelease(id, true);
-    return viewRelease(actor, (await repo.updateRelease(rel.id, { name: nameOf(input.name), updatedAt: nowIso() }))!);
+    await assertManage(actor, rel);
+    return viewRelease(actor, await saveRelease(rel, { name: nameOf(input.name) }));
   }
 
   /** Delete a release that has not gone out. A published one stays as a record. */
   async function removeRelease(actor: Actor, id: string): Promise<void> {
     needEditor(actor);
     const rel = await loadRelease(id, true);
-    await repo.deleteRelease(rel.id);
+    await assertManage(actor, rel);
+    // Deleted only as it was checked: a release published or given new items meanwhile stays.
+    await repo.tx(
+      async (r) => {
+        if (!(await r.updateRelease(rel.id, { updatedAt: nextRevision(rel.updatedAt) }, { state: rel.state, updatedAt: rel.updatedAt }))) throw fail("release_changed");
+        await r.deleteRelease(rel.id);
+      },
+      { atomic: true }
+    );
+  }
+
+  /** A revision later than `old` (the release's `updatedAt`), so a compare-and-set always sees the change. */
+  function nextRevision(old: string): string {
+    const now = Date.now();
+    const prev = Date.parse(old);
+    return new Date(Number.isNaN(prev) || now > prev ? now : prev + 1).toISOString();
+  }
+  /**
+   * Write the release only if it is exactly as it was read and checked (0.18.0). Two changes that
+   * each checked an older state (adding a document while someone schedules) cannot both land.
+   */
+  async function saveRelease(rel: CmsRelease, patch: Parameters<CmsRepo["updateRelease"]>[1]): Promise<CmsRelease> {
+    const saved = await repo.updateRelease(rel.id, { ...patch, updatedAt: nextRevision(rel.updatedAt) }, { state: rel.state, updatedAt: rel.updatedAt });
+    if (!saved) throw fail("release_changed");
+    return saved;
   }
 
   /**
@@ -557,18 +651,28 @@ export function createFlow(ctx: FlowContext) {
       if (action === "unpublish" && doc.publishedVersion === null) throw fail("not_published");
       const other = others.find((r) => r.items.some((x) => x.documentId === doc.id));
       if (other) throw fail("in_other_release", { release: other.name, slug: doc.slug });
+      // A scheduled release goes out as the scheduler, later, with nobody checking again: only
+      // someone who may publish the document (and whose version passed review) adds to it.
+      if (rel.state === "scheduled") {
+        assert(actor, doc.collection, "publish", doc);
+        if (action === "publish") await ctx.assertReviewed(repo, actor, doc, doc.version);
+      }
       const item: ReleaseItem = { documentId: doc.id, collection: doc.collection, slug: doc.slug, title: doc.title, action, version: doc.version };
       const at = items.findIndex((x) => x.documentId === doc.id);
       if (at >= 0) items[at] = item;
       else items.push(item);
     }
-    return viewRelease(actor, (await repo.updateRelease(rel.id, { items, lastError: null, updatedAt: nowIso() }))!);
+    return viewRelease(actor, await saveRelease(rel, { items, lastError: null }));
   }
 
   async function removeFromRelease(actor: Actor, id: string, documentId: string): Promise<ReleaseView> {
     needEditor(actor);
     const rel = await loadRelease(id, true);
-    return viewRelease(actor, (await repo.updateRelease(rel.id, { items: rel.items.filter((x) => x.documentId !== documentId), updatedAt: nowIso() }))!);
+    const it = rel.items.find((x) => x.documentId === documentId);
+    const doc = it && known(it.collection) ? await repo.findDocById(it.documentId) : null;
+    // An item this person cannot see is, for them, not in the release.
+    if (!it || !visibleItem(actor, it, doc)) throw fail("not_found", { collection: it?.collection ?? "", slug: "" });
+    return viewRelease(actor, await saveRelease(rel, { items: rel.items.filter((x) => x.documentId !== documentId) }));
   }
 
   /**
@@ -576,7 +680,7 @@ export function createFlow(ctx: FlowContext) {
    * a missing permission, a failed check or a missing review on any document
    * stops all of it, and the error lists what blocked (`current.blocked`).
    */
-  async function publishRelease(actor: Actor, id: string): Promise<CmsRelease> {
+  async function publishRelease(actor: Actor, id: string, o: { dueBy?: string; revision?: string } = {}): Promise<CmsRelease> {
     await ctx.ready();
     if (actor.kind === "anonymous") throw fail("unauthorized");
     const done: { item: ReleaseItem; prev: CmsDoc; doc: CmsDoc }[] = [];
@@ -584,18 +688,29 @@ export function createFlow(ctx: FlowContext) {
       const cur = await r.findRelease(String(id));
       if (!cur) throw fail("release_not_found");
       if (cur.state === "published") throw fail("release_closed");
+      // The scheduler publishes only what is still scheduled, due, and exactly what was checked when
+      // it was scheduled (any change since makes the release open or a newer revision).
+      if (o.dueBy !== undefined && (cur.state !== "scheduled" || !cur.publishAt || cur.publishAt > o.dueBy)) throw fail("release_changed");
+      if (o.revision !== undefined && Date.parse(cur.updatedAt) !== Date.parse(o.revision)) throw fail("release_changed");
       if (!cur.items.length) throw fail("release_empty");
       const blocked: BlockedItem[] = [];
       const ok: { item: ReleaseItem; doc: CmsDoc }[] = [];
       for (const item of cur.items) {
-        const block = (code: CmsErrorCode, params: ErrorParams = {}, message?: string) => blocked.push({ collection: item.collection, slug: item.slug, title: item.title, code, message: message ?? ctx.message(fail(code, params)) });
         const doc = known(item.collection) ? await r.findDocById(item.documentId) : null;
+        // What blocks on an item hidden from the caller is said without naming it.
+        if (actor.kind !== "system" && !visibleItem(actor, item, doc)) {
+          blocked.push({ collection: "", slug: "", title: "", code: "forbidden_release", message: ctx.message(fail("forbidden_release")), hidden: true });
+          continue;
+        }
+        const block = (code: CmsErrorCode, params: ErrorParams = {}, message?: string) => blocked.push({ collection: item.collection, slug: item.slug, title: item.title, code, message: message ?? ctx.message(fail(code, params)) });
         if (!doc) block("not_found", { collection: item.collection, slug: item.slug });
         else if (!can(actor, doc.collection, "publish", doc)) block("forbidden_publish", { collection: doc.collection });
         else if (item.action === "unpublish") ok.push({ item, doc });
         else {
           const v = await r.getVersion(doc.id, item.version);
-          const errors = v ? errorsOf(await ctx.problems(doc, { ...v.snapshot, slug: doc.slug }, r)) : [];
+          // Judged on exactly what is checked: the snapshot at the document's current address.
+          const checked = v ? { ...v.snapshot, slug: doc.slug } : null;
+          const errors = v && checked ? errorsOf(await ctx.problems(doc, checked, r, actor, item.version)) : [];
           if (!v) block("version_not_found", { version: item.version });
           else if (ctx.needsReview(actor, doc.collection) && !v.approvedBy) block("review_required", { collection: doc.collection });
           else if (errors.length) block(errors[0].code, errors[0].params, errors[0].message);
@@ -610,23 +725,24 @@ export function createFlow(ctx: FlowContext) {
         done.push({ item, prev: doc, doc: out });
       }
       const at = nowIso();
-      const saved = await r.updateRelease(cur.id, { state: "published", publishAt: null, publishedAt: at, publishedBy: actorRef(actor).label, lastError: null, updatedAt: at }, cur.state);
-      if (!saved) throw fail("release_closed");
+      const saved = await r.updateRelease(cur.id, { state: "published", publishAt: null, publishedAt: at, publishedBy: actorRef(actor).label, lastError: null, updatedAt: nextRevision(cur.updatedAt) }, { state: cur.state, updatedAt: cur.updatedAt });
+      if (!saved) throw fail("release_changed");
       return saved;
-    });
+    }, { atomic: true });
     for (const d of done) {
       audit(actor, d.item.action === "publish" ? "doc.publish" : "doc.unpublish", { collection: d.doc.collection, slug: d.doc.slug, version: d.item.version, detail: { release: rel.name } });
       ctx.changed(d.prev, d.doc);
     }
     audit(actor, "release.publish", { detail: { id: rel.id, name: rel.name, documents: done.length } });
-    return rel;
+    return shownRelease(actor, rel);
   }
 
   /** Publish the release at a time. The person scheduling must be allowed to publish every document in it. */
   async function scheduleRelease(actor: Actor, id: string, o: { publishAt: string | null }): Promise<ReleaseView> {
     needEditor(actor);
     const rel = await loadRelease(id, true);
-    if (o.publishAt === null) return viewRelease(actor, (await repo.updateRelease(rel.id, { state: "open", publishAt: null, updatedAt: nowIso() }))!);
+    await assertManage(actor, rel);
+    if (o.publishAt === null) return viewRelease(actor, await saveRelease(rel, { state: "open", publishAt: null }));
     const publishAt = future(o.publishAt, "publishAt");
     if (!publishAt) throw fail("schedule_invalid", { field: "publishAt" });
     if (!rel.items.length) throw fail("release_empty");
@@ -636,7 +752,7 @@ export function createFlow(ctx: FlowContext) {
       assert(actor, doc.collection, "publish", doc);
       if (it.action === "publish") await ctx.assertReviewed(repo, actor, doc, it.version);
     }
-    return viewRelease(actor, (await repo.updateRelease(rel.id, { state: "scheduled", publishAt, lastError: null, updatedAt: nowIso() }))!);
+    return viewRelease(actor, await saveRelease(rel, { state: "scheduled", publishAt, lastError: null }));
   }
 
   /** The open release a document is in, if any (so a screen can warn before a separate publish). */
@@ -711,7 +827,8 @@ export function createFlow(ctx: FlowContext) {
   async function presenceIn(actor: Actor, col: string): Promise<{ slug: string; people: Presence[] }[]> {
     await ctx.ready();
     assert(actor, col, "write");
-    const docs = await repo.listDocs({ collection: col });
+    // Only documents this person may edit: who is in the others is not theirs to know.
+    const docs = (await repo.listDocs({ collection: col })).filter((d) => can(actor, col, "write", d));
     const bySlug = new Map(docs.map((d) => [d.id, d.slug]));
     const out = new Map<string, Presence[]>();
     for (const p of await repo.listPresence(since(), docs.map((d) => d.id))) {

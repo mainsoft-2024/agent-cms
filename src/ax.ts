@@ -44,6 +44,12 @@ export interface AxContext {
   collections: () => string[];
   can: (actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null) => boolean;
   assert: (actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null) => void;
+  /** Remove fields `actor` may not see from a copy of `doc` (the same projection reads use). */
+  project?: <T extends { fields?: Record<string, unknown> } | null | undefined>(actor: Actor, col: string, doc: CmsDoc | null, content: T) => T;
+  /** The published copy as readers get it (same as reads), or null. */
+  publicView?: (doc: CmsDoc) => CmsDoc | null;
+  /** Field paths `actor` may not see in the stored document (`fieldAccess`). */
+  hidden?: (actor: Actor, col: string, doc: CmsDoc) => string[];
   get: (actor: Actor, col: string, slug: string, o?: { draft?: boolean }) => Promise<CmsDoc>;
   create: (actor: Actor, col: string, input: Input, o?: { note?: string }) => Promise<CmsDoc>;
   update: (actor: Actor, col: string, slug: string, input: Input, o?: { expectedVersion?: number; note?: string }) => Promise<CmsDoc>;
@@ -176,13 +182,37 @@ export function createAx(ctx: AxContext) {
     return fail("edit_invalid", { index: r.index, reason: r.reason });
   }
 
-  async function saveSuggestion(actor: Actor, doc: CmsDoc, edits: TextEdit[], note: string | null, lines: { from: number; to: number }[]): Promise<Suggestion> {
+  async function saveSuggestion(actor: Actor, doc: CmsDoc, edits: TextEdit[], note: string | null, lines: { from: number; to: number }[], stored: CmsDoc): Promise<Suggestion> {
     const who = ctx.actorRef(actor);
     const at = ctx.nowIso();
-    const data = { baseVersion: doc.version, edits, note, by: { kind: who.kind, label: who.label, agent: who.agent }, lines };
+    // What the author could not see: their edits can only quote the rest. A reader who cannot see
+    // something the author could does not get the suggestion (its text may quote it).
+    const authorHidden = ctx.hidden?.(actor, stored.collection, stored) ?? [];
+    const data = { docId: stored.id, baseVersion: doc.version, edits, note, by: { kind: who.kind, label: who.label, agent: who.agent }, lines, authorHidden };
     const r = await ctx.repo.insertRecord({ kind: "suggestion", scope: `${doc.collection}/${doc.slug}`, data, at });
     ctx.audit(actor, "doc.suggest", { collection: doc.collection, slug: doc.slug, version: doc.version, detail: { id: r.id, edits: edits.length } });
     return { id: r.id, collection: doc.collection, slug: doc.slug, at, ...data } as Suggestion;
+  }
+
+  /** Whether `actor` may see this stored suggestion of `stored`: bound to that document, and quoting nothing hidden from them. */
+  function suggestionFor(actor: Actor, stored: CmsDoc, data: Record<string, unknown>): boolean {
+    // Bound to the document it was made on; older records without that binding are not shown.
+    if (typeof data.docId !== "string" || data.docId !== stored.id) return false;
+    const mine = ctx.hidden?.(actor, stored.collection, stored) ?? [];
+    if (!mine.length) return true;
+    const theirs = data.authorHidden;
+    return Array.isArray(theirs) && mine.every((p) => theirs.includes(p));
+  }
+  /** The stored document and the suggestion, for someone who may edit it and see the suggestion. */
+  async function loadSuggestion(actor: Actor, col: string, slug: string, id: string) {
+    ctx.collection(col);
+    await ctx.ready();
+    const r = await ctx.repo.findRecord("suggestion", id);
+    const stored = await ctx.repo.findDoc(col, slug);
+    if (!r || !stored || r.scope !== `${col}/${slug}`) throw fail("suggestion_not_found");
+    ctx.assert(actor, col, "write", stored);
+    if (!suggestionFor(actor, stored, r.data)) throw fail("suggestion_not_found");
+    return { r, stored };
   }
 
   const api = {
@@ -229,12 +259,17 @@ export function createAx(ctx: AxContext) {
         for (const row of rows.sort((a, b) => a.slug.localeCompare(b.slug))) {
           if (o.slugs?.length && !o.slugs.includes(row.slug)) continue;
           if (o.glob && !globMatch(o.glob, `${col}/${row.slug}`)) continue;
-          if (!writer && (row.publishedVersion === null || row.status === "archived" || !row.published || !ctx.can(actor, col, "read", row))) continue;
+          // Per document: a writer of the collection may still be kept out of one document by its rules.
+          const mine = writer && ctx.can(actor, col, "write", row);
+          // Readers are judged on, and shown, the published copy.
+          const pub = mine ? null : ctx.publicView ? ctx.publicView(row) : row.publishedVersion === null || row.status === "archived" || !row.published ? null : ({ ...row, ...(row.published as object), format: (row.published as { format?: string }).format, version: row.publishedVersion, status: "published", review: null, schedule: null, dueAt: null, updatedBy: null, updatedByKind: null, updatedByAgent: null } as CmsDoc);
+          if (!mine && (!pub || !ctx.can(actor, col, "read", pub))) continue;
           if (out.searched >= GREP_MAX_DOCS || bytes > GREP_MAX_BYTES || Date.now() - t0 > GREP_BUDGET_MS) {
             out.partial = true;
             break outer;
           }
-          const doc = writer ? row : { ...row, ...(row.published as object) };
+          const raw = mine ? row : pub!;
+          const doc = ctx.project ? ctx.project(actor, col, raw, raw) : raw;
           const text = docFile(doc as CmsDoc);
           bytes += text.length;
           out.searched++;
@@ -264,8 +299,11 @@ export function createAx(ctx: AxContext) {
     async edit(actor: Actor, col: string, slug: string, edits: TextEdit[], o: { note?: string; expectedVersion?: number; dryRun?: boolean } = {}): Promise<EditResult> {
       ctx.collection(col);
       await ctx.ready();
+      // Authorize on the stored row (a rule may look at fields this actor cannot see); edit the text they can see.
+      const stored = await ctx.repo.findDoc(col, slug);
+      if (!stored) throw fail("not_found", { collection: col, slug });
+      ctx.assert(actor, col, "write", stored);
       const doc = await ctx.get(actor, col, slug, { draft: true });
-      ctx.assert(actor, col, "write", doc);
       if (o.expectedVersion !== undefined && o.expectedVersion !== doc.version) throw fail("conflict_version", { expected: o.expectedVersion, current: doc.version });
       const text = docFile(doc);
       const r = applyEdits(text, edits);
@@ -275,7 +313,7 @@ export function createAx(ctx: AxContext) {
       // A dry run shows what would change; nothing is saved, suggested or announced.
       if (o.dryRun) return { ...base, version: doc.version, saved: false, dryRun: true };
       if (suggests(actor, col)) {
-        const suggestion = await saveSuggestion(actor, doc, edits, o.note ?? null, r.changed);
+        const suggestion = await saveSuggestion(actor, doc, edits, o.note ?? null, r.changed, stored);
         return { ...base, version: doc.version, saved: false, suggestion };
       }
       let saved: CmsDoc;
@@ -305,15 +343,17 @@ export function createAx(ctx: AxContext) {
         return { path: docPath(col, doc.slug, doc.format), collection: col, slug: doc.slug, version: doc.version, saved: true, snippet: numberLines(content, 1, 12).content, changed: [{ from: 1, to: lines }], counts: [1] };
       }
       if (o.expectedVersion === undefined) throw fail("edit_invalid", { index: 0, reason: "expectedVersion is required to replace a whole document (read it first)" });
+      // Authorized on the stored row; the text replaced is the one this actor can see.
+      ctx.assert(actor, col, "write", existing);
       const doc = await ctx.get(actor, col, slug, { draft: true });
-      ctx.assert(actor, col, "write", doc);
+      if (doc.id !== existing.id) throw fail("conflict_version", { expected: o.expectedVersion, current: doc.version });
       if (o.expectedVersion !== doc.version) throw fail("conflict_version", { expected: o.expectedVersion, current: doc.version });
       const cur = docFile(doc);
       const input = parse(content, doc.fields);
       const changed = changedLines(cur, content);
       const base = { path: docPath(col, doc.slug, input.format), collection: col, slug: doc.slug, changed, counts: [1], snippet: snippets(content, changed) };
       if (suggests(actor, col)) {
-        const suggestion = await saveSuggestion(actor, doc, [{ oldString: cur, newString: content }], o.note ?? null, changed);
+        const suggestion = await saveSuggestion(actor, doc, [{ oldString: cur, newString: content }], o.note ?? null, changed, existing);
         return { ...base, version: doc.version, saved: false, suggestion };
       }
       let saved: CmsDoc;
@@ -357,23 +397,31 @@ export function createAx(ctx: AxContext) {
     async suggestions(actor: Actor, col: string, slug: string): Promise<Suggestion[]> {
       ctx.collection(col);
       await ctx.ready();
-      const doc = await ctx.get(actor, col, slug, { draft: true });
-      ctx.assert(actor, col, "write", doc);
-      const rows = await ctx.repo.listRecords({ kind: "suggestion", scope: `${col}/${doc.slug}`, order: "asc", limit: 200 });
-      return rows.map((r) => ({ id: r.id, collection: col, slug: doc.slug, at: r.createdAt, ...(r.data as Omit<Suggestion, "id" | "collection" | "slug" | "at">) }));
+      const stored = await ctx.repo.findDoc(col, slug);
+      if (!stored) throw fail("not_found", { collection: col, slug });
+      ctx.assert(actor, col, "write", stored);
+      const rows = await ctx.repo.listRecords({ kind: "suggestion", scope: `${col}/${stored.slug}`, order: "asc", limit: 200 });
+      // Only this document's (a later one with the same slug does not inherit them), and none whose
+      // author could see a field this person may not.
+      return rows
+        .filter((r) => suggestionFor(actor, stored, r.data))
+        .map((r) => {
+          const { authorHidden: _h, ...data } = r.data as Record<string, unknown>;
+          return { id: r.id, collection: col, slug: stored.slug, at: r.createdAt, ...(data as Omit<Suggestion, "id" | "collection" | "slug" | "at">) };
+        });
     },
 
     /** Apply a suggestion (optionally changed) as the person; the edit must still fit the current text. */
     async applySuggestion(actor: Actor, col: string, slug: string, id: string, o: { edits?: TextEdit[]; note?: string } = {}): Promise<EditResult> {
-      const r = await ctx.repo.findRecord("suggestion", id);
-      if (!r || r.scope !== `${col}/${slug}`) throw fail("suggestion_not_found");
+      const { r, stored } = await loadSuggestion(actor, col, slug, id);
       const s = r.data as unknown as Suggestion;
       const person: Actor = actor.kind === "user" && actor.agent ? { ...actor, agent: undefined } : actor;
       // Apply as the person even when the collection keeps agents' edits as suggestions.
       let res: EditResult;
       {
+        ctx.assert(person, col, "write", stored);
         const doc = await ctx.get(person, col, slug, { draft: true });
-        ctx.assert(person, col, "write", doc);
+        if (doc.id !== stored.id) throw fail("suggestion_not_found");
         const text = docFile(doc);
         const applied = applyEdits(text, o.edits ?? s.edits);
         if (!("text" in applied)) throw fail("suggestion_stale");
@@ -387,10 +435,7 @@ export function createAx(ctx: AxContext) {
     },
 
     async rejectSuggestion(actor: Actor, col: string, slug: string, id: string): Promise<void> {
-      const r = await ctx.repo.findRecord("suggestion", id);
-      if (!r || r.scope !== `${col}/${slug}`) throw fail("suggestion_not_found");
-      const doc = await ctx.get(actor, col, slug, { draft: true });
-      ctx.assert(actor, col, "write", doc);
+      await loadSuggestion(actor, col, slug, id);
       await ctx.repo.deleteRecords({ kind: "suggestion", id });
       ctx.audit(actor, "doc.suggest.reject", { collection: col, slug, detail: { id } });
     },

@@ -1,7 +1,7 @@
 /** `CmsRepo` on Postgres via Drizzle (node-postgres, pglite and other `PgDatabase` drivers with transactions). */
 
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
-import type { PgDatabase } from "drizzle-orm/pg-core";
+import { getTableConfig, type PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
 import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp, NewChange, ChangeRow, DocPageQuery, DocPage } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
@@ -181,8 +181,11 @@ export class DrizzleRepo implements CmsRepo {
     };
   }
 
-  tx<T>(fn: (repo: CmsRepo) => Promise<T>): Promise<T> {
-    if (this.txMode === false) return fn(this);
+  tx<T>(fn: (repo: CmsRepo) => Promise<T>, o: { atomic?: boolean } = {}): Promise<T> {
+    if (this.txMode === false) {
+      if (o.atomic) return Promise.reject(new CmsError("transactions_required"));
+      return fn(this);
+    }
     let started = false;
     const run = (async () =>
       this.db.transaction((t) => {
@@ -195,6 +198,7 @@ export class DrizzleRepo implements CmsRepo {
       if (started || !/no transactions support|transactions? (are|is) not supported/i.test(e instanceof Error ? e.message : String(e))) throw e;
       this.txMode = false;
       this.warn("this database driver has no transactions: each change runs as separate statements (see DrizzleRepo `transactions`). A driver with transactions is safer: @neondatabase/serverless Pool, node-postgres or postgres.js.");
+      if (o.atomic) throw new CmsError("transactions_required");
       return fn(this);
     });
   }
@@ -239,7 +243,9 @@ export class DrizzleRepo implements CmsRepo {
   }
   async updateDoc(id: string, p: DocPatch, expectedVersion?: number) {
     const D = this.t.documents;
-    const where = expectedVersion === undefined ? eq(D.id, id) : and(eq(D.id, id), eq(D.version, expectedVersion));
+    // With an expected version the row must also still be live (not in the trash): a guarded write
+    // never lands on a document deleted after it was checked.
+    const where = expectedVersion === undefined ? eq(D.id, id) : and(eq(D.id, id), eq(D.version, expectedVersion), isNull(D.deletedAt));
     const [r] = await uniq(
       this.db
         .update(D)
@@ -274,6 +280,13 @@ export class DrizzleRepo implements CmsRepo {
     const V = this.t.versions;
     const rows = await this.db.select().from(V).where(eq(V.documentId, documentId)).orderBy(desc(V.version));
     return rows.map((r) => this.toVersion(r));
+  }
+  async pageVersions(documentId: string, o: { limit: number; before?: number | null }) {
+    const V = this.t.versions;
+    const where = o.before == null ? eq(V.documentId, documentId) : and(eq(V.documentId, documentId), lt(V.version, o.before));
+    const rows = await this.db.select().from(V).where(where).orderBy(desc(V.version)).limit(o.limit);
+    const [c] = await this.db.select({ n: sql<number>`count(*)::int` }).from(V).where(eq(V.documentId, documentId));
+    return { versions: rows.map((r) => this.toVersion(r)), total: Number(c?.n ?? 0) };
   }
   async getVersion(documentId: string, version: number) {
     const V = this.t.versions;
@@ -377,8 +390,16 @@ export class DrizzleRepo implements CmsRepo {
       conds.push(or(lt(A.at, new Date(at)), and(eq(A.at, new Date(at)), lt(A.id, id))));
     }
     if (q.action) conds.push(eq(A.action, q.action));
+    const esc = (v: string) => v.replace(/[\\%_]/g, (c) => "\\" + c);
+    if (q.actionPrefix) conds.push(sql`${A.action} like ${`${esc(q.actionPrefix)}%`}`);
     if (q.outcome) conds.push(eq(A.outcome, q.outcome));
     if (q.actorKind) conds.push(eq(A.actorKind, q.actorKind));
+    if (q.actorId) conds.push(eq(A.actorId, q.actorId));
+    if (q.who) conds.push(sql`${A.actorLabel} ilike ${`%${esc(q.who)}%`}`);
+    if (q.collection) conds.push(eq(A.collection, q.collection));
+    if (q.slug) conds.push(eq(A.slug, q.slug));
+    if (q.since) conds.push(gte(A.at, new Date(q.since)));
+    if (q.until) conds.push(lt(A.at, new Date(q.until)));
     const rows = await this.db
       .select()
       .from(A)
@@ -543,7 +564,8 @@ export class DrizzleRepo implements CmsRepo {
     const R = this.t.releases;
     return (await this.db.select().from(R).orderBy(desc(R.createdAt))).map((r) => this.toRelease(r));
   }
-  async updateRelease(id: string, patch: ReleasePatch, expectedState?: CmsRelease["state"]) {
+  async updateRelease(id: string, patch: ReleasePatch, expected?: CmsRelease["state"] | { state?: CmsRelease["state"]; updatedAt?: string }) {
+    const e = typeof expected === "string" ? { state: expected } : (expected ?? {});
     const R = this.t.releases;
     const { publishAt, publishedAt, updatedAt, ...rest } = patch;
     const set = {
@@ -552,7 +574,11 @@ export class DrizzleRepo implements CmsRepo {
       ...(publishedAt !== undefined ? { publishedAt: date(publishedAt) } : {}),
       updatedAt: updatedAt ? new Date(updatedAt) : new Date(),
     };
-    const [r] = await this.db.update(R).set(set).where(expectedState ? and(eq(R.id, id), eq(R.state, expectedState)) : eq(R.id, id)).returning();
+    const conds = [eq(R.id, id)];
+    if (e.state) conds.push(eq(R.state, e.state));
+    // The revision is the time to the millisecond (older rows may hold microseconds).
+    if (e.updatedAt) conds.push(sql`date_trunc('milliseconds', ${R.updatedAt}) = ${new Date(e.updatedAt).toISOString()}::timestamptz`);
+    const [r] = await this.db.update(R).set(set).where(and(...conds)).returning();
     return r ? this.toRelease(r) : null;
   }
   async deleteRelease(id: string) {
@@ -768,12 +794,20 @@ export class DrizzleRepo implements CmsRepo {
     const where = [eq(R.kind, q.kind), ...(q.id !== undefined ? [eq(R.id, q.id)] : []), ...(q.scope !== undefined ? [eq(R.scope, q.scope)] : []), ...(q.before !== undefined ? [lt(R.createdAt, new Date(q.before))] : [])];
     return (await this.db.delete(R).where(and(...where)).returning({ id: R.id })).length;
   }
+  /**
+   * Change numbers are handed out in commit order (0.18.0): the row is added under a transaction
+   * advisory lock on this table, taken in the same statement and held until the commit. So a reader
+   * that sees number N has also seen every smaller number that will ever exist (gaps are rolled-back
+   * writes, never late ones), and an events stream can hand out N as a resume point.
+   */
+  readonly changesInCommitOrder = true;
   async appendChange(c: NewChange) {
-    const [r] = await this.db
-      .insert(this.t.changes)
-      .values({ event: c.event, collection: c.collection, slug: c.slug, version: c.version, origin: c.origin, data: c.data, ...(c.at ? { at: new Date(c.at) } : {}) })
-      .returning({ seq: this.t.changes.seq });
-    return Number(r.seq);
+    const C = this.t.changes;
+    const cfg = getTableConfig(C);
+    const lockName = `agent-cms:${cfg.schema ?? "public"}.${cfg.name}`;
+    const res = await this.db.execute(sql`with l as (select pg_advisory_xact_lock(hashtext(${lockName}))) insert into ${C} (${sql.identifier("at")}, ${sql.identifier("event")}, ${sql.identifier("collection")}, ${sql.identifier("slug")}, ${sql.identifier("version")}, ${sql.identifier("origin")}, ${sql.identifier("data")}) select ${c.at ? new Date(c.at).toISOString() : new Date().toISOString()}::timestamptz, ${c.event}, ${c.collection}, ${c.slug}, ${c.version}::integer, ${c.origin}, ${JSON.stringify(c.data ?? {})}::jsonb from l returning ${sql.identifier("seq")}`);
+    const rows = ((res as { rows?: unknown[] }).rows ?? (res as unknown as unknown[])) as { seq: string | number }[];
+    return Number(rows[0].seq);
   }
   async changesSince(seq: number, limit: number): Promise<ChangeRow[]> {
     const C = this.t.changes;

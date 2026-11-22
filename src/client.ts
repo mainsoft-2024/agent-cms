@@ -482,7 +482,8 @@ export function createRestClient(opts: RestClientOptions) {
       req<{ diagnostics: Diagnostic[]; checks: { code: string; message: string; severity: "error" | "warning"; path?: string; line?: number }[]; blocking: boolean }>("POST", `${doc(c, s)}/checks`, { body: { doc: d } }),
     autosave: (c: string, s: string, d: DocInputWire, baseVersion: number) => req<{ autosave: AutosaveState }>("PUT", `${doc(c, s)}/autosave`, { body: { doc: d, baseVersion } }).then((r) => r.autosave),
     discardAutosave: (c: string, s: string) => req<{ ok: true }>("DELETE", `${doc(c, s)}/autosave`),
-    publish: (c: string, s: string, o: { expectedVersion?: number; version?: number } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/publish`, { body: { version: o.version }, ifMatch: o.expectedVersion }).then((r) => r.doc),
+    /** `documentId`: publish only if the address still holds that document (else `document_replaced`). */
+    publish: (c: string, s: string, o: { expectedVersion?: number; version?: number; documentId?: string } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/publish`, { body: { version: o.version, documentId: o.documentId }, ifMatch: o.expectedVersion }).then((r) => r.doc),
     unpublish: (c: string, s: string, expectedVersion?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/unpublish`, { body: {}, ifMatch: expectedVersion }).then((r) => r.doc),
     archive: (c: string, s: string, expectedVersion?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/archive`, { body: {}, ifMatch: expectedVersion }).then((r) => r.doc),
     unarchive: (c: string, s: string, expectedVersion?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/unarchive`, { body: {}, ifMatch: expectedVersion }).then((r) => r.doc),
@@ -516,7 +517,7 @@ export function createRestClient(opts: RestClientOptions) {
     filters: (c: string) => req<{ filters: (SavedFilter & { mine: boolean })[] }>("GET", `/collections/${enc(c)}/_filters`).then((r) => r.filters),
     saveFilter: (c: string, b: { name: string; query: Record<string, string>; shared?: boolean }) => req<{ filter: SavedFilter }>("POST", `/collections/${enc(c)}/_filters`, { body: b }).then((r) => r.filter),
     removeFilter: (c: string, id: string) => req<{ ok: true }>("DELETE", `/collections/${enc(c)}/_filters/${enc(id)}`),
-    trash: (kind?: TrashRef["kind"]) => req<{ items: TrashItem[]; days: number; canPurge: boolean }>("GET", "/trash", { query: { kind } }),
+    trash: (kind?: TrashRef["kind"], q?: string) => req<{ items: TrashItem[]; days: number; canPurge: boolean }>("GET", "/trash", { query: { kind, q: q || undefined } }),
     restoreTrash: (items: TrashRef[]) => req<{ restored: number; results?: { kind: TrashRef["kind"]; id: string; ok: boolean; error?: { code: string; message: string } }[] }>("POST", "/trash/_restore", { body: { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
     purgeTrash: (items: TrashRef[] | "all") => req<{ purged: number }>("POST", "/trash/_purge", { body: items === "all" ? { all: true } : { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
     releases: () => req<{ releases: CmsRelease[] }>("GET", "/releases").then((r) => r.releases),
@@ -612,7 +613,7 @@ export function createRestClient(opts: RestClientOptions) {
       const query = [o.thumb ? "thumb=1" : o.download ? "download=1" : o.size ? `size=${enc(o.size)}` : "", a.rev ? `v=${a.rev}` : ""].filter(Boolean).join("&");
       return `${base}/files/${enc(a.id)}/${enc(a.name)}${query ? `?${query}` : ""}`;
     },
-    audit: (q: { cursor?: string | null; action?: string; outcome?: string; actorKind?: "user" | "key" | "system" | "anonymous"; limit?: number } = {}) => req<{ entries: AuditEntry[]; nextCursor: string | null }>("GET", "/audit", { query: q }),
+    audit: (q: { cursor?: string | null; action?: string; group?: string; outcome?: string; actorKind?: "user" | "key" | "system" | "anonymous"; actorId?: string; who?: string; collection?: string; slug?: string; since?: string; until?: string; limit?: number } = {}) => req<{ entries: AuditEntry[]; nextCursor: string | null }>("GET", "/audit", { query: q }),
   };
 }
 

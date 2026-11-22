@@ -33,6 +33,11 @@ test("keys: list with expired badge; create shows the secret once with MCP and C
   await user.click(screen.getByRole("button", { name: "New key" }));
   const dialog = await screen.findByRole("dialog", { name: "New key" });
   await user.type(within(dialog).getByLabelText("Name"), "release-bot");
+  // Least privilege first: a new key starts as read-only, and says so.
+  const access = within(dialog).getByRole("radiogroup", { name: "What it may do" });
+  assert.equal(within(access).getByRole("radio", { name: "Read" }).getAttribute("aria-checked"), "true");
+  assert.ok(within(dialog).getByText(/reads in every collection · never expires · from anywhere/));
+  await user.click(within(access).getByRole("radio", { name: "Custom" }));
   assert.equal(within(dialog).getByRole("checkbox", { name: "read" }).getAttribute("data-state"), "checked");
   await user.click(within(dialog).getByRole("checkbox", { name: "publish" }));
   await user.click(within(dialog).getByRole("checkbox", { name: "Notices" }));
@@ -65,7 +70,7 @@ test("keys: list with expired badge; create shows the secret once with MCP and C
 
   const keys = await s.cms.listKeys(admin);
   const made = keys.find((k) => k.name === "release-bot")!;
-  assert.deepEqual(made.scopes, ["read", "write", "publish"]);
+  assert.deepEqual(made.scopes, ["read", "publish"]);
   assert.deepEqual(made.collections, ["notices"]);
   assert.ok(made.expiresAt && Date.parse(made.expiresAt) > Date.now() + 29 * 86_400_000);
 
@@ -103,12 +108,18 @@ test("audit: entries, filters, 0 axe violations", async () => {
   await s.cms.createKey(admin, { name: "bot", scopes: ["read", "write"] });
   await new Promise((r) => setTimeout(r, 20));
   renderWith(s, <CmsAudit />);
-  await screen.findByText("Create key");
-  assert.ok(screen.getByText("Publish"));
-  assert.ok(screen.getByText("guide/a"));
-  assert.ok(screen.getByRole("combobox", { name: "Action" }));
+  // The table (wide screens); a phone gets the same entries as a list of cards.
+  const table = await screen.findByRole("table");
+  await within(table).findByText("Create key");
+  assert.ok(within(table).getByText("Publish"));
+  assert.ok(within(table).getByText("guide/a"));
+  const cards = screen.getByRole("list", { name: "Audit log" });
+  assert.ok(within(cards).getByText("Create key"));
+  assert.ok(screen.getByRole("combobox", { name: "Kind" }));
   assert.ok(screen.getByRole("combobox", { name: "Who" }));
   assert.ok(screen.getByRole("combobox", { name: "Result" }));
+  assert.ok(screen.getByRole("combobox", { name: "Period" }));
+  assert.ok(screen.getByRole("searchbox", { name: "Who (name)" }));
   assert.deepEqual(await axeViolations(), []);
 });
 

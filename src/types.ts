@@ -90,6 +90,11 @@ export interface AutosaveState {
 }
 
 export interface CmsDoc extends DocContent {
+  /**
+   * Set on what a write returns to someone who may change the document but not edit or read its
+   * working copy (0.18.0): only the state is real; title, body and fields are empty.
+   */
+  receipt?: true;
   id: string;
   collection: string;
   status: DocStatus;
@@ -185,6 +190,8 @@ export interface ReleaseItem {
 export interface CmsRelease {
   id: string;
   name: string;
+  /** Items left out of this answer because the reader may not edit those documents (0.18.0). */
+  hiddenItems?: number;
   state: "open" | "scheduled" | "published";
   publishAt: string | null;
   items: ReleaseItem[];

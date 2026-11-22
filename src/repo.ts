@@ -39,8 +39,20 @@ export interface AuditQuery {
   before?: string | null;
   limit: number;
   action?: string;
+  /** All actions of one kind: `doc.` matches `doc.publish`, `doc.delete`, … (0.18.0). */
+  actionPrefix?: string;
   outcome?: AuditEntry["outcome"];
   actorKind?: AuditEntry["actorKind"];
+  /** One person or key by id (0.18.0). */
+  actorId?: string;
+  /** Words in the name shown for who did it (0.18.0). */
+  who?: string;
+  /** What it was done to (0.18.0). */
+  collection?: string;
+  slug?: string;
+  /** A period: entries at or after `since` and before `until` (ISO times, 0.18.0). */
+  since?: string;
+  until?: string;
 }
 
 export type NewAsset = Omit<CmsAsset, "createdAt" | "updatedAt" | "deletedAt" | "deletedBy" | "focalX" | "focalY" | "rev"> & { createdAt?: string; updatedAt?: string; focalX?: number | null; focalY?: number | null; rev?: number };
@@ -99,7 +111,12 @@ export const inFolder = (folder: string, under: string) => under === "" || folde
 
 export interface CmsRepo {
   /** Run `fn` atomically (one DB transaction). */
-  tx<T>(fn: (repo: CmsRepo) => Promise<T>): Promise<T>;
+  /**
+   * Run `fn` in a transaction. With `atomic`, a store that cannot promise all-or-nothing (a
+   * driver without transactions) refuses with `transactions_required` instead of running the
+   * steps one by one: used where half a change would be wrong (publishing a release).
+   */
+  tx<T>(fn: (repo: CmsRepo) => Promise<T>, o?: { atomic?: boolean }): Promise<T>;
 
   /** Documents in the trash are not found unless `trashed` is set. */
   findDoc(collection: string, slug: string, o?: FindOptions): Promise<CmsDoc | null>;
@@ -107,11 +124,17 @@ export interface CmsRepo {
   listDocs(filter: DocFilter): Promise<CmsDoc[]>;
   insertDoc(doc: NewDoc): Promise<CmsDoc>;
   /** Returns null when `expectedVersion` is given and the row moved on. */
+  /** With `expectedVersion`: only if the row is still at that version and not in the trash (else null). */
   updateDoc(id: string, patch: DocPatch, expectedVersion?: number): Promise<CmsDoc | null>;
   deleteDoc(id: string): Promise<void>;
 
   insertVersion(v: NewVersion): Promise<void>;
   listVersions(documentId: string): Promise<StoredVersion[]>;
+  /**
+   * One page of a document's versions, newest first, older than `before` (0.18.0). Optional:
+   * without it the CMS pages `listVersions` in memory.
+   */
+  pageVersions?(documentId: string, o: { limit: number; before?: number | null }): Promise<{ versions: StoredVersion[]; total: number }>;
   getVersion(documentId: string, version: number): Promise<StoredVersion | null>;
   setVersionReviewed(documentId: string, version: number, reviewed: ReviewMark[]): Promise<void>;
   updateVersion(documentId: string, version: number, patch: VersionPatch): Promise<void>;
@@ -169,7 +192,11 @@ export interface CmsRepo {
   /** Newest first. */
   listReleases(): Promise<CmsRelease[]>;
   /** With `expectedState`, null when the release is no longer in that state (someone else ran it). */
-  updateRelease(id: string, patch: ReleasePatch, expectedState?: CmsRelease["state"]): Promise<CmsRelease | null>;
+  /**
+   * `expected`: the state the release must still be in, or `{ state, updatedAt }` (0.18.0): the
+   * release must be exactly as it was read (its `updatedAt` is its revision). Null when it is not.
+   */
+  updateRelease(id: string, patch: ReleasePatch, expected?: CmsRelease["state"] | { state?: CmsRelease["state"]; updatedAt?: string }): Promise<CmsRelease | null>;
   deleteRelease(id: string): Promise<void>;
 
   insertFilter(f: NewFilter): Promise<SavedFilter>;
@@ -235,6 +262,12 @@ export interface CmsRepo {
   appendChange?(c: NewChange): Promise<number>;
   /** Rows after `seq`, oldest first. */
   changesSince?(seq: number, limit: number): Promise<ChangeRow[]>;
+  /**
+   * True when change numbers become visible in order (0.18.0): seeing number N means every smaller
+   * number is either visible or will never exist. Without it, the CMS waits a few seconds at a
+   * missing number in case a slower transaction still commits it.
+   */
+  readonly changesInCommitOrder?: boolean;
   /** The newest number (0 when empty). */
   lastChange?(): Promise<number>;
   /** Drop rows older than `before`; returns how many went. */
@@ -357,10 +390,13 @@ export class MemoryRepo implements CmsRepo {
       assetRefs: this.assetRefs.map((r) => ({ ...r })),
       releases: structuredClone(this.releases),
       comments: structuredClone(this.comments),
+      changesTop: this.changeBase,
     };
     try {
       return await fn(this);
     } catch (e) {
+      // Change rows of a rolled-back write go too; their numbers are not handed out again.
+      this.changes = this.changes.filter((c) => c.seq <= snap.changesTop);
       this.docs = snap.docs;
       this.versions = snap.versions;
       this.assets = snap.assets;
@@ -400,7 +436,7 @@ export class MemoryRepo implements CmsRepo {
   async updateDoc(id: string, patch: DocPatch, expectedVersion?: number) {
     const d = this.docs.get(id);
     if (!d) return null;
-    if (expectedVersion !== undefined && d.version !== expectedVersion) return null;
+    if (expectedVersion !== undefined && (d.version !== expectedVersion || d.deletedAt)) return null;
     if (patch.slug && patch.slug !== d.slug) {
       for (const o of this.docs.values()) if (o.id !== id && o.collection === d.collection && o.slug === patch.slug) throw new Error("duplicate slug");
     }
@@ -422,6 +458,11 @@ export class MemoryRepo implements CmsRepo {
   }
   async listVersions(documentId: string) {
     return this.versions.filter((v) => v.documentId === documentId).sort((a, b) => b.version - a.version).map((v) => structuredClone(v));
+  }
+  async pageVersions(documentId: string, o: { limit: number; before?: number | null }) {
+    const all = this.versions.filter((v) => v.documentId === documentId).sort((a, b) => b.version - a.version);
+    const rows = all.filter((v) => o.before == null || v.version < o.before).slice(0, o.limit);
+    return { versions: rows.map((v) => structuredClone(v)), total: all.length };
   }
   async getVersion(documentId: string, version: number) {
     const v = this.versions.find((x) => x.documentId === documentId && x.version === version);
@@ -509,7 +550,20 @@ export class MemoryRepo implements CmsRepo {
   }
   async listAudit(q: AuditQuery) {
     return this.audit
-      .filter((e) => (!q.before || `${e.at}|${e.id}` < q.before) && (!q.action || e.action === q.action) && (!q.outcome || e.outcome === q.outcome) && (!q.actorKind || e.actorKind === q.actorKind))
+      .filter(
+        (e) =>
+          (!q.before || `${e.at}|${e.id}` < q.before) &&
+          (!q.action || e.action === q.action) &&
+          (!q.actionPrefix || e.action.startsWith(q.actionPrefix)) &&
+          (!q.outcome || e.outcome === q.outcome) &&
+          (!q.actorKind || e.actorKind === q.actorKind) &&
+          (!q.actorId || e.actorId === q.actorId) &&
+          (!q.who || e.actorLabel.toLowerCase().includes(q.who.toLowerCase())) &&
+          (!q.collection || e.collection === q.collection) &&
+          (!q.slug || e.slug === q.slug) &&
+          (!q.since || e.at >= q.since) &&
+          (!q.until || e.at < q.until)
+      )
       .sort((a, b) => `${b.at}|${b.id}`.localeCompare(`${a.at}|${a.id}`))
       .slice(0, q.limit)
       .map((e) => structuredClone(e));
@@ -640,9 +694,10 @@ export class MemoryRepo implements CmsRepo {
   async listReleases() {
     return this.releases.map((r) => structuredClone(r)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
-  async updateRelease(id: string, patch: ReleasePatch, expectedState?: CmsRelease["state"]) {
+  async updateRelease(id: string, patch: ReleasePatch, expected?: CmsRelease["state"] | { state?: CmsRelease["state"]; updatedAt?: string }) {
     const r = this.releases.find((x) => x.id === id);
-    if (!r || (expectedState && r.state !== expectedState)) return null;
+    const e = typeof expected === "string" ? { state: expected } : (expected ?? {});
+    if (!r || (e.state && r.state !== e.state) || (e.updatedAt && Date.parse(r.updatedAt) !== Date.parse(e.updatedAt))) return null;
     Object.assign(r, structuredClone(Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))));
     return structuredClone(r);
   }
@@ -803,12 +858,18 @@ export class MemoryRepo implements CmsRepo {
     return n - this.records.length;
   }
   private changes: ChangeRow[] = [];
+  /**
+   * Rows are added and seen at once, in order. The memory repo is for one process and tests: its
+   * transactions share live state, so it makes no promise for writes that overlap in time.
+   */
+  readonly changesInCommitOrder = true;
   async appendChange(c: NewChange) {
-    const seq = (this.changes.at(-1)?.seq ?? this.changeBase) + 1;
+    const seq = Math.max(this.changes.at(-1)?.seq ?? 0, this.changeBase) + 1;
+    this.changeBase = seq;
     this.changes.push({ seq, at: c.at ?? new Date().toISOString(), event: c.event, collection: c.collection, slug: c.slug, version: c.version, origin: c.origin, data: structuredClone(c.data) });
     return seq;
   }
-  /** Numbers keep going after a prune, like a database sequence. */
+  /** The highest number handed out: numbers keep going after a prune or a rollback, like a database sequence. */
   private changeBase = 0;
   async changesSince(seq: number, limit: number) {
     return this.changes.filter((c) => c.seq > seq).slice(0, limit).map((c) => structuredClone(c));
@@ -818,9 +879,7 @@ export class MemoryRepo implements CmsRepo {
   }
   async pruneChanges(before: string) {
     const n = this.changes.length;
-    const last = this.changes.at(-1)?.seq ?? this.changeBase;
     this.changes = this.changes.filter((c) => c.at >= before);
-    if (!this.changes.length) this.changeBase = last;
     return n - this.changes.length;
   }
   async findDocsByIds(ids: readonly string[]) {

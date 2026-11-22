@@ -22,10 +22,14 @@ test("webhooks: create shows the secret; test, a failed delivery sent again, edi
   renderWith(s, <CmsWebhooks />);
   await screen.findByText("No webhooks yet.");
 
-  await user.click(screen.getByRole("button", { name: "New webhook" }));
+  // The header's button (the empty state has one too).
+  await user.click(screen.getAllByRole("button", { name: "New webhook" })[0]);
   const dlg = await screen.findByRole("dialog");
   await user.type(within(dlg).getByLabelText("Name"), "Site cache");
   await user.type(within(dlg).getByLabelText("Address"), "https://intranet.example/hook");
+  // "Every event" is the default; choosing events is an explicit step.
+  await user.click(within(dlg).getByRole("radio", { name: "Only these" }));
+  assert.equal((within(dlg).getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled, true, "nothing picked yet");
   await user.click(within(dlg).getByRole("checkbox", { name: "Publish" }));
   await user.click(within(dlg).getByRole("checkbox", { name: "Guide" }));
   await user.click(within(dlg).getByRole("button", { name: "Create" }));
@@ -35,6 +39,9 @@ test("webhooks: create shows the secret; test, a failed delivery sent again, edi
   await user.click(within(dlg).getByRole("button", { name: "Create" }));
 
   const made = await screen.findByRole("dialog", { name: "“Site cache” is ready" });
+  // Masked until "Show" (someone may be looking over the shoulder).
+  assert.ok(within(made).queryByText(/^whsec_[A-Za-z0-9_-]{20,}$/) === null);
+  await user.click(within(made).getAllByRole("button", { name: "Show" })[0]);
   const secret = within(made).getByText(/^whsec_[A-Za-z0-9_-]{20,}$/).textContent ?? "";
   await user.click(within(made).getAllByRole("button", { name: "Close" })[0]);
 
@@ -45,6 +52,8 @@ test("webhooks: create shows the secret; test, a failed delivery sent again, edi
   await within(panel).findByText("Nothing has been sent yet.");
   assert.ok(within(panel).queryByText(/^whsec_[A-Za-z0-9_-]{20,}$/) === null, "the secret is hidden until asked for");
   await user.click(within(panel).getByRole("button", { name: "Show" }));
+  // The secret asked for is shown at once, and focus moves to the button that hides it again.
+  await waitFor(() => assert.equal((document.activeElement as HTMLElement | null)?.textContent, "Hide"));
   assert.equal((await within(panel).findByText(/^whsec_[A-Za-z0-9_-]{20,}$/)).textContent, secret, "the same secret as at creation");
 
   await user.click(within(panel).getByRole("button", { name: "Send a test" }));
@@ -61,7 +70,7 @@ test("webhooks: create shows the secret; test, a failed delivery sent again, edi
   const log = within(panel).getByRole("list", { name: "Deliveries" });
   await waitFor(() => assert.equal(within(log).getAllByRole("listitem").length, 3));
   const failed = within(log).getAllByRole("listitem").find((li) => /Publish, a/.test(li.textContent ?? ""))!;
-  assert.match(failed.textContent ?? "", /^500Publish, a/);
+  assert.match(failed.textContent ?? "", /^Refused500Publish, a/);
   await waitFor(() => assert.match(row.textContent ?? "", /\d failed/));
   s.hooks.answer = 200;
   await user.click(within(failed).getByRole("button", { name: "Send again" }));
@@ -101,7 +110,7 @@ test("webhooks: without secretsKey the screen says what is missing; Korean, phon
   const bare = makeServer();
   renderWith(bare, <CmsWebhooks />);
   await screen.findByText(/Webhooks need `secretsKey` in createCms/);
-  assert.equal((screen.getByRole("button", { name: "New webhook" }) as HTMLButtonElement).disabled, true);
+  assert.equal((screen.getAllByRole("button", { name: "New webhook" })[0] as HTMLButtonElement).disabled, true);
   cleanup();
 
   setMobile(true);
