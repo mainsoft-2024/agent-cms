@@ -328,9 +328,13 @@ export function CopyButton({ value, label, className }: { value: string; label?:
 }
 
 /** Monospace value with a copy button (key secrets, URLs, commands). */
-export function CodeBox({ value, label, className, multiline, secret }: { value: string; label?: string; className?: string; multiline?: boolean; /** Hidden on screen (and from screen readers) until Show is pressed; Copy still copies it. */ secret?: string }) {
+export function CodeBox({ value, label, className, multiline, secret, revealed, focusOnShow }: { value: string; label?: string; className?: string; multiline?: boolean; /** Hidden on screen (and from screen readers) until Show is pressed; Copy still copies it. */ secret?: string; /** Start with the secret shown (it was just asked for). */ revealed?: boolean; /** Move focus to the Hide button when it appears (the control that revealed it went away). */ focusOnShow?: boolean }) {
   const { t } = useCms();
-  const [shown, setShown] = React.useState(false);
+  const [shown, setShown] = React.useState(!!revealed);
+  const toggleRef = React.useRef<HTMLButtonElement>(null);
+  React.useEffect(() => {
+    if (focusOnShow) toggleRef.current?.focus();
+  }, [focusOnShow]);
   const masked = secret && !shown ? value.split(secret).join(`${secret.slice(0, 4)}${"•".repeat(12)}${secret.slice(-4)}`) : value;
   return (
     <div className={cn("flex w-full min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted/50 px-3 py-2", className)}>
@@ -338,7 +342,7 @@ export function CodeBox({ value, label, className, multiline, secret }: { value:
         {masked}
       </code>
       {secret ? (
-        <Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2 font-sans text-xs" aria-pressed={shown} onClick={() => setShown((v) => !v)}>
+        <Button ref={toggleRef} type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2 font-sans text-xs" aria-pressed={shown} onClick={() => setShown((v) => !v)}>
           {shown ? t("hide") : t("show")}
         </Button>
       ) : null}
@@ -948,8 +952,11 @@ export function DocPicker({ search, value, onPick, label, placeholder, disabled,
       clearTimeout(timer);
     };
   }, [q, open, search, tick]);
+  // A new source (another collection) starts empty: options from the old one are never offered.
+  React.useEffect(() => setFound([]), [search]);
   const choose = (d: DocOption | undefined) => {
-    if (!d) return;
+    // While a new answer is on its way the old options stay visible but cannot be picked.
+    if (!d || state !== "idle") return;
     onPick(d);
     setQ("");
     setOpen(false);
@@ -1002,8 +1009,9 @@ export function DocPicker({ search, value, onPick, label, placeholder, disabled,
                 aria-selected={i === active}
                 onMouseDown={(e) => e.preventDefault()}
                 onMouseEnter={() => setActive(i)}
+                aria-disabled={state !== "idle" || undefined}
                 onClick={() => choose(d)}
-                className={cn("flex cursor-pointer flex-col rounded px-2 py-1.5 text-sm", i === active && "bg-accent")}
+                className={cn("flex cursor-pointer flex-col rounded px-2 py-1.5 text-sm", i === active && "bg-accent", state !== "idle" && "cursor-default opacity-50")}
               >
                 <span className="truncate">{d.title || d.slug}</span>
                 <span className="truncate text-xs text-muted-foreground">{[d.sub, d.slug].filter(Boolean).join(" · ")}</span>

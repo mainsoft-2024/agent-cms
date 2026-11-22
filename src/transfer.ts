@@ -73,7 +73,7 @@ export interface TransferContext {
   diagnose: (actor: Actor, collection: string, input: DocInput, o: { slug?: string }) => Promise<Diagnostic[]>;
   create: (actor: Actor, collection: string, input: DocInput, o: { note?: string }) => Promise<CmsDoc>;
   update: (actor: Actor, collection: string, slug: string, input: DocInput, o: { note?: string; expectedVersion?: number }) => Promise<CmsDoc>;
-  publish: (actor: Actor, collection: string, slug: string, o?: { version?: number; expectedVersion?: number }) => Promise<CmsDoc>;
+  publish: (actor: Actor, collection: string, slug: string, o?: { version?: number; expectedVersion?: number; documentId?: string }) => Promise<CmsDoc>;
   assetsOf: (actor: Actor, docs: CmsDoc[]) => Promise<{ id: string; store: string; key: string; name: string; alt: string; tags: string[] }[]>;
 }
 
@@ -132,10 +132,11 @@ export function createTransfer(ctx: TransferContext) {
           item.title = doc.title ?? name;
           const cur = await ctx.repo.findDoc(col, item.slug);
           const wasPublic = data.status === "published";
-          item.fromVersion = cur?.version ?? null;
-          if (cur?.deletedAt) throw fail("slug_in_trash", { slug: item.slug });
-          // Compared with (and diffed against) only when this person may edit that document.
+          // Compared with (and diffed against) only when this person may edit that document; until
+          // then nothing about it (its version, whether it is in the trash) is said.
           if (cur && !ctx.can(actor, col, "write", cur)) throw fail("forbidden_write", { collection: col });
+          if (cur?.deletedAt) throw fail("slug_in_trash", { slug: item.slug });
+          item.fromVersion = cur?.version ?? null;
           item.diagnostics = await ctx.diagnose(actor, col, doc, { slug: cur ? item.slug : undefined });
           const same = !!cur && stable({ t: cur.title, s: cur.summary, b: cur.body.trim(), c: cur.category, k: cur.keywords, f: { ...cur.fields, ...(doc.fields ?? {}) } }) === stable({ t: doc.title ?? cur.title, s: doc.summary ?? cur.summary, b: (doc.body ?? "").trim(), c: doc.category === undefined ? cur.category : doc.category, k: doc.keywords ?? cur.keywords, f: cur.fields });
           if (o.diff && cur && !same) item.diff = unifiedDiff(cur.body, doc.body ?? "", { from: `v${cur.version}`, to: f.path });
@@ -168,7 +169,7 @@ export function createTransfer(ctx: TransferContext) {
             try {
               if (!ctx.can(actor, col, "publish")) throw fail("forbidden_publish", { collection: col });
               // Exactly what this import saved: an edit made meanwhile is a conflict, not published.
-              await ctx.publish(actor, col, item.slug, { version: item.toVersion ?? cur?.version, expectedVersion: item.toVersion ?? cur?.version });
+              await ctx.publish(actor, col, item.slug, { version: item.toVersion ?? cur?.version, expectedVersion: item.toVersion ?? cur?.version, documentId: item.documentId ?? undefined });
               item.published = true;
               item.publishError = null;
             } catch (e) {

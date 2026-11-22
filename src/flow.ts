@@ -25,6 +25,8 @@ export interface FlowContext {
   can: (actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) => boolean;
   assert: (actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) => void;
   isAdmin: (actor: Actor) => boolean;
+  /** Whether the collection's rules decide per document (`access`). */
+  rulesPerDocument: (col: string) => boolean;
   ready: () => Promise<void> | void;
   /** The document as an editor sees it, or `not_found` / a permission error. */
   editable: (actor: Actor, col: string, slug: string) => Promise<CmsDoc>;
@@ -92,6 +94,8 @@ export interface BlockedItem {
   title: string;
   code: string;
   message: string;
+  /** An item the caller may not see (0.18.0): collection, slug and title are empty. */
+  hidden?: boolean;
 }
 
 export interface ScheduledRun {
@@ -388,7 +392,8 @@ export function createFlow(ctx: FlowContext) {
     if (o.collection) assert(actor, o.collection, "write");
     const cols = (o.collection ? [ctx.collection(o.collection)] : ctx.collections()).filter((c) => can(actor, c.slug, "write"));
     const out: DocSummary[] = [];
-    for (const c of cols) for (const d of await repo.listDocs({ collection: c.slug })) if (d.review?.state === "requested") out.push(ctx.summaryOf(d));
+    // Each document by its own rules: only the ones this person may edit.
+    for (const c of cols) for (const d of await repo.listDocs({ collection: c.slug })) if (d.review?.state === "requested" && can(actor, c.slug, "write", d)) out.push(ctx.summaryOf(d));
     return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -498,14 +503,45 @@ export function createFlow(ctx: FlowContext) {
     return rel;
   }
 
+  /**
+   * Whether `actor` may see a release item (0.18.0): only items of documents they may edit. An item
+   * whose document is gone is shown only where that reveals nothing: to admins, or in a collection
+   * without per-document rules to someone who may write there.
+   */
+  function visibleItem(actor: Actor, it: ReleaseItem, doc: CmsDoc | null): boolean {
+    if (!known(it.collection)) return ctx.isAdmin(actor);
+    if (doc) return can(actor, it.collection, "write", doc);
+    return ctx.isAdmin(actor) || (!ctx.rulesPerDocument(it.collection) && can(actor, it.collection, "write"));
+  }
+  async function itemDocs(rels: readonly CmsRelease[]) {
+    const ids = [...new Set(rels.flatMap((r) => r.items.filter((i) => known(i.collection)).map((i) => i.documentId)))];
+    return docsById(repo, ids);
+  }
+  /** The release as `actor` may see it: their items, and a count of the rest. */
+  async function shownRelease(actor: Actor, rel: CmsRelease): Promise<CmsRelease> {
+    if (actor.kind === "system") return rel;
+    const docs = await itemDocs([rel]);
+    const mine = rel.items.filter((i) => visibleItem(actor, i, docs.get(i.documentId) ?? null));
+    return mine.length === rel.items.length ? rel : { ...rel, items: mine, hiddenItems: rel.items.length - mine.length };
+  }
+  /**
+   * Changing a whole release (its name, its time, deleting it, publishing it) is for admins and
+   * for people who can see every item in it: nobody acts on documents hidden from them.
+   */
+  async function assertManage(actor: Actor, rel: CmsRelease) {
+    if (actor.kind === "system" || ctx.isAdmin(actor)) return;
+    const docs = await itemDocs([rel]);
+    if (rel.items.some((i) => !visibleItem(actor, i, docs.get(i.documentId) ?? null))) throw fail("forbidden_release");
+  }
+
   async function viewRelease(actor: Actor, rel: CmsRelease): Promise<ReleaseView> {
     const items: ReleaseView["items"] = [];
-    const docs = await docsById(repo, rel.items.filter((it) => known(it.collection)).map((it) => it.documentId));
+    const docs = await itemDocs([rel]);
     let hidden = 0;
     for (const it of rel.items) {
       const doc = known(it.collection) ? (docs.get(it.documentId) ?? null) : null;
       // A document this person may not edit is counted, not shown (title, slug and versions stay private).
-      if (!known(it.collection) || !can(actor, it.collection, "write", doc)) {
+      if (!visibleItem(actor, it, doc)) {
         hidden++;
         continue;
       }
@@ -519,10 +555,9 @@ export function createFlow(ctx: FlowContext) {
     needEditor(actor);
     // The list carries each item's title and slug: only the ones this person may edit, with a count of the rest.
     const all = await repo.listReleases();
-    const ids = [...new Set(all.flatMap((r) => r.items.map((i) => i.documentId)))];
-    const docs = await docsById(repo, ids);
+    const docs = await itemDocs(all);
     return all.map((r) => {
-      const mine = r.items.filter((i) => known(i.collection) && can(actor, i.collection, "write", docs.get(i.documentId) ?? null));
+      const mine = r.items.filter((i) => visibleItem(actor, i, docs.get(i.documentId) ?? null));
       return mine.length === r.items.length ? r : { ...r, items: mine, hiddenItems: r.items.length - mine.length };
     });
   }
@@ -548,6 +583,7 @@ export function createFlow(ctx: FlowContext) {
   async function renameRelease(actor: Actor, id: string, input: { name: string }): Promise<ReleaseView> {
     needEditor(actor);
     const rel = await loadRelease(id, true);
+    await assertManage(actor, rel);
     return viewRelease(actor, (await repo.updateRelease(rel.id, { name: nameOf(input.name), updatedAt: nowIso() }))!);
   }
 
@@ -555,6 +591,7 @@ export function createFlow(ctx: FlowContext) {
   async function removeRelease(actor: Actor, id: string): Promise<void> {
     needEditor(actor);
     const rel = await loadRelease(id, true);
+    await assertManage(actor, rel);
     await repo.deleteRelease(rel.id);
   }
 
@@ -574,6 +611,12 @@ export function createFlow(ctx: FlowContext) {
       if (action === "unpublish" && doc.publishedVersion === null) throw fail("not_published");
       const other = others.find((r) => r.items.some((x) => x.documentId === doc.id));
       if (other) throw fail("in_other_release", { release: other.name, slug: doc.slug });
+      // A scheduled release goes out as the scheduler, later, with nobody checking again: only
+      // someone who may publish the document (and whose version passed review) adds to it.
+      if (rel.state === "scheduled") {
+        assert(actor, doc.collection, "publish", doc);
+        if (action === "publish") await ctx.assertReviewed(repo, actor, doc, doc.version);
+      }
       const item: ReleaseItem = { documentId: doc.id, collection: doc.collection, slug: doc.slug, title: doc.title, action, version: doc.version };
       const at = items.findIndex((x) => x.documentId === doc.id);
       if (at >= 0) items[at] = item;
@@ -585,6 +628,10 @@ export function createFlow(ctx: FlowContext) {
   async function removeFromRelease(actor: Actor, id: string, documentId: string): Promise<ReleaseView> {
     needEditor(actor);
     const rel = await loadRelease(id, true);
+    const it = rel.items.find((x) => x.documentId === documentId);
+    const doc = it && known(it.collection) ? await repo.findDocById(it.documentId) : null;
+    // An item this person cannot see is, for them, not in the release.
+    if (!it || !visibleItem(actor, it, doc)) throw fail("not_found", { collection: it?.collection ?? "", slug: "" });
     return viewRelease(actor, (await repo.updateRelease(rel.id, { items: rel.items.filter((x) => x.documentId !== documentId), updatedAt: nowIso() }))!);
   }
 
@@ -605,8 +652,13 @@ export function createFlow(ctx: FlowContext) {
       const blocked: BlockedItem[] = [];
       const ok: { item: ReleaseItem; doc: CmsDoc }[] = [];
       for (const item of cur.items) {
-        const block = (code: CmsErrorCode, params: ErrorParams = {}, message?: string) => blocked.push({ collection: item.collection, slug: item.slug, title: item.title, code, message: message ?? ctx.message(fail(code, params)) });
         const doc = known(item.collection) ? await r.findDocById(item.documentId) : null;
+        // What blocks on an item hidden from the caller is said without naming it.
+        if (actor.kind !== "system" && !visibleItem(actor, item, doc)) {
+          blocked.push({ collection: "", slug: "", title: "", code: "forbidden_release", message: ctx.message(fail("forbidden_release")), hidden: true });
+          continue;
+        }
+        const block = (code: CmsErrorCode, params: ErrorParams = {}, message?: string) => blocked.push({ collection: item.collection, slug: item.slug, title: item.title, code, message: message ?? ctx.message(fail(code, params)) });
         if (!doc) block("not_found", { collection: item.collection, slug: item.slug });
         else if (!can(actor, doc.collection, "publish", doc)) block("forbidden_publish", { collection: doc.collection });
         else if (item.action === "unpublish") ok.push({ item, doc });
@@ -636,13 +688,14 @@ export function createFlow(ctx: FlowContext) {
       ctx.changed(d.prev, d.doc);
     }
     audit(actor, "release.publish", { detail: { id: rel.id, name: rel.name, documents: done.length } });
-    return rel;
+    return shownRelease(actor, rel);
   }
 
   /** Publish the release at a time. The person scheduling must be allowed to publish every document in it. */
   async function scheduleRelease(actor: Actor, id: string, o: { publishAt: string | null }): Promise<ReleaseView> {
     needEditor(actor);
     const rel = await loadRelease(id, true);
+    await assertManage(actor, rel);
     if (o.publishAt === null) return viewRelease(actor, (await repo.updateRelease(rel.id, { state: "open", publishAt: null, updatedAt: nowIso() }))!);
     const publishAt = future(o.publishAt, "publishAt");
     if (!publishAt) throw fail("schedule_invalid", { field: "publishAt" });
@@ -728,7 +781,8 @@ export function createFlow(ctx: FlowContext) {
   async function presenceIn(actor: Actor, col: string): Promise<{ slug: string; people: Presence[] }[]> {
     await ctx.ready();
     assert(actor, col, "write");
-    const docs = await repo.listDocs({ collection: col });
+    // Only documents this person may edit: who is in the others is not theirs to know.
+    const docs = (await repo.listDocs({ collection: col })).filter((d) => can(actor, col, "write", d));
     const bySlug = new Map(docs.map((d) => [d.id, d.slug]));
     const out = new Map<string, Presence[]>();
     for (const p of await repo.listPresence(since(), docs.map((d) => d.id))) {

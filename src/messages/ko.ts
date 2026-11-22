@@ -17,6 +17,8 @@ export const ko: Messages = {
   forbidden_read: "{collection} 읽기 권한이 없음",
   forbidden_write: "{collection} 편집 권한이 없음",
   forbidden_publish: "{collection} 게시 권한이 없음",
+  document_replaced: "{slug} 주소에 이제 다른 문서가 있음. 아무것도 바꾸지 않음",
+  forbidden_release: "이 릴리스에 고칠 수 없는 문서가 있음. 릴리스 전체를 바꾸는 일은 관리자나 모든 문서를 고칠 수 있는 사람만 함",
   forbidden_keys: "API 키 관리 권한이 없음",
   forbidden_audit: "감사 로그를 볼 권한이 없음",
   key_too_wide: "이 키보다 넓은 권한의 키는 만들 수 없음",

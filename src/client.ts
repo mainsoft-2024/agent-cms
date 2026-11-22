@@ -482,7 +482,8 @@ export function createRestClient(opts: RestClientOptions) {
       req<{ diagnostics: Diagnostic[]; checks: { code: string; message: string; severity: "error" | "warning"; path?: string; line?: number }[]; blocking: boolean }>("POST", `${doc(c, s)}/checks`, { body: { doc: d } }),
     autosave: (c: string, s: string, d: DocInputWire, baseVersion: number) => req<{ autosave: AutosaveState }>("PUT", `${doc(c, s)}/autosave`, { body: { doc: d, baseVersion } }).then((r) => r.autosave),
     discardAutosave: (c: string, s: string) => req<{ ok: true }>("DELETE", `${doc(c, s)}/autosave`),
-    publish: (c: string, s: string, o: { expectedVersion?: number; version?: number } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/publish`, { body: { version: o.version }, ifMatch: o.expectedVersion }).then((r) => r.doc),
+    /** `documentId`: publish only if the address still holds that document (else `document_replaced`). */
+    publish: (c: string, s: string, o: { expectedVersion?: number; version?: number; documentId?: string } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/publish`, { body: { version: o.version, documentId: o.documentId }, ifMatch: o.expectedVersion }).then((r) => r.doc),
     unpublish: (c: string, s: string, expectedVersion?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/unpublish`, { body: {}, ifMatch: expectedVersion }).then((r) => r.doc),
     archive: (c: string, s: string, expectedVersion?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/archive`, { body: {}, ifMatch: expectedVersion }).then((r) => r.doc),
     unarchive: (c: string, s: string, expectedVersion?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/unarchive`, { body: {}, ifMatch: expectedVersion }).then((r) => r.doc),

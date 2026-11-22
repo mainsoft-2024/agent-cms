@@ -257,6 +257,12 @@ export interface CmsRepo {
   appendChange?(c: NewChange): Promise<number>;
   /** Rows after `seq`, oldest first. */
   changesSince?(seq: number, limit: number): Promise<ChangeRow[]>;
+  /**
+   * True when change numbers become visible in order (0.18.0): seeing number N means every smaller
+   * number is either visible or will never exist. Without it, the CMS waits a few seconds at a
+   * missing number in case a slower transaction still commits it.
+   */
+  readonly changesInCommitOrder?: boolean;
   /** The newest number (0 when empty). */
   lastChange?(): Promise<number>;
   /** Drop rows older than `before`; returns how many went. */
@@ -379,10 +385,13 @@ export class MemoryRepo implements CmsRepo {
       assetRefs: this.assetRefs.map((r) => ({ ...r })),
       releases: structuredClone(this.releases),
       comments: structuredClone(this.comments),
+      changesTop: this.changeBase,
     };
     try {
       return await fn(this);
     } catch (e) {
+      // Change rows of a rolled-back write go too; their numbers are not handed out again.
+      this.changes = this.changes.filter((c) => c.seq <= snap.changesTop);
       this.docs = snap.docs;
       this.versions = snap.versions;
       this.assets = snap.assets;
@@ -843,12 +852,15 @@ export class MemoryRepo implements CmsRepo {
     return n - this.records.length;
   }
   private changes: ChangeRow[] = [];
+  /** Rows are added and seen at once, in order. */
+  readonly changesInCommitOrder = true;
   async appendChange(c: NewChange) {
-    const seq = (this.changes.at(-1)?.seq ?? this.changeBase) + 1;
+    const seq = Math.max(this.changes.at(-1)?.seq ?? 0, this.changeBase) + 1;
+    this.changeBase = seq;
     this.changes.push({ seq, at: c.at ?? new Date().toISOString(), event: c.event, collection: c.collection, slug: c.slug, version: c.version, origin: c.origin, data: structuredClone(c.data) });
     return seq;
   }
-  /** Numbers keep going after a prune, like a database sequence. */
+  /** The highest number handed out: numbers keep going after a prune or a rollback, like a database sequence. */
   private changeBase = 0;
   async changesSince(seq: number, limit: number) {
     return this.changes.filter((c) => c.seq > seq).slice(0, limit).map((c) => structuredClone(c));
@@ -858,9 +870,7 @@ export class MemoryRepo implements CmsRepo {
   }
   async pruneChanges(before: string) {
     const n = this.changes.length;
-    const last = this.changes.at(-1)?.seq ?? this.changeBase;
     this.changes = this.changes.filter((c) => c.at >= before);
-    if (!this.changes.length) this.changeBase = last;
     return n - this.changes.length;
   }
   async findDocsByIds(ids: readonly string[]) {

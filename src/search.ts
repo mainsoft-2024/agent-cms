@@ -26,6 +26,8 @@ export interface SearchUnit {
   markdown: string;
   publishedAt: string | null;
   fields: Record<string, unknown>;
+  /** The published version this unit was cut from (0.18.0): results are checked against that copy. */
+  version?: number;
 }
 
 export interface SearchHit {
@@ -250,6 +252,7 @@ export function unitsOf(doc: {
   keywords: string[];
   publishedAt: string | null;
   fields: Record<string, unknown>;
+  version?: number;
 }): SearchUnit[] {
   const sections = splitSections(doc.body);
   const base = {
@@ -262,6 +265,7 @@ export function unitsOf(doc: {
     keywords: doc.keywords,
     publishedAt: doc.publishedAt,
     fields: doc.fields,
+    ...(doc.version !== undefined ? { version: doc.version } : {}),
   };
   if (!sections.length) return [{ ...base, anchor: "", heading: "", markdown: "" }];
   return sections.map((s) => ({ ...base, anchor: s.anchor, heading: s.heading, markdown: s.markdown }));

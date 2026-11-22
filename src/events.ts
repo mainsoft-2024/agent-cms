@@ -72,8 +72,7 @@ export function hearAs<E extends OutEvent>(core: CmsCore, actor: Actor, e: E, on
 const frame = (event: string, id: string, data: unknown) => `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 /** Without an id frame line, so the client's last id stays the last real event. */
 const note = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-// `seq` stays in the data: delivery is at least once (a resume point never passes a change that is
-// not yet committed, so a reconnect may repeat a few), and clients drop repeats by it.
+// `seq` stays in the data of every numbered event, replayed or live, so a client can tell them apart.
 const publicEvent = ({ remote: _r, ...e }: FeedEvent) => e;
 
 export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions = {}): Response {
@@ -96,22 +95,16 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
       };
       // Events that arrive while the missed ones are being replayed wait here, so the order holds.
       let queue: FeedEvent[] | null = [];
-      let lastSent = 0;
-      let sentId = 0;
-      const replayed = new Set<number>();
+      /** Live numbered events at or below this were covered by the replay (or came before the start). */
+      let from = Infinity;
       const deliver = (e: FeedEvent) => {
+        if (e.seq !== undefined && e.seq <= from) return;
         const heard = hearAs(core, actor, e, o.collections);
         if (!heard) return;
-        e = heard;
-        if (e.seq !== undefined) {
-          if (replayed.has(e.seq)) return; // already sent from the log
-          lastSent = Math.max(lastSent, e.seq);
-        }
-        // The resume point (the frame id) never runs ahead of what is known to be committed.
-        const wm = core.changes.watermark();
-        const id = e.seq === undefined ? new Date().toISOString() : String(wm >= 0 ? Math.min(e.seq, Math.max(wm, sentId)) : e.seq);
-        if (e.seq !== undefined && wm >= 0) sentId = Math.max(sentId, Math.min(e.seq, wm));
-        send(frame(e.event, id, publicEvent(e)));
+        // Numbered events arrive in log order (the core's dispatcher), so their number is a safe
+        // resume point. An event the log could not take carries no id: the client's last id stays.
+        if (e.seq === undefined) send(note(e.event, publicEvent(heard)));
+        else send(frame(e.event, String(e.seq), publicEvent({ ...heard, seq: e.seq })));
       };
       const unsubscribe = core.subscribe((e) => {
         if (queue) queue.push(e);
@@ -137,36 +130,49 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
       if (o.signal?.aborted) return stop();
       // How long the browser waits before it reconnects.
       send("retry: 3000\n\n");
-      const raw = o.since?.trim() || null;
+      // Where live delivery stands: every numbered event after it reaches this stream live (it
+      // subscribed above), every one up to it is replayed from the log. Nothing in between.
+      let at: number | null = null;
       try {
-        if (raw && /^\d+$/.test(raw)) {
+        at = await core.changes.position();
+      } catch (e) {
+        core.telemetry({ type: "error", where: "events position", message: e instanceof Error ? e.message : String(e) });
+      }
+      const raw = o.since?.trim() || null;
+      // A client that already got further (from another server) keeps its place: what this server
+      // has not told yet up to there, it already has.
+      if (at !== null && raw && /^\d+$/.test(raw) && Number(raw) > at) at = Number(raw);
+      from = at ?? -1;
+      try {
+        if (raw && /^\d+$/.test(raw) && at !== null) {
           const seq = Number(raw);
-          const missed = await core.changes.since(actor, seq, { collections: o.collections, limit: REPLAY_MAX, hear: (e) => hearAs(core, actor, e, o.collections) });
-          if (!missed) send(note("resync", { since: raw, documents: [], more: true, reset: true }));
-          else {
-            for (const c of missed.changes) {
-              lastSent = c.seq;
-              replayed.add(c.seq);
-              const { seq: id, at: _at, ...rest } = c;
-              send(frame(c.event, String(id), rest));
+          if (seq < at) {
+            const missed = await core.changes.since(actor, seq, { collections: o.collections, limit: REPLAY_MAX, until: at, hear: (e) => hearAs(core, actor, e, o.collections) });
+            if (!missed || missed.more) send(note("resync", { since: raw, documents: [], more: true, reset: true }));
+            else for (const c of missed.changes) {
+              const { at: _at, ...rest } = c;
+              send(frame(c.event, String(c.seq), rest));
             }
-            lastSent = Math.max(lastSent, missed.last);
-            if (missed.more) send(note("resync", { since: raw, documents: [], more: true, reset: true }));
           }
-        } else if (raw && !Number.isNaN(Date.parse(raw))) {
+        } else if (raw && !/^\d+$/.test(raw) && !Number.isNaN(Date.parse(raw))) {
           const since = new Date(Date.parse(raw)).toISOString();
           const docs = await core.changedSince(actor, since, { collections: o.collections, limit: RESYNC_MAX });
           send(note("resync", { since, documents: docs, more: docs.length >= RESYNC_MAX }));
+        } else if (raw && /^\d+$/.test(raw)) {
+          // A number but no log here to replay from: tell the client to reload.
+          send(note("resync", { since: raw, documents: [], more: true, reset: true }));
         }
       } catch (e) {
         core.telemetry({ type: "error", where: "events resync", message: e instanceof Error ? e.message : String(e) });
+        // The replay failed: the client cannot trust its position, so it reloads.
+        if (raw) send(note("resync", { since: raw, documents: [], more: true, reset: true }));
       }
-      // Where the log stands, read before live delivery starts: never a number past an event not sent yet.
-      if (!lastSent) lastSent = await core.changes.last().catch(() => 0);
       const waiting = queue;
       queue = null;
+      // `ready` names the resume point before the live events that follow it.
+      if (at !== null) send(frame("ready", String(at), { collections: o.collections ?? null, last: at }));
+      else send(note("ready", { collections: o.collections ?? null, last: null }));
       for (const e of waiting) deliver(e);
-      send(frame("ready", String(lastSent), { collections: o.collections ?? null, last: lastSent }));
       void held;
     },
     cancel() {

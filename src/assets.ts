@@ -229,7 +229,11 @@ export interface AssetsContext {
   nowIso: () => string;
   actorRef: (actor: Actor) => { kind: "user" | "key" | "system"; id: string | null; label: string; agent: string | null };
   collection: (slug: string) => AnyCollection;
-  canReadDoc: (actor: Actor, doc: CmsDoc) => boolean;
+  /**
+   * The copy of a document `actor` may see (0.18.0): the working copy when they may edit it, the
+   * published copy when they may read that, else null.
+   */
+  docViewFor: (actor: Actor, doc: CmsDoc) => { doc: CmsDoc; draft: boolean } | null;
   /** A role's word on a store (`media:<store>` target, 0.17.0); undefined when the person has no roles. */
   roleAllows?: (actor: Actor, store: string, what: "write" | "delete") => boolean | undefined;
   warn: (key: string, message: string) => void;
@@ -805,9 +809,11 @@ export function createAssets(ctx: AssetsContext) {
     for (const r of refs) {
       const d = docs.get(r.documentId);
       if (!d) continue;
-      // Documents the actor may not read are counted, not named.
-      if (!ctx.canReadDoc(actor, d)) hidden++;
-      else documents.push({ collection: d.collection, slug: d.slug, title: d.title, status: d.status, inDraft: r.inDraft, inPublished: r.inPublished });
+      // Documents the actor may not see are counted, not named. A reader sees the published copy:
+      // its title, and only whether that copy uses the file.
+      const seen = ctx.docViewFor(actor, d);
+      if (!seen || (!seen.draft && !r.inPublished)) hidden++;
+      else documents.push({ collection: d.collection, slug: d.slug, title: seen.doc.title, status: seen.draft ? d.status : "published", inDraft: seen.draft ? r.inDraft : false, inPublished: r.inPublished });
     }
     return { documents, hidden };
   }

@@ -244,7 +244,7 @@ function WebhookPanel({ hook, onEdit, onChanged, onDeleted }: { hook: WebhookVie
       <div className="flex flex-col gap-1.5">
         <h3 className="text-xs font-medium text-muted-foreground">{t("webhook_secret")}</h3>
         {secret ? (
-          <CodeBox value={secret} secret={secret} label={t("webhook_secret")} multiline />
+          <CodeBox value={secret} secret={secret} label={t("webhook_secret")} multiline revealed focusOnShow />
         ) : (
           <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
             <code className="min-w-0 flex-1 truncate font-mono text-xs">whsec_••••••••••••</code>

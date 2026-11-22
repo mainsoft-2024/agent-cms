@@ -79,7 +79,13 @@ test("automations: make one on the screen; a publish that matches runs on the ne
     const other = screen.queryByRole("button", { name: "Pick another document" });
     if (other) await user.click(other);
     await user.type(screen.getByRole("combobox", { name: "Document to try it on" }), title);
-    await user.click(await screen.findByRole("option", { name: new RegExp(title) }));
+    // Options from an older query cannot be picked while the new answer is on its way.
+    const option = await waitFor(() => {
+      const o = screen.getByRole("option", { name: new RegExp(title) });
+      assert.ok(o.getAttribute("aria-disabled") === null);
+      return o;
+    });
+    await user.click(option);
   };
   await pick("Other");
   await user.click(screen.getByRole("button", { name: "Try it" }));

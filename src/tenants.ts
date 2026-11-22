@@ -71,6 +71,8 @@ export interface TenantHandlerOptions {
    * once the tenant's requests in progress have finished, streams included, or after `drainMs`.
    */
   dispose?: (tenant: string) => void | Promise<void>;
+  /** Told when `dispose` fails (default: a console warning). */
+  onError?: (err: unknown, tenant: string) => void;
   /** How long a dropped tenant's requests in progress may still run before `dispose` anyway. Default 30 s. */
   drainMs?: number;
 }
@@ -78,7 +80,8 @@ export interface TenantHandlerOptions {
 const notFound = () => new Response(JSON.stringify({ error: "not_found", message: "No such site" }), { status: 404, headers: { "content-type": "application/json; charset=utf-8" } });
 
 /** One request handler for every tenant: finds the tenant, makes its CMS on first use, passes the request on. */
-export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandler & { tenants(): string[]; forget(tenant: string): Promise<void> } {
+export function createTenantHandler(opts: TenantHandlerOptions): TenantRequestHandler & { tenants(): string[]; forget(tenant: string): Promise<void> } {
+  const o = { ...opts, onError: opts.onError ?? ((e: unknown, tenant: string) => console.warn(`[agent-cms] tenant ${tenant}: dispose failed:`, e)) };
   const max = Math.max(1, o.max ?? 200);
   const live = new Map<string, Promise<TenantRequestHandler>>();
   // Requests in progress per handler (until the response body has been read or cancelled).
@@ -105,7 +108,12 @@ export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandl
       });
     }
     busy.delete(h);
-    await Promise.resolve(o.dispose?.(tenant)).catch(() => {});
+    // A dispose that throws at once or rejects later is reported, never left unhandled.
+    try {
+      await o.dispose?.(tenant);
+    } catch (e) {
+      o.onError?.(e, tenant);
+    }
   }
   function enter(h: Promise<TenantRequestHandler>) {
     const b = busy.get(h) ?? { n: 0, idle: [] };
@@ -138,9 +146,13 @@ export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandl
           c.error(e);
         }
       },
-      cancel(reason) {
-        leave();
-        return reader.cancel(reason);
+      async cancel(reason) {
+        // Counted as finished only once the handler's own body has stopped.
+        try {
+          await reader.cancel(reason);
+        } finally {
+          leave();
+        }
       },
     });
     return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
@@ -156,7 +168,7 @@ export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandl
     live.set(tenant, made);
     // A tenant that failed to start is tried again on the next request.
     made.catch(() => live.get(tenant) === made && live.delete(tenant));
-    while (live.size > max) void forget(live.keys().next().value as string);
+    while (live.size > max) void forget(live.keys().next().value as string).catch((e) => o.onError?.(e, tenant));
     return made;
   }
   const handle = async (req: Request): Promise<Response> => {

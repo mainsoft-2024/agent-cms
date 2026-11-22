@@ -31,6 +31,8 @@ export const ERROR_CODES = {
   forbidden_read: "forbidden",
   forbidden_write: "forbidden",
   forbidden_publish: "forbidden",
+  forbidden_release: "forbidden",
+  document_replaced: "conflict",
   forbidden_keys: "forbidden",
   forbidden_audit: "forbidden",
   forbidden_media: "forbidden",

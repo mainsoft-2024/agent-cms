@@ -147,6 +147,7 @@ export function CmsTransfer({ className }: { className?: string }) {
    */
   async function retryPublish() {
     if (!result) return;
+    const shown = result;
     setBusy(true);
     try {
       const items = [...result.items];
@@ -154,16 +155,16 @@ export function CmsTransfer({ className }: { className?: string }) {
         const i = items[n];
         if (!i.publishError || !i.toVersion) continue;
         try {
-          // Still the document the import saved (not one made later with the same address)?
-          const now = await client.get(i.collection, i.slug, { draft: true });
-          if (i.documentId && now.id !== i.documentId) throw new Error(t("transfer_not_same_doc"));
-          await client.publish(i.collection, i.slug, { version: i.toVersion, expectedVersion: i.toVersion });
+          // The server publishes only that document at that version, in one step: a document made
+          // later at the same address, or an edit since, is refused instead of published.
+          await client.publish(i.collection, i.slug, { version: i.toVersion, expectedVersion: i.toVersion, documentId: i.documentId ?? undefined });
           items[n] = { ...i, published: true, publishError: null };
         } catch (e) {
           items[n] = { ...i, publishError: errorMessage(e, t) };
         }
       }
-      setResult({ files: result.files, items });
+      // Only onto the same result: one closed or replaced meanwhile stays that way.
+      setResult((cur) => (cur === shown ? { files: shown.files, items } : cur));
     } finally {
       setBusy(false);
     }
@@ -277,7 +278,7 @@ export function CmsTransfer({ className }: { className?: string }) {
           <StatusText tone={status.tone} className="text-sm">
             {status.text || (picked && busy ? t("transfer_checking") : "")}
           </StatusText>
-          {result ? <ImportResult items={result.items} busy={busy} onRetry={() => void retryPublish()} onClose={() => setResult(null)} /> : null}
+          {result ? <ImportResult items={result.items} busy={busy} onRetry={() => void retryPublish()} onClose={() => !busy && setResult(null)} /> : null}
           {pictures.length && picked ? (
             <div role="note" className="flex min-w-0 flex-col gap-1 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-200">
               <p className="font-medium">{t("transfer_pictures_left", { n: pictures.length })}</p>
@@ -386,7 +387,7 @@ function ImportResult({ items, busy, onRetry, onClose }: { items: ImportItem[]; 
         {published ? <span>{t("transfer_published_n", { n: published })}</span> : null}
         {publishFailed.length ? <span className="text-amber-700 dark:text-amber-400">{t("transfer_publish_failed_n", { n: publishFailed.length })}</span> : null}
         {failed.length ? <span className="text-destructive">{t("transfer_failed_n", { n: failed.length })}</span> : null}
-        <Button type="button" variant="ghost" size="sm" className="ml-auto h-7" onClick={onClose}>
+        <Button type="button" variant="ghost" size="sm" className="ml-auto h-7" disabled={busy} onClick={onClose}>
           {t("close")}
         </Button>
       </div>

@@ -17,6 +17,8 @@ export const en: Messages = {
   forbidden_read: "No read access to {collection}",
   forbidden_write: "No edit access to {collection}",
   forbidden_publish: "No publish access to {collection}",
+  document_replaced: "{slug} is now another document than the one this was about; nothing was changed",
+  forbidden_release: "This release has documents you cannot edit; only an admin or someone who can edit all of them may change it as a whole",
   forbidden_keys: "No access to API keys",
   forbidden_audit: "No access to the audit log",
   key_too_wide: "A key can only create keys narrower than itself",

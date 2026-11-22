@@ -285,3 +285,107 @@ test("round 3: editors get drafts only of documents they may edit; patch and flo
   const seen = await cms.releases.get(editor, rel.id);
   assert.deepEqual([seen.items.map((i) => i.slug), seen.hiddenItems, seen.canPublish], [["mine"], 1, false]);
 });
+
+test("review round 3: releases are guarded on the server, not only on the screen", async () => {
+  const owned = defineCollection({
+    slug: "owned",
+    label: "Owned",
+    visibility: "public",
+    fields: z.object({ owner: z.string().optional() }),
+    access: {
+      write: ({ actor, doc }) => actor.kind === "user" && (actor.isAdmin || !doc || (doc.fields as { owner?: string }).owner === actor.id),
+      publish: ({ actor }) => actor.kind === "user" && actor.isAdmin,
+    },
+  });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [owned], warn: () => {} });
+  await cms.create(admin, "owned", { slug: "mine", title: "Mine", body: "x\n", fields: { owner: "u2" } });
+  await cms.create(admin, "owned", { slug: "theirs", title: "Secret title", body: "x\n", fields: { owner: "u9" } });
+  const rel = await cms.releases.create(admin, { name: "Mixed" });
+  await cms.releases.add(admin, rel.id, [{ collection: "owned", slug: "mine" }, { collection: "owned", slug: "theirs" }]);
+  const theirs = (await cms.releases.get(admin, rel.id)).items.find((i) => i.slug === "theirs")!;
+
+  const refused = (e: { code: string }) => e.code === "forbidden_release";
+  await assert.rejects(cms.releases.rename(editor, rel.id, { name: "Mine now" }), refused);
+  await assert.rejects(cms.releases.remove(editor, rel.id), refused);
+  await assert.rejects(cms.releases.schedule(editor, rel.id, { publishAt: null }), refused);
+  await assert.rejects(cms.releases.removeItem(editor, rel.id, theirs.documentId), (e: { code: string }) => e.code === "not_found");
+  await assert.rejects(cms.releases.publish(editor, rel.id), (e: { code: string; current?: { blocked: { slug: string; title: string; hidden?: boolean }[] } }) => {
+    assert.equal(e.code, "release_blocked");
+    assert.doesNotMatch(JSON.stringify(e.current), /Secret title|theirs/, "a hidden item blocks without being named");
+    assert.ok(e.current!.blocked.some((b) => b.hidden));
+    return true;
+  });
+
+  // A scheduled release goes out later as the scheduler: only someone who may publish adds to it.
+  await cms.releases.remove(admin, rel.id);
+  const sched = await cms.releases.create(admin, { name: "Friday" });
+  await cms.releases.add(admin, sched.id, [{ collection: "owned", slug: "theirs" }]);
+  await cms.releases.schedule(admin, sched.id, { publishAt: new Date(Date.now() + 86_400_000).toISOString() });
+  await assert.rejects(cms.releases.add(editor, sched.id, [{ collection: "owned", slug: "mine" }]), (e: { code: string }) => e.code === "forbidden_publish");
+});
+
+test("review round 3: publish by document id refuses a document made later at the same address; a write in between is a conflict", async () => {
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public" });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [guide], warn: () => {}, trash: { days: 0 } });
+  const first = await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" });
+  await cms.remove(admin, "guide", "a");
+  await cms.create(admin, "guide", { slug: "a", title: "Another A", body: "y\n" });
+  await assert.rejects(cms.publish(admin, "guide", "a", { version: 1, expectedVersion: 1, documentId: first.id }), (e: { code: string }) => e.code === "document_replaced");
+  assert.equal((await cms.get(admin, "guide", "a", { draft: true })).publishedVersion, null, "nothing was published");
+});
+
+test("review round 3: suggestions are bound to their document and hidden from someone who cannot see what the author could", async () => {
+  const priced = defineCollection({
+    slug: "priced",
+    label: "Priced",
+    visibility: "public",
+    agentEdits: "suggest",
+    access: { write: ({ actor }) => actor.kind === "user" },
+    fields: z.object({ cost: z.number().optional() }),
+    fieldAccess: { cost: { read: ({ actor }) => actor.kind === "user" && actor.isAdmin } },
+  });
+  const repo = new MemoryRepo();
+  const cms = createCms({ repo, collections: [priced], warn: () => {} });
+  await cms.create(admin, "priced", { slug: "p", title: "P", body: "Old line\n", fields: { cost: 3 } });
+  const bot: Actor = { ...admin, agent: { label: "Helper" } } as Actor;
+  await cms.ax.edit(bot, "priced", "p", [{ oldString: "cost: 3", newString: "cost: 4" }]);
+  assert.equal((await cms.ax.suggestions(admin, "priced", "p")).length, 1, "the admin sees it");
+  assert.equal((await cms.ax.suggestions(editor, "priced", "p")).length, 0, "an editor who cannot see cost does not");
+  const [s] = await cms.ax.suggestions(admin, "priced", "p");
+  await assert.rejects(cms.ax.rejectSuggestion(editor, "priced", "p", s.id), (e: { code: string }) => e.code === "suggestion_not_found");
+  assert.equal(JSON.stringify(s).includes("authorHidden"), false, "bookkeeping stays on the server");
+  // A record from before the binding (no document id) is not shown to anyone.
+  await repo.insertRecord({ kind: "suggestion", scope: "priced/p", data: { edits: [], by: { kind: "user", label: "Old" } }, at: new Date().toISOString() });
+  assert.equal((await cms.ax.suggestions(admin, "priced", "p")).length, 1);
+});
+
+test("review round 3: search answers only from the copy it indexed; a published copy carries no draft review or schedule", async () => {
+  const cms = createCms({ repo: new MemoryRepo(), collections: [notes()], warn: () => {} });
+  await cms.create(admin, "notes", { slug: "n", title: "Zebra facts", body: "Zebras are striped.\n" }, { publish: true });
+  assert.equal((await cms.search(anon, ["notes"], "zebra")).hits.length, 1);
+  // The document changes under the index (another server published members-only content).
+  await cms.update(admin, "notes", "n", { fields: { members: true } }, { publish: true });
+  const after = await cms.search(anon, ["notes"], "zebra");
+  assert.equal(after.hits.length, 0, "the old unit is not shown on the strength of a newer copy");
+
+  await cms.create(admin, "notes", { slug: "r", title: "R", body: "x\n" }, { publish: true });
+  await cms.update(admin, "notes", "r", { title: "R2" });
+  await cms.requestReview(admin, "notes", "r", { note: "secret reviewer note" });
+  const pub = await cms.get(anon, "notes", "r");
+  assert.equal(pub.review, null);
+  assert.equal(pub.title, "R");
+});
+
+test("review round 3: when the change row cannot be written, the write rolls back with it", async () => {
+  const repo = new MemoryRepo();
+  const cms = createCms({ repo, collections: [notes()], warn: () => {}, onError: () => {} });
+  await cms.create(admin, "notes", { slug: "ok", title: "OK", body: "x\n" });
+  const real = repo.appendChange.bind(repo);
+  repo.appendChange = async () => {
+    throw new Error("log is down");
+  };
+  await assert.rejects(cms.create(admin, "notes", { slug: "lost", title: "Lost", body: "x\n" }), /log is down/);
+  await assert.rejects(cms.get(admin, "notes", "lost", { draft: true }), (e: { code: string }) => e.code === "not_found");
+  repo.appendChange = real;
+  await cms.settle();
+});

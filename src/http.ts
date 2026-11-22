@@ -905,11 +905,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json(await core.diff(actor, col, slug, a, b));
           }
           if (m === "POST" && ["publish", "archive", "unarchive", "unpublish"].includes(action)) {
-            const b = await body(req, z.object({ version: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional() }), true);
+            const b = await body(req, z.object({ version: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), documentId: z.string().max(64).optional() }), true);
             const o = { expectedVersion: expected(b.expectedVersion) };
             const doc =
               action === "publish"
-                ? await core.publish(actor, col, slug, { ...o, version: b.version })
+                ? await core.publish(actor, col, slug, { ...o, version: b.version, documentId: b.documentId })
                 : action === "archive"
                   ? await core.archive(actor, col, slug, o)
                   : action === "unarchive"

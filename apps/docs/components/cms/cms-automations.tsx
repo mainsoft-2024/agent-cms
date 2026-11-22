@@ -85,7 +85,6 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
   const [status, setStatus] = React.useState<{ text: string; tone: "ok" | "error" | "muted" }>({ text: "", tone: "muted" });
   const [busy, setBusy] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
-  const [slug, setSlug] = React.useState("");
   const [testCol, setTestCol] = React.useState("");
   const runs = useAsync<AutomationRun[]>(() => client.automationRuns(auto.id, 20), [client, auto.id, auto.updatedAt]);
   const hooks = useAsync(() => (me?.webhooks ? client.webhooks().then((r) => r.webhooks) : Promise.resolve([])), [client, me?.webhooks]);
@@ -94,14 +93,20 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
   const [testDoc, setTestDoc] = React.useState<DocOption | null>(null);
   // The collection the test document comes from: the rule's own, the only one, or the one picked.
   const testColSlug = collection || (cols.length === 1 ? cols[0].slug : testCol);
+  // The picked document is the test target, collection and slug together. Another collection (or
+  // a different rule) clears it, so the test never runs a slug against a collection it is not from.
+  React.useEffect(() => {
+    setTestDoc((d) => (d && d.collection !== testColSlug ? null : d));
+  }, [testColSlug]);
+  const testColLabel = cols.find((c) => c.slug === testColSlug)?.label;
+  // Changes only with the collection: the picker starts over (and drops old options) when it does.
   const searchDocs = React.useCallback(
     async (q: string): Promise<DocOption[]> => {
       if (!testColSlug) return [];
       const r = await client.list(testColSlug, { q: q.trim() || undefined, limit: 20 });
-      const label = cols.find((c) => c.slug === testColSlug)?.label;
-      return r.docs.map((d) => ({ collection: testColSlug, slug: d.slug, title: d.title, sub: label }));
+      return r.docs.map((d) => ({ collection: testColSlug, slug: d.slug, title: d.title, sub: testColLabel }));
     },
-    [client, testColSlug, cols]
+    [client, testColSlug, testColLabel]
   );
 
   async function run(fn: () => Promise<string>) {
@@ -257,7 +262,7 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
             placeholder={t("automation_test_doc_hint")}
             value={testDoc}
             disabled={!testColSlug}
-            onPick={(d) => (setTestDoc(d), setSlug(d?.slug ?? ""))}
+            onPick={(d) => setTestDoc(d)}
             search={searchDocs}
           />
           <Button
@@ -265,13 +270,14 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
             variant="outline"
             disabled={
               busy ||
-              !slug.trim() ||
-              !(collection || (cols.length === 1 ? cols[0] : testCol)) ||
+              !testDoc ||
+              testDoc.collection !== testColSlug ||
               unsaved
             }
             onClick={() =>
               run(async () => {
-                const r = await client.testAutomation(auto.id, { collection: testColSlug, slug: slug.trim() });
+                if (!testDoc) return "";
+                const r = await client.testAutomation(auto.id, { collection: testDoc.collection, slug: testDoc.slug });
                 return r.matches ? t("automation_test_match", { title: r.title, actions: r.actions.map((a) => actionLabel(a.type)).join(", ") || "—" }) : t("automation_test_nomatch", { title: r.title });
               })
             }

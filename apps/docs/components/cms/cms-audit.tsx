@@ -195,7 +195,8 @@ export function CmsAudit({ pageSize = 50, className }: CmsAuditProps) {
           ) : null}
         </div>
         {/* On a phone: a timeline of cards, time on top, nothing cut off. */}
-        <ol className="flex flex-col gap-2 md:hidden" aria-label={t("audit_title")}>
+        {/* While new filters load, the rows below are the previous answer: dimmed and marked busy. */}
+        <ol className={cn("flex flex-col gap-2 transition-opacity md:hidden", loading && shown.length > 0 && "opacity-50")} aria-busy={loading} aria-label={t("audit_title")}>
           {shown.map((e) => (
             <li key={e.id} className="flex min-w-0 flex-col gap-1 rounded-md border px-3 py-2.5 text-[13.5px]">
               <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -210,7 +211,7 @@ export function CmsAudit({ pageSize = 50, className }: CmsAuditProps) {
             </li>
           ))}
         </ol>
-        <div className="hidden md:block">
+        <div className={cn("hidden transition-opacity md:block", loading && shown.length > 0 && "opacity-50")} aria-busy={loading}>
         <Table>
           <TableHeader>
             <TableRow>

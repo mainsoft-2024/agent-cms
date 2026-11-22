@@ -25,6 +25,16 @@ const SCOPES: KeyScope[] = ["read", "write", "publish", "admin"];
 type Expiry = "none" | "30" | "90" | "365" | "custom";
 /** Start from the least a key needs; "custom" opens the scope boxes. */
 type Preset = "read" | "write" | "publish" | "custom";
+/** What scopes add up to in a collection, as the server applies them. */
+function effective(scopes: readonly string[]): ("read" | "write" | "publish" | "html")[] {
+  const admin = scopes.includes("admin");
+  const out: ("read" | "write" | "publish" | "html")[] = [];
+  if (admin || scopes.some((x) => x === "read" || x === "write" || x === "publish")) out.push("read");
+  if (admin || scopes.includes("write")) out.push("write");
+  if (admin || scopes.includes("publish")) out.push("publish");
+  if (admin || scopes.includes("html")) out.push("html");
+  return out;
+}
 const PRESETS: Record<Exclude<Preset, "custom">, KeyScope[]> = { read: ["read"], write: ["read", "write"], publish: ["read", "write", "publish"] };
 /** Looks like an IPv4 or IPv6 address or range (the server has the last word). */
 export const looksLikeRange = (v: string) => /^(\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?|[0-9a-f:]*:[0-9a-f:.]*(\/\d{1,3})?)$/i.test(v);
@@ -298,8 +308,9 @@ function NewKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpen
   const colLabel = (slug: string) => me?.collections.find((c) => c.slug === slug)?.label ?? slug;
   // One sentence that says what the key will be able to do, as chosen so far.
   const summary = [
-    // Exactly the scopes chosen, in words; admin is about the whole CMS, not the collections.
-    t("key_sum_can", { what: SCOPES.filter((x) => scopes.includes(x) && x !== "admin").map((x) => t(`key_scope_word.${x}` as never)).join(", ") || t("key_scope_word.none"), where: cols.length ? cols.map(colLabel).join(", ") : t("key_sum_all_cols") }),
+    // What the key can effectively do in its collections (the server's rules: writing or publishing
+    // also reads; admin does all of it), then what admin adds across the whole CMS.
+    t("key_sum_can", { what: effective(scopes).map((x) => t(`key_scope_word.${x}` as never)).join(", ") || t("key_scope_word.none"), where: cols.length ? cols.map(colLabel).join(", ") : t("key_sum_all_cols") }),
     scopes.includes("admin") ? t("key_sum_admin_all") : "",
     expiry === "none" ? t("key_sum_forever") : expiry === "custom" ? (date ? t("key_sum_until", { date }) : "") : t("key_sum_days", { n: Number(expiry) }),
     rate.trim() ? t("key_per_minute", { n: Number(rate) }) : "",

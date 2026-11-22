@@ -1,7 +1,7 @@
 /** `CmsRepo` on Postgres via Drizzle (node-postgres, pglite and other `PgDatabase` drivers with transactions). */
 
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
-import type { PgDatabase } from "drizzle-orm/pg-core";
+import { getTableConfig, type PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
 import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp, NewChange, ChangeRow, DocPageQuery, DocPage } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
@@ -787,12 +787,20 @@ export class DrizzleRepo implements CmsRepo {
     const where = [eq(R.kind, q.kind), ...(q.id !== undefined ? [eq(R.id, q.id)] : []), ...(q.scope !== undefined ? [eq(R.scope, q.scope)] : []), ...(q.before !== undefined ? [lt(R.createdAt, new Date(q.before))] : [])];
     return (await this.db.delete(R).where(and(...where)).returning({ id: R.id })).length;
   }
+  /**
+   * Change numbers are handed out in commit order (0.18.0): the row is added under a transaction
+   * advisory lock on this table, taken in the same statement and held until the commit. So a reader
+   * that sees number N has also seen every smaller number that will ever exist (gaps are rolled-back
+   * writes, never late ones), and an events stream can hand out N as a resume point.
+   */
+  readonly changesInCommitOrder = true;
   async appendChange(c: NewChange) {
-    const [r] = await this.db
-      .insert(this.t.changes)
-      .values({ event: c.event, collection: c.collection, slug: c.slug, version: c.version, origin: c.origin, data: c.data, ...(c.at ? { at: new Date(c.at) } : {}) })
-      .returning({ seq: this.t.changes.seq });
-    return Number(r.seq);
+    const C = this.t.changes;
+    const cfg = getTableConfig(C);
+    const lockName = `agent-cms:${cfg.schema ?? "public"}.${cfg.name}`;
+    const res = await this.db.execute(sql`with l as (select pg_advisory_xact_lock(hashtext(${lockName}))) insert into ${C} (${sql.identifier("at")}, ${sql.identifier("event")}, ${sql.identifier("collection")}, ${sql.identifier("slug")}, ${sql.identifier("version")}, ${sql.identifier("origin")}, ${sql.identifier("data")}) select ${c.at ? new Date(c.at).toISOString() : new Date().toISOString()}::timestamptz, ${c.event}, ${c.collection}, ${c.slug}, ${c.version}::integer, ${c.origin}, ${JSON.stringify(c.data ?? {})}::jsonb from l returning ${sql.identifier("seq")}`);
+    const rows = ((res as { rows?: unknown[] }).rows ?? (res as unknown as unknown[])) as { seq: string | number }[];
+    return Number(rows[0].seq);
   }
   async changesSince(seq: number, limit: number): Promise<ChangeRow[]> {
     const C = this.t.changes;

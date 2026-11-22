@@ -216,6 +216,26 @@ test("events stream: a client that comes back with its last id gets exactly what
   await back.body!.cancel();
 });
 
+test("events stream: numbers go out in log order even when this server's own change is newer than one it has not read yet; seq is in every frame", async () => {
+  const { a, b } = pair({ changes: { pollMs: 60_000 } });
+  const handler = createCmsHandler({ cms: a, resolveUser: async () => admin });
+  const s = await handler(new Request("http://app.test/api/cms/_events?collections=guide"));
+  assert.deepEqual((await frames(s, 1))[0], { event: "ready", id: "0", data: { collections: ["guide"], last: 0 } });
+  // B's change (1) is in the log, but A polls only once a minute; A's own change (2) comes right after.
+  await b.create(admin, "guide", { slug: "from-b", title: "B", body: "x\n" });
+  await a.create(admin, "guide", { slug: "from-a", title: "A", body: "x\n" });
+  const got = await frames(s, 2, 2000);
+  assert.deepEqual(got.map((f) => [f.event, f.id, f.data.seq, f.data.slug]), [["doc.created", "1", 1, "from-b"], ["doc.created", "2", 2, "from-a"]]);
+  await s.body!.cancel();
+  // Replayed frames carry seq too, and the ready id is where live delivery stands.
+  const back = await handler(new Request("http://app.test/api/cms/_events?collections=guide", { headers: { "last-event-id": "0" } }));
+  const again = await frames(back, 3);
+  assert.deepEqual(again.map((f) => [f.event, f.id, f.data.seq ?? f.data.last]), [["doc.created", "1", 1], ["doc.created", "2", 2], ["ready", "2", 2]]);
+  await back.body!.cancel();
+  await a.settle();
+  await b.settle();
+});
+
 test("metrics: requests, events, cache and search are counted; paths are grouped; the text parses as Prometheus", async () => {
   const { createMetrics, routeOf } = await import("./metrics");
   assert.equal(routeOf("/api/cms/collections/guide/hello-world/versions"), "/collections/:c/:slug/versions");
@@ -358,7 +378,9 @@ test("review fixes: hidden fields are gone from every copy, cannot be set on cre
   assert.equal((await one.get(anon, "guide", "same")).title, "One");
   assert.equal((await two.get(anon, "guide", "same")).title, "Two");
 
+  // A log without commit order (a custom repo): a young gap may still fill, so reading stops there.
   const repo = new MemoryRepo();
+  Object.defineProperty(repo, "changesInCommitOrder", { value: false });
   const c = createCms({ repo, collections: [guide()], warn: () => {} });
   await repo.appendChange({ event: "doc.created", collection: "guide", slug: "x", version: 1, origin: "o", data: {} });
   // Number 2 is still committing elsewhere; 3 is already visible.

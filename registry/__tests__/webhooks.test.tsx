@@ -52,7 +52,8 @@ test("webhooks: create shows the secret; test, a failed delivery sent again, edi
   await within(panel).findByText("Nothing has been sent yet.");
   assert.ok(within(panel).queryByText(/^whsec_[A-Za-z0-9_-]{20,}$/) === null, "the secret is hidden until asked for");
   await user.click(within(panel).getByRole("button", { name: "Show" }));
-  await user.click((await within(panel).findAllByRole("button", { name: "Show" }))[0]);
+  // The secret asked for is shown at once, and focus moves to the button that hides it again.
+  await waitFor(() => assert.equal((document.activeElement as HTMLElement | null)?.textContent, "Hide"));
   assert.equal((await within(panel).findByText(/^whsec_[A-Za-z0-9_-]{20,}$/)).textContent, secret, "the same secret as at creation");
 
   await user.click(within(panel).getByRole("button", { name: "Send a test" }));

@@ -26,6 +26,10 @@ export interface StatsContext {
   can: (actor: Actor, collection: string, what: "read" | "write", doc?: CmsDoc | null) => boolean;
   counts: (actor: Actor, collection: string) => Promise<DocCounts>;
   isAdmin: (actor: Actor) => boolean;
+  /** Changes whenever a document is written here: cached numbers from before are not reused. */
+  generation?: () => number;
+  /** The published copy of a document (without the draft's review and schedule), or null. */
+  publicView?: (doc: CmsDoc) => CmsDoc | null;
 }
 
 /** Audit actions worth a line in "recent activity". */
@@ -37,12 +41,15 @@ export function createStats(ctx: StatsContext) {
   return async function stats(actor: Actor, o: { days?: number } = {}): Promise<CmsStats> {
     await ctx.ready();
     const days = (STATS_DAYS as readonly number[]).includes(o.days ?? 14) ? (o.days ?? 14) : 14;
-    const key = `${actor.kind}:${"id" in actor ? actor.id : ""}:${days}`;
+    // Per person and per write generation, for 15 seconds: numbers filtered by permissions are not
+    // carried across a write, and a change of role shows within moments.
+    const key = `${actor.kind}:${"id" in actor ? actor.id : ""}:${days}:${ctx.generation?.() ?? 0}`;
     const hit = cache.get(key);
     const nowMs = ctx.now().getTime();
-    if (hit && nowMs - hit.at < 60_000) return hit.value;
+    if (hit && nowMs - hit.at < 15_000) return hit.value;
 
-    const readable = ctx.collections().filter((c) => ctx.can(actor, c, "read"));
+    // Collections the person may read, or edit (an editor's list shows those even without read).
+    const readable = ctx.collections().filter((c) => ctx.can(actor, c, "read") || ctx.can(actor, c, "write"));
     const totals = { documents: 0, published: 0, review: 0, scheduled: 0 };
     const docs = new Map<string, CmsDoc>();
     // What this person may edit (stored rows) and, of the rest, what they may read (published copies).
@@ -57,9 +64,8 @@ export function createStats(ctx: StatsContext) {
           editable.add(d.id);
           continue;
         }
-        if (d.publishedVersion === null || !d.published || d.status === "archived") continue;
-        const pub = { ...d, ...(d.published as object) } as CmsDoc;
-        if (ctx.can(actor, col, "read", pub)) docs.set(d.id, pub);
+        const pub = ctx.publicView ? ctx.publicView(d) : d.publishedVersion === null || !d.published || d.status === "archived" ? null : ({ ...d, ...(d.published as object), version: d.publishedVersion, review: null, schedule: null } as CmsDoc);
+        if (pub && ctx.can(actor, col, "read", pub)) docs.set(d.id, pub);
       }
     }
     // Totals count only those documents, so the cards match what the lists show this person.
