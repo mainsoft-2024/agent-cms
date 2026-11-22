@@ -390,8 +390,7 @@
     "zod": "3.25.76"
   },
   "workspaces": [
-    "examples/next",
-    "apps/docs"
+    "examples/next"
   ],
   "engines": {
     "node": ">=20"
