@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "./fixtures";
 
 // Webhooks in a real browser, with a real receiver: the example app's own /api/hook, which checks
 // the signature with verifyWebhook.

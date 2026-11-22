@@ -312,3 +312,44 @@ test("korean screen text is written in 음슴체: no value ends a sentence with 
   }
   assert.deepEqual(bad, []);
 });
+
+test("messages: every placeholder in a translation exists in English, and the other way round", async () => {
+  const names = (s: string) => new Set([...s.matchAll(/\{(\w+)(?:\|[^|}]*\|[^|}]*)?\}/g)].map((m) => m[1]));
+  // The screens' catalog is read as text: importing it would need the built
+  // package (it imports @mainsoft/agent-cms/client), and CI tests before building.
+  const catalog = (src: string) => {
+    const out: Record<string, string> = {};
+    for (const m of src.matchAll(/^\s+([a-zA-Z_]\w*):\s*"((?:[^"\\]|\\.)*)"/gm)) out[m[1]] = JSON.parse(`"${m[2]}"`) as string;
+    return out;
+  };
+  const text = readFileSync(join(import.meta.dirname, "../registry/cms/cms-messages.ts"), "utf8");
+  const koAt = text.indexOf("export const ko");
+  const ui = { en: catalog(text.slice(text.indexOf("export const en"), koAt)), ko: catalog(text.slice(koAt)) };
+  const srv = { en: (await import("./messages/en")).en as Record<string, string>, ko: (await import("./messages/ko")).ko as Record<string, string> };
+  const bad: string[] = [];
+  for (const [where, en, ko] of [["registry", ui.en, ui.ko], ["server", srv.en, srv.ko]] as const) {
+    for (const [k, v] of Object.entries(ko)) {
+      if (typeof v !== "string" || typeof en[k] !== "string") continue;
+      const a = names(en[k]);
+      const b = names(v);
+      for (const n of b) if (!a.has(n)) bad.push(`${where} ko.${k}: {${n}} is not in English`);
+      for (const n of a) if (!b.has(n)) bad.push(`${where} ko.${k}: {${n}} from English is missing`);
+    }
+  }
+  assert.deepEqual(bad, []);
+});
+
+test("the block editor is our own: no editor library in the screens or the package", () => {
+  const dir = join(import.meta.dirname, "../registry/cms");
+  const editorLibs = /from\s+["'](@blocknote|@tiptap|prosemirror|lexical|@lexical|slate|@udecode|@platejs|@mantine|quill|@editorjs)/;
+  const bad = readdirSync(dir).filter((f) => editorLibs.test(readFileSync(join(dir, f), "utf8")));
+  assert.deepEqual(bad, []);
+  const pkg = JSON.parse(readFileSync(join(import.meta.dirname, "../package.json"), "utf8")) as Record<string, Record<string, string> | undefined>;
+  const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies });
+  assert.deepEqual(deps.filter((d) => /^(@blocknote|@tiptap|@mantine|prosemirror|lexical|@lexical)/.test(d)), []);
+});
+
+test("markdown: code spans with backticks inside read back the same", async () => {
+  const { codeSpan } = await import("./markdown");
+  for (const v of ["a`b", "x``y", "``", "plain", "` lead"]) assert.deepEqual(parseInline(`see ${codeSpan(v)} here`)[1], { t: "code", v }, v);
+});

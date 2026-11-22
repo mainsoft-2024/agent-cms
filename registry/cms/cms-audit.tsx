@@ -35,10 +35,15 @@ export function CmsAudit({ pageSize = 50, className }: CmsAuditProps) {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
 
-  const q = React.useMemo(() => ({ action: action === "__all" ? undefined : action, outcome: outcome === "__all" ? undefined : outcome, limit: pageSize }), [action, outcome, pageSize]);
+  const q = React.useMemo(
+    () => ({ action: action === "__all" ? undefined : action, outcome: outcome === "__all" ? undefined : outcome, actorKind: actor === "__all" ? undefined : (actor as "user" | "key" | "system" | "anonymous"), limit: pageSize }),
+    [action, outcome, actor, pageSize]
+  );
+  const gen = React.useRef(0);
 
   React.useEffect(() => {
     let live = true;
+    gen.current++;
     setLoading(true);
     client.audit(q).then(
       (r) => {
@@ -60,21 +65,24 @@ export function CmsAudit({ pageSize = 50, className }: CmsAuditProps) {
   }, [client, q]);
 
   const more = async () => {
-    if (!cursor) return;
+    if (!cursor || loading) return;
+    const mine = gen.current;
     setLoading(true);
     try {
       const r = await client.audit({ ...q, cursor });
+      // A page for filters that changed meanwhile is dropped.
+      if (mine !== gen.current) return;
       setEntries((x) => [...x, ...r.entries]);
       setCursor(r.nextCursor);
     } catch (e) {
-      setError(e);
+      if (mine === gen.current) setError(e);
     } finally {
-      setLoading(false);
+      if (mine === gen.current) setLoading(false);
     }
   };
 
-  // The REST route filters by action and outcome; "who" filters what is loaded.
-  const shown = actor === "__all" ? entries : entries.filter((e) => e.actorKind === actor);
+  // The server filters by action, outcome and who.
+  const shown = entries;
 
   const actionLabel = (a: string) => t(`audit.${a}` as MessageKey);
   const actorLabel = (k: string) => t(`actor_${k}` as MessageKey);

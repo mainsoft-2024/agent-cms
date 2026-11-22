@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 // 0.14.0 in a real browser: key limits and rotation, the events stream, retention.
 const api = "/api/cms";
@@ -13,7 +13,8 @@ test("keys: a key with its own limit is refused after it, and rotating keeps the
   await dialog.getByLabel("Requests per minute").fill("3");
   if (shot("70-key-form")) await page.screenshot(shot("70-key-form"));
   await dialog.getByRole("button", { name: "Create" }).click();
-  const first = (await page.getByRole("dialog", { name }).getByText(/^sgk_/).first().textContent()) ?? "";
+  await page.getByRole("dialog", { name }).getByRole("button", { name: "Show" }).first().click();
+  const first = (await page.getByRole("dialog", { name }).getByText(/^sgk_[^•]+$/).first().textContent()) ?? "";
   await page.getByRole("dialog", { name }).getByRole("button", { name: "Close" }).first().click();
   await expect(page.getByText("3 per minute")).toBeVisible();
 
@@ -33,7 +34,8 @@ test("keys: a key with its own limit is refused after it, and rotating keeps the
 
   await page.getByRole("button", { name: `Rotate: ${name}` }).click();
   await page.getByRole("dialog", { name: `Make a new secret for “${name}”?` }).getByRole("button", { name: "Rotate" }).click();
-  const second = (await page.getByRole("dialog", { name }).getByText(/^sgk_/).first().textContent()) ?? "";
+  await page.getByRole("dialog", { name }).getByRole("button", { name: "Show" }).first().click();
+  const second = (await page.getByRole("dialog", { name }).getByText(/^sgk_[^•]+$/).first().textContent()) ?? "";
   expect(second).not.toBe(first);
   await page.getByRole("dialog", { name }).getByRole("button", { name: "Close" }).first().click();
   await expect(page.getByText(/^Works until /)).toBeVisible();

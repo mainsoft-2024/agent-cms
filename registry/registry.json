@@ -42,6 +42,7 @@
         "lucide-react"
       ],
       "registryDependencies": [
+        "dialog",
         "sheet",
         "cms-lib"
       ],
@@ -192,6 +193,32 @@
         },
         {
           "path": "registry/cms/cms-paste.ts",
+          "type": "registry:lib"
+        }
+      ]
+    },
+    {
+      "name": "cms-block-editor",
+      "type": "registry:component",
+      "title": "Block editor",
+      "description": "A Notion-style block editor for the document body, written for agent-cms (no editor library). The body stays markdown: opening a document never changes it, untouched blocks keep their exact text, and what has no block of its own (HTML, columns, tables, toggles) is drawn as it will look and edited as markdown in place. Slash menu, markdown shortcuts, a toolbar over selected text, links, drag handles, block selection, copy and paste as markdown, image paste and drop into the media library, its own undo, IME input. Pass it as `slots.blockEditor`.",
+      "dependencies": [
+        "@mainsoft/agent-cms"
+      ],
+      "registryDependencies": [
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-block-editor.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-blocks-convert.ts",
+          "type": "registry:lib"
+        },
+        {
+          "path": "registry/cms/cms-blocks-inline.ts",
           "type": "registry:lib"
         }
       ]

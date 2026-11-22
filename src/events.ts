@@ -27,6 +27,13 @@ export interface EventStreamOptions {
   since?: string | null;
   /** Ends the stream (the request's `signal`). */
   signal?: AbortSignal;
+  /**
+   * The request itself, held for as long as the stream is open. Node's
+   * `Request` keeps the controller behind `request.signal` alive only while
+   * the request object lives; without this a collected request never aborts
+   * and the listener would stay subscribed after the client left.
+   */
+  request?: Request;
   /** A comment line this often keeps proxies from closing a quiet stream (ms). Default 25000. */
   heartbeatMs?: number;
 }
@@ -71,9 +78,11 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
       });
       const beat = setInterval(() => send(": keep-alive\n\n"), o.heartbeatMs ?? 25_000);
       (beat as { unref?: () => void }).unref?.();
+      let held: Request | undefined = o.request;
       stop = () => {
         if (!open) return;
         open = false;
+        held = undefined;
         clearInterval(beat);
         unsubscribe();
         o.signal?.removeEventListener("abort", stop);

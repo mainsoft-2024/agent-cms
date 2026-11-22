@@ -17,6 +17,12 @@ export interface NodeHandlerOptions {
   origin?: string;
   /** Largest request body read into memory, in bytes. Default 8MB (an import bundle is at most 4MB). */
   maxBodyBytes?: number;
+  /**
+   * Believe `X-Forwarded-For` / `X-Real-IP` from the caller. Default false: the socket's
+   * address is the caller's (what rate limits and key address rules use), and those headers
+   * are replaced. Set true only behind a proxy you run that sets them.
+   */
+  trustProxy?: boolean;
 }
 
 type Req = IncomingMessage & { originalUrl?: string; body?: unknown };
@@ -32,6 +38,12 @@ export async function toWebRequest(req: Req, o: NodeHandlerOptions = {}): Promis
     if (Array.isArray(v)) for (const x of v) headers.append(k, x);
     else if (v !== undefined) headers.set(k, v);
   }
+  if (!o.trustProxy) {
+    headers.delete("x-forwarded-for");
+    headers.delete("x-real-ip");
+    const peer = req.socket?.remoteAddress;
+    if (peer) headers.set("x-forwarded-for", peer.replace(/^::ffff:/, ""));
+  }
   const method = (req.method ?? "GET").toUpperCase();
   if (method === "GET" || method === "HEAD") return new Request(url, { method, headers });
   const max = o.maxBodyBytes ?? 8 * 1024 * 1024;
@@ -39,6 +51,8 @@ export async function toWebRequest(req: Req, o: NodeHandlerOptions = {}): Promis
   if (req.body !== undefined && req.readableEnded) {
     // A body parser ran before us (express.json()): send what it read on.
     body = req.body instanceof Uint8Array ? req.body : typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+    const size = typeof body === "string" ? new TextEncoder().encode(body).length : body.length;
+    if (size > max) throw Object.assign(new Error("request body too large"), { status: 413 });
   } else {
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -68,7 +82,26 @@ export async function sendWebResponse(res: ServerResponse, response: Response): 
   });
   if (cookies.length) res.setHeader("set-cookie", cookies);
   if (!response.body) return void res.end();
-  res.end(new Uint8Array(await response.arrayBuffer()));
+  // Stream it: an event stream never ends, and a big file should not sit in memory.
+  // When the caller goes away the body is cancelled, which ends the stream on our side.
+  const reader = response.body.getReader();
+  let closed = false;
+  const onClose = () => {
+    closed = true;
+    void reader.cancel().catch(() => undefined);
+  };
+  res.on("close", onClose);
+  try {
+    res.flushHeaders?.();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || closed) break;
+      if (!res.write(value)) await new Promise<void>((ok) => res.once("drain", ok).once("close", ok));
+    }
+  } finally {
+    res.off("close", onClose);
+    if (!closed) res.end();
+  }
 }
 
 /** A `(req, res, next?)` function around a web handler such as `createCmsHandler(...)`. */

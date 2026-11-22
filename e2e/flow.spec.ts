@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "./fixtures";
 
 // The publishing flow in a real browser: schedule, review, comments, trash, releases.
 const api = "/api/cms";

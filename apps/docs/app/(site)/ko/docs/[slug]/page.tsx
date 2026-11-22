@@ -9,7 +9,8 @@ export async function generateMetadata({ params, searchParams }: PageProps<"/ko/
   const draft = await previewDoc(previewToken(await searchParams), "docs-ko", slug);
   if (draft) return { title: draft.doc.title, robots: { index: false, follow: false } };
   const doc = await publishedDoc("docs-ko", slug);
-  return doc ? { title: doc.title, description: doc.summary || undefined, alternates: { canonical: `/ko/docs/${slug}`, languages: { en: `/docs/${slug}` } } } : {};
+  const en = doc ? await publishedDoc("docs", slug).catch(() => null) : null;
+  return doc ? { title: doc.title, description: doc.summary || undefined, alternates: { canonical: `/ko/docs/${slug}`, languages: en ? { en: `/docs/${slug}`, ko: `/ko/docs/${slug}` } : undefined } } : {};
 }
 
 export default async function Page({ params, searchParams }: PageProps<"/ko/docs/[slug]">) {

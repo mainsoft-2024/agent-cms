@@ -158,7 +158,8 @@ export const CMS_TOOLS: CmsToolDef[] = [
     needs: "write",
     description:
       "Change a document (only the fields you pass; `fields` is a merge patch). Pass expectedVersion from get_document(draft=true) so a person's concurrent edit is never overwritten. To change one section, prefer patch_document.",
-    input: z.object({ collection: col, slug, doc: z.object(docInput), expectedVersion, publish: z.boolean().optional(), note: z.string().optional() }),
+    // Strict: a misspelled field or "expectedVerison" is an error with its path, not silently dropped.
+    input: z.object({ collection: col, slug, doc: z.object(docInput).strict(), expectedVersion, publish: z.boolean().optional(), note: z.string().optional() }).strict(),
     run: async (cms, actor, a) =>
       cms.update(actor, a.collection as string, a.slug as string, a.doc as never, {
         expectedVersion: a.expectedVersion as number | undefined,
@@ -171,7 +172,7 @@ export const CMS_TOOLS: CmsToolDef[] = [
     needs: "write",
     description:
       "Change sections of a document's body without resending it. Ops: replace (text under a heading), insert_after / insert_before (new markdown next to a section), delete (a section), append. `anchor` is the section id from search results (\"\" = text before the first heading). A wrong anchor fails with the list of valid ones. dryRun=true returns the diff without saving.",
-    input: z.object({ collection: col, slug, ops: z.array(patchOp).min(1).max(20), expectedVersion, dryRun: z.boolean().optional(), note: z.string().optional() }),
+    input: z.object({ collection: col, slug, ops: z.array(patchOp).min(1).max(20), expectedVersion, dryRun: z.boolean().optional(), note: z.string().optional() }).strict(),
     run: async (cms, actor, a) => {
       const r = await cms.patch(actor, a.collection as string, a.slug as string, a.ops as never, {
         expectedVersion: a.expectedVersion as number | undefined,
@@ -184,7 +185,7 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "read_document",
     description:
-      "Read a document as one file with line numbers (`N→text`): frontmatter (slug, title, summary, category, keywords, then one line per field) and the body (markdown, `:::html` blocks, or HTML for HTML documents). Writers see the working copy. Long documents: pass offset/limit (lines), or outline=true for headings and blocks with their lines. Note `version` for edit_document.",
+      "Read a document as one file with line numbers (`N→text`): frontmatter (slug, title, summary, category, keywords, then one line per field) and the body (markdown, `:::html` blocks, or HTML for HTML documents). Writers see the working copy. Long documents: pass offset/limit (lines), or outline=true for headings and blocks with their lines. Note `version` for edit_document. The answer has `nextOffset` for the next page (null at the end); if `version` changed between pages, read again from the start.",
     input: z.object({ collection: col, slug, offset: z.number().int().positive().optional(), limit: z.number().int().positive().max(2000).optional(), outline: z.boolean().optional() }),
     run: async (cms, actor, a) => cms.ax.read(actor, a.collection as string, a.slug as string, { offset: a.offset as number | undefined, limit: a.limit as number | undefined, outline: a.outline as boolean | undefined }),
   },
@@ -217,8 +218,9 @@ export const CMS_TOOLS: CmsToolDef[] = [
       edits: z.array(z.object({ oldString: z.string().min(1), newString: z.string(), replaceAll: z.boolean().optional() })).min(1).max(50),
       expectedVersion,
       note: z.string().optional(),
-    }),
-    run: async (cms, actor, a) => cms.ax.edit(actor, a.collection as string, a.slug as string, a.edits as never, { expectedVersion: a.expectedVersion as number | undefined, note: a.note as string | undefined }),
+      dryRun: z.boolean().optional().describe("Only show what would change (lines and snippet); nothing is saved"),
+    }).strict(),
+    run: async (cms, actor, a) => cms.ax.edit(actor, a.collection as string, a.slug as string, a.edits as never, { expectedVersion: a.expectedVersion as number | undefined, note: a.note as string | undefined, dryRun: a.dryRun as boolean | undefined }),
   },
   {
     name: "write_document",
@@ -450,9 +452,9 @@ export const CMS_TOOLS: CmsToolDef[] = [
     name: "list_assets",
     media: "read",
     description: "List files in the media library (images, video, documents), newest first, with the stores and their folders. Each file has the markdown that puts it in a document body.",
-    input: z.object({ store, folder: z.string().optional().describe("This folder and everything under it"), kind: z.enum(fileKinds).optional(), q: z.string().optional().describe("Part of the file name or a tag"), tag: z.string().optional(), cursor: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
+    input: z.object({ store, folder: z.string().optional().describe("This folder and everything under it"), kind: z.enum(fileKinds).optional(), q: z.string().optional().describe("Part of the file name or a tag"), tag: z.string().optional(), unused: z.boolean().optional().describe("Only files no document uses (candidates for clean-up)"), missingAlt: z.boolean().optional().describe("Only images without alt text (fix them with update_asset)"), sort: z.enum(["new", "old", "name", "size"]).optional().describe("Default new (newest first)"), cursor: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
     run: async (cms, actor, a) => {
-      const r = await cms.assets.list(actor, { store: a.store as string | undefined, folder: a.folder as string | undefined, kinds: a.kind ? [a.kind as AssetKind] : undefined, q: a.q as string | undefined, tag: a.tag as string | undefined, cursor: a.cursor as string | undefined, limit: (a.limit as number | undefined) ?? 30 });
+      const r = await cms.assets.list(actor, { store: a.store as string | undefined, folder: a.folder as string | undefined, kinds: a.kind ? [a.kind as AssetKind] : undefined, q: a.q as string | undefined, tag: a.tag as string | undefined, unused: a.unused as boolean | undefined, missingAlt: a.missingAlt as boolean | undefined, sort: a.sort as "new" | undefined, cursor: a.cursor as string | undefined, limit: (a.limit as number | undefined) ?? 30 });
       return { assets: r.assets.map(assetOut), cursor: r.cursor, counts: r.counts, stores: (await cms.assets.folders(actor)).map((s) => ({ store: s.store, visibility: s.visibility, files: s.total, folders: s.folders.map((f) => f.path) })) };
     },
   },
@@ -597,7 +599,9 @@ export async function runTool(cms: CmsLike, actor: Actor, name: string, args: un
   const parsed = def.input.safeParse(args ?? {});
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; ");
-    return { ok: false, error: { error: "invalid_request", kind: "invalid", message: core.message({ isCmsError: true, code: "invalid_request", params: { issues } }), params: { issues } } };
+    // Also as a list, so an agent can fix each field by its path without reading the sentence.
+    const list = parsed.error.issues.slice(0, 20).map((i) => ({ path: i.path.join("."), code: i.code, message: i.message }));
+    return { ok: false, error: { error: "invalid_request", kind: "invalid", message: core.message({ isCmsError: true, code: "invalid_request", params: { issues } }), params: { issues }, issues: list } as never };
   }
   try {
     return { ok: true, value: await def.run(core, actor, parsed.data as Record<string, unknown>) };

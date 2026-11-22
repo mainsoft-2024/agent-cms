@@ -264,10 +264,27 @@ export function createFlow(ctx: FlowContext) {
   const refs = (v: unknown): TrashRef[] => (Array.isArray(v) ? v.filter((x): x is TrashRef => !!x && (x.kind === "document" || x.kind === "asset") && typeof x.id === "string").slice(0, 200) : []);
 
   /** Put things back as they were. A document that was published is public again at once. */
-  async function trashRestore(actor: Actor, items: readonly TrashRef[]): Promise<{ restored: number }> {
+  async function trashRestore(actor: Actor, items: readonly TrashRef[]): Promise<{ restored: number; results: { kind: TrashRef["kind"]; id: string; ok: boolean; error?: { code: string; message: string } }[] }> {
     await ctx.ready();
     let restored = 0;
-    for (const it of refs(items)) {
+    const list = refs(items);
+    const results: { kind: TrashRef["kind"]; id: string; ok: boolean; error?: { code: string; message: string } }[] = [];
+    // One item: its error is the answer. Several: each is tried and gets its own outcome.
+    for (const it of list) {
+      try {
+        await restoreOne(actor, it);
+        restored++;
+        results.push({ kind: it.kind, id: it.id, ok: true });
+      } catch (e) {
+        if (list.length === 1 || !(e instanceof Error && "code" in e)) throw e;
+        results.push({ kind: it.kind, id: it.id, ok: false, error: { code: String((e as { code: unknown }).code), message: e.message } });
+      }
+    }
+    return { restored, results };
+  }
+
+  async function restoreOne(actor: Actor, it: TrashRef): Promise<void> {
+    {
       if (it.kind === "asset") {
         await ctx.assets.untrash(actor, it.id);
       } else {
@@ -278,9 +295,7 @@ export function createFlow(ctx: FlowContext) {
         audit(actor, "doc.undelete", { collection: d.collection, slug: d.slug, version: d.version });
         ctx.changed(null, doc, { quiet: true }); // told as doc.restored, not as a new document
       }
-      restored++;
     }
-    return { restored };
   }
 
   /** Delete for good (admins only). `"all"` empties the trash. */

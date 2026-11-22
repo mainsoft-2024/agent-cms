@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 // 0.15.0 in a real browser: the new markdown blocks and HTML kept as written.
 const api = "/api/cms";

@@ -67,7 +67,8 @@ export function Who({ kind, label, agent, className }: { kind: string | null | u
   return (
     <span className={cn("inline-flex items-center gap-1.5", className)}>
       <Avatar kind={agent ? "key" : kind} label={label} />
-      <span>{agent ? `${agent}, ${label ?? ""}` : label}</span>
+      {/* <bdi>: a name in another script does not move the punctuation around it. */}
+      <span>{agent ? (<><bdi>{agent}</bdi>, <bdi>{label ?? ""}</bdi></>) : <bdi>{label}</bdi>}</span>
     </span>
   );
 }
@@ -136,12 +137,20 @@ export function CopyButton({ value, label, className }: { value: string; label?:
 }
 
 /** Monospace value with a copy button (key secrets, URLs, commands). */
-export function CodeBox({ value, label, className, multiline }: { value: string; label?: string; className?: string; multiline?: boolean }) {
+export function CodeBox({ value, label, className, multiline, secret }: { value: string; label?: string; className?: string; multiline?: boolean; /** Hidden on screen (and from screen readers) until Show is pressed; Copy still copies it. */ secret?: string }) {
+  const { t } = useCms();
+  const [shown, setShown] = React.useState(false);
+  const masked = secret && !shown ? value.split(secret).join(`${secret.slice(0, 4)}${"•".repeat(12)}${secret.slice(-4)}`) : value;
   return (
     <div className={cn("flex items-start gap-2 rounded-md border bg-muted/50 px-3 py-2", className)}>
-      <code className={cn("min-w-0 flex-1 font-mono text-xs leading-5", multiline ? "whitespace-pre-wrap break-all" : "truncate")}>
-        {value}
+      <code dir="ltr" className={cn("min-w-0 flex-1 font-mono text-xs leading-5", multiline ? "whitespace-pre-wrap break-all" : "truncate")}>
+        {masked}
       </code>
+      {secret ? (
+        <Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2 font-sans text-xs" aria-pressed={shown} onClick={() => setShown((v) => !v)}>
+          {shown ? t("hide") : t("show")}
+        </Button>
+      ) : null}
       <CopyButton value={value} label={label} />
     </div>
   );

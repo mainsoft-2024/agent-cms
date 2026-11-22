@@ -229,7 +229,7 @@ function WebhookPanel({ hook, onEdit, onChanged, onDeleted }: { hook: WebhookVie
         <StatusText className="text-xs">{log.error ? errorMessage(log.error, t) : log.data && !log.data.length ? t("webhook_history_empty") : ""}</StatusText>
         <ul className="flex flex-col divide-y" aria-label={t("webhook_history")}>
           {(log.data ?? []).map((d) => (
-            <li key={d.id} className="flex items-center gap-2 py-1.5 text-xs">
+            <li key={d.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-1.5 text-xs">
               <span className={cn("w-9 shrink-0 font-mono font-medium", d.ok ? "text-green-700" : "text-destructive")} title={d.error ?? undefined}>
                 {d.status ?? "—"}
               </span>
@@ -239,7 +239,7 @@ function WebhookPanel({ hook, onEdit, onChanged, onDeleted }: { hook: WebhookVie
                 {d.attempt > 1 ? <span className="text-muted-foreground"> · {t("webhook_attempt", { n: d.attempt })}</span> : null}
               </span>
               {d.ok || d.event === "ping" ? (
-                <time className="shrink-0 text-muted-foreground" dateTime={d.at}>
+                <time className="shrink-0 text-muted-foreground" dateTime={d.at} title={new Date(d.at).toLocaleString(locale, { timeZoneName: "short" })}>
                   {relativeTime(d.at, t, locale)}
                 </time>
               ) : (
@@ -248,6 +248,13 @@ function WebhookPanel({ hook, onEdit, onChanged, onDeleted }: { hook: WebhookVie
                   {t("webhook_resend")}
                 </Button>
               )}
+              {/* The reason is readable without hovering (phones): under the row. */}
+              {!d.ok && d.error ? (
+                <span className="basis-full break-words pl-11 text-destructive">
+                  {d.error}
+                  <span className="text-muted-foreground"> · {new Date(d.at).toLocaleString(locale)}</span>
+                </span>
+              ) : null}
             </li>
           ))}
         </ul>

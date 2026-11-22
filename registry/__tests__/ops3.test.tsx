@@ -22,7 +22,9 @@ test("keys: a key with its own limit and addresses; rotating shows the new secre
   await user.type(within(dialog).getByLabelText("Allowed addresses"), "203.0.113.0/24, 2001:db8::/32");
   assert.deepEqual(await axeViolations(), []);
   await user.click(within(dialog).getByRole("button", { name: "Create" }));
-  const first = within(await screen.findByRole("dialog", { name: "deploy" })).getAllByText(/^sgk_/)[0].textContent ?? "";
+  // The secret is masked until Show is pressed.
+  await user.click(within(await screen.findByRole("dialog", { name: "deploy" })).getAllByRole("button", { name: "Show" })[0]);
+  const first = within(await screen.findByRole("dialog", { name: "deploy" })).getAllByText(/^sgk_[^•]+$/)[0].textContent ?? "";
   await user.click(within(screen.getByRole("dialog", { name: "deploy" })).getAllByRole("button", { name: "Close" })[0]);
   await screen.findByText("60 per minute · 203.0.113.0/24 · 2001:db8::/32");
   const made = (await s.cms.listKeys(admin))[0];
@@ -41,7 +43,8 @@ test("keys: a key with its own limit and addresses; rotating shows the new secre
   const confirm = await screen.findByRole("dialog", { name: "Make a new secret for “deploy”?" });
   assert.match(confirm.textContent ?? "", /keeps working for one hour/);
   await user.click(within(confirm).getByRole("button", { name: "Rotate" }));
-  const second = within(await screen.findByRole("dialog", { name: "deploy" })).getAllByText(/^sgk_/)[0].textContent ?? "";
+  await user.click(within(await screen.findByRole("dialog", { name: "deploy" })).getAllByRole("button", { name: "Show" })[0]);
+  const second = within(await screen.findByRole("dialog", { name: "deploy" })).getAllByText(/^sgk_[^•]+$/)[0].textContent ?? "";
   assert.ok(second.startsWith("sgk_") && second !== first);
   await user.click(within(screen.getByRole("dialog", { name: "deploy" })).getAllByRole("button", { name: "Close" })[0]);
 

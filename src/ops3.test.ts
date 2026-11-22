@@ -292,6 +292,8 @@ test("events: a stranger hears what goes public, an editor hears every save, and
   const s = setup();
   const abortA = new AbortController();
   const abortB = new AbortController();
+  // The requests are not kept here on purpose: the stream must hold them, or
+  // a collected request never passes its abort on (Node links them weakly).
   const stranger = await s.handler(new Request("http://app.test/api/cms/_events", { signal: abortA.signal }));
   assert.deepEqual([stranger.status, stranger.headers.get("content-type")], [200, "text/event-stream; charset=utf-8"]);
   s.session.user = admin;
@@ -312,8 +314,10 @@ test("events: a stranger hears what goes public, an editor hears every save, and
   assert.deepEqual(heardByStranger.map((f) => [f.event, f.data.collection, f.data.slug]), [["doc.published", "guide", "a"]], "no drafts, and nothing from the internal collection");
 
   // Ending the request stops the listener.
+  (globalThis as { gc?: () => void }).gc?.();
   abortA.abort();
   abortB.abort();
+  (globalThis as { gc?: () => void }).gc?.();
   await tick();
   await s.cms.publish(admin, "guide", "a");
   assert.deepEqual(await frames(editor, 1, 50), []);

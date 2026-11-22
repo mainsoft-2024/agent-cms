@@ -104,6 +104,13 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
   const [busy, setBusy] = React.useState(false);
   const [status, setStatus] = React.useState<{ text: string; tone: "ok" | "error" } | null>(null);
 
+  // Another document: forget the old pair until its own versions arrive.
+  React.useEffect(() => {
+    setTo(null);
+    setFrom(null);
+    setStatus(null);
+  }, [collection, slug]);
+
   // Default: latest against the published version (or the one before).
   React.useEffect(() => {
     if (!versions.length || to !== null) return;
@@ -115,7 +122,7 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
 
   const diff = useAsync<{ d: DocDiff; body?: string } | null>(
     async () => {
-      if (from === null || to === null) return null;
+      if (from === null || to === null || !versions.some((v) => v.version === to) || !versions.some((v) => v.version === from)) return null;
       const [d, v] = await Promise.all([client.diff(collection, slug, from, to), client.version(collection, slug, to).catch(() => null)]);
       return { d, body: v?.snapshot.body };
     },
@@ -370,7 +377,16 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
 
   const diffArea = (
     <div className="flex min-w-0 flex-1 flex-col gap-3">
+      {list.error ? (
+        <div className="flex items-center gap-2">
+          <StatusText tone="error">{errorMessage(list.error, t)}</StatusText>
+          <Button type="button" variant="outline" size="sm" className="h-7" onClick={list.reload}>
+            {t("retry")}
+          </Button>
+        </div>
+      ) : null}
       {diff.error ? <StatusText tone="error">{errorMessage(diff.error, t)}</StatusText> : null}
+      {diff.data && diff.data.body === undefined ? <StatusText className="text-xs">{t("version_text_unavailable")}</StatusText> : null}
       {d && !d.fields.length && !d.hunks.length ? <p className="text-sm text-muted-foreground">{t("no_diff")}</p> : null}
       {fieldTable}
       {d && d.hunks.length ? (view === "unified" ? unified : split) : null}

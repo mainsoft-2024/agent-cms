@@ -57,12 +57,20 @@ export interface CmsClientOptions {
   clientName?: string;
 }
 
+/** `Retry-After` in seconds ("120" or an HTTP date); undefined when absent or unreadable. */
+export function retryAfterOf(h: string | null, now = Date.now()): number | undefined {
+  if (!h) return undefined;
+  if (/^\d+$/.test(h.trim())) return Number(h.trim());
+  const at = Date.parse(h);
+  return Number.isFinite(at) ? Math.max(0, Math.ceil((at - now) / 1000)) : undefined;
+}
+
 export class CmsRemoteError extends Error {
   constructor(
     message: string,
     /** e.g. "conflict_version", "forbidden_write", "not_found" (from the server), or "http" / "rpc" / "network". */
     public code: string,
-    public extra: { kind?: string; status?: number; params?: ErrorParams; diagnostics?: Diagnostic[]; current?: unknown } = {}
+    public extra: { kind?: string; status?: number; params?: ErrorParams; diagnostics?: Diagnostic[]; current?: unknown; /** Seconds to wait (from `Retry-After`) before trying again. */ retryAfter?: number; /** `X-Request-Id` of the failed request, for support and logs. */ requestId?: string } = {}
   ) {
     super(message);
     this.name = "CmsRemoteError";
@@ -70,6 +78,12 @@ export class CmsRemoteError extends Error {
   readonly isCmsRemoteError = true;
   get kind() {
     return this.extra.kind;
+  }
+  get retryAfter() {
+    return this.extra.retryAfter;
+  }
+  get requestId() {
+    return this.extra.requestId;
   }
   get status() {
     return this.extra.status;
@@ -249,7 +263,27 @@ export type ShareTtl = "1h" | "24h" | "7d";
 export type AssetCounts = Record<"all" | "image" | "video" | "audio" | "document" | "other", number>;
 export type AssetDetail = AssetView & { usage: AssetUsage[]; usageHidden: number };
 
+/** An agent's edit kept for a person to apply or reject. */
+export interface SuggestionWire {
+  id: string;
+  baseVersion: number;
+  edits: { oldString: string; newString: string; replaceAll?: boolean }[];
+  note: string | null;
+  by: { kind: "user" | "key" | "system"; label: string; agent: string | null };
+  at: string;
+  lines: { from: number; to: number }[];
+}
+
 export interface CollectionSchema {
+  /** Body formats this collection allows (0.15.0). */
+  formats?: ("markdown" | "html")[];
+  /** The person may add or change HTML blocks / run scripts in isolated HTML. */
+  canHtml?: boolean;
+  canHtmlScripts?: boolean;
+  /** "suggest": an agent's edits wait as suggestions for a person. */
+  agentEdits?: "apply" | "suggest";
+  /** The collection has publish checks (the editor asks them before publishing). */
+  publishChecks?: boolean;
   slug: string;
   label: string;
   visibility: "public" | "internal";
@@ -315,7 +349,7 @@ export function createRestClient(opts: RestClientOptions) {
     }
     if (!res.ok) {
       const e = (data ?? {}) as { error?: string; message?: string; kind?: string; params?: ErrorParams; diagnostics?: Diagnostic[]; current?: unknown };
-      throw new CmsRemoteError(e.message ?? `HTTP ${res.status}`, e.error ?? "http", { kind: e.kind, status: res.status, params: e.params, diagnostics: e.diagnostics, current: e.current });
+      throw new CmsRemoteError(e.message ?? `HTTP ${res.status}`, e.error ?? "http", { kind: e.kind, status: res.status, params: e.params, diagnostics: e.diagnostics, current: e.current, retryAfter: retryAfterOf(res.headers.get("retry-after")), requestId: res.headers.get("x-request-id") ?? undefined });
     }
     return data as T;
   }
@@ -334,6 +368,13 @@ export function createRestClient(opts: RestClientOptions) {
     remove: (c: string, s: string, expectedVersion?: number) => req<{ ok: true }>("DELETE", doc(c, s), { ifMatch: expectedVersion }),
     diagnose: (c: string, d: DocInputWire, slug?: string) => req<{ diagnostics: Diagnostic[] }>("POST", `/collections/${enc(c)}/_diagnose`, { body: { doc: d, slug } }).then((r) => r.diagnostics),
     patch: (c: string, s: string, ops: PatchOp[], o: { expectedVersion?: number; dryRun?: boolean } = {}) => req<{ doc: CmsDoc | null; diff: string; diagnostics: Diagnostic[]; saved: boolean }>("POST", `${doc(c, s)}/patch`, { body: { ops, ...o } }),
+    /** Agents' edits waiting as suggestions (collections with `agentEdits: "suggest"`). */
+    suggestions: (c: string, s: string) => req<{ suggestions: SuggestionWire[] }>("GET", `${doc(c, s)}/suggestions`).then((r) => r.suggestions),
+    applySuggestion: (c: string, s: string, id: string) => req<unknown>("POST", `${doc(c, s)}/suggestions/${enc(id)}/apply`),
+    rejectSuggestion: (c: string, s: string, id: string) => req<unknown>("POST", `${doc(c, s)}/suggestions/${enc(id)}/reject`),
+    /** What the collection's publish checks (and the schema) say about this content, before publishing. */
+    publishChecks: (c: string, s: string, d?: DocInputWire) =>
+      req<{ diagnostics: Diagnostic[]; checks: { code: string; message: string; severity: "error" | "warning"; path?: string; line?: number }[]; blocking: boolean }>("POST", `${doc(c, s)}/checks`, { body: { doc: d } }),
     autosave: (c: string, s: string, d: DocInputWire, baseVersion: number) => req<{ autosave: AutosaveState }>("PUT", `${doc(c, s)}/autosave`, { body: { doc: d, baseVersion } }).then((r) => r.autosave),
     discardAutosave: (c: string, s: string) => req<{ ok: true }>("DELETE", `${doc(c, s)}/autosave`),
     publish: (c: string, s: string, o: { expectedVersion?: number; version?: number } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/publish`, { body: { version: o.version }, ifMatch: o.expectedVersion }).then((r) => r.doc),
@@ -371,7 +412,7 @@ export function createRestClient(opts: RestClientOptions) {
     saveFilter: (c: string, b: { name: string; query: Record<string, string>; shared?: boolean }) => req<{ filter: SavedFilter }>("POST", `/collections/${enc(c)}/_filters`, { body: b }).then((r) => r.filter),
     removeFilter: (c: string, id: string) => req<{ ok: true }>("DELETE", `/collections/${enc(c)}/_filters/${enc(id)}`),
     trash: (kind?: TrashRef["kind"]) => req<{ items: TrashItem[]; days: number; canPurge: boolean }>("GET", "/trash", { query: { kind } }),
-    restoreTrash: (items: TrashRef[]) => req<{ restored: number }>("POST", "/trash/_restore", { body: { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
+    restoreTrash: (items: TrashRef[]) => req<{ restored: number; results?: { kind: TrashRef["kind"]; id: string; ok: boolean; error?: { code: string; message: string } }[] }>("POST", "/trash/_restore", { body: { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
     purgeTrash: (items: TrashRef[] | "all") => req<{ purged: number }>("POST", "/trash/_purge", { body: items === "all" ? { all: true } : { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
     releases: () => req<{ releases: CmsRelease[] }>("GET", "/releases").then((r) => r.releases),
     release: (id: string) => req<{ release: ReleaseView }>("GET", `/releases/${enc(id)}`).then((r) => r.release),
@@ -423,6 +464,8 @@ export function createRestClient(opts: RestClientOptions) {
     retentionRules: () => req<{ rules: { what: string; days: number }[] }>("GET", "/retention"),
     runRetention: (o: { dryRun?: boolean } = {}) => req<{ dryRun: boolean; at: string; items: { what: string; days: number; before: string; rows: number }[] }>("POST", "/retention", { body: o }),
     assets: (q: Omit<AssetListOptions, "kinds"> & { kind?: string } = {}) => req<{ assets: AssetView[]; cursor: string | null; counts: AssetCounts }>("GET", "/assets", { query: { ...q } }),
+    /** Address that downloads these files as one zip (open it in the browser; cookies sign it in). */
+    assetZipUrl: (ids: readonly string[]) => `${base}/assets/_zip?ids=${ids.map(encodeURIComponent).join(",")}`,
     assetFolders: () => req<{ stores: FolderTree[] }>("GET", "/assets/_folders").then((r) => r.stores),
     createAssetFolder: (path: string, store?: string | null) => req<{ store: string; path: string }>("POST", "/assets/_folders", { body: { path, store } }),
     deleteAssetFolder: (path: string, store?: string | null) => req<{ ok: true }>("DELETE", "/assets/_folders", { query: { path, store } }),

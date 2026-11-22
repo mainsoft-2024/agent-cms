@@ -316,7 +316,8 @@ test("media: the focal point by keyboard, and replacing a file asks first", asyn
   await within(panel).findByRole("button", { name: "초점: 왼쪽에서 52%, 위에서 50%" });
   await user.keyboard("{Shift>}{ArrowUp}{/Shift}");
   await within(panel).findByRole("button", { name: "초점: 왼쪽에서 52%, 위에서 40%" });
-  assert.deepEqual([(await s.cms.assets.get(admin, logo.id)).focalX, (await s.cms.assets.get(admin, logo.id)).focalY], [0.52, 0.4]);
+  // The point moves at once; it is saved once, a moment after the last key.
+  await waitFor(async () => assert.deepEqual([(await s.cms.assets.get(admin, logo.id)).focalX, (await s.cms.assets.get(admin, logo.id)).focalY], [0.52, 0.4]), { timeout: 3000 });
   // Done aiming: the point stays visible, but no longer takes input.
   await user.click(toggle);
   assert.equal((within(panel).getByRole("button", { name: /^초점:/ }) as HTMLButtonElement).disabled, true);

@@ -7,9 +7,10 @@
 
 import * as React from "react";
 import { ArrowLeftRight, BookOpen, FileText, LayoutGrid, Shield, Workflow, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { ShellNavContext, useCms } from "./use-cms";
+import { modLabel, ShellNavContext, TRASH_CHANGED, useCms, useShortcut } from "./use-cms";
 
 export interface CmsNavItem {
   label: string;
@@ -58,12 +59,38 @@ export interface CmsShellProps {
   renderLink?: (props: CmsLinkProps) => React.ReactNode;
   /** Item counts beside collections; default: the "all" count from `counts()` for collections you can edit. */
   counts?: Record<string, number>;
+  /** Go to a page from a keyboard shortcut (g d, g m, g t). Default `window.location.assign`; pass your router's push. */
+  onNavigate?: (href: string) => void;
   className?: string;
 }
 
-export function CmsShell({ children, title, logo, activeCollection, activeHref, basePath = "/admin", hrefFor, extraNav, onSearch, LinkComponent, renderLink, counts, className }: CmsShellProps) {
+export function CmsShell({ children, title, logo, activeCollection, activeHref, basePath = "/admin", hrefFor, extraNav, onSearch, LinkComponent, renderLink, counts, onNavigate, className }: CmsShellProps) {
   const { t, me, client } = useCms();
   const [open, setOpen] = React.useState(false);
+  const [help, setHelp] = React.useState(false);
+  useShortcut("shift+?", () => setHelp(true));
+  // "g" then a letter within a second: go to a screen.
+  const gAt = React.useRef(0);
+  React.useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || e.defaultPrevented) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.("input, textarea, select, [contenteditable=''], [contenteditable='true'], [role=textbox]")) return;
+      const k = e.key.toLowerCase();
+      if (k === "g") {
+        gAt.current = Date.now();
+        return;
+      }
+      if (Date.now() - gAt.current > 1000) return;
+      gAt.current = 0;
+      const target = k === "d" && me?.dashboard ? href({ kind: "dashboard" }) : k === "m" && me?.media ? href({ kind: "media" }) : k === "t" ? href({ kind: "trash" }) : null;
+      if (!target) return;
+      e.preventDefault();
+      (onNavigate ?? ((h: string) => window.location.assign(h)))(target);
+    };
+    document.addEventListener("keydown", on);
+    return () => document.removeEventListener("keydown", on);
+  });
   const [loaded, setLoaded] = React.useState<Record<string, number>>({});
 
   React.useEffect(() => {
@@ -91,6 +118,13 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
   const editor = !!me?.collections.some((c) => c.canWrite);
   const hasTrash = editor && (me?.trashDays ?? 0) > 0;
   const [inTrash, setInTrash] = React.useState<number | null>(null);
+  // Counted once, then again only when a screen says the trash changed (not on every page change).
+  const [trashTick, setTrashTick] = React.useState(0);
+  React.useEffect(() => {
+    const on = () => setTrashTick((n) => n + 1);
+    window.addEventListener(TRASH_CHANGED, on);
+    return () => window.removeEventListener(TRASH_CHANGED, on);
+  }, []);
   React.useEffect(() => {
     if (!hasTrash) return;
     let live = true;
@@ -101,7 +135,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
     return () => {
       live = false;
     };
-  }, [client, hasTrash, activeHref]);
+  }, [client, hasTrash, trashTick]);
 
   const href = (target: CmsShellTarget) =>
     hrefFor?.(target) ?? (target.kind === "collection" ? `${basePath}/${encodeURIComponent(target.slug)}` : `${basePath}/${target.kind}`);
@@ -123,7 +157,13 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
       active && "bg-accent font-medium text-accent-foreground"
     );
 
-  const close = () => setOpen(false);
+  // A link in the phone menu: the menu closes and focus goes to the new page, not back to the menu button.
+  const mainRef = React.useRef<HTMLElement>(null);
+  const navigated = React.useRef(false);
+  const close = () => {
+    navigated.current = true;
+    setOpen(false);
+  };
 
   const nav = (
     <nav aria-label={t("nav_label")} className="flex flex-col gap-0.5 text-sm">
@@ -171,7 +211,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
                 children: (
                   <>
                     <BookOpen aria-hidden className="h-4 w-4 shrink-0" />
-                    <span className="flex-1 truncate">{c.label}</span>
+                    <bdi className="flex-1 truncate">{c.label}</bdi>
                     {shown[c.slug] !== undefined ? <span className="text-xs tabular-nums text-muted-foreground">{shown[c.slug]}</span> : null}
                   </>
                 ),
@@ -319,7 +359,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
                     children: (
                       <>
                         {it.icon ?? <FileText aria-hidden className="h-4 w-4 shrink-0" />}
-                        <span className="flex-1 truncate">{it.label}</span>
+                        <bdi className="flex-1 truncate">{it.label}</bdi>
                         {it.badge !== undefined && it.badge !== null ? <span className="text-xs tabular-nums text-muted-foreground">{it.badge}</span> : null}
                       </>
                     ),
@@ -350,15 +390,102 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
           {nav}
         </aside>
         <Sheet open={open} onOpenChange={setOpen}>
-          <SheetContent side="left" className="w-72 overflow-y-auto p-3">
+          <SheetContent
+            side="left"
+            className="w-72 overflow-y-auto p-3"
+            {...({
+              // Radix sheets: where focus goes when the sheet closes.
+              onCloseAutoFocus: (e: Event) => {
+                if (!navigated.current) return;
+                navigated.current = false;
+                e.preventDefault();
+                const h = mainRef.current?.querySelector<HTMLElement>("h1");
+                if (h && !h.hasAttribute("tabindex")) h.setAttribute("tabindex", "-1");
+                (h ?? mainRef.current)?.focus({ preventScroll: true });
+              },
+            } as object)}
+          >
             <SheetTitle className="sr-only">{t("menu")}</SheetTitle>
             <SheetDescription className="sr-only">{t("nav_label")}</SheetDescription>
             {brand}
             {nav}
           </SheetContent>
         </Sheet>
-        <main className="flex min-w-0 flex-1 flex-col">{children}</main>
+        <main ref={mainRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
+          {children}
+        </main>
       </div>
+      <ShortcutsDialog open={help} onOpenChange={setHelp} />
     </ShellNavContext.Provider>
+  );
+}
+
+/** Every shortcut the admin knows, in one place (opened with "?"). */
+export function ShortcutsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { t } = useCms();
+  const mod = modLabel();
+  const groups: { title: string; rows: [string[], string][] }[] = [
+    {
+      title: t("sc_group_global"),
+      rows: [
+        [["?"], t("sc_help")],
+        [[mod, "K"], t("sc_search")],
+        [["G", "D"], t("sc_go_dashboard")],
+        [["G", "M"], t("sc_go_media")],
+        [["G", "T"], t("sc_go_trash")],
+        [["Esc"], t("sc_escape")],
+      ],
+    },
+    {
+      title: t("sc_group_list"),
+      rows: [
+        [["/"], t("sc_find")],
+        [["N"], t("sc_new")],
+        [[mod, "A"], t("sc_select_all")],
+      ],
+    },
+    {
+      title: t("sc_group_editor"),
+      rows: [
+        [[mod, "S"], t("sc_save")],
+        [[mod, "Shift", "P"], t("sc_publish")],
+        [[mod, "Shift", "F"], t("sc_focus")],
+        [[mod, "B"], t("sc_bold")],
+        [[mod, "I"], t("sc_italic")],
+        [[mod, "K"], t("sc_link")],
+        [["/"], t("sc_slash")],
+      ],
+    },
+  ];
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{t("shortcuts")}</DialogTitle>
+          <DialogDescription>{t("shortcuts_hint")}</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-5 sm:grid-cols-2">
+          {groups.map((g) => (
+            <section key={g.title} className={g.rows.length > 4 ? "sm:col-span-2" : undefined}>
+              <h3 className="mb-2 text-xs font-medium text-muted-foreground">{g.title}</h3>
+              <dl className={cn("grid gap-1.5 text-sm", g.rows.length > 4 && "sm:grid-cols-2 sm:gap-x-6")}>
+                {g.rows.map(([keys, label]) => (
+                  <div key={label + keys.join()} className="flex items-center justify-between gap-3">
+                    <dt className="text-foreground/80">{label}</dt>
+                    <dd className="flex shrink-0 gap-1">
+                      {keys.map((k) => (
+                        <kbd key={k} className="min-w-6 rounded border border-b-2 bg-muted px-1.5 text-center font-mono text-[11px] leading-5">
+                          {k}
+                        </kbd>
+                      ))}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
