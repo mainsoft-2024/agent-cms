@@ -46,6 +46,8 @@ export interface FieldSpec {
   collection?: string;
   accept?: string[];
   store?: string;
+  /** This person cannot change it (`fieldAccess` on the server). */
+  readOnly?: boolean;
 }
 
 /** Drop `null` from `anyOf: [X, null]` (nullable fields). */
@@ -79,12 +81,14 @@ export function fieldSpecs(schema: CollectionSchema): FieldSpec[] {
   const root = (schema.fields ?? {}) as JsonSchema;
   const props = root.properties ?? {};
   const req = new Set(root.required ?? []);
-  return Object.entries(props).map(([key, raw]) => {
+  const hidden = new Set(schema.fieldRules?.hidden ?? []);
+  const readOnly = new Set(schema.fieldRules?.readOnly ?? []);
+  return Object.entries(props).filter(([key]) => !hidden.has(key)).map(([key, raw]) => {
     const s = unwrap(raw);
     const hint = schema.admin?.[key];
     const widget = widgetFor(raw, hint?.widget);
     const options = (widget === "select" ? s.enum : widget === "multiselect" ? (s.items ? unwrap(s.items).enum : undefined) : undefined) as string[] | undefined;
-    return { key, label: hint?.label ?? key, help: hint?.help ?? s.description, widget, required: req.has(key), options, integer: s.type === "integer", collection: schema.slug, accept: hint?.accept ?? (widget === "image" ? ["image/*"] : undefined), store: hint?.store };
+    return { key, label: hint?.label ?? key, help: hint?.help ?? s.description, widget, required: req.has(key), options, integer: s.type === "integer", collection: schema.slug, accept: hint?.accept ?? (widget === "image" ? ["image/*"] : undefined), store: hint?.store, readOnly: readOnly.has(key) || undefined };
   });
 }
 
@@ -254,7 +258,33 @@ export const FieldGate = React.createContext<((key: string, bad: boolean) => voi
 
 // ── one custom field ─────────────────────────────────────────────────────────
 
-export function FieldInput({ spec, idPrefix, value, onChange, problems }: { spec: FieldSpec; idPrefix: string; value: unknown; onChange: (v: unknown) => void; problems?: FieldProblem[] }) {
+export function FieldInput(props: { spec: FieldSpec; idPrefix: string; value: unknown; onChange: (v: unknown) => void; problems?: FieldProblem[] }) {
+  const { t } = useCms();
+  if (!props.spec.readOnly) return <FieldControl {...props} />;
+  // Read-only for this person (`fieldAccess`): the value as text (selectable, copyable), not a greyed-out control.
+  const id = `${props.idPrefix}-f-${props.spec.key}`;
+  const v = props.value;
+  const shown = v === undefined || v === null || v === "" ? null : typeof v === "boolean" ? t(v ? "field_yes" : "field_no") : Array.isArray(v) ? v.map((x) => (typeof x === "object" ? JSON.stringify(x) : String(x))).join(", ") : typeof v === "object" ? JSON.stringify(v, null, 2) : String(v);
+  return (
+    <div className="min-w-0 space-y-1.5" role="group" aria-labelledby={`${id}-label`} aria-describedby={`${id}-ro`}>
+      <div className="flex items-center gap-2">
+        <span id={`${id}-label`} className="text-sm font-medium">
+          {props.spec.label}
+        </span>
+        <span id={`${id}-ro`} className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          <Lock className="size-3" aria-hidden />
+          {t("field_read_only")}
+        </span>
+      </div>
+      <div className={cn("min-h-9 rounded-md border border-dashed bg-muted/30 px-3 py-2 text-sm break-words", typeof v === "object" && v !== null && !Array.isArray(v) && "whitespace-pre-wrap font-mono text-xs")}>
+        {shown ?? <span className="text-muted-foreground">{t("field_empty_value")}</span>}
+      </div>
+      {props.spec.help ? <p className="text-xs text-muted-foreground">{props.spec.help}</p> : null}
+    </div>
+  );
+}
+
+function FieldControl({ spec, idPrefix, value, onChange, problems }: { spec: FieldSpec; idPrefix: string; value: unknown; onChange: (v: unknown) => void; problems?: FieldProblem[] }) {
   const { t } = useCms();
   const id = `${idPrefix}-f-${spec.key}`;
   const [localError, setLocalError] = React.useState<string | null>(null);
@@ -411,10 +441,12 @@ export interface CmsFieldFormProps {
   slugPrefix?: string;
   idPrefix?: string;
   className?: string;
+  /** For `slots.fieldAddon` (0.17.0): the editor's slot context. */
+  slotContext?: import("./use-cms").EditorSlotContext;
 }
 
-export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocked, slugPrefix, idPrefix = "cms", className }: CmsFieldFormProps) {
-  const { t } = useCms();
+export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocked, slugPrefix, idPrefix = "cms", className, slotContext }: CmsFieldFormProps) {
+  const { t, slots } = useCms();
   const specs = React.useMemo(() => fieldSpecs(schema), [schema]);
   const set = <K extends keyof DocContent>(k: K, v: DocContent[K]) => onChange({ ...value, [k]: v });
   const setField = (k: string, v: unknown) => {
@@ -477,7 +509,10 @@ export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocke
       ) : null}
       {text("summary", t("field_summary"), { wide: true })}
       {specs.map((s) => (
-        <FieldInput key={s.key} spec={s} idPrefix={idPrefix} value={value.fields[s.key]} onChange={(v) => setField(s.key, v)} problems={problems[`fields.${s.key}`]} />
+        <div key={s.key} className="min-w-0">
+          <FieldInput spec={s} idPrefix={idPrefix} value={value.fields[s.key]} onChange={(v) => setField(s.key, v)} problems={problems[`fields.${s.key}`]} />
+          {slots.fieldAddon && slotContext && !s.readOnly ? <div className="mt-1 flex flex-wrap gap-2">{slots.fieldAddon({ key: s.key, label: s.label, widget: s.widget }, { ...slotContext, value: value.fields[s.key], setValue: (v) => setField(s.key, v) })}</div> : null}
+        </div>
       ))}
       <FieldShell id={kwId} label={t("field_keywords")} errors={kwErr}>
         <TagsInput id={kwId} value={value.keywords} onChange={(v) => set("keywords", v)} invalid={kwErr?.some((e) => e.severity === "error")} describedBy={describedBy({ id: kwId, errors: kwErr })} />

@@ -13,7 +13,7 @@ import type { AnyCollection } from "./cms";
 import type { CmsErrorCode, CmsErrorOptions, Diagnostic, ErrorParams } from "./errors";
 import { assetUses, externalImages } from "./markdown";
 import { FetchGuardError, guardedFetch, imageSize, type ResolveHost } from "./net-guard";
-import type { AssetSort, CmsRepo } from "./repo";
+import { docsById, type AssetSort, type CmsRepo } from "./repo";
 import { makeZip, zipNames } from "./zip";
 import {
   acceptsFile,
@@ -230,6 +230,8 @@ export interface AssetsContext {
   actorRef: (actor: Actor) => { kind: "user" | "key" | "system"; id: string | null; label: string; agent: string | null };
   collection: (slug: string) => AnyCollection;
   canReadDoc: (actor: Actor, doc: CmsDoc) => boolean;
+  /** A role's word on a store (`media:<store>` target, 0.17.0); undefined when the person has no roles. */
+  roleAllows?: (actor: Actor, store: string, what: "write" | "delete") => boolean | undefined;
   warn: (key: string, message: string) => void;
   ready: () => Promise<void> | void;
   /** Days a deleted file stays in the trash (0: deleted at once). */
@@ -313,7 +315,7 @@ export function createAssets(ctx: AssetsContext) {
     if (own) return own({ actor, store });
     if (actor.kind === "anonymous") return false;
     if (what === "read") return true;
-    if (actor.kind === "user") return actor.isAdmin;
+    if (actor.kind === "user") return actor.isAdmin || (ctx.roleAllows?.(actor, store, what) ?? false);
     return actor.scopes.includes("admin") || actor.scopes.includes(what === "write" ? "write" : "publish");
   }
   function need(actor: Actor, store: string, what: "read" | "write" | "delete") {
@@ -798,8 +800,10 @@ export function createAssets(ctx: AssetsContext) {
   async function usage(actor: Actor, a: CmsAsset): Promise<{ documents: AssetUsage[]; hidden: number }> {
     const documents: AssetUsage[] = [];
     let hidden = 0;
-    for (const r of await repo.listAssetRefs(a.id)) {
-      const d = await repo.findDocById(r.documentId);
+    const refs = await repo.listAssetRefs(a.id);
+    const docs = await docsById(repo, refs.map((r) => r.documentId));
+    for (const r of refs) {
+      const d = docs.get(r.documentId);
       if (!d) continue;
       // Documents the actor may not read are counted, not named.
       if (!ctx.canReadDoc(actor, d)) hidden++;

@@ -36,6 +36,27 @@ export interface CmsSlots {
    * the body is edited as markdown text. Pass it lazily (next/dynamic or React.lazy): it is large.
    */
   blockEditor?: React.ComponentType<BlockEditorProps>;
+  /** 0.17.0: buttons in the document editor's header, before Save (a "Translate" or "Check links" button). */
+  editorActions?: (ctx: EditorSlotContext) => React.ReactNode;
+  /** 0.17.0: a panel under the fields in the document editor (an SEO score, a social card preview). */
+  editorPanel?: (ctx: EditorSlotContext) => React.ReactNode;
+  /** 0.17.0: next to a field's input in the editor's form (a "Generate" button, a counter). */
+  fieldAddon?: (field: { key: string; label: string; widget: string }, ctx: EditorSlotContext & { value: unknown; setValue: (v: unknown) => void }) => React.ReactNode;
+}
+
+/** What editor slots get: the document as it is on screen, and ways to change it (the person still saves). */
+export interface EditorSlotContext {
+  collection: string;
+  /** null while the document is new. */
+  slug: string | null;
+  content: DocContent;
+  /** Merge a change into the form (marks the document as changed). */
+  setContent: (patch: Partial<DocContent>) => void;
+  /** Put markdown at the cursor in the body. */
+  insertMarkdown: (markdown: string) => void;
+  version: number | null;
+  published: boolean;
+  readOnly: boolean;
 }
 
 export interface BlockEditorProps {

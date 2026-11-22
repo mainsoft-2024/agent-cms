@@ -48,10 +48,32 @@ export function isPublicAddress(ip: string): boolean {
 
 export type ResolveHost = (host: string) => Promise<string[]>;
 
+type DnsPromises = { lookup(host: string, o: { all: true }): Promise<{ address: string }[]> };
+
+/**
+ * Node's resolver where there is one; on Edge runtimes (no `node:dns`) DNS over HTTPS, so the
+ * check still sees the addresses a name points at.
+ */
 const defaultResolve: ResolveHost = async (host) => {
-  const dns = await import("node:dns/promises");
-  return (await dns.lookup(host, { all: true })).map((a) => a.address);
+  const p = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+  const dns = p?.getBuiltinModule?.("node:dns") as { promises?: DnsPromises } | undefined;
+  if (dns?.promises) return (await dns.promises.lookup(host, { all: true })).map((a) => a.address);
+  return dohResolve(host);
 };
+
+/** A and AAAA records over DNS over HTTPS (JSON API). */
+export async function dohResolve(host: string, o: { fetch?: typeof fetch; endpoint?: string } = {}): Promise<string[]> {
+  const f = o.fetch ?? fetch;
+  const endpoint = o.endpoint ?? "https://cloudflare-dns.com/dns-query";
+  const one = async (type: "A" | "AAAA") => {
+    const res = await f(`${endpoint}?name=${encodeURIComponent(host)}&type=${type}`, { headers: { accept: "application/dns-json" } });
+    if (!res.ok) throw new Error(`DNS over HTTPS answered ${res.status}`);
+    const j = (await res.json()) as { Answer?: { type: number; data: string }[] };
+    return (j.Answer ?? []).filter((a) => a.type === (type === "A" ? 1 : 28)).map((a) => a.data);
+  };
+  const [a, aaaa] = await Promise.all([one("A"), one("AAAA").catch(() => [])]);
+  return [...a, ...aaaa];
+}
 
 export interface GuardedFetchOptions {
   maxBytes: number;

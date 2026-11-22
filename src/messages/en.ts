@@ -76,6 +76,7 @@ export const en: Messages = {
   schema_outdated: "The database schema is v{found}, this version needs v{expected}. Run: {command}",
   conflict_version: "Someone else saved v{current} since you read v{expected}. Reload or merge, then save",
   slug_taken: "The slug {slug} is already used",
+  forbidden_field: "You cannot change the field {field}",
   forbidden_html: "Adding or changing HTML in {collection} needs the \"html\" permission",
   forbidden_html_scripts: "HTML that runs in an isolated frame needs the \"html_scripts\" permission",
   raw_link_invalid: "This file link is not valid",

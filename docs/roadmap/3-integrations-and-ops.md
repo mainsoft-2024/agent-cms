@@ -374,3 +374,25 @@ PR #24. 스키마 7. 검증: 단위 166개(159 통과, 7은 실제 저장소가 
 - CLI `user create`, 메일 보내기 예제(Resend 등), 실제 OIDC 공급자(Google 등)로 확인.
 - 리뷰의 [남음] 항목(`docs/roadmap/review-ui-2026-11-22.md`).
 - 0.17.0: 75, 76, 77, 78, 82, 90, 104, 106, 21, 73, 93/92/134/80 나머지, 113, 131(Notion, zip), 27.
+
+## 구현 결과 (0.17.0, 묶음 3 마무리, 2026-11-22)
+
+| 번호 | 결과 |
+|---|---|
+| 75 변경 로그 | `cms_changes`(스키마 9). 이벤트마다 번호. 듣는 쪽이 있으면 2초 폴링, `ChangeSignal`(pg LISTEN/NOTIFY, postgres.js)로 즉시. `/_events`는 번호로 이어 받기, `GET /_changes` 폴링. 7일 보관 |
+| 76 읽기 캐시 | `cache`(`memoryCache` 또는 get/set 저장소). 컬렉션 세대 키로 무효화. `access.read`가 있는 컬렉션은 캐시 안 함 |
+| 77 페이지 | `pageDocs` keyset 커서 `k.…`, 예전 숫자 커서 호환. 휴지통·댓글·버전에 limit/cursor |
+| 78 색인 | 색인 11개, 일괄 조회(사용처, 릴리스, resync) |
+| 82 doctor | 색인, 게시 버전 행, 고아 행 검사와 `--fix` |
+| 90 드라이버 | `./db` connectPostgres(pg, postgres.js, neon WebSocket/HTTP, pglite), 트랜잭션 없는 드라이버 |
+| 104 Edge | `./crypto`(SHA-256, HMAC, base64url), secrets 지연 로드, DoH. Edge 런타임 테스트 |
+| 106 bench | `npm run bench` |
+| 21 여러 사이트 | `./tenants` 사이트마다 스키마 |
+| 73 XSS 계약 | 적대적 픽스처 테스트, `/\host` 링크 버그 수정 |
+| 93·92·134·80 | `beforeRead`, 목록 `afterRead`, 필드 훅, `config.plugins` migrate, 편집기 확장 자리 3개, `/metrics`·`createMetrics` |
+| 113 | 미디어 저장소 역할 권한, `fieldAccess`(화면은 읽기 전용 표시) |
+| 131 | Notion(CLI는 그림까지), 어드민 zip |
+| 27 | Hono·Express 예제와 CI |
+| 로그인 | `user create`, `user reset-link` |
+
+남은 것(묶음 밖으로 넘김): 목록 본문 제외(77), 복구 절차 문서(82), `doctor --runtime=edge`(104), bench의 CI 회귀 감시(106), Contentful·Strapi 가져오기(131), Remix 예제와 다른 언어 클라이언트(27), 실제 Google·Okta로 SSO 확인, 어드민 zip 가져오기의 Notion 그림(지금은 CLI만).

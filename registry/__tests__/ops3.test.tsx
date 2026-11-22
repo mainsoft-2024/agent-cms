@@ -74,3 +74,21 @@ test("keys: Korean strings for limits and rotation", async () => {
   const confirm = await screen.findByRole("dialog", { name: "“배포”의 새 시크릿을 만들지 확인" });
   assert.match(confirm.textContent ?? "", /1시간 동안 계속 동작/);
 });
+
+test("field form: a field this person cannot change shows its value as text with a lock, and no control", async () => {
+  const { CmsFieldForm } = await import("../cms/cms-field-form");
+  const s = makeServer();
+  const schema = {
+    slug: "products",
+    label: "Products",
+    fields: { type: "object", properties: { price: { type: "number" }, note: { type: "string" } } },
+    categories: [],
+    fieldRules: { hidden: ["secret"], readOnly: ["price"] },
+  } as never;
+  renderWith(s, <CmsFieldForm schema={schema} value={{ title: "Mug", slug: "mug", summary: "", body: "", category: null, keywords: [], fields: { price: 12, note: "" } } as never} onChange={() => {}} />);
+  const group = await screen.findByRole("group", { name: "price" });
+  assert.ok(within(group).getByText("12"));
+  assert.ok(within(group).getByText("Read-only for you"));
+  assert.ok(group.querySelector("input") === null, "no input for a read-only field");
+  assert.ok(screen.getByLabelText("note"), "other fields stay editable");
+});

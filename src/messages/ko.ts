@@ -76,6 +76,7 @@ export const ko: Messages = {
   schema_outdated: "DB 스키마가 v{found}이고 이 버전은 v{expected}가 필요함. 실행: {command}",
   conflict_version: "v{expected}를 읽은 뒤 다른 곳에서 v{current}로 저장했음. 다시 불러오거나 합친 뒤 저장하기",
   slug_taken: "이미 쓰는 주소예요: {slug}",
+  forbidden_field: "{field} 필드를 바꿀 권한 없음",
   forbidden_html: "{collection}에 HTML을 넣거나 고치려면 \"html\" 권한 필요",
   forbidden_html_scripts: "격리 실행 HTML은 \"html_scripts\" 권한 필요",
   raw_link_invalid: "올바르지 않은 파일 링크",

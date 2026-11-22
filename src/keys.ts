@@ -1,6 +1,6 @@
 /** API keys: `sgk_` + 40 random base62 chars. Only a sha256 hash is stored. */
 
-import { createHash, randomBytes } from "node:crypto";
+import { hex, randomBytes, sha256 } from "./crypto";
 
 const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 export const KEY_PREFIX = "sgk_";
@@ -22,7 +22,7 @@ export function generateKey(random: (n: number) => Uint8Array = randomBytes): st
 }
 
 export function hashKey(raw: string): string {
-  return createHash("sha256").update(raw.trim()).digest("hex");
+  return hex(sha256(raw.trim()));
 }
 
 /** What the admin list shows: `sgk_…9f2a`. */

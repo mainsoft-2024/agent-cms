@@ -241,7 +241,40 @@ test("cli: openapi prints the document; import --from reads a WordPress file; ex
   assert.equal(await runCli(["import", wxr, "--from", "wordpress", "--collection", "blog", "--publish"], io(a, key.secret)), 0);
   const wp = await a.cms.get(admin, "blog", "from-wp");
   assert.deepEqual([wp.status, wp.body.trim(), (await a.cms.get(admin, "blog", "wp-draft", { draft: true })).status], ["published", "Hello **WP**", "draft"]);
-  assert.equal(await runCli(["import", wxr, "--from", "notion", "--collection", "blog"], io(a, key.secret)), 1);
+  // A Notion export ("Markdown & CSV"): a deflated zip with pages, a subpage, a picture and a link between pages.
+  {
+    const n = setup();
+    const keyN = await n.cms.createKey(admin, { name: "cli", scopes: ["read", "write", "publish"] });
+    const { deflateRawSync } = await import("node:zlib");
+    const { makeZip } = await import("./zip");
+    const enc = new TextEncoder();
+    const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, ...new Array(40).fill(7)]);
+    const pages: [string, Uint8Array][] = [
+      ["Launch notes 0123456789abcdef0123456789abcdef.md", enc.encode("# Launch notes\n\nStatus: Done\nTags: launch, notes\n\nWe shipped. See [the plan](Plan%20fedcba9876543210fedcba9876543210.md).\n\n![Team photo](Launch%20notes%200123456789abcdef0123456789abcdef/team.png)\n")],
+      ["Launch notes 0123456789abcdef0123456789abcdef/team.png", pngBytes],
+      ["Plan fedcba9876543210fedcba9876543210.md", enc.encode("# Plan\n\n- one\n- two\n")],
+    ];
+    // makeZip stores; rewrite as deflate by hand so the reader's inflate path runs.
+    const stored = makeZip(pages.map(([name, data]) => ({ name, data })));
+    const entries = (await import("./zip")).readZip(stored);
+    assert.equal(entries.length, 3);
+    const zipPath = join(dir, "notion.zip");
+    writeFileSync(zipPath, deflatedZip(pages, deflateRawSync));
+    lines.length = 0;
+    assert.equal(await runCli(["import", zipPath, "--from", "notion", "--collection", "blog", "--publish"], io(n, keyN.secret)), 0, lines.join("\n"));
+    assert.match(lines.join("\n"), /team\.png\s+uploaded as [a-z0-9]{12}/);
+    const page = await n.cms.get(admin, "blog", "launch-notes");
+    assert.equal(page.title, "Launch notes");
+    assert.deepEqual(page.keywords, ["launch", "notes"]);
+    assert.match(page.body, /See \[the plan\]\(\/plan\)\./);
+    assert.match(page.body, /!\[Team photo\]\(asset:[a-z0-9]{12}\/team\.png\)/);
+    assert.doesNotMatch(page.body, /ntn0/);
+    assert.equal((await n.cms.get(admin, "blog", "plan")).body.trim(), "- one\n- two");
+    // Again: nothing uploaded twice.
+    lines.length = 0;
+    assert.equal(await runCli(["import", zipPath, "--from", "notion", "--collection", "blog", "--on-conflict", "file-wins"], io(n, keyN.secret)), 0);
+    assert.ok(!/uploaded as/.test(lines.join("\n")), lines.join("\n"));
+  }
 
   // A document with a picture travels with its file to another CMS.
   const png = new Uint8Array(200);
@@ -277,3 +310,42 @@ test("cli: openapi prints the document; import --from reads a WordPress file; ex
   assert.equal((await b.cms.assets.list(admin, {})).assets.length, 1, "the file is not uploaded twice");
   assert.ok(existsSync(join(out, "_assets", "manifest.json")));
 });
+
+/** A zip with deflated entries (what Notion and most tools write). */
+function deflatedZip(files: [string, Uint8Array][], deflate: (b: Uint8Array) => Uint8Array): Uint8Array {
+  const enc = new TextEncoder();
+  const parts: Uint8Array[] = [];
+  const dir: Uint8Array[] = [];
+  let off = 0;
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (b: Uint8Array) => {
+    let c = 0xffffffff;
+    for (const x of b) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  for (const [name, data] of files) {
+    const n = enc.encode(name);
+    const comp = deflate(data);
+    const h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x800, true); h.setUint16(8, 8, true);
+    h.setUint32(14, crc(data), true); h.setUint32(18, comp.length, true); h.setUint32(22, data.length, true); h.setUint16(26, n.length, true);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x800, true); c.setUint16(10, 8, true);
+    c.setUint32(16, crc(data), true); c.setUint32(20, comp.length, true); c.setUint32(24, data.length, true); c.setUint16(28, n.length, true); c.setUint32(42, off, true);
+    parts.push(new Uint8Array(h.buffer), n, comp);
+    dir.push(new Uint8Array(c.buffer), n);
+    off += 30 + n.length + comp.length;
+  }
+  const dirLen = dir.reduce((a, b) => a + b.length, 0);
+  const e = new DataView(new ArrayBuffer(22));
+  e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, dirLen, true); e.setUint32(16, off, true);
+  const all = [...parts, ...dir, new Uint8Array(e.buffer)];
+  const out = new Uint8Array(all.reduce((a, b) => a + b.length, 0));
+  let p = 0;
+  for (const b of all) { out.set(b, p); p += b.length; }
+  return out;
+}

@@ -138,7 +138,7 @@ function matchItems(items: Item[], q: string, t: T): Item[] {
 
 /** Safe link targets: web, mail, phone, in-site paths, anchors, media library files and app links. */
 export function okHref(href: string): boolean {
-  return /^(https?:\/\/|mailto:|tel:|\/(?!\/)|#|asset:|cms-link:)/i.test(href.trim());
+  return /^(https?:\/\/|mailto:|tel:|\/(?![/\\])|#|asset:|cms-link:)/i.test(href.trim());
 }
 
 // ── markdown typed at the start of a line ─────────────────────────────────────

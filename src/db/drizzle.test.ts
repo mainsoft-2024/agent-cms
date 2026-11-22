@@ -16,6 +16,9 @@ import { DrizzleRepo } from "../drizzle-repo";
 import { isCmsError } from "../errors";
 import { MemoryStorage } from "../storage";
 import { cmsDdl, cmsTables, SCHEMA_VERSION, splitSql } from "../tables";
+import { createCmsHandler } from "../http";
+import { createTenantHandler, migrateTenant, tenantTables } from "../tenants";
+import { connectPostgres } from "../db";
 import type { Actor } from "../types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -210,7 +213,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_comments", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
+      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_changes", "blog_comments", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -245,12 +248,12 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_jobs", "cms_presence", "cms_releases", "cms_saved_filters", "cms_webhook_deliveries", "cms_webhooks"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 6], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 5], /0\.10\.0/);
-    assert.match(pending.steps[pending.steps.length - 4], /0\.11\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.12\.0/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.15\.0/);
+    assert.match(pending.steps[pending.steps.length - 7], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 6], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.15\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -430,8 +433,9 @@ test("db: schema 6 → 7 adds cms_records; automations, runs and roles work on a
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [6, ["cms_records"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.match(pending.steps[pending.steps.length - 2], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.15\.0: body format/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.15\.0: body format/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.17\.0: change log/);
     await run(db, pending.sql);
     await run(db, pending.sql); // safe to run again
     assert.deepEqual([(await repo.inspect()).schemaVersion, (await repo.inspect()).missingTables], [SCHEMA_VERSION, []]);
@@ -499,6 +503,178 @@ test("db: retention deletes old audit entries, hit counts and revoked keys; a ro
     assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from cms_hits"))[0].n, 0);
     assert.deepEqual((await cms.listKeys(admin)).map((k) => k.id), [next.key.id]);
     assert.ok(await cms.authenticateKey(next.secret));
+  } finally {
+    await close();
+  }
+});
+
+test("db: schema 8 → 9 adds the change log and indexes; paging, the log and doctor --fix work on a real database", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    // A 0.16.0 database: no change log, none of the new indexes.
+    await run(db, `DROP TABLE cms_changes; DROP INDEX cms_documents_list_idx; DROP INDEX cms_audit_doc_idx; UPDATE cms_meta SET value = '8'::jsonb WHERE key = 'schema_version';`);
+    const repo = new DrizzleRepo(db);
+    const before = await repo.inspect();
+    assert.deepEqual([before.schemaVersion, before.missingTables], [8, ["cms_changes"]]);
+    const pending = migrationSql(before, cmsTables())!;
+    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs"]);
+    await run(db, pending.sql);
+    const after = await repo.inspect();
+    assert.deepEqual([after.schemaVersion, after.missingTables, after.missingIndexes], [SCHEMA_VERSION, [], []]);
+    // Only an index missing: migrate check still offers the step (it is idempotent).
+    await run(db, `DROP INDEX cms_jobs_done_idx;`);
+    const idxOnly = await repo.inspect();
+    assert.deepEqual(idxOnly.missingIndexes, ["cms_jobs_done_idx"]);
+    await run(db, migrationSql(idxOnly, cmsTables())!.sql);
+    assert.deepEqual((await repo.inspect()).missingIndexes, []);
+
+    let t = Date.parse("2026-11-22T00:00:00Z");
+    const cms = createCms({ repo, collections: [guide], cronSecret: "c".repeat(32), now: () => new Date((t += 1000)) });
+    for (let i = 0; i < 12; i++) await cms.create(admin, "guide", { slug: `p${String(i).padStart(2, "0")}`, title: `Post ${i}`, summary: i === 3 ? "100% sure_thing" : "", body: "x\n" }, { publish: true });
+    // Keyset pages on Postgres (microsecond columns, millisecond cursors): nothing twice, nothing skipped.
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const p: Awaited<ReturnType<typeof cms.page>> = await cms.page(anon, "guide", { limit: 5, cursor });
+      assert.equal(p.total, 12);
+      seen.push(...p.docs.map((d) => d.slug));
+      cursor = p.nextCursor;
+    } while (cursor);
+    assert.deepEqual(seen, Array.from({ length: 12 }, (_, i) => `p${String(11 - i).padStart(2, "0")}`));
+    // LIKE wildcards in a search are taken literally.
+    assert.deepEqual((await cms.page(anon, "guide", { q: "100%" })).docs.map((d) => d.slug), ["p03"]);
+    assert.deepEqual((await cms.page(anon, "guide", { q: "1%s" })).docs.map((d) => d.slug), []);
+    assert.deepEqual((await cms.page(anon, "guide", { q: "Post_1" })).docs.map((d) => d.slug), []);
+    assert.deepEqual((await cms.page(anon, "guide", { q: "sure_thing" })).docs.map((d) => d.slug), ["p03"]);
+    // Readers search the published copy; editors the draft.
+    await cms.update(admin, "guide", "p05", { title: "Renamed draft" });
+    assert.deepEqual((await cms.page(anon, "guide", { q: "renamed" })).docs, []);
+    assert.deepEqual((await cms.page(admin, "guide", { drafts: true, q: "renamed" })).docs.map((d) => d.slug), ["p05"]);
+
+    // The change log: numbered rows, read after a number, pruned by cron.
+    await new Promise((r) => setTimeout(r, 50));
+    const last = await repo.lastChange();
+    assert.equal(last, 25, "12 creates, 12 publishes, 1 save");
+    const log = await repo.changesSince(20, 10);
+    assert.deepEqual(log.map((r) => r.seq), [21, 22, 23, 24, 25]);
+    assert.equal(log.at(-1)!.event, "doc.updated");
+    assert.equal(typeof log[0].origin, "string");
+    t += 8 * 86_400_000;
+    await cms.cron();
+    assert.equal(await repo.lastChange(), 0, "pruned (the sequence keeps counting from where it was)");
+    assert.equal(await repo.appendChange({ event: "doc.updated", collection: "guide", slug: "p01", version: 2, origin: "x", data: {} }), 26);
+
+    // doctor --fix: rows that point at nothing go, the rest stays.
+    const docId = (await cms.get(admin, "guide", "p01", { draft: true })).id;
+    // A database made without the foreign keys (the app wrote its own migrations): left-over rows.
+    await run(db, `SET session_replication_role = replica; INSERT INTO cms_comments (document_id, body, author_kind, author_label) VALUES (gen_random_uuid(), 'lost', 'user', 'x'), ('${docId}', 'kept', 'user', 'x'); SET session_replication_role = origin;`);
+    const dirty = await repo.inspect();
+    assert.equal(dirty.orphanComments, 1);
+    const out: string[] = [];
+    const code = await runCli(["doctor", "--fix"], { db, cwd: "/nonexistent", out: (l: string) => out.push(l), err: (l: string) => out.push(l) });
+    assert.equal(code, 0, out.join("\n"));
+    assert.match(out[0], /removed 0 version row\(s\), 0 file use\(s\) and 1 comment\(s\)/);
+    assert.ok(out.some((l) => l.includes("all indexes exist")));
+    assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from cms_comments"))[0].n, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("db: tenants live in schemas of their own; one never sees another's documents", async () => {
+  const { db, close } = await freshDb();
+  try {
+    let made = 0;
+    const handler = createTenantHandler({
+      resolve: (req) => req.headers.get("x-site"),
+      create: async (tenant) => {
+        if (tenant === "ghost") throw new Error("no such site");
+        made++;
+        await migrateTenant(db, tenant);
+        const cms = createCms({ repo: new DrizzleRepo(db, { tables: tenantTables(tenant) }), collections: [guide] });
+        return createCmsHandler({ cms, resolveUser: async () => ({ kind: "user" as const, id: "u1", label: "Admin", isAdmin: true }), trustedOrigins: ["http://app.test"] });
+      },
+    });
+    const call = (site: string | null, path: string, init: RequestInit = {}) =>
+      handler(new Request(`http://app.test/api/cms${path}`, { ...init, headers: { ...(site ? { "x-site": site } : {}), origin: "http://app.test", "content-type": "application/json" } }));
+    const put = await call("acme", "/collections/guide", { method: "POST", body: JSON.stringify({ doc: { slug: "hello", title: "Acme hello", body: "x" }, publish: true }) });
+    assert.equal(put.status, 201, await put.clone().text());
+    assert.equal((await call("acme", "/collections/guide/hello")).status, 200);
+    assert.equal((await call("beta-2", "/collections/guide/hello")).status, 404, "the other site has its own documents");
+    assert.equal((await call(null, "/collections/guide/hello")).status, 404);
+    assert.equal((await call("Bad Name", "/collections/guide/hello")).status, 404);
+    assert.equal((await call("ghost", "/collections/guide/hello")).status, 404);
+    await call("acme", "/collections/guide/hello");
+    assert.equal(made, 2, "each site's CMS is made once");
+    assert.deepEqual(handler.tenants().sort(), ["acme", "beta-2"]);
+    const schemas = await rows<{ nspname: string }>(db, "select nspname from pg_namespace where nspname like 'tenant\\_%' order by 1");
+    assert.deepEqual(schemas.map((r) => r.nspname), ["tenant_acme", "tenant_beta_2"]);
+    assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from tenant_acme.cms_documents"))[0].n, 1);
+    assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from tenant_beta_2.cms_documents"))[0].n, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("db: a driver without transactions (neon-http) still saves, once, with a warning", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    // What neon-http does: refuse a transaction before running anything.
+    const noTx = new Proxy(db, { get: (t, k) => (k === "transaction" ? () => Promise.reject(new Error("No transactions support in neon-http driver")) : Reflect.get(t, k)) }) as Db;
+    const warned: string[] = [];
+    const repo = new DrizzleRepo(noTx, { warn: (m) => warned.push(m) });
+    const cms = createCms({ repo, collections: [guide] });
+    await cms.create(admin, "guide", { slug: "a", title: "A", body: "x" }, { publish: true });
+    await cms.update(admin, "guide", "a", { title: "B" });
+    assert.equal((await cms.get(admin, "guide", "a", { draft: true })).title, "B");
+    assert.equal(warned.length, 1);
+    // Version checks still hold without a transaction.
+    await assert.rejects(cms.update(admin, "guide", "a", { title: "C" }, { expectedVersion: 1 }), (e: unknown) => isCmsError(e) && e.code === "conflict_version");
+    // transactions: true does not hide the error.
+    await assert.rejects(new DrizzleRepo(noTx, { transactions: true }).tx(async () => 1), /No transactions support/);
+  } finally {
+    await close();
+  }
+});
+
+test("db: connectPostgres opens pglite in memory and gives a working repo", async () => {
+  const c = await connectPostgres("memory:");
+  try {
+    assert.equal(c.driver, "pglite");
+    assert.equal(c.signal, null);
+    await run(c.db, cmsDdl());
+    const cms = createCms({ repo: c.repo, collections: [guide] });
+    await cms.create(admin, "guide", { slug: "a", title: "A", body: "x" });
+    assert.equal((await cms.page(admin, "guide", { drafts: true })).total, 1);
+  } finally {
+    await c.close();
+  }
+});
+
+test("db: migrate check / apply include plugin tables from the config", async () => {
+  const { db, close } = await freshDb();
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  try {
+    await run(db, cmsDdl());
+    const dir = mkdtempSync(join(tmpdir(), "acms-plug-"));
+    writeFileSync(join(dir, "agent-cms.config.mjs"), `export default { plugins: [{ name: "stars", sql: ['CREATE TABLE IF NOT EXISTS "stars" ("doc" text PRIMARY KEY, "n" integer NOT NULL DEFAULT 0)'] }, { name: "noop" }] };`);
+    const out: string[] = [];
+    const err: string[] = [];
+    const io = { db, cwd: dir, out: (l: string) => out.push(l), err: (l: string) => err.push(l) };
+    assert.equal(await runCli(["migrate", "check"], io), 1);
+    assert.match(out.join("\n"), /-- plugin stars\nCREATE TABLE IF NOT EXISTS "stars"/);
+    assert.match(err.join("\n"), /plugin tables are missing/);
+    out.length = 0;
+    assert.equal(await runCli(["migrate", "apply"], io), 0);
+    assert.match(out.join("\n"), /Plugin tables: stars\./);
+    assert.equal((await rows<{ n: number }>(db, "select count(*)::int as n from stars"))[0].n, 0);
+    out.length = 0;
+    assert.equal(await runCli(["migrate", "check"], io), 0);
+    assert.match(out.join("\n"), /up to date/);
   } finally {
     await close();
   }

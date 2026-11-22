@@ -257,7 +257,7 @@ test("import: a bundle is looked at first, then only the ticked files become dra
   ];
 
   renderWith(s, <CmsTransfer />);
-  await screen.findByText("Drop an export file or markdown files here");
+  await screen.findByText("Drop an export file, markdown files or a .zip (also a Notion export) here");
   // Keeping what is there is the default: an existing document is skipped, new ones come in.
   await user.upload(screen.getByLabelText("Choose a file"), new File([JSON.stringify({ files })], "cms-export.json", { type: "application/json" }));
   const item = async (path: string) => (await screen.findByText(path, { selector: "span[title]" })).closest("li")!;

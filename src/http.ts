@@ -103,14 +103,14 @@
  *   GET    /preview/comments?token= | POST {name?, body, anchor?, quote?, threadId?}   links made with comments: true
  */
 
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "./crypto";
 import { z } from "zod";
 import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "./cms";
 import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
 import { clientIp, ipAllowed } from "./limits";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
-import { eventStream } from "./events";
+import { eventStream, mayHear } from "./events";
 import { openApiDocument } from "./openapi";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
@@ -346,6 +346,15 @@ const etag = (d: { version: number }) => `"v${d.version}"`;
 /** A doc on the wire: editors see the autosave, nobody else does. */
 const wire = (d: CmsDoc) => d;
 
+/** One page of a list already in memory: `limit` (at most 500) from `cursor` (an offset). Without `limit`, all of it. */
+function slicePage<T>(items: readonly T[], q: URLSearchParams): { items: T[]; nextCursor: string | null } {
+  if (!q.get("limit")) return { items: [...items], nextCursor: null };
+  const limit = Math.max(1, Math.min(Number(q.get("limit") ?? 100) || 100, 500));
+  const from = Math.max(0, Math.floor(Number(q.get("cursor") ?? 0)) || 0);
+  const next = from + limit;
+  return { items: items.slice(from, next), nextCursor: next < items.length ? String(next) : null };
+}
+
 export function createCmsHandler(opts: CmsHandlerOptions) {
   const core: CmsCore = coreOf(opts.cms);
   const resolveUser = opts.resolveUser ?? opts.auth?.resolveUser.bind(opts.auth) ?? (async () => null);
@@ -384,9 +393,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       if (seg[0] === "_cron" && seg.length === 1 && (m === "GET" || m === "POST")) {
         // Its own secret, not a session or a key: a cron service calls this.
         if (!core.cronSecret) throw new CmsError("route_not_found");
-        const given = Buffer.from((req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, ""));
-        const want = Buffer.from(core.cronSecret);
-        if (given.length !== want.length || !timingSafeEqual(given, want)) throw new CmsError("unauthorized", {}, { messages: core.messages });
+        const given = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+        if (!timingSafeEqual(given, core.cronSecret)) throw new CmsError("unauthorized", {}, { messages: core.messages });
         note({ kind: "cron", via: null });
         return json(await core.cron());
       }
@@ -505,7 +513,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       if (seg[0] === "trash") {
         const Items = z.array(z.object({ kind: z.enum(["document", "asset"]), id: z.string().max(60) })).min(1).max(200);
         const kind = q.get("kind");
-        if (seg.length === 1 && m === "GET") return json(await core.trash.list(actor, { kind: kind === "document" || kind === "asset" ? kind : undefined }));
+        if (seg.length === 1 && m === "GET") {
+          const all = await core.trash.list(actor, { kind: kind === "document" || kind === "asset" ? kind : undefined });
+          const p = slicePage(all.items, q);
+          return json({ ...all, items: p.items, total: all.items.length, nextCursor: p.nextCursor });
+        }
         if (seg[1] === "_restore" && seg.length === 2 && m === "POST") return json(await core.trash.restore(actor, (await body(req, z.object({ items: Items }))).items));
         if (seg[1] === "_purge" && seg.length === 2 && m === "POST") {
           const b = await body(req, z.object({ items: Items.optional(), all: z.boolean().optional() }));
@@ -580,7 +592,17 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       }
 
       if (seg[0] === "_events" && seg.length === 1 && m === "GET") {
-        return eventStream(core, actor, { collections: q.get("collections")?.split(",").filter(Boolean), since: q.get("since") ?? req.headers.get("last-event-id"), signal: req.signal, request: req });
+        return eventStream(core, actor, { collections: q.get("collections")?.split(",").filter(Boolean), since: req.headers.get("last-event-id") ?? q.get("since"), signal: req.signal, request: req });
+      }
+
+      if (seg[0] === "_changes" && seg.length === 1 && m === "GET") {
+        // Polling instead of a stream: what changed after `since` (a number from the last answer).
+        for (const c of q.get("collections")?.split(",").filter(Boolean) ?? []) core.assertCan(actor, c, "read");
+        const only = q.get("collections")?.split(",").filter(Boolean);
+        const since = Math.max(0, Math.floor(Number(q.get("since") ?? 0)) || 0);
+        const r = await core.changes.since(actor, since, { collections: only, limit: Number(q.get("limit") ?? 200) || 200, hear: (e) => mayHear(core, actor, e, only) });
+        if (!r) return json({ changes: [], last: await core.changes.last(), more: false, reset: true });
+        return json({ ...r, reset: false });
       }
 
       if (seg[0] === "files" && seg[1] && seg.length <= 3 && (m === "GET" || m === "HEAD")) {
@@ -688,7 +710,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
 
         if (seg.length === 3 && seg[2] === "_counts" && m === "GET") return json({ counts: await core.counts(actor, col) });
         if (seg.length === 3 && seg[2] === "_schema" && m === "GET") {
+          // Field rules depend on the document when `fieldAccess` looks at it (`?slug=`).
+          const forSlug = q.get("slug");
+          const forDoc = forSlug && cfg.fieldAccess ? await core.get(actor, col, forSlug, { draft: true }).catch(() => null) : null;
           return json({
+            fieldRules: cfg.fieldAccess ? core.fieldRulesFor(actor, col, forDoc) : { hidden: [], readOnly: [] },
             slug: cfg.slug,
             label: cfg.label,
             visibility: cfg.visibility,
@@ -852,7 +878,10 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json({ doc: wire(doc) }, 200, { etag: etag(doc) });
           }
           if (action === "schedule" && m === "DELETE") return json({ doc: wire(await core.unschedule(actor, col, slug)) });
-          if (action === "comments" && m === "GET") return json({ comments: await core.comments(actor, col, slug) });
+          if (action === "comments" && m === "GET") {
+            const p = slicePage(await core.comments(actor, col, slug), q);
+            return json({ comments: p.items, nextCursor: p.nextCursor });
+          }
           if (action === "comments" && m === "POST") return json({ comment: await core.addComment(actor, col, slug, await body(req, CommentBody)) }, 201);
           if (action === "presence" && m === "POST") {
             const at = z.object({ line: z.number().int(), ch: z.number().int() }).nullable().optional();
@@ -902,7 +931,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         }
 
         if (slug && seg[3] === "versions") {
-          if (seg.length === 4 && m === "GET") return json({ versions: q.get("fields") === "summary" ? await core.versionList(actor, col, slug) : await core.versions(actor, col, slug) });
+          if (seg.length === 4 && m === "GET") {
+            // Newest first in pages when asked (`limit`, `cursor`); everything, oldest first, otherwise (as before 0.17.0).
+            const all = q.get("fields") === "summary" ? await core.versionList(actor, col, slug) : await core.versions(actor, col, slug);
+            if (!q.get("limit")) return json({ versions: all, nextCursor: null });
+            const p = slicePage([...all].reverse(), q);
+            return json({ versions: p.items, total: all.length, nextCursor: p.nextCursor });
+          }
           const n = Number(seg[4]);
           if (!Number.isInteger(n) || n < 1) throw new CmsError("invalid_version", {}, { messages: core.messages });
           if (seg.length === 5 && m === "GET") return json({ version: await core.version(actor, col, slug, n) });

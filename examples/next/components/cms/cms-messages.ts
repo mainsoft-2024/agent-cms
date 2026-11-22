@@ -983,7 +983,7 @@ export const en = {
   release_check_failed: "Not checked",
   release_checking: "Checking…",
   files_folder_empty: "This folder is empty. Drop files here or use Upload.",
-  transfer_drop: "Drop an export file or markdown files here",
+  transfer_drop: "Drop an export file, markdown files or a .zip (also a Notion export) here",
   transfer_picked: "{n} files · {size}",
   transfer_collection_one: "Every file goes into this collection.",
   transfer_collection_file: "Each file says its own collection (export files do; markdown needs `collection:` in its front matter).",
@@ -1269,6 +1269,16 @@ export const en = {
   shell_me_failed: "Could not load what you may do.",
   account_pk_exists: "This device already has a passkey for your account.",
   account_pk_browser: "The browser did not make a passkey: {reason}",
+  field_read_only: "Read-only for you",
+  role_media_group: "Media library",
+  role_media_hint: "Write = upload and edit files, Delete = move and delete",
+  role_not_for_media: "Does not apply to files",
+  role_media_write: "Upload and edit",
+  role_media_delete: "Move and delete",
+  transfer_zip_note: "Pictures in a Notion export come in with the command line: npx @mainsoft/agent-cms import <zip> --from notion --collection <name>",
+  field_yes: "Yes",
+  field_no: "No",
+  field_empty_value: "Empty",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2238,7 +2248,7 @@ export const ko: CmsMessages = {
   release_check_failed: "점검 못 함",
   release_checking: "점검 중…",
   files_folder_empty: "빈 폴더. 파일을 끌어 놓거나 올리기 사용",
-  transfer_drop: "내보낸 파일이나 마크다운 파일을 여기에 끌어 놓기",
+  transfer_drop: "내보낸 파일, 마크다운 파일, .zip(Notion 내보내기도 됨)을 여기에 끌어 놓기",
   transfer_picked: "파일 {n}개 · {size}",
   transfer_collection_one: "모든 파일이 이 컬렉션으로 들어감",
   transfer_collection_file: "파일마다 적힌 컬렉션으로 들어감 (내보낸 파일은 들어 있음, 마크다운은 머리말에 `collection:` 필요)",
@@ -2524,6 +2534,16 @@ export const ko: CmsMessages = {
   shell_me_failed: "권한 정보를 못 불러옴",
   account_pk_exists: "이 기기에는 이미 이 계정의 패스키가 있음",
   account_pk_browser: "브라우저가 패스키를 만들지 못함: {reason}",
+  field_read_only: "내게는 읽기 전용",
+  role_media_group: "미디어 라이브러리",
+  role_media_hint: "쓰기 = 파일 올리기와 고치기, 삭제 = 옮기기와 삭제",
+  role_not_for_media: "파일에는 해당 없음",
+  role_media_write: "올리기와 고치기",
+  role_media_delete: "옮기기와 삭제",
+  transfer_zip_note: "Notion 내보내기의 그림은 명령줄로 가져옴: npx @mainsoft/agent-cms import <zip> --from notion --collection <이름>",
+  field_yes: "예",
+  field_no: "아니오",
+  field_empty_value: "비어 있음",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;

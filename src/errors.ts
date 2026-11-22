@@ -39,6 +39,7 @@ export const ERROR_CODES = {
   forbidden_ip: "forbidden",
   forbidden_admin: "forbidden",
   forbidden_html: "forbidden",
+  forbidden_field: "forbidden",
   forbidden_html_scripts: "forbidden",
   raw_link_invalid: "unauthorized",
   raw_link_expired: "unauthorized",

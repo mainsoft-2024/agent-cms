@@ -712,6 +712,10 @@ createCms({
 - `GET /api/cms/_events` is a Server-Sent Events stream of what happens: `new EventSource("/api/cms/_events?collections=posts")`. Readers hear what goes public, writers hear every save, and a reconnect gets a `resync` of what it missed. The stream is fed by the server process that answers it.
 - Collection hooks: `beforeValidate`, `beforeChange`, `beforePublish`, `beforeDelete`, `afterChange`, `afterPublish`, `afterDelete`, `afterRead`.
 
+## Several servers, caching, sites (0.17)
+
+Every change goes to a numbered change log (`cms_changes`); each server follows it, so the events stream, a read cache (`cache: memoryCache()`) and search hear what any server did. Lists are paged in the database. `@mainsoft/agent-cms/db` connects pg, postgres.js, Neon or PGlite; `@mainsoft/agent-cms/tenants` gives each site its own Postgres schema; the core runs on Edge runtimes; `/metrics` speaks Prometheus. Single fields can be hidden or locked per reader (`fieldAccess`). See the [guide](https://agent-cms-docs.vercel.app/docs/scaling) and [UPGRADE-0.17.md](UPGRADE-0.17.md).
+
 ## Export, import, OpenAPI
 
 ```

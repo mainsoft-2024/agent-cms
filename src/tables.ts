@@ -12,7 +12,7 @@
  * alone (never read, written or dropped): see UPGRADE-0.6.md.
  */
 
-import { bigint, boolean, date, index, integer, jsonb, pgSchema, pgTable, primaryKey, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, bigserial, boolean, date, index, integer, jsonb, pgSchema, pgTable, primaryKey, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { AuditEntry, AutosaveState, DocContent, KeyScope, Presence, ReleaseItem, ReviewMark, ReviewRequest, Schedule, VersionChange } from "./types";
 
 import { SCHEMA_VERSION } from "./schema-version";
@@ -359,7 +359,27 @@ export function cmsTables(o: CmsTablesOptions = {}) {
     (t) => ({ keyIdx: uniqueIndex(n("records_key_idx")).on(t.kind, t.key), scopeIdx: index(n("records_scope_idx")).on(t.kind, t.scope, t.createdAt) })
   );
 
-  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, records, options: { prefix, schema: o.schema ?? null } };
+  /**
+   * What happened, in order (0.17.0, schema 9): one row per event, numbered. Other processes and
+   * apps catch up from a number (`GET /_changes?since=`); the events stream resumes from it.
+   */
+  const changes = table(
+    n("changes"),
+    {
+      seq: bigserial("seq", { mode: "number" }).primaryKey(),
+      at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+      event: text("event").notNull(),
+      collection: text("collection"),
+      slug: text("slug"),
+      version: integer("version"),
+      /** The process that made the change (so it does not hear itself again). */
+      origin: text("origin").notNull().default(""),
+      data: jsonb("data").$type<Record<string, unknown>>().notNull().default({}),
+    },
+    (t) => ({ atIdx: index(n("changes_at_idx")).on(t.at), docIdx: index(n("changes_doc_idx")).on(t.collection, t.slug, t.seq) })
+  );
+
+  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, records, changes, options: { prefix, schema: o.schema ?? null } };
 }
 
 export type CmsTables = ReturnType<typeof cmsTables>;
@@ -382,6 +402,7 @@ export const cmsJobs = defaultTables.jobs;
 export const cmsWebhooks = defaultTables.webhooks;
 export const cmsWebhookDeliveries = defaultTables.webhookDeliveries;
 export const cmsRecords = defaultTables.records;
+export const cmsChanges = defaultTables.changes;
 
 function names(t?: CmsTables | CmsTablesOptions) {
   const o = t && "options" in t ? t.options : ((t as CmsTablesOptions | undefined) ?? {});
@@ -626,6 +647,32 @@ CREATE INDEX IF NOT EXISTS ${idx("records_scope_idx")} ON ${tbl("records")} ("ki
       version: 8,
       name: "agent-cms 0.15.0: body format (markdown or html)",
       sql: `ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "body_format" text NOT NULL DEFAULT 'markdown';`,
+    },
+    {
+      version: 9,
+      name: "agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs",
+      sql: `
+CREATE TABLE IF NOT EXISTS ${tbl("changes")} (
+  "seq" bigserial PRIMARY KEY,
+  "at" timestamptz NOT NULL DEFAULT now(),
+  "event" text NOT NULL,
+  "collection" text,
+  "slug" text,
+  "version" integer,
+  "origin" text NOT NULL DEFAULT '',
+  "data" jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS ${idx("changes_at_idx")} ON ${tbl("changes")} ("at");
+CREATE INDEX IF NOT EXISTS ${idx("changes_doc_idx")} ON ${tbl("changes")} ("collection", "slug", "seq");
+CREATE INDEX IF NOT EXISTS ${idx("documents_list_idx")} ON ${tbl("documents")} ("collection", "updated_at" DESC) WHERE "deleted_at" IS NULL;
+CREATE INDEX IF NOT EXISTS ${idx("documents_public_idx")} ON ${tbl("documents")} ("collection", "published_at" DESC) WHERE "deleted_at" IS NULL AND "published_version" IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ${idx("documents_trash_idx")} ON ${tbl("documents")} ("deleted_at") WHERE "deleted_at" IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ${idx("documents_updated_idx")} ON ${tbl("documents")} ("updated_at");
+CREATE INDEX IF NOT EXISTS ${idx("versions_created_idx")} ON ${tbl("versions")} ("created_at");
+CREATE INDEX IF NOT EXISTS ${idx("audit_doc_idx")} ON ${tbl("audit")} ("collection", "slug", "at");
+CREATE INDEX IF NOT EXISTS ${idx("jobs_done_idx")} ON ${tbl("jobs")} ("done_at") WHERE "done_at" IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ${idx("assets_trash_idx")} ON ${tbl("assets")} ("deleted_at") WHERE "deleted_at" IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ${idx("comments_thread_idx")} ON ${tbl("comments")} ("thread_id") WHERE "thread_id" IS NOT NULL;`.trim(),
     },
   ];
 }

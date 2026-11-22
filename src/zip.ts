@@ -134,3 +134,75 @@ export function readZip(zip: Uint8Array): ZipEntry[] {
   }
   return out;
 }
+
+/**
+ * Read any ordinary zip (stored or deflated entries), e.g. a Notion or WordPress export or an
+ * agent-cms export zipped by hand (0.17.0). Folders are left out. `maxBytes` caps the unpacked
+ * total (a zip bomb stops with an error).
+ */
+export async function unzip(zip: Uint8Array, o: { maxBytes?: number; maxEntries?: number; budget?: { bytes: number; entries: number } } = {}): Promise<ZipEntry[]> {
+  // One budget for a zip and the zips inside it (pass the same `budget` along).
+  const budget = o.budget ?? { bytes: o.maxBytes ?? 512 * 1024 * 1024, entries: o.maxEntries ?? 20_000 };
+  const v = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+  let eocd = zip.length - 22;
+  while (eocd >= 0 && v.getUint32(eocd, true) !== 0x06054b50) eocd--;
+  if (eocd < 0) throw new Error("not a zip file");
+  const count = v.getUint16(eocd + 10, true);
+  let p = v.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const out: ZipEntry[] = [];
+  let total = 0;
+  for (let i = 0; i < count; i++) {
+    if (v.getUint32(p, true) !== 0x02014b50) throw new Error("bad zip directory");
+    const flags = v.getUint16(p + 8, true);
+    const method = v.getUint16(p + 10, true);
+    const csize = v.getUint32(p + 20, true);
+    const size = v.getUint32(p + 24, true);
+    const nameLen = v.getUint16(p + 28, true);
+    const extra = v.getUint16(p + 30, true);
+    const comment = v.getUint16(p + 32, true);
+    const local = v.getUint32(p + 42, true);
+    const raw = zip.subarray(p + 46, p + 46 + nameLen);
+    // Bit 11: UTF-8 names. Older tools write CP437; ASCII reads the same either way.
+    const name = flags & 0x800 ? dec.decode(raw) : dec.decode(raw);
+    p += 46 + nameLen + extra + comment;
+    if (name.endsWith("/")) continue;
+    if (flags & 1) throw new Error(`${name}: encrypted zip entries are not supported`);
+    if (name.split("/").some((seg) => seg === "..") || name.startsWith("/")) throw new Error(`${name}: unsafe path in zip`);
+    if (--budget.entries < 0) throw new Error("the zip has too many files");
+    if (size > budget.bytes) throw new Error("the zip unpacks to more than the limit");
+    const start = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
+    const body = zip.subarray(start, start + csize);
+    let data: Uint8Array;
+    if (start + csize > zip.length) throw new Error(`${name}: entry runs past the end of the zip`);
+    if (method === 0) {
+      if (csize !== size) throw new Error(`${name}: sizes do not match`);
+      data = body.slice();
+    } else if (method === 8) {
+      // Counted while it inflates: stops at the real size, whatever the header says.
+      const reader = new Blob([body as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();
+      const parts: Uint8Array[] = [];
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        got += value.length;
+        if (got > size || got > budget.bytes) {
+          await reader.cancel().catch(() => {});
+          throw new Error(`${name}: unpacks to more than it says`);
+        }
+        parts.push(value);
+      }
+      data = new Uint8Array(got);
+      let at = 0;
+      for (const part of parts) {
+        data.set(part, at);
+        at += part.length;
+      }
+      if (got !== size) throw new Error(`${name}: unpacked size does not match`);
+    } else throw new Error(`${name}: zip method ${method} is not supported (stored and deflate are)`);
+    budget.bytes -= data.length;
+    out.push({ name, data });
+  }
+  return out;
+}

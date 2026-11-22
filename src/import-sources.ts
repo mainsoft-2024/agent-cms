@@ -7,7 +7,7 @@
 import { docToMarkdown } from "./frontmatter";
 import type { TransferFile } from "./transfer";
 
-export const IMPORT_SOURCES = ["json", "csv", "wordpress"] as const;
+export const IMPORT_SOURCES = ["json", "csv", "wordpress", "notion"] as const;
 export type ImportSource = (typeof IMPORT_SOURCES)[number];
 
 export interface SourceDoc {
@@ -341,7 +341,100 @@ export function docsFromWordpress(text: string, o: { types?: string[] } = {}): S
 }
 
 /** Read a source file into import files. */
-export function filesFromSource(source: ImportSource, text: string, o: { collection?: string; types?: string[] } = {}): TransferFile[] {
+export function filesFromSource(source: Exclude<ImportSource, "notion">, text: string, o: { collection?: string; types?: string[] } = {}): TransferFile[] {
   const docs = source === "json" ? docsFromJson(text) : source === "csv" ? docsFromCsv(text) : docsFromWordpress(text, o);
   return filesFromDocs(docs, o);
+}
+
+/** A file from a Notion export with what the import needs to upload it. */
+export interface NotionAsset {
+  /** A stand-in id (12 characters) the body points at (`asset:<id>`) until the file is uploaded. */
+  id: string;
+  /** Path inside the export. */
+  path: string;
+  name: string;
+  data: Uint8Array;
+}
+
+const NOTION_ID = /\s+[0-9a-f]{32}$/i;
+const stripNotionId = (s: string) => s.replace(NOTION_ID, "").trim();
+const safeUri = (s: string) => {
+  try {
+    return decodeURI(s);
+  } catch {
+    return s;
+  }
+};
+
+/**
+ * A Notion export ("Markdown & CSV", unzipped entries): each page is `Title <id>.md`, its images
+ * sit in a folder `Title <id>/`. Pages become documents (title from the first `# ` heading, the
+ * property lines under it become fields), images become files to upload; the body points at them
+ * as `asset:<path>` and the import swaps in the real ids. Database CSVs are read as tables of
+ * properties for the pages they list.
+ */
+export function docsFromNotion(entries: { name: string; data: Uint8Array }[]): { docs: SourceDoc[]; assets: NotionAsset[]; skipped: string[] } {
+  const dec = new TextDecoder();
+  const byPath = new Map(entries.map((e) => [e.name.normalize("NFC"), e]));
+  const docs: SourceDoc[] = [];
+  const assets = new Map<string, NotionAsset>();
+  const skipped: string[] = [];
+  const used = new Set<string>();
+  for (const e of entries) {
+    const path = e.name.normalize("NFC");
+    if (!/\.md$/i.test(path)) {
+      if (!/\.(csv|html)$/i.test(path) && !byPath.has(path.replace(/\/[^/]+$/, "") + ".md") && !/\.(png|jpe?g|gif|webp|svg|avif|pdf|mp4|mov|zip)$/i.test(path)) skipped.push(path);
+      continue;
+    }
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+    const base = path.slice(dir.length).replace(/\.md$/i, "");
+    let text = dec.decode(e.data).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+    let title = stripNotionId(base);
+    const h1 = /^# (.+)\n/.exec(text);
+    if (h1) {
+      title = h1[1].trim();
+      text = text.slice(h1[0].length);
+    }
+    // Property lines right under the title ("Status: Done", "Tags: a, b").
+    const fields: Record<string, unknown> = {};
+    let category: string | null = null;
+    let keywords: string[] | undefined;
+    const props = /^\n*((?:[A-Za-z\u00C0-\uFFFF][^:\n]{0,40}: [^\n]*\n)+)\n/.exec(text);
+    if (props) {
+      for (const line of props[1].trim().split("\n")) {
+        const at = line.indexOf(": ");
+        const k = line.slice(0, at).trim();
+        const val = line.slice(at + 2).trim();
+        const key = k.toLowerCase();
+        if (key === "tags" || key === "keywords") keywords = val.split(",").map((x) => x.trim()).filter(Boolean);
+        else if (key === "category" || key === "type") category = val || null;
+        else fields[k.replace(/\s+(\w)/g, (_, c: string) => c.toUpperCase()).replace(/^\w/, (c) => c.toLowerCase())] = val;
+      }
+      text = text.slice(props[0].length);
+    }
+    // Images and files next to the page.
+    text = text.replace(/(!?)\[([^\]]*)\]\(([^)\s]+)\)/g, (all, bang: string, label: string, href: string) => {
+      if (/^[a-z]+:/i.test(href) || href.startsWith("#") || href.startsWith("/")) return all;
+      const rel = safeUri(href).normalize("NFC");
+      const target = (dir + rel).split("/").reduce<string[]>((acc, seg) => (seg === ".." ? acc.slice(0, -1) : seg === "." ? acc : [...acc, seg]), []).join("/");
+      const file = byPath.get(target);
+      if (!file) return bang ? `${label || "image"} (missing: ${rel})` : label;
+      if (/\.md$/i.test(target)) {
+        // A link to another page: to its slug (same collection).
+        return `[${label}](/${slugify(stripNotionId(target.slice(target.lastIndexOf("/") + 1).replace(/\.md$/i, "")))})`;
+      }
+      const name = target.slice(target.lastIndexOf("/") + 1);
+      const have = assets.get(target);
+      const id = have?.id ?? `ntn${assets.size.toString(36).padStart(9, "0")}`;
+      if (!have) assets.set(target, { id, path: target, name, data: file.data });
+      const alt = (label || name).replace(/[[\]]/g, "");
+      return bang ? `![${alt}](asset:${id}/${encodeURIComponent(name)})` : `[${alt}](asset:${id}/${encodeURIComponent(name)})`;
+    });
+    let slug = slugify(title) || slugify(stripNotionId(base)) || "page";
+    for (let n = 2; used.has(slug); n++) slug = `${slugify(title)}-${n}`;
+    used.add(slug);
+    // Pages in a Notion export are finished pages: `--publish` publishes them.
+    docs.push({ slug, title, status: "published", body: `${text.trim()}\n`, ...(category ? { category } : {}), ...(keywords ? { keywords } : {}), ...(Object.keys(fields).length ? { fields } : {}) });
+  }
+  return { docs, assets: [...assets.values()], skipped };
 }
