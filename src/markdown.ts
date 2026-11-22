@@ -220,8 +220,14 @@ function tableCells(line: string): string[] {
     if (c === "`") {
       let n = 1;
       while (s[i + n] === "`") n++;
-      if (!tick) tick = n;
-      else if (n === tick) tick = 0;
+      const run = "`".repeat(n);
+      // Code only when a run of the same length closes it later on the line.
+      const closes = (from: number) => {
+        for (let j = s.indexOf(run, from); j >= 0; j = s.indexOf(run, j + 1)) if (s[j - 1] !== "`" && s[j + n] !== "`") return true;
+        return false;
+      };
+      if (!tick && closes(i + n)) tick = n;
+      else if (tick && n === tick) tick = 0;
       cur += s.slice(i, i + n);
       i += n - 1;
       continue;
@@ -304,7 +310,7 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
   const used = new Map<string, number>();
   let para: string[] = [];
   let paraAt = [0, 0];
-  type ListAcc = { kind: "ul" | "ol" | "todo"; items: string[]; checks: boolean[]; start: number; from: number; to: number; indent: number; kids: (string[] | null)[] };
+  type ListAcc = { kind: "ul" | "ol" | "todo"; items: string[]; checks: boolean[]; start: number; from: number; to: number; indent: number; kids: (string[] | null)[]; width: number };
   let list: ListAcc | null = null;
 
   const uniqueId = (text: string) => {
@@ -355,7 +361,7 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
       const l: ListAcc = list;
       const at = indentOf(line);
       const last = l.kids.length - 1;
-      if (at >= l.indent + 2 && (l.kids[last] || LIST_MARK.test(line))) {
+      if (at >= l.indent + l.width && (l.kids[last] || LIST_MARK.test(line))) {
         flushPara();
         (l.kids[last] ??= []).push(line);
         l.to = i;
@@ -367,7 +373,7 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
       const l: ListAcc = list;
       let k = i + 1;
       while (k < lines.length && !lines[k].trim()) k++;
-      if (k < lines.length && indentOf(lines[k]) >= l.indent + 2) {
+      if (k < lines.length && indentOf(lines[k]) >= l.indent + l.width) {
         flushPara();
         const last = l.kids.length - 1;
         for (; i < k; i++) (l.kids[last] ??= []).push("");
@@ -499,7 +505,9 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
       flushPara();
       const kind = task ? "todo" : ol ? "ol" : "ul";
       if (list && list.kind !== kind) flushList();
-      if (!list) list = { kind, items: [], checks: [], start: ol ? Number(ol[1]) : 1, from: i, to: i, indent: indentOf(line), kids: [] };
+      if (!list) list = { kind, items: [], checks: [], start: ol ? Number(ol[1]) : 1, from: i, to: i, indent: indentOf(line), kids: [], width: 2 };
+      // Blocks inside this item start at its text: past the marker and the space after it.
+      list.width = Math.max(2, (/^\s*(?:[-*+]|\d+[.)])\s/.exec(line)?.[0].length ?? 2) - indentOf(line));
       list.items.push(task ? task[2] : ol ? ol[2] : ul![1]);
       list.checks.push(task ? task[1] !== " " : false);
       list.kids.push(null);

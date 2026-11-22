@@ -158,15 +158,17 @@ function listItems(src: string): { own: string; kids: string | null }[] {
   const lines = src.split("\n");
   const base = indentOf(lines[0] ?? "");
   const out: { own: string[]; kids: string[] | null }[] = [];
+  let width = 2;
   for (const line of lines) {
-    const top = LIST_MARK.test(line) && indentOf(line) < base + 2;
+    const top = LIST_MARK.test(line) && indentOf(line) < base + width;
     if (top || !out.length) {
       out.push({ own: [line], kids: null });
+      width = Math.max(2, (/^\s*(?:[-*+]|\d+[.)])\s/.exec(line)?.[0].length ?? 2) - indentOf(line));
       continue;
     }
     const cur = out[out.length - 1];
     // Blocks inside the item: a nested list right under it, or anything after a blank line.
-    if (cur.kids || !line.trim() || (indentOf(line) >= base + 2 && LIST_MARK.test(line))) (cur.kids ??= []).push(line);
+    if (cur.kids || !line.trim() || (indentOf(line) >= base + width && LIST_MARK.test(line))) (cur.kids ??= []).push(line);
     else cur.own.push(line);
   }
   return out.map((x) => ({ own: x.own.map((l) => stripIndent(l, base)).join("\n"), kids: x.kids ? dedent(x.kids) : null }));
@@ -300,7 +302,8 @@ export function markdownToBlocks(md: string, parent?: string): EBlock[] {
     if (sameKind && top[0] && isList(top[0])) (top[0] as TextBlock).newList = true;
     last = b;
     const kids = childrenOf(made);
-    if (top.length === 1) top[0].orig = { md: src, fp: "" };
+    // A one-block piece keeps its text as written (a list item keeps the text without the list's indentation).
+    if (top.length === 1 && !isList(top[0])) top[0].orig = { md: src, fp: "" };
     for (const x of top) if (x.orig) x.orig.fp = treeFp(x, kids);
     if (top.length && prevId && b.line && prevEnd) top[0].gap = { after: prevId, text: "\n".repeat(Math.max(1, b.line - prevEnd)) };
     if (top.length && b.endLine) (prevEnd = b.endLine), (prevId = top[top.length - 1].id);

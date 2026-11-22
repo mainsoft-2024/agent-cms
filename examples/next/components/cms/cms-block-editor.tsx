@@ -769,7 +769,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
 
     if (e.key === "Tab" && !mod && !e.altKey) {
       // Tab nests where it can; elsewhere (a line that cannot nest) it moves focus on, as usual.
-      if (indentIds([b.id], e.shiftKey) || isList(b) || (b as EBlock).parent) e.preventDefault();
+      if (indentIds([b.id], e.shiftKey)) e.preventDefault();
       return;
     }
 
@@ -1026,6 +1026,12 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     const isTop = (x: EBlock) => !x.parent || !madeIds.has(x.parent);
     const placed = made.map((x) => (isTop(x) ? ({ ...x, parent: b.parent } as EBlock) : x));
     const first = placed[0];
+    // Pasted at the very start of a line: the pasted blocks go above it, the line keeps its place and what is inside it.
+    if (!left.length && right.length) {
+      const lastPasted = [...placed].reverse().find((x) => isText(x)) ?? placed[placed.length - 1];
+      commit(normalize([...list.slice(0, i), ...placed, ...list.slice(i)]), focusOf(lastPasted, "end"));
+      return;
+    }
     const out: EBlock[] = [];
     if (isText(first) && isTop(first) && (left.length || b.type !== "p") && !made.some((x) => x.parent === first.id)) {
       out.push({ ...b, spans: [...left, ...first.spans] });
@@ -1249,6 +1255,9 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     // Nowhere near the editor (the sidebar, the toolbar): no drop.
     const area = root.getBoundingClientRect();
     if (x < area.left - 24 || x > area.right + 24 || y < area.top - 48 || y > area.bottom + 48) return null;
+    // Over something drawn on top of the editor (a sticky bar, a menu, the sidebar): no drop.
+    const top = document.elementFromPoint(x, y);
+    if (top && !root.contains(top) && top !== document.body && top !== document.documentElement) return null;
     const rows = Array.from(root.querySelectorAll<HTMLElement>("[data-block-id]")).filter((el) => !banned(el.dataset.blockId!) && el.getClientRects().length);
     // The block under the pointer first (the innermost); the gutter beside it only when there is none.
     const pickIn = (pad: number) => {

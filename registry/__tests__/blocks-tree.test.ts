@@ -184,3 +184,13 @@ test("review: tabs inside code nested in a list survive an edit of the item; bac
   assert.equal(again.rows[0][0].map((x) => x.text).join(""), "a`");
   assert.equal(again.rows[0][1].map((x) => x.text).join(""), "b|c|d");
 });
+
+test("review 2: content indent follows the marker; an indented single item moved stays a sibling", () => {
+  assert.deepEqual(shape(markdownToBlocks("10. First\n\n   11. Second")), ["number:First", "number:Second"]);
+  assert.deepEqual(shape(markdownToBlocks("10. First\n    - sub")), ["number:First", "  bullet:sub"]);
+  let bs = markdownToBlocks("  - Single\n\n- Other");
+  bs = moveTo(bs, [find(bs, "Single").id], find(bs, "Other").id, "after")!;
+  assert.deepEqual(shape(markdownToBlocks(blocksToMarkdown(bs))), ["bullet:Other", "bullet:Single"]);
+  const t = markdownToBlocks("| a | b |\n| --- | --- |\n| Type `` literally | Keep me |")[0] as Extract<EBlock, { type: "table" }>;
+  assert.equal(t.rows[0][1].map((x) => x.text).join(""), "Keep me");
+});

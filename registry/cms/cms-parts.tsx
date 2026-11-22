@@ -658,7 +658,7 @@ function Block1({ b, components }: { b: Block; components?: BlockComponents }) {
     case "list": {
       const L = b.ordered ? "ol" : "ul";
       return (
-        <L className={cn("my-2 space-y-1 pl-6 leading-7", b.ordered ? "list-decimal" : "list-disc")}>
+        <L start={b.ordered && b.start !== undefined ? b.start : undefined} className={cn("my-2 space-y-1 pl-6 leading-7", b.ordered ? "list-decimal" : "list-disc")}>
           {b.items.map((it, k) => (
             <li key={k}>
               <Inlines items={it} />
