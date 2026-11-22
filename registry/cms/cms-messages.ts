@@ -1276,6 +1276,9 @@ export const en = {
   role_media_write: "Upload and edit",
   role_media_delete: "Move and delete",
   transfer_zip_note: "Pictures in a Notion export come in with the command line: npx @mainsoft/agent-cms import <zip> --from notion --collection <name>",
+  field_yes: "Yes",
+  field_no: "No",
+  field_empty_value: "Empty",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2538,6 +2541,9 @@ export const ko: CmsMessages = {
   role_media_write: "올리기와 고치기",
   role_media_delete: "옮기기와 삭제",
   transfer_zip_note: "Notion 내보내기의 그림은 명령줄로 가져옴: npx @mainsoft/agent-cms import <zip> --from notion --collection <이름>",
+  field_yes: "예",
+  field_no: "아니오",
+  field_empty_value: "비어 있음",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;

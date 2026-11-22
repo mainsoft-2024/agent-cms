@@ -261,14 +261,26 @@ export const FieldGate = React.createContext<((key: string, bad: boolean) => voi
 export function FieldInput(props: { spec: FieldSpec; idPrefix: string; value: unknown; onChange: (v: unknown) => void; problems?: FieldProblem[] }) {
   const { t } = useCms();
   if (!props.spec.readOnly) return <FieldControl {...props} />;
-  // Read-only for this person (`fieldAccess`): the control shows the value and cannot change it.
+  // Read-only for this person (`fieldAccess`): the value as text (selectable, copyable), not a greyed-out control.
+  const id = `${props.idPrefix}-f-${props.spec.key}`;
+  const v = props.value;
+  const shown = v === undefined || v === null || v === "" ? null : typeof v === "boolean" ? t(v ? "field_yes" : "field_no") : Array.isArray(v) ? v.map((x) => (typeof x === "object" ? JSON.stringify(x) : String(x))).join(", ") : typeof v === "object" ? JSON.stringify(v, null, 2) : String(v);
   return (
-    <fieldset disabled className="min-w-0 [&_input]:cursor-not-allowed" aria-describedby={`${props.idPrefix}-f-${props.spec.key}-ro`}>
-      <FieldControl {...props} spec={{ ...props.spec, help: props.spec.help ? `${props.spec.help} · ${t("field_read_only")}` : t("field_read_only") }} onChange={() => {}} />
-      <span id={`${props.idPrefix}-f-${props.spec.key}-ro`} className="sr-only">
-        {t("field_read_only")}
-      </span>
-    </fieldset>
+    <div className="min-w-0 space-y-1.5" role="group" aria-labelledby={`${id}-label`} aria-describedby={`${id}-ro`}>
+      <div className="flex items-center gap-2">
+        <span id={`${id}-label`} className="text-sm font-medium">
+          {props.spec.label}
+        </span>
+        <span id={`${id}-ro`} className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          <Lock className="size-3" aria-hidden />
+          {t("field_read_only")}
+        </span>
+      </div>
+      <div className={cn("min-h-9 rounded-md border border-dashed bg-muted/30 px-3 py-2 text-sm break-words", typeof v === "object" && v !== null && !Array.isArray(v) && "whitespace-pre-wrap font-mono text-xs")}>
+        {shown ?? <span className="text-muted-foreground">{t("field_empty_value")}</span>}
+      </div>
+      {props.spec.help ? <p className="text-xs text-muted-foreground">{props.spec.help}</p> : null}
+    </div>
   );
 }
 
