@@ -1401,6 +1401,10 @@ export const en = {
   doc_pick_failed: "Could not search.",
   doc_pick_none: "No document matches.",
   automation_test_schedule: "A rule on a schedule runs at its time on every matching document; there is no single document to try it on. Its runs show below.",
+  empty_title_in: "Nothing in {name} yet",
+  empty_text_writer: "Write the first one here. It stays a draft until you publish it.",
+  empty_text_reader: "Nothing has been published here yet.",
+  agent_guide_text: "An agent or a script can write drafts here too. A person reviews and publishes.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2788,6 +2792,10 @@ export const ko: CmsMessages = {
   doc_pick_failed: "찾지 못함.",
   doc_pick_none: "맞는 문서 없음.",
   automation_test_schedule: "예약 규칙은 정한 시각에 맞는 문서 전부에 돌아서 문서 하나로 시험할 수 없음. 실행 기록은 아래에 나옴.",
+  empty_title_in: "{name}에 아직 문서 없음",
+  empty_text_writer: "여기서 첫 문서를 쓸 것. 게시하기 전까지는 초안으로 남음.",
+  empty_text_reader: "아직 여기 게시된 문서 없음.",
+  agent_guide_text: "에이전트나 스크립트도 여기에 초안을 쓸 수 있음. 게시는 사람이 확인하고 함.",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;
