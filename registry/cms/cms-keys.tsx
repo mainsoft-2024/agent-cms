@@ -86,7 +86,7 @@ export function CmsKeys({ mcpServerName = "agent-cms", className }: CmsKeysProps
           {t("new_key")}
         </Button>
       </PageHeader>
-      <div className="flex-1 overflow-x-auto px-4 py-4 md:px-6">
+      <div className="relative min-w-0 flex-1 overflow-x-auto px-4 py-4 md:px-6">
         <StatusText tone={keys.error ? "error" : "muted"} className="mb-2 text-xs">
           {keys.error ? errorMessage(keys.error, t) : keys.loading && !keys.data ? t("loading") : keys.data && !list.length ? t("no_keys") : ""}
         </StatusText>

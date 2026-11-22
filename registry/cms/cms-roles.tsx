@@ -351,7 +351,7 @@ function RoleForm({ role, targets, dirtyRef, onChanged, onDeleted }: { role: Cms
             <p className="text-xs text-muted-foreground">{t("role_perms_text")}</p>
           </div>
           {targets.length ? (
-            <div className="overflow-x-auto rounded-md border">
+            <div className="relative overflow-x-auto rounded-md border">
               <table className="w-full min-w-[520px] text-sm">
                 <thead className="bg-muted/40">
                   <tr className="border-b">

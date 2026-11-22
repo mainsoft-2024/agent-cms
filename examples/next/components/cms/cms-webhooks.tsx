@@ -61,7 +61,7 @@ export function CmsWebhooks({ className }: CmsWebhooksProps) {
         </Button>
       </PageHeader>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <div className="min-w-0 flex-1 overflow-x-auto px-4 py-4 md:px-6">
+        <div className="relative min-w-0 flex-1 overflow-x-auto px-4 py-4 md:px-6">
           <StatusText tone={hooks.error ? "error" : "muted"} className="mb-2 text-xs">
             {hooks.error ? errorMessage(hooks.error, t) : hooks.loading && !hooks.data ? t("loading") : off ? t("webhooks_need_key") : hooks.data && !list.length ? t("webhooks_empty") : ""}
           </StatusText>
