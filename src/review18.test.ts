@@ -527,3 +527,22 @@ test("review round 6: an editor's list filtered by status uses the copy they get
   assert.deepEqual((await cms.list(editor, "owned", { drafts: true, status: "published" })).map((d) => d.title), ["T"]);
   assert.deepEqual((await cms.list(editor, "owned", { drafts: true, status: "draft" })).map((d) => d.title), []);
 });
+
+test("review round 7: a save that fails on a hidden field says so without naming it", async () => {
+  const p = defineCollection({
+    slug: "p",
+    label: "P",
+    visibility: "public",
+    access: { write: ({ actor }) => actor.kind === "user" },
+    fields: z.object({ cost: z.number().max(100).optional() }),
+    fieldAccess: { cost: { read: ({ actor }) => actor.kind === "user" && actor.isAdmin } },
+    hooks: { beforeChange: [({ actor }) => (actor.kind === "user" && !actor.isAdmin ? { fields: { cost: 999 } } : undefined)] },
+  });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [p], warn: () => {} });
+  await cms.create(admin, "p", { slug: "a", title: "A", body: "x\n", fields: { cost: 1 } });
+  await assert.rejects(cms.update(editor, "p", "a", { title: "B" }), (e: { code: string; diagnostics?: { path: string }[] }) => {
+    assert.equal(e.code, "check_hidden");
+    assert.doesNotMatch(JSON.stringify(e.diagnostics), /cost|100|999/);
+    return true;
+  });
+});

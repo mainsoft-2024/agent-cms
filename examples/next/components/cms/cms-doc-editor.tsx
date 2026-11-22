@@ -618,7 +618,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   });
   useShortcut(mode.kind === "edit" && "mod+shift+p", () => {
     const k = keys.current;
-    if (k.canPublish && !k.busy) void publishRef.current();
+    // Publishing from the editor saves first: only for someone who may also edit.
+    if (k.canPublish && k.canWrite && !k.busy) void publishRef.current();
   });
 
   const setFocus = React.useCallback(

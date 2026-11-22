@@ -545,6 +545,8 @@ export function createFlow(ctx: FlowContext) {
     if (rel.items.some((i) => !visibleItem(actor, i, docs.get(i.documentId) ?? null))) throw fail("forbidden_release");
   }
 
+  /** Failure text from before 0.18 may name anything; only admins see it as written. */
+  const safeLastError = (actor: Actor, rel: CmsRelease) => (rel.lastError && actor.kind !== "system" && !ctx.isAdmin(actor) ? ctx.message(fail("release_failed", { code: "error" })) : rel.lastError);
   async function viewRelease(actor: Actor, rel: CmsRelease): Promise<ReleaseView> {
     const items: ReleaseView["items"] = [];
     const docs = await itemDocs([rel]);
@@ -558,7 +560,7 @@ export function createFlow(ctx: FlowContext) {
       }
       items.push({ ...it, slug: doc?.slug ?? it.slug, title: doc?.title ?? it.title, currentVersion: doc?.version ?? null, stale: !!doc && doc.version !== it.version, state: doc ? docState(doc).state : null, canPublish: !!doc && can(actor, it.collection, "publish", doc) });
     }
-    return { ...rel, items, hiddenItems: hidden, canPublish: rel.state !== "published" && items.length > 0 && !hidden && items.every((i) => i.canPublish) };
+    return { ...rel, lastError: safeLastError(actor, rel), items, hiddenItems: hidden, canPublish: rel.state !== "published" && items.length > 0 && !hidden && items.every((i) => i.canPublish) };
   }
 
   async function releases(actor: Actor): Promise<CmsRelease[]> {
@@ -569,7 +571,8 @@ export function createFlow(ctx: FlowContext) {
     const docs = await itemDocs(all);
     return all.map((r) => {
       const mine = r.items.filter((i) => visibleItem(actor, i, docs.get(i.documentId) ?? null));
-      return mine.length === r.items.length ? r : { ...r, items: mine, hiddenItems: r.items.length - mine.length };
+      const out = { ...r, lastError: safeLastError(actor, r) };
+      return mine.length === r.items.length ? out : { ...out, items: mine, hiddenItems: r.items.length - mine.length };
     });
   }
 

@@ -101,7 +101,15 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
           controller.enqueue(enc.encode(text));
           // A client that does not read keeps nothing waiting on the server: it is disconnected
           // and, when it comes back, resumes from its last id (or is told to reload).
-          if ((controller.desiredSize ?? 0) < -OUT_MAX) stop();
+          if ((controller.desiredSize ?? 0) < -OUT_MAX) {
+            // Drop what is queued (closing would still send it) and end the response.
+            try {
+              controller.error(new Error("client too slow"));
+            } catch {
+              // already gone
+            }
+            stop();
+          }
         } catch {
           stop();
         }
@@ -192,7 +200,7 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
           }
         } else if (raw && !/^\d+$/.test(raw) && !Number.isNaN(Date.parse(raw))) {
           const since = new Date(Date.parse(raw)).toISOString();
-          const docs = await core.changedSince(actor, since, { collections: o.collections, limit: RESYNC_MAX });
+          const docs = await within(core.changedSince(actor, since, { collections: o.collections, limit: RESYNC_MAX }), REPLAY_WAIT_MS);
           send(note("resync", { since, documents: docs, more: docs.length >= RESYNC_MAX }));
         } else if (raw && /^\d+$/.test(raw)) {
           // A number but no log here to replay from: tell the client to reload.
