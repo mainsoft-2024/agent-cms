@@ -124,6 +124,7 @@ export interface CmsRepo {
   listDocs(filter: DocFilter): Promise<CmsDoc[]>;
   insertDoc(doc: NewDoc): Promise<CmsDoc>;
   /** Returns null when `expectedVersion` is given and the row moved on. */
+  /** With `expectedVersion`: only if the row is still at that version and not in the trash (else null). */
   updateDoc(id: string, patch: DocPatch, expectedVersion?: number): Promise<CmsDoc | null>;
   deleteDoc(id: string): Promise<void>;
 
@@ -191,7 +192,11 @@ export interface CmsRepo {
   /** Newest first. */
   listReleases(): Promise<CmsRelease[]>;
   /** With `expectedState`, null when the release is no longer in that state (someone else ran it). */
-  updateRelease(id: string, patch: ReleasePatch, expectedState?: CmsRelease["state"]): Promise<CmsRelease | null>;
+  /**
+   * `expected`: the state the release must still be in, or `{ state, updatedAt }` (0.18.0): the
+   * release must be exactly as it was read (its `updatedAt` is its revision). Null when it is not.
+   */
+  updateRelease(id: string, patch: ReleasePatch, expected?: CmsRelease["state"] | { state?: CmsRelease["state"]; updatedAt?: string }): Promise<CmsRelease | null>;
   deleteRelease(id: string): Promise<void>;
 
   insertFilter(f: NewFilter): Promise<SavedFilter>;
@@ -431,7 +436,7 @@ export class MemoryRepo implements CmsRepo {
   async updateDoc(id: string, patch: DocPatch, expectedVersion?: number) {
     const d = this.docs.get(id);
     if (!d) return null;
-    if (expectedVersion !== undefined && d.version !== expectedVersion) return null;
+    if (expectedVersion !== undefined && (d.version !== expectedVersion || d.deletedAt)) return null;
     if (patch.slug && patch.slug !== d.slug) {
       for (const o of this.docs.values()) if (o.id !== id && o.collection === d.collection && o.slug === patch.slug) throw new Error("duplicate slug");
     }
@@ -689,9 +694,10 @@ export class MemoryRepo implements CmsRepo {
   async listReleases() {
     return this.releases.map((r) => structuredClone(r)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
-  async updateRelease(id: string, patch: ReleasePatch, expectedState?: CmsRelease["state"]) {
+  async updateRelease(id: string, patch: ReleasePatch, expected?: CmsRelease["state"] | { state?: CmsRelease["state"]; updatedAt?: string }) {
     const r = this.releases.find((x) => x.id === id);
-    if (!r || (expectedState && r.state !== expectedState)) return null;
+    const e = typeof expected === "string" ? { state: expected } : (expected ?? {});
+    if (!r || (e.state && r.state !== e.state) || (e.updatedAt && Date.parse(r.updatedAt) !== Date.parse(e.updatedAt))) return null;
     Object.assign(r, structuredClone(Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))));
     return structuredClone(r);
   }
@@ -852,7 +858,10 @@ export class MemoryRepo implements CmsRepo {
     return n - this.records.length;
   }
   private changes: ChangeRow[] = [];
-  /** Rows are added and seen at once, in order. */
+  /**
+   * Rows are added and seen at once, in order. The memory repo is for one process and tests: its
+   * transactions share live state, so it makes no promise for writes that overlap in time.
+   */
   readonly changesInCommitOrder = true;
   async appendChange(c: NewChange) {
     const seq = Math.max(this.changes.at(-1)?.seq ?? 0, this.changeBase) + 1;

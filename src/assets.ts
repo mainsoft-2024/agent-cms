@@ -812,8 +812,17 @@ export function createAssets(ctx: AssetsContext) {
       // Documents the actor may not see are counted, not named. A reader sees the published copy:
       // its title, and only whether that copy uses the file.
       const seen = ctx.docViewFor(actor, d);
-      if (!seen || (!seen.draft && !r.inPublished)) hidden++;
-      else documents.push({ collection: d.collection, slug: d.slug, title: seen.doc.title, status: seen.draft ? d.status : "published", inDraft: seen.draft ? r.inDraft : false, inPublished: r.inPublished });
+      // Where the file is, judged on the copies this person may see (fields hidden from them do not count).
+      let inDraft = false;
+      let inPublished = false;
+      if (seen) {
+        const cfg = ctx.collection(d.collection);
+        if (seen.draft) inDraft = r.inDraft && idsIn(cfg, seen.doc).has(a.id);
+        const pub = seen.draft ? (seen.doc.published as Pick<DocContent, "body" | "fields"> | null) : seen.doc;
+        inPublished = r.inPublished && !!pub && idsIn(cfg, pub).has(a.id);
+      }
+      if (!seen || (!inDraft && !inPublished)) hidden++;
+      else documents.push({ collection: d.collection, slug: d.slug, title: seen.doc.title, status: seen.draft ? d.status : "published", inDraft, inPublished });
     }
     return { documents, hidden };
   }

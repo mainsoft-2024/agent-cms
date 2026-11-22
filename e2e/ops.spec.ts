@@ -23,6 +23,9 @@ test("webhooks: make one, test it, a publish arrives signed after the cron call,
   await dlg.getByRole("checkbox", { name: "Publish", exact: true }).click();
   await dlg.getByRole("button", { name: "Create" }).click();
   const made = page.getByRole("dialog", { name: "“Site cache” is ready" });
+  // The secret is masked on screen until asked for (Copy copies it either way).
+  await expect(made.getByText(/^whsec_[A-Za-z0-9_-]{20,}$/)).toHaveCount(0);
+  await made.getByRole("button", { name: "Show" }).click();
   await expect(made.getByText(/^whsec_[A-Za-z0-9_-]{20,}$/)).toBeVisible();
   await made.getByRole("button", { name: "Close" }).first().click();
 
@@ -70,7 +73,7 @@ test("webhooks on a phone: the list and the panel fit the screen @mobile", async
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
   await page.getByRole("button", { name: "New webhook" }).first().click();
   await page.getByRole("dialog", { name: "New webhook" }).getByRole("radio", { name: "Only these" }).click();
-  await expect(page.getByRole("dialog", { name: "New webhook" }).getByRole("checkbox", { name: "Comment" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "New webhook" }).getByRole("checkbox", { name: "Comment", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
   await clear(request);
 });

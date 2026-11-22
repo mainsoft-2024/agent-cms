@@ -43,6 +43,8 @@ export interface EventStreamOptions {
 
 const RESYNC_MAX = 200;
 const REPLAY_MAX = 500;
+/** Live events held while a stream replays; more means the client reloads instead. */
+const QUEUE_MAX = 5_000;
 
 /** Whether `actor` may be told about `e`. */
 export function mayHear(core: CmsCore, actor: Actor, e: OutEvent, only?: readonly string[]): boolean {
@@ -106,9 +108,12 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
         if (e.seq === undefined) send(note(e.event, publicEvent(heard)));
         else send(frame(e.event, String(e.seq), publicEvent({ ...heard, seq: e.seq })));
       };
+      // Too many events while the replay runs: this stream cannot keep up, the client reloads.
+      let overflow = false;
       const unsubscribe = core.subscribe((e) => {
-        if (queue) queue.push(e);
-        else deliver(e);
+        if (!queue) return deliver(e);
+        if (queue.length < QUEUE_MAX) queue.push(e);
+        else overflow = true;
       });
       const beat = setInterval(() => send(": keep-alive\n\n"), o.heartbeatMs ?? 25_000);
       (beat as { unref?: () => void }).unref?.();
@@ -139,16 +144,35 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
         core.telemetry({ type: "error", where: "events position", message: e instanceof Error ? e.message : String(e) });
       }
       const raw = o.since?.trim() || null;
-      // A client that already got further (from another server) keeps its place: what this server
-      // has not told yet up to there, it already has.
-      if (at !== null && raw && /^\d+$/.test(raw) && Number(raw) > at) at = Number(raw);
+      /** Set when the client was told to reload: its position cannot be trusted until it has. */
+      let reset = false;
+      const tellReset = () => {
+        reset = true;
+        send(note("resync", { since: raw, documents: [], more: true, reset: true }));
+      };
+      try {
+        // A client that already got further (from another server) keeps its place: what this server
+        // has not told yet up to there, it already has. A number past the end of the log is from
+        // another log (a restored or reset database): reload.
+        if (at !== null && raw && /^\d+$/.test(raw) && Number(raw) > at) {
+          if (Number(raw) <= (await core.changes.last())) at = Number(raw);
+          else {
+            tellReset();
+          }
+        }
+      } catch {
+        tellReset();
+      }
       from = at ?? -1;
       try {
+        if (reset) {
+          // already told
+        } else
         if (raw && /^\d+$/.test(raw) && at !== null) {
           const seq = Number(raw);
           if (seq < at) {
             const missed = await core.changes.since(actor, seq, { collections: o.collections, limit: REPLAY_MAX, until: at, hear: (e) => hearAs(core, actor, e, o.collections) });
-            if (!missed || missed.more) send(note("resync", { since: raw, documents: [], more: true, reset: true }));
+            if (!missed || missed.more) tellReset();
             else for (const c of missed.changes) {
               const { at: _at, ...rest } = c;
               send(frame(c.event, String(c.seq), rest));
@@ -160,18 +184,21 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
           send(note("resync", { since, documents: docs, more: docs.length >= RESYNC_MAX }));
         } else if (raw && /^\d+$/.test(raw)) {
           // A number but no log here to replay from: tell the client to reload.
-          send(note("resync", { since: raw, documents: [], more: true, reset: true }));
+          tellReset();
         }
       } catch (e) {
         core.telemetry({ type: "error", where: "events resync", message: e instanceof Error ? e.message : String(e) });
         // The replay failed: the client cannot trust its position, so it reloads.
-        if (raw) send(note("resync", { since: raw, documents: [], more: true, reset: true }));
+        if (raw && !reset) tellReset();
       }
       const waiting = queue;
       queue = null;
-      // `ready` names the resume point before the live events that follow it.
-      if (at !== null) send(frame("ready", String(at), { collections: o.collections ?? null, last: at }));
-      else send(note("ready", { collections: o.collections ?? null, last: null }));
+      if (overflow && !reset) tellReset();
+      // `ready` names the resume point before the live events that follow it. After a reset it
+      // carries no id: the client keeps its old position until it has reloaded (and if it drops
+      // before that, it is told to reload again).
+      if (at !== null && !reset) send(frame("ready", String(at), { collections: o.collections ?? null, last: at }));
+      else send(note("ready", { collections: o.collections ?? null, last: at, ...(reset ? { reset: true } : {}) }));
       for (const e of waiting) deliver(e);
       void held;
     },

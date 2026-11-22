@@ -331,6 +331,10 @@ export type CmsTelemetry =
 /** How long a missing change-log number may still be committing before it counts as rolled back. */
 // A number missing from the change log for less than this is a transaction still committing
 // (numbers are taken before the commit): wait for it. Older gaps are rolled-back writes.
+/** How long an events stream waits for the dispatcher to start before going on without numbers. */
+const POSITION_WAIT_MS = 5_000;
+/** Local events kept to enrich log rows while the reader catches up. */
+const WAITING_MAX = 10_000;
 const GAP_WAIT_MS = 15_000;
 
 /** An event as subscribers hear it: with its number in the change log, and whether another server made it. */
@@ -506,6 +510,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!subscribers.size || follow.closed) return; // the log keeps it for whoever asks later
     if (delivered >= 0 && e.seq <= delivered) return; // already told from the log
     waitingLocal.set(e.seq, e);
+    // Only a richer copy of what the log holds: when the reader falls far behind, the oldest go
+    // (the log's own row is told instead).
+    if (waitingLocal.size > WAITING_MAX) waitingLocal.delete(waitingLocal.keys().next().value as number);
     void pullChanges();
   }
   /**
@@ -891,9 +898,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     collection,
     docViewFor: (actor, doc) => {
       if (!collections.has(doc.collection)) return null;
-      if (can(actor, doc.collection, "write", doc)) return { doc, draft: true };
+      // Projected: a reference only in a field this person may not see does not count for them.
+      if (can(actor, doc.collection, "write", doc)) return { doc: conflictCopy(actor, doc.collection, doc), draft: true };
       const pub = publicView(doc);
-      return pub && can(actor, doc.collection, "read", pub) ? { doc: pub, draft: false } : null;
+      return pub && can(actor, doc.collection, "read", pub) ? { doc: conflictCopy(actor, doc.collection, pub), draft: false } : null;
     },
     roleAllows: (actor, store, what) => roles.allows(actor, `media:${store}`, what === "write" ? "write" : "delete"),
     warn: warnOnce,
@@ -1028,9 +1036,20 @@ export function createCmsCore(opts: CreateCmsOptions) {
         .catch((e) => report(e, which));
     }
   }
+  /**
+   * Check results as `actor` may see them: one about a field hidden from them keeps its place and
+   * severity but not its words (an app's message may quote the value).
+   */
+  function checksFor(actor: Actor, col: string, doc: CmsDoc | null, results: PublishCheckResult[]): PublishCheckResult[] {
+    if (!doc || !collection(col).fieldAccess) return results;
+    const hidden = hiddenPaths(actor, col, doc);
+    if (!hidden.length) return results;
+    return results.map((r) => (r.path && isHiddenPath(hidden, r.path.replace(/^fields\./, "")) ? { code: r.code, severity: r.severity, message: message(fail("check_hidden")) } : r));
+  }
   async function gate(which: "beforePublish" | "beforeDelete", actor: Actor, doc: { collection: string; slug: string; version: number }, content: DocContent) {
     if (which === "beforePublish") {
-      const errors = (await appChecks(doc.collection, doc.slug, content)).filter((x) => x.severity === "error");
+      const stored = await repo.findDoc(doc.collection, doc.slug);
+      const errors = checksFor(actor, doc.collection, stored, await appChecks(doc.collection, doc.slug, content)).filter((x) => x.severity === "error");
       if (errors.length)
         throw fail("publish_check_failed", { checks: errors.map((e) => e.message).join("; ") }, { diagnostics: errors.map((e) => ({ path: e.path ?? "", code: "publish_check_failed" as const, params: { checks: e.message, check: e.code, line: e.line ?? null }, severity: "error" as const, message: e.message })) });
     }
@@ -1044,7 +1063,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
       try {
         for (const r of (await fn(content, { collection: col, slug })) ?? []) out.push({ code: String(r.code), message: String(r.message), severity: r.severity === "error" ? "error" : "warning", path: r.path, line: r.line });
       } catch (e) {
-        out.push({ code: "check_failed", message: e instanceof Error ? e.message : String(e), severity: "error" });
+        // The error itself goes to the app's error report; people see that a check could not run
+        // (an exception's text may quote anything, hidden fields included).
+        report(e, "publishChecks");
+        out.push({ code: "check_failed", message: message(fail("check_failed")), severity: "error" });
       }
     }
     return out;
@@ -1102,6 +1124,15 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return { ...doc, ...contentOf(doc.published), version: doc.publishedVersion, autosave: null, review: null, schedule: null, dueAt: null };
   }
 
+  /**
+   * The published copy shown in an editor's list or dashboard in place of a draft they may not
+   * edit (0.18.0): who last changed the draft, and when, belong to the draft.
+   */
+  function fallbackView(doc: CmsDoc): CmsDoc | null {
+    const pub = publicView(doc);
+    return pub && { ...pub, updatedAt: doc.republishedAt ?? doc.publishedAt ?? pub.updatedAt, updatedBy: null, updatedByKind: null, updatedByAgent: null };
+  }
+
   async function get(actor: Actor, col: string, slug: string, o: { draft?: boolean } = {}): Promise<CmsDoc> {
     collection(col);
     await ensureSchema();
@@ -1148,7 +1179,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
           for (const path of all) unsetPath(f, path);
           return { ...c, fields: f };
         };
-        cur = { ...cur, published: strip(cur.published as never, cur.publishedVersion), ...(cur.autosave ? { autosave: { ...cur.autosave, content: strip(cur.autosave.content as never, cur.version) } } : {}) } as CmsDoc;
+        cur = { ...cur, published: strip(cur.published as never, cur.publishedVersion), ...(cur.autosave ? { autosave: { ...cur.autosave, content: strip(cur.autosave.content as never, cur.autosave.baseVersion ?? cur.version) } } : {}) } as CmsDoc;
       }
       for (const [path, h] of Object.entries(cfg.fieldHooks ?? {})) {
         if (!h.afterRead || !hasPath(fields, path)) continue;
@@ -1255,7 +1286,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const rows = editor
       ? (await repo.listDocs({ collection: col, statuses: o.status ? [o.status] : undefined })).flatMap((d) => {
           if (!collection(col).access?.write || can(actor, col, "write", d)) return [d];
-          const pub = publicView(d);
+          const pub = fallbackView(d);
           if (!pub || !can(actor, col, "read", pub)) return [];
           fallback.add(pub);
           return [pub];
@@ -1528,14 +1559,23 @@ export function createCmsCore(opts: CreateCmsOptions) {
     fail("conflict_version", { expected, current: cur.version }, { current: can(actor, col, "write", cur) ? conflictCopy(actor, col, cur) : undefined });
   /** The current document sent with a conflict: the same field projection as a read. */
   const conflictCopy = (actor: Actor, col: string, cur: CmsDoc): CmsDoc => {
-    const c = collection(col);
-    if (!c.fieldAccess) return cur;
+    if (!collection(col).fieldAccess) return cur;
+    const hidden = hiddenPaths(actor, col, cur);
     return {
-      ...project(actor, col, cur, cur),
-      published: project(actor, col, cur, cur.published as never),
-      ...(cur.autosave ? { autosave: { ...cur.autosave, content: project(actor, col, cur, cur.autosave.content as never) } } : {}),
+      ...projectWith(hidden, cur),
+      published: copyProjected(actor, col, cur, cur.published as never, cur.publishedVersion, hidden),
+      ...(cur.autosave ? { autosave: { ...cur.autosave, content: copyProjected(actor, col, cur, cur.autosave.content as never, cur.autosave.baseVersion ?? cur.version, hidden) } } : {}),
     } as CmsDoc;
   };
+  /**
+   * One copy of a document (published, autosave) as `actor` may see it (0.18.0): judged on its own
+   * content at its own version, and anything hidden in the current copy (`alsoHidden`) stays hidden.
+   */
+  function copyProjected<T extends { fields?: Record<string, unknown> } | null | undefined>(actor: Actor, col: string, doc: CmsDoc, copy: T, version: number | null | undefined, alsoHidden: readonly string[]): T {
+    if (!copy?.fields || !collection(col).fieldAccess) return copy;
+    const own = hiddenPaths(actor, col, { ...doc, ...copy, version: version ?? doc.version } as CmsDoc);
+    return projectWith([...new Set([...alsoHidden, ...own])], copy);
+  }
 
   /** True when this actor's publishes in `col` need someone's approval first (`review` in the collection). */
   function needsReview(actor: Actor, col: string): boolean {
@@ -1748,7 +1788,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const state = { content, at: nowIso(), by: actorRef(actor).label, baseVersion };
     // Keep updatedAt: an autosave is not a change anyone else sees.
     await repo.updateDoc(cur.id, { autosave: state, updatedAt: cur.updatedAt });
-    return state;
+    // The answer goes to the caller: fields they may not see (kept from the stored copy) stay out.
+    return collection(col).fieldAccess ? { ...state, content: copyProjected(actor, col, cur, state.content, baseVersion, hiddenPaths(actor, col, cur)) } : state;
   }
 
   async function discardAutosave(actor: Actor, col: string, slug: string) {
@@ -1866,7 +1907,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   async function unpublishIn(r: CmsRepo, actor: Actor, cur: CmsDoc): Promise<CmsDoc> {
-    if (cur.publishedVersion === null && cur.status !== "archived") return cur.schedule ? (await r.updateDoc(cur.id, { schedule: null, dueAt: null, updatedAt: cur.updatedAt }))! : cur;
+    if (cur.publishedVersion === null && cur.status !== "archived") {
+      if (!cur.schedule) return cur;
+      const cleared = await r.updateDoc(cur.id, { schedule: null, dueAt: null, updatedAt: cur.updatedAt }, cur.version);
+      if (!cleared) throw await movedOn(r, actor, cur);
+      return cleared;
+    }
     const who = actorRef(actor);
     const out = await r.updateDoc(cur.id, { status: "draft", publishedVersion: null, published: null, schedule: null, dueAt: null, updatedAt: nowIso(), updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent }, cur.version);
     if (!out) throw await movedOn(r, actor, cur);
@@ -2479,7 +2525,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     },
     audit: (actor, detail) => audit(actor, "retention.run", { detail }),
   });
-  const stats = createStats({ repo, now, dayOf: (d) => dayIn(timeZone, d), ready: ensureSchema, collections: () => [...collections.keys()], can, counts, isAdmin, generation: () => writeGen, publicView });
+  const stats = createStats({ repo, now, dayOf: (d) => dayIn(timeZone, d), ready: ensureSchema, collections: () => [...collections.keys()], can, counts, isAdmin, generation: () => writeGen, publicView: fallbackView, rulesPerDocument: (c: string) => { const x = collections.get(c); return !!(x?.access?.read || x?.access?.write || x?.access?.publish); } });
 
   const transfer = createTransfer({
     repo,
@@ -2527,7 +2573,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const diagnostics = await diagnose(actor, col, input, { slug });
     const cur = await repo.findDoc(col, slug);
     if (!cur) throw fail("not_found", { collection: col, slug });
-    const checks = await appChecks(col, slug, validateLoose(col, merged(cur, input)));
+    const checks = checksFor(actor, col, cur, await appChecks(col, slug, validateLoose(col, merged(cur, input))));
     return { diagnostics, checks, blocking: diagnostics.some((d) => d.severity === "error") || checks.some((c) => c.severity === "error") };
   }
   /** The content as the checks see it, even when it does not validate yet. */
@@ -2639,13 +2685,16 @@ export function createCmsCore(opts: CreateCmsOptions) {
        * no readable log (events then carry no number).
        */
       async position(): Promise<number | null> {
-        if (!canFollow()) return null;
+        if (!canFollow() || follow.closed) return null;
         keepFollowing();
-        for (let i = 0; i < 50 && (delivered < 0 || follow.busy); i++) {
-          if (follow.closed) return null;
-          await pullChanges();
+        // Any point the dispatcher has reached splits replay from live delivery correctly; it only
+        // has to have started. Waiting is bounded: a stuck database gives a stream without numbers.
+        if (delivered < 0) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([pullChanges(), new Promise<void>((done) => (timer = setTimeout(done, POSITION_WAIT_MS)))]);
+          clearTimeout(timer);
         }
-        return delivered < 0 ? null : delivered;
+        return delivered < 0 || follow.closed ? null : delivered;
       },
       /** Whether change numbers are in commit order (see `CmsRepo.changesInCommitOrder`). */
       ordered,
@@ -2686,6 +2735,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     async settle(): Promise<void> {
       follow.closed = true;
       while (inFlight.size) await Promise.allSettled([...inFlight]);
+      // A read of the log that was already running finishes (it tells nobody once closed).
+      if (pulling) await pulling.catch(() => {});
       if (follow.timer) clearTimeout(follow.timer);
       follow.timer = null;
       follow.unsignal?.();

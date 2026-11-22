@@ -81,7 +81,18 @@ const notFound = () => new Response(JSON.stringify({ error: "not_found", message
 
 /** One request handler for every tenant: finds the tenant, makes its CMS on first use, passes the request on. */
 export function createTenantHandler(opts: TenantHandlerOptions): TenantRequestHandler & { tenants(): string[]; forget(tenant: string): Promise<void> } {
-  const o = { ...opts, onError: opts.onError ?? ((e: unknown, tenant: string) => console.warn(`[agent-cms] tenant ${tenant}: dispose failed:`, e)) };
+  const report = opts.onError ?? ((e: unknown, tenant: string) => console.warn(`[agent-cms] tenant ${tenant}: dispose failed:`, e));
+  // A reporter that throws itself never turns teardown into a failure.
+  const o = {
+    ...opts,
+    onError: (e: unknown, tenant: string) => {
+      try {
+        report(e, tenant);
+      } catch {
+        // nothing more to do
+      }
+    },
+  };
   const max = Math.max(1, o.max ?? 200);
   const live = new Map<string, Promise<TenantRequestHandler>>();
   // Requests in progress per handler (until the response body has been read or cancelled).

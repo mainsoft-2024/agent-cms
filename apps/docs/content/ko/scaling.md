@@ -23,6 +23,8 @@ const cms = createCms({ repo, collections, cache: memoryCache({ max: 2000 }), ch
 
 이벤트 스트림(`/_events`)의 메시지 id도 같은 번호입니다. 다시 연결한 브라우저는 마지막 id를 보내고 놓친 것만 정확히 받습니다.
 
+0.18부터 번호는 커밋 순서대로 붙습니다(쓰기마다 끝에 로그에 짧은 잠금). 그래서 재개 지점이 아직 커밋 중인 변경을 건너뛰지 않습니다. 직접 만든 저장소는 `changesInCommitOrder: true`로 알리고, 그렇지 않으면 CMS가 빈 번호에서 최대 15초 기다립니다.
+
 ## 읽기 캐시
 
 `cache`에는 `memoryCache()`나 `get(key)`, `set(key, value, ttlMs)`가 있는 저장소(Redis, Upstash, Next 캐시)를 줍니다. 독자가 받는 문서와 목록을 캐시하고, 편집자는 캐시를 거치지 않습니다. 게시·게시 취소·보관·삭제·복원이 있으면 그 컬렉션의 캐시를 이 서버에서는 바로, 다른 서버에서는 다음 폴링 안에 비웁니다. `access.read` 규칙이 있는 컬렉션은 캐시하지 않습니다.
@@ -38,6 +40,8 @@ const cms = createCms({ repo, collections, cache: memoryCache({ max: 2000 }), ch
 ## Edge
 
 코어와 REST 핸들러는 Node 내장 모듈이 필요 없습니다. Vercel Edge나 Cloudflare Workers에서 거기서 되는 드라이버(`neon-http`, `neon-serverless`)와 함께 돌립니다. 웹훅은 봉인한 시크릿 때문에 Node의 crypto가 필요합니다(Workers는 `nodejs_compat`).
+
+웹훅 주소는 보낼 때마다 내부망 주소가 아닌지 확인합니다. `node:dns`가 없는 곳(Edge)에서는 `https://cloudflare-dns.com/dns-query`에 DNS over HTTPS로 묻기 때문에, 웹훅이 부르는 호스트 이름이 그곳에 전달됩니다. 그래서는 안 되는 곳이라면 전달은 Node에서 돌리거나 Edge에서는 웹훅을 끄세요.
 
 ## 여러 사이트
 

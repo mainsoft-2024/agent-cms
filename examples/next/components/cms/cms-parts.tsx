@@ -927,6 +927,8 @@ export function DocPicker({ search, value, onPick, label, placeholder, disabled,
   const [q, setQ] = React.useState("");
   const [open, setOpen] = React.useState(false);
   const [found, setFound] = React.useState<DocOption[]>([]);
+  /** The query and source the shown options answer: an option is picked only while both still hold. */
+  const answered = React.useRef<{ q: string; search: unknown } | null>(null);
   const [state, setState] = React.useState<"idle" | "busy" | "failed">("idle");
   const [active, setActive] = React.useState(0);
   const [tick, setTick] = React.useState(0);
@@ -939,6 +941,7 @@ export function DocPicker({ search, value, onPick, label, placeholder, disabled,
         search(q).then(
           (list) => {
             if (!live) return;
+            answered.current = { q, search };
             setFound(list);
             setState("idle");
             setActive(0);
@@ -956,7 +959,7 @@ export function DocPicker({ search, value, onPick, label, placeholder, disabled,
   React.useEffect(() => setFound([]), [search]);
   const choose = (d: DocOption | undefined) => {
     // While a new answer is on its way the old options stay visible but cannot be picked.
-    if (!d || state !== "idle") return;
+    if (!d || state !== "idle" || answered.current?.q !== q || answered.current?.search !== search) return;
     onPick(d);
     setQ("");
     setOpen(false);

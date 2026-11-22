@@ -389,3 +389,64 @@ test("review round 3: when the change row cannot be written, the write rolls bac
   repo.appendChange = real;
   await cms.settle();
 });
+
+test("review round 4: autosave answers and conflict copies leave out what the editor may not see", async () => {
+  const cms = createCms({ repo: new MemoryRepo(), collections: [products()], warn: () => {} });
+  await cms.create(admin, "products", { slug: "p", title: "P", body: "x\n", fields: { cost: 7, price: 10 } });
+  const saved = await cms.autosave(editor, "products", "p", { title: "P draft" }, 1);
+  assert.equal(JSON.stringify(saved).includes("cost"), false, "the stored value is kept, not shown");
+  assert.equal((await cms.get(admin, "products", "p", { draft: true })).autosave?.content.fields.cost, 7);
+  await cms.update(admin, "products", "p", { title: "P2" });
+  await assert.rejects(cms.update(editor, "products", "p", { title: "late" }, { expectedVersion: 1 }), (e: { code: string; current?: unknown }) => {
+    assert.equal(e.code, "conflict_version");
+    assert.equal(JSON.stringify(e.current).includes("cost"), false);
+    return true;
+  });
+});
+
+test("review round 4: a release changed after it was checked is not written; the scheduler publishes only the revision it saw", async () => {
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public" });
+  const repo = new MemoryRepo();
+  const cms = createCms({ repo, collections: [guide], warn: () => {} });
+  await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" });
+  await cms.create(admin, "guide", { slug: "b", title: "B", body: "x\n" });
+  const rel = await cms.releases.create(admin, { name: "Friday" });
+  await cms.releases.add(admin, rel.id, [{ collection: "guide", slug: "a" }]);
+  // The editor's add read the release while it was open; meanwhile it was scheduled.
+  const stale = await repo.findRelease(rel.id);
+  await cms.releases.schedule(admin, rel.id, { publishAt: new Date(Date.now() + 86_400_000).toISOString() });
+  const real = repo.findRelease.bind(repo);
+  repo.findRelease = async () => structuredClone(stale);
+  await assert.rejects(cms.releases.add(admin, rel.id, [{ collection: "guide", slug: "b" }]), (e: { code: string }) => e.code === "release_changed");
+  repo.findRelease = real;
+  assert.equal((await cms.releases.get(admin, rel.id)).items.length, 1, "nothing was added behind the scheduler's back");
+});
+
+test("review round 4: a guarded update never lands on a document in the trash", async () => {
+  const repo = new MemoryRepo();
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public" });
+  const cms = createCms({ repo, collections: [guide], warn: () => {} });
+  const d = await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" });
+  await cms.remove(admin, "guide", "a");
+  assert.equal(await repo.updateDoc(d.id, { title: "x" }, d.version), null);
+});
+
+test("review round 4: a publish check that throws shows a fixed message, not the error's text", async () => {
+  const guide = defineCollection({
+    slug: "guide",
+    label: "Guide",
+    visibility: "public",
+    publishChecks: [
+      () => {
+        throw new Error("secret 12345");
+      },
+    ],
+  });
+  const errors: unknown[] = [];
+  const cms = createCms({ repo: new MemoryRepo(), collections: [guide], warn: () => {}, onError: (e) => void errors.push(e) });
+  await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" });
+  const r = await cms.publishChecks(admin, "guide", "a");
+  assert.equal(r.checks[0].code, "check_failed");
+  assert.doesNotMatch(r.checks[0].message, /12345/);
+  assert.ok(errors.length >= 1, "the error went to onError");
+});

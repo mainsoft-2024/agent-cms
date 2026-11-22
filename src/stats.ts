@@ -28,25 +28,22 @@ export interface StatsContext {
   isAdmin: (actor: Actor) => boolean;
   /** Changes whenever a document is written here: cached numbers from before are not reused. */
   generation?: () => number;
-  /** The published copy of a document (without the draft's review and schedule), or null. */
+  /** The published copy of a document (without the draft's review, schedule or last editor), or null. */
   publicView?: (doc: CmsDoc) => CmsDoc | null;
+  /** Whether a collection's rules decide per document. */
+  rulesPerDocument?: (col: string) => boolean;
 }
 
 /** Audit actions worth a line in "recent activity". */
 const SHOWN = new Set(["doc.publish", "doc.unpublish", "doc.schedule", "doc.delete", "review.request", "review.approve", "asset.upload", "release.publish"]);
 
 export function createStats(ctx: StatsContext) {
-  const cache = new Map<string, { at: number; value: CmsStats }>();
-
+  // No cache of answers (0.18.0): what a person may see is decided on every call, so a change of
+  // role, ownership or a write on another server shows at once.
   return async function stats(actor: Actor, o: { days?: number } = {}): Promise<CmsStats> {
     await ctx.ready();
     const days = (STATS_DAYS as readonly number[]).includes(o.days ?? 14) ? (o.days ?? 14) : 14;
-    // Per person and per write generation, for 15 seconds: numbers filtered by permissions are not
-    // carried across a write, and a change of role shows within moments.
-    const key = `${actor.kind}:${"id" in actor ? actor.id : ""}:${days}:${ctx.generation?.() ?? 0}`;
-    const hit = cache.get(key);
     const nowMs = ctx.now().getTime();
-    if (hit && nowMs - hit.at < 15_000) return hit.value;
 
     // Collections the person may read, or edit (an editor's list shows those even without read).
     const readable = ctx.collections().filter((c) => ctx.can(actor, c, "read") || ctx.can(actor, c, "write"));
@@ -109,15 +106,14 @@ export function createStats(ctx: StatsContext) {
       for (const e of entries) {
         if (!SHOWN.has(e.action) || e.outcome !== "ok") continue;
         // A document the person may not see stays out of their dashboard, admin or not, when rules say so.
-        if (e.collection && e.slug && e.action !== "doc.delete" && ![...docs.values()].some((d) => d.collection === e.collection && d.slug === e.slug)) continue;
+        // A deleted document is gone from every list: show its deletion only where the collection
+        // has no per-document rules (in one with rules, nobody can tell whether it was theirs to see).
+        if (e.collection && e.slug && (e.action === "doc.delete" ? ctx.rulesPerDocument?.(e.collection) !== false || !readable.includes(e.collection) : ![...docs.values()].some((d) => d.collection === e.collection && d.slug === e.slug))) continue;
         recent.push({ at: e.at, who: e.actorAgent ?? e.actorLabel, agent: e.actorKind !== "user" || !!e.actorAgent, action: e.action, collection: e.collection, slug: e.slug, title: titles.get(`${e.collection}/${e.slug}`) ?? (typeof e.detail.name === "string" ? e.detail.name : null), version: e.version });
       }
     }
     recent.sort((a, b) => b.at.localeCompare(a.at));
 
-    const value: CmsStats = { days, totals, changes: [...byDay].map(([day, n]) => ({ day, ...n })), top, recent: recent.slice(0, 10) };
-    cache.set(key, { at: nowMs, value });
-    if (cache.size > 200) cache.delete(cache.keys().next().value as string);
-    return value;
+    return { days, totals, changes: [...byDay].map(([day, n]) => ({ day, ...n })), top, recent: recent.slice(0, 10) };
   };
 }

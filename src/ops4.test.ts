@@ -236,6 +236,17 @@ test("events stream: numbers go out in log order even when this server's own cha
   await b.settle();
 });
 
+test("events stream: a position past the end of the log (another database) is told to reload, and ready then carries no id", async () => {
+  const c = createCms({ repo: new MemoryRepo(), collections: [guide()], warn: () => {} });
+  await c.create(admin, "guide", { slug: "a", title: "A", body: "x\n" });
+  const handler = createCmsHandler({ cms: c, resolveUser: async () => admin });
+  const s = await handler(new Request("http://app.test/api/cms/_events?collections=guide", { headers: { "last-event-id": "999" } }));
+  const got = await frames(s, 2);
+  assert.deepEqual(got.map((f) => [f.event, f.id || null, f.data.reset ?? null]), [["resync", null, true], ["ready", null, true]]);
+  await s.body!.cancel();
+  await c.settle();
+});
+
 test("metrics: requests, events, cache and search are counted; paths are grouped; the text parses as Prometheus", async () => {
   const { createMetrics, routeOf } = await import("./metrics");
   assert.equal(routeOf("/api/cms/collections/guide/hello-world/versions"), "/collections/:c/:slug/versions");

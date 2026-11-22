@@ -217,9 +217,11 @@ export function createFlow(ctx: FlowContext) {
     for (const rel of await repo.listReleases()) {
       if (rel.state !== "scheduled" || !rel.publishAt || rel.publishAt > at) continue;
       try {
-        await publishRelease(scheduler, rel.id);
+        await publishRelease(scheduler, rel.id, { dueBy: at, revision: rel.updatedAt });
         out.releases.push({ id: rel.id, name: rel.name, ok: true });
       } catch (e) {
+        // Changed since it was listed (unscheduled, edited): not this run's to publish or to fail.
+        if (isCmsError(e) && e.code === "release_changed") continue;
         if (!isCmsError(e)) ctx.report(e, "runScheduled");
         const message = ctx.message(e);
         await repo.updateRelease(rel.id, { state: "open", publishAt: null, lastError: message }, "scheduled").catch((err) => ctx.report(err, "runScheduled"));
@@ -584,7 +586,7 @@ export function createFlow(ctx: FlowContext) {
     needEditor(actor);
     const rel = await loadRelease(id, true);
     await assertManage(actor, rel);
-    return viewRelease(actor, (await repo.updateRelease(rel.id, { name: nameOf(input.name), updatedAt: nowIso() }))!);
+    return viewRelease(actor, await saveRelease(rel, { name: nameOf(input.name) }));
   }
 
   /** Delete a release that has not gone out. A published one stays as a record. */
@@ -593,6 +595,22 @@ export function createFlow(ctx: FlowContext) {
     const rel = await loadRelease(id, true);
     await assertManage(actor, rel);
     await repo.deleteRelease(rel.id);
+  }
+
+  /** A revision later than `old` (the release's `updatedAt`), so a compare-and-set always sees the change. */
+  function nextRevision(old: string): string {
+    const now = Date.now();
+    const prev = Date.parse(old);
+    return new Date(Number.isNaN(prev) || now > prev ? now : prev + 1).toISOString();
+  }
+  /**
+   * Write the release only if it is exactly as it was read and checked (0.18.0). Two changes that
+   * each checked an older state (adding a document while someone schedules) cannot both land.
+   */
+  async function saveRelease(rel: CmsRelease, patch: Parameters<CmsRepo["updateRelease"]>[1]): Promise<CmsRelease> {
+    const saved = await repo.updateRelease(rel.id, { ...patch, updatedAt: nextRevision(rel.updatedAt) }, { state: rel.state, updatedAt: rel.updatedAt });
+    if (!saved) throw fail("release_changed");
+    return saved;
   }
 
   /**
@@ -622,7 +640,7 @@ export function createFlow(ctx: FlowContext) {
       if (at >= 0) items[at] = item;
       else items.push(item);
     }
-    return viewRelease(actor, (await repo.updateRelease(rel.id, { items, lastError: null, updatedAt: nowIso() }))!);
+    return viewRelease(actor, await saveRelease(rel, { items, lastError: null }));
   }
 
   async function removeFromRelease(actor: Actor, id: string, documentId: string): Promise<ReleaseView> {
@@ -632,7 +650,7 @@ export function createFlow(ctx: FlowContext) {
     const doc = it && known(it.collection) ? await repo.findDocById(it.documentId) : null;
     // An item this person cannot see is, for them, not in the release.
     if (!it || !visibleItem(actor, it, doc)) throw fail("not_found", { collection: it?.collection ?? "", slug: "" });
-    return viewRelease(actor, (await repo.updateRelease(rel.id, { items: rel.items.filter((x) => x.documentId !== documentId), updatedAt: nowIso() }))!);
+    return viewRelease(actor, await saveRelease(rel, { items: rel.items.filter((x) => x.documentId !== documentId) }));
   }
 
   /**
@@ -640,7 +658,7 @@ export function createFlow(ctx: FlowContext) {
    * a missing permission, a failed check or a missing review on any document
    * stops all of it, and the error lists what blocked (`current.blocked`).
    */
-  async function publishRelease(actor: Actor, id: string): Promise<CmsRelease> {
+  async function publishRelease(actor: Actor, id: string, o: { dueBy?: string; revision?: string } = {}): Promise<CmsRelease> {
     await ctx.ready();
     if (actor.kind === "anonymous") throw fail("unauthorized");
     const done: { item: ReleaseItem; prev: CmsDoc; doc: CmsDoc }[] = [];
@@ -648,6 +666,10 @@ export function createFlow(ctx: FlowContext) {
       const cur = await r.findRelease(String(id));
       if (!cur) throw fail("release_not_found");
       if (cur.state === "published") throw fail("release_closed");
+      // The scheduler publishes only what is still scheduled, due, and exactly what was checked when
+      // it was scheduled (any change since makes the release open or a newer revision).
+      if (o.dueBy !== undefined && (cur.state !== "scheduled" || !cur.publishAt || cur.publishAt > o.dueBy)) throw fail("release_changed");
+      if (o.revision !== undefined && Date.parse(cur.updatedAt) !== Date.parse(o.revision)) throw fail("release_changed");
       if (!cur.items.length) throw fail("release_empty");
       const blocked: BlockedItem[] = [];
       const ok: { item: ReleaseItem; doc: CmsDoc }[] = [];
@@ -679,7 +701,7 @@ export function createFlow(ctx: FlowContext) {
         done.push({ item, prev: doc, doc: out });
       }
       const at = nowIso();
-      const saved = await r.updateRelease(cur.id, { state: "published", publishAt: null, publishedAt: at, publishedBy: actorRef(actor).label, lastError: null, updatedAt: at }, cur.state);
+      const saved = await r.updateRelease(cur.id, { state: "published", publishAt: null, publishedAt: at, publishedBy: actorRef(actor).label, lastError: null, updatedAt: nextRevision(cur.updatedAt) }, { state: cur.state, updatedAt: cur.updatedAt });
       if (!saved) throw fail("release_closed");
       return saved;
     }, { atomic: true });
@@ -696,7 +718,7 @@ export function createFlow(ctx: FlowContext) {
     needEditor(actor);
     const rel = await loadRelease(id, true);
     await assertManage(actor, rel);
-    if (o.publishAt === null) return viewRelease(actor, (await repo.updateRelease(rel.id, { state: "open", publishAt: null, updatedAt: nowIso() }))!);
+    if (o.publishAt === null) return viewRelease(actor, await saveRelease(rel, { state: "open", publishAt: null }));
     const publishAt = future(o.publishAt, "publishAt");
     if (!publishAt) throw fail("schedule_invalid", { field: "publishAt" });
     if (!rel.items.length) throw fail("release_empty");
@@ -706,7 +728,7 @@ export function createFlow(ctx: FlowContext) {
       assert(actor, doc.collection, "publish", doc);
       if (it.action === "publish") await ctx.assertReviewed(repo, actor, doc, it.version);
     }
-    return viewRelease(actor, (await repo.updateRelease(rel.id, { state: "scheduled", publishAt, lastError: null, updatedAt: nowIso() }))!);
+    return viewRelease(actor, await saveRelease(rel, { state: "scheduled", publishAt, lastError: null }));
   }
 
   /** The open release a document is in, if any (so a screen can warn before a separate publish). */

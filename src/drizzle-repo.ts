@@ -243,7 +243,9 @@ export class DrizzleRepo implements CmsRepo {
   }
   async updateDoc(id: string, p: DocPatch, expectedVersion?: number) {
     const D = this.t.documents;
-    const where = expectedVersion === undefined ? eq(D.id, id) : and(eq(D.id, id), eq(D.version, expectedVersion));
+    // With an expected version the row must also still be live (not in the trash): a guarded write
+    // never lands on a document deleted after it was checked.
+    const where = expectedVersion === undefined ? eq(D.id, id) : and(eq(D.id, id), eq(D.version, expectedVersion), isNull(D.deletedAt));
     const [r] = await uniq(
       this.db
         .update(D)
@@ -562,7 +564,8 @@ export class DrizzleRepo implements CmsRepo {
     const R = this.t.releases;
     return (await this.db.select().from(R).orderBy(desc(R.createdAt))).map((r) => this.toRelease(r));
   }
-  async updateRelease(id: string, patch: ReleasePatch, expectedState?: CmsRelease["state"]) {
+  async updateRelease(id: string, patch: ReleasePatch, expected?: CmsRelease["state"] | { state?: CmsRelease["state"]; updatedAt?: string }) {
+    const e = typeof expected === "string" ? { state: expected } : (expected ?? {});
     const R = this.t.releases;
     const { publishAt, publishedAt, updatedAt, ...rest } = patch;
     const set = {
@@ -571,7 +574,11 @@ export class DrizzleRepo implements CmsRepo {
       ...(publishedAt !== undefined ? { publishedAt: date(publishedAt) } : {}),
       updatedAt: updatedAt ? new Date(updatedAt) : new Date(),
     };
-    const [r] = await this.db.update(R).set(set).where(expectedState ? and(eq(R.id, id), eq(R.state, expectedState)) : eq(R.id, id)).returning();
+    const conds = [eq(R.id, id)];
+    if (e.state) conds.push(eq(R.state, e.state));
+    // The revision is the time to the millisecond (older rows may hold microseconds).
+    if (e.updatedAt) conds.push(sql`date_trunc('milliseconds', ${R.updatedAt}) = ${new Date(e.updatedAt).toISOString()}::timestamptz`);
+    const [r] = await this.db.update(R).set(set).where(and(...conds)).returning();
     return r ? this.toRelease(r) : null;
   }
   async deleteRelease(id: string) {
