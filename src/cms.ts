@@ -705,7 +705,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
   /** Which CMS the cache belongs to (tables or a set name), so CMSs sharing one store never mix. */
   const cacheNs = (opts.cache && "namespace" in opts.cache ? (opts.cache as CacheOptions).namespace : undefined) ?? repo.cacheNamespace?.() ?? `m${Math.random().toString(36).slice(2, 10)}`;
-  const cacheKey = (col: string, rest: string) => `agent-cms:${cacheNs}:${col}:${rest}`;
+  // `v18`: copies cached by 0.17 carried the draft's status and editor; they are not read again.
+  const cacheKey = (col: string, rest: string) => `agent-cms:${cacheNs}:v18:${col}:${rest}`;
   /** Set at once when this process changes a collection, so it never serves an older entry while the store catches up. */
   const localGen = new Map<string, string>();
   const newGen = () => Math.random().toString(36).slice(2, 10);
@@ -1063,7 +1064,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function gate(which: "beforePublish" | "beforeDelete", actor: Actor, doc: { collection: string; slug: string; version: number }, content: DocContent, base?: CmsDoc | null) {
     if (which === "beforePublish") {
       // Judged on the very copy being checked (no second read: this runs inside the transaction).
-      const checked = { ...(base ?? {}), ...content, collection: doc.collection, slug: doc.slug, version: doc.version } as CmsDoc;
+      const checked = { ...(base ?? {}), ...content, format: content.format, collection: doc.collection, slug: doc.slug, version: doc.version } as CmsDoc;
       const errors = checksFor(actor, doc.collection, checked, await appChecks(doc.collection, doc.slug, content)).filter((x) => x.severity === "error");
       if (errors.length)
         throw fail("publish_check_failed", { checks: errors.map((e) => e.message).join("; ") }, { diagnostics: errors.map((e) => ({ path: e.path ?? "", code: "publish_check_failed" as const, params: { checks: e.message, check: e.code, line: e.line ?? null }, severity: "error" as const, message: e.message })) });
@@ -1110,8 +1111,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (other && other.id !== cur?.id) diagnostics.push({ path: "slug", code: taken, params: { slug: content.slug }, severity: "error", message: formatMessage(messages, taken, { slug: content.slug }) });
     diagnostics.push(...(await assets.checkDoc(cfg, content, cur ? assets.idsIn(cfg, cur) : undefined)));
     // What is said about fields this person may not see (a file's id or name in one) stays out.
-    const hidden = hiddenPaths(actor, col, (cur ?? { collection: col, ...content }) as CmsDoc);
-    return hidden.length ? diagnostics.filter((d) => !isHiddenPath(hidden, d.path)) : diagnostics;
+    // Judged on the copy that was checked (what was sent over what is stored), with the same
+    // conservative rule as publish checks.
+    return diagnosticsFor(actor, col, { ...(cur ?? {}), ...content, collection: col } as CmsDoc, diagnostics);
   }
 
   const same = (a: DocContent, b: DocContent) => stableJson(contentOf(a)) === stableJson(contentOf(b));
@@ -1299,11 +1301,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
     // of the others, the published copy if they may read it; nothing else.
     /** Published copies in an editor's list (documents they may read but not edit): read as published, not as drafts. */
     const fallback = new WeakSet<CmsDoc>();
+    // With per-document write rules the status filter is applied to the copy each person gets (a
+    // published copy shown in place of a draft is "published"), not to the stored row.
+    const perDocWrite = !!collection(col).access?.write;
     const rows = editor
-      ? (await repo.listDocs({ collection: col, statuses: o.status ? [o.status] : undefined })).flatMap((d) => {
-          if (!collection(col).access?.write || can(actor, col, "write", d)) return [d];
+      ? (await repo.listDocs({ collection: col, statuses: o.status && !perDocWrite ? [o.status] : undefined })).flatMap((d) => {
+          if (!perDocWrite || can(actor, col, "write", d)) return !o.status || d.status === o.status ? [d] : [];
           const pub = fallbackView(d);
-          if (!pub || !can(actor, col, "read", pub)) return [];
+          if (!pub || !can(actor, col, "read", pub) || (o.status && o.status !== "published")) return [];
           fallback.add(pub);
           return [pub];
         })
@@ -2601,6 +2606,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const diagnostics = await diagnose(actor, col, input, { slug });
     const cur = await repo.findDoc(col, slug);
     if (!cur) throw fail("not_found", { collection: col, slug });
+    assert(actor, col, "write", cur);
     const proposed = validateLoose(col, merged(cur, input));
     const checks = checksFor(actor, col, { ...cur, ...proposed } as CmsDoc, await appChecks(col, slug, proposed));
     return { diagnostics, checks, blocking: diagnostics.some((d) => d.severity === "error") || checks.some((c) => c.severity === "error") };
@@ -2623,18 +2629,76 @@ export function createCmsCore(opts: CreateCmsOptions) {
   };
 
   /** Wrap a write so the document it returns is projected for the actor who asked. */
+  /**
+   * An error from a write as its caller may see it: diagnostics about fields hidden from them keep
+   * their place, not their words. Judged on the stored document and on what was sent.
+   */
+  async function redactError(actor: Actor, col: string, slug: string | null, args: unknown[], e: unknown): Promise<unknown> {
+    if (!isCmsError(e) || !collections.has(col) || !collection(col).fieldAccess) return e;
+    const diags = (e as { diagnostics?: Diagnostic[] }).diagnostics;
+    if (!diags?.length) return e;
+    const stored = slug ? await repo.findDoc(col, slug).catch(() => null) : null;
+    const sent = args.find((x): x is DocInput => !!x && typeof x === "object" && ("fields" in (x as object) || "body" in (x as object)));
+    const candidate = { ...(stored ?? { collection: col, slug: slug ?? "" }), ...(sent ?? {}), fields: { ...(stored?.fields ?? {}), ...((sent?.fields as object) ?? {}) } } as CmsDoc;
+    const shownDiags = diagnosticsFor(actor, col, candidate, diags);
+    if (shownDiags.every((d, i) => d === diags[i])) return e;
+    // The first finding names the error: if it was redacted, so is the error's own text.
+    const first = shownDiags[0];
+    const out = first.code === ("check_hidden" as string) ? fail("check_hidden", {}, { diagnostics: shownDiags }) : e;
+    if (out === e) (e as { diagnostics?: unknown }).diagnostics = shownDiags;
+    return out;
+  }
+
+  /** The state of a document and nothing of its content: what a caller who may change but not read it gets back. */
+  function receipt(d: CmsDoc): CmsDoc {
+    return {
+      id: d.id,
+      collection: d.collection,
+      slug: d.slug,
+      title: "",
+      summary: "",
+      body: "",
+      fields: {},
+      keywords: [],
+      category: null,
+      status: d.status,
+      version: d.version,
+      publishedVersion: d.publishedVersion,
+      published: null,
+      publishedAt: d.publishedAt,
+      republishedAt: d.republishedAt,
+      createdAt: d.createdAt,
+      updatedAt: d.updatedAt,
+      updatedBy: null,
+      updatedByKind: null,
+      updatedByAgent: null,
+      autosave: null,
+      deletedAt: d.deletedAt,
+      deletedBy: null,
+      schedule: null,
+      dueAt: null,
+      review: null,
+    } as unknown as CmsDoc;
+  }
   function shown<A extends [Actor, string, ...unknown[]], R>(fn: (...a: A) => Promise<R>): (...a: A) => Promise<R> {
     const isDoc = (d: unknown): d is CmsDoc => !!d && typeof d === "object" && "collection" in d && "fields" in d && "slug" in d;
     // What the caller may receive is decided apart from what they were allowed to do: someone who
     // may publish but not edit gets the published copy if they may read it, else only the state.
     const forCaller = (actor: Actor, d: CmsDoc): CmsDoc => {
       if (!collections.has(d.collection) || can(actor, d.collection, "write", d)) return conflictCopy(actor, d.collection, d);
+      // The working version stays (it is what the next write is checked against); everything else
+      // is either the published copy exactly as this person may read it, or nothing.
       const pub = publicView(d);
-      if (pub && can(actor, d.collection, "read", pub)) return conflictCopy(actor, d.collection, { ...pub, status: d.status, publishedVersion: d.publishedVersion, published: null });
-      return { ...d, title: "", summary: null, body: "", fields: {}, published: null, autosave: null, review: null, keywords: [] } as unknown as CmsDoc;
+      if (pub && can(actor, d.collection, "read", pub)) return { ...conflictCopy(actor, d.collection, pub), published: null, version: d.version };
+      return receipt(d);
     };
     return async (...a: A) => {
-      const out = await fn(...a);
+      let out: R;
+      try {
+        out = await fn(...a);
+      } catch (e) {
+        throw await redactError(a[0], a[1], typeof a[2] === "string" ? a[2] : null, a, e);
+      }
       if (isDoc(out)) return forCaller(a[0], out) as unknown as R;
       // `{ doc, … }` (patch and friends): the document inside.
       if (out && typeof out === "object" && isDoc((out as { doc?: unknown }).doc)) {
@@ -2773,7 +2837,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
       follow.closed = true;
       while (inFlight.size) await Promise.allSettled([...inFlight]);
       // A read of the log that was already running finishes (it tells nobody once closed).
-      if (pulling) await pulling.catch(() => {});
+      if (pulling) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([pulling.catch(() => {}), new Promise<void>((done) => (timer = setTimeout(done, POSITION_WAIT_MS)))]);
+        clearTimeout(timer);
+      }
       if (follow.timer) clearTimeout(follow.timer);
       follow.timer = null;
       follow.unsignal?.();

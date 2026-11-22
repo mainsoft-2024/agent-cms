@@ -19,6 +19,7 @@ export const en: Messages = {
   forbidden_publish: "No publish access to {collection}",
   document_replaced: "{slug} is now another document than the one this was about; nothing was changed",
   check_failed: "A publish check could not run (the error is in the server log)",
+  release_failed: "The scheduled release could not be published ({code}); publish it by hand to see why",
   check_hidden: "A publish check failed on a field you cannot see",
   release_changed: "The release changed meanwhile; load it again and retry",
   forbidden_release: "This release has documents you cannot edit; only an admin or someone who can edit all of them may change it as a whole",

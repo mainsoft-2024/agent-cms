@@ -229,7 +229,9 @@ export function createFlow(ctx: FlowContext) {
         // Changed since it was listed (unscheduled, edited): not this run's to publish or to fail.
         if (isCmsError(e) && e.code === "release_changed") continue;
         if (!isCmsError(e)) ctx.report(e, "runScheduled");
-        const message = ctx.message(e);
+        // What is stored and shown later is the kind of failure, not the scheduler's detailed text
+        // (it may name documents and fields the people reading the release cannot see).
+        const message = ctx.message(fail("release_failed", { code: isCmsError(e) ? e.code : "internal" }));
         // Reopened only if it is still the revision that failed.
         await repo.updateRelease(rel.id, { state: "open", publishAt: null, lastError: message, updatedAt: nextRevision(rel.updatedAt) }, { state: "scheduled", updatedAt: rel.updatedAt }).catch((err) => ctx.report(err, "runScheduled"));
         audit(scheduler, "release.publish", { outcome: "failed", detail: { id: rel.id, name: rel.name, code: isCmsError(e) ? e.code : "internal" } });
@@ -602,10 +604,13 @@ export function createFlow(ctx: FlowContext) {
     const rel = await loadRelease(id, true);
     await assertManage(actor, rel);
     // Deleted only as it was checked: a release published or given new items meanwhile stays.
-    await repo.tx(async (r) => {
-      if (!(await r.updateRelease(rel.id, { updatedAt: nextRevision(rel.updatedAt) }, { state: rel.state, updatedAt: rel.updatedAt }))) throw fail("release_changed");
-      await r.deleteRelease(rel.id);
-    });
+    await repo.tx(
+      async (r) => {
+        if (!(await r.updateRelease(rel.id, { updatedAt: nextRevision(rel.updatedAt) }, { state: rel.state, updatedAt: rel.updatedAt }))) throw fail("release_changed");
+        await r.deleteRelease(rel.id);
+      },
+      { atomic: true }
+    );
   }
 
   /** A revision later than `old` (the release's `updatedAt`), so a compare-and-set always sees the change. */

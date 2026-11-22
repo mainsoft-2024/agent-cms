@@ -35,6 +35,7 @@ export const ERROR_CODES = {
   release_changed: "conflict",
   check_failed: "invalid",
   check_hidden: "invalid",
+  release_failed: "precondition",
   document_replaced: "conflict",
   forbidden_keys: "forbidden",
   forbidden_audit: "forbidden",

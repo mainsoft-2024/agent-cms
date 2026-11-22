@@ -497,3 +497,33 @@ test("review round 5: deleting a release that changed after the check is refused
   repo.findRelease = real;
   assert.equal((await cms.releases.get(admin, rel.id)).items.length, 1);
 });
+
+test("review round 6: a caller who may change but not read gets only the state; editor lists filter on the copy they get", async () => {
+  const blind = defineCollection({
+    slug: "blind",
+    label: "Blind",
+    visibility: "internal",
+    access: { read: ({ actor }) => actor.kind === "user" && actor.isAdmin, write: ({ actor, doc }) => actor.kind === "user" && (actor.isAdmin || !doc || doc.slug !== "theirs"), publish: ({ actor }) => actor.kind === "user" },
+  });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [blind], warn: () => {} });
+  await cms.create(admin, "blind", { slug: "theirs", title: "Secret", body: "secret body\n" });
+  const out = await cms.publish(editor, "blind", "theirs");
+  assert.doesNotMatch(JSON.stringify(out), /Secret|secret body/);
+  assert.equal(out.status, "published");
+  assert.equal(out.version, 1);
+});
+
+test("review round 6: an editor's list filtered by status uses the copy they get", async () => {
+  const owned = defineCollection({
+    slug: "owned",
+    label: "Owned",
+    visibility: "public",
+    fields: z.object({ owner: z.string().optional() }),
+    access: { write: ({ actor, doc }) => actor.kind === "user" && (actor.isAdmin || !doc || (doc.fields as { owner?: string }).owner === actor.id) },
+  });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [owned], warn: () => {} });
+  await cms.create(admin, "owned", { slug: "theirs", title: "T", body: "x\n", fields: { owner: "u9" } }, { publish: true });
+  await cms.update(admin, "owned", "theirs", { title: "T draft" });
+  assert.deepEqual((await cms.list(editor, "owned", { drafts: true, status: "published" })).map((d) => d.title), ["T"]);
+  assert.deepEqual((await cms.list(editor, "owned", { drafts: true, status: "draft" })).map((d) => d.title), []);
+});

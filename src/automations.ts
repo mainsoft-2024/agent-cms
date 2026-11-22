@@ -295,6 +295,8 @@ export function createAutomations(ctx: AutomationsContext) {
       if (!doc) throw fail("not_found", { collection: target.collection, slug: target.slug });
       const blind = auto.conditions.find((c) => {
         if (c.field === "actor") return false;
+        // Whole copies (all fields, the published or autosave copy) would answer about hidden ones too.
+        if (seen?.hidden.length && (c.field === "fields" || /^(published|autosave)(\.|$)/.test(c.field))) return true;
         const f = c.field.replace(/^fields\./, "");
         return !!seen?.hidden.some((h) => f === h || f.startsWith(`${h}.`) || h.startsWith(`${f}.`));
       });

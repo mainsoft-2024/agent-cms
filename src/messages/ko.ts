@@ -19,6 +19,7 @@ export const ko: Messages = {
   forbidden_publish: "{collection} 게시 권한이 없음",
   document_replaced: "{slug} 주소에 이제 다른 문서가 있음. 아무것도 바꾸지 않음",
   check_failed: "게시 전 점검 하나가 실행되지 못함(오류는 서버 로그에 있음)",
+  release_failed: "예약한 릴리스를 게시하지 못함({code}). 직접 게시하면 이유가 보임",
   check_hidden: "볼 수 없는 필드에서 게시 전 점검이 실패함",
   release_changed: "그 사이 릴리스가 바뀜. 다시 불러와서 다시 시도",
   forbidden_release: "이 릴리스에 고칠 수 없는 문서가 있음. 릴리스 전체를 바꾸는 일은 관리자나 모든 문서를 고칠 수 있는 사람만 함",

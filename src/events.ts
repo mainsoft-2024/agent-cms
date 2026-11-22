@@ -45,6 +45,14 @@ const RESYNC_MAX = 200;
 const REPLAY_MAX = 500;
 /** Live events held while a stream replays; more means the client reloads instead. */
 const QUEUE_MAX = 5_000;
+/** Messages queued for a client that does not read before it is disconnected (the stream counts chunks). */
+const OUT_MAX = 2_000;
+/** How long a replay from the log may take before the client is told to reload instead. */
+const REPLAY_WAIT_MS = 10_000;
+function within<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<T>((_, no) => (timer = setTimeout(() => no(new Error("timed out")), ms)))]).finally(() => clearTimeout(timer));
+}
 
 /** Whether `actor` may be told about `e`. */
 export function mayHear(core: CmsCore, actor: Actor, e: OutEvent, only?: readonly string[]): boolean {
@@ -91,6 +99,9 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
         if (!open) return;
         try {
           controller.enqueue(enc.encode(text));
+          // A client that does not read keeps nothing waiting on the server: it is disconnected
+          // and, when it comes back, resumes from its last id (or is told to reload).
+          if ((controller.desiredSize ?? 0) < -OUT_MAX) stop();
         } catch {
           stop();
         }
@@ -156,7 +167,7 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
         // has not told yet up to there, it already has. A number past the end of the log is from
         // another log (a restored or reset database): reload.
         if (at !== null && raw && /^\d+$/.test(raw) && Number(raw) > at) {
-          if (Number(raw) <= (await core.changes.last())) at = Number(raw);
+          if (Number(raw) <= (await within(core.changes.last(), REPLAY_WAIT_MS))) at = Number(raw);
           else {
             tellReset();
           }
@@ -172,7 +183,7 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
         if (raw && /^\d+$/.test(raw) && at !== null) {
           const seq = Number(raw);
           if (seq < at) {
-            const missed = await core.changes.since(actor, seq, { collections: o.collections, limit: REPLAY_MAX, until: at, hear: (e) => hearAs(core, actor, e, o.collections) });
+            const missed = await within(core.changes.since(actor, seq, { collections: o.collections, limit: REPLAY_MAX, until: at, hear: (e) => hearAs(core, actor, e, o.collections) }), REPLAY_WAIT_MS);
             if (!missed || missed.more) tellReset();
             else for (const c of missed.changes) {
               const { at: _at, ...rest } = c;
