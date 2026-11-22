@@ -26,6 +26,8 @@ export interface FlowContext {
   assert: (actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) => void;
   isAdmin: (actor: Actor) => boolean;
   /** Diagnostics about a checked copy as `actor` may see them (hidden fields redacted). */
+  /** A stored copy over its document with its own format and version. */
+  overlay: (doc: CmsDoc, copy: Partial<DocContent> | null | undefined, version: number | null | undefined) => CmsDoc;
   diagnosticsFor: <D extends { path: string; code: string }>(actor: Actor, col: string, checked: CmsDoc | null, diags: D[]) => D[];
   /** Whether the collection's rules decide per document (`access`). */
   rulesPerDocument: (col: string) => boolean;
@@ -705,7 +707,7 @@ export function createFlow(ctx: FlowContext) {
         else if (item.action === "unpublish") ok.push({ item, doc });
         else {
           const v = await r.getVersion(doc.id, item.version);
-          const errors = v ? ctx.diagnosticsFor(actor, doc.collection, { ...doc, ...v.snapshot, version: item.version } as CmsDoc, errorsOf(await ctx.problems(doc, { ...v.snapshot, slug: doc.slug }, r))) : [];
+          const errors = v ? ctx.diagnosticsFor(actor, doc.collection, ctx.overlay(doc, v.snapshot, item.version), errorsOf(await ctx.problems(doc, { ...v.snapshot, slug: doc.slug }, r))) : [];
           if (!v) block("version_not_found", { version: item.version });
           else if (ctx.needsReview(actor, doc.collection) && !v.approvedBy) block("review_required", { collection: doc.collection });
           else if (errors.length) block(errors[0].code, errors[0].params, errors[0].message);

@@ -451,7 +451,7 @@ test("review round 4: a publish check that throws shows a fixed message, not the
   assert.ok(errors.length >= 1, "the error went to onError");
 });
 
-test("review round 5: someone who may publish but not edit gets the published copy back, not the draft", async () => {
+test("review round 5: someone who may publish but not edit gets only the state back, not the draft", async () => {
   const pub = defineCollection({
     slug: "pub",
     label: "Pub",
@@ -463,7 +463,8 @@ test("review round 5: someone who may publish but not edit gets the published co
   await cms.update(admin, "pub", "a", { title: "Secret draft" });
   const out = await cms.publish(editor, "pub", "a", { version: 1 });
   assert.doesNotMatch(JSON.stringify(out), /Secret draft/);
-  assert.equal(out.title, "Public");
+  assert.equal(out.title, "", "only the state: readers fetch the published copy with a read");
+  assert.equal(out.version, 2);
 });
 
 test("review round 5: a check about no field or a containing field says nothing to someone with hidden fields", async () => {

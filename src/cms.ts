@@ -1015,7 +1015,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     let cur = content;
     if (collection(col).fieldAccess || collection(col).fieldHooks) cur = validate(col, await guardFields(actor, col, prev, cur), { actor, base: prev });
     for (const fn of collection(col).hooks?.beforeChange ?? []) {
-      const patch = await hook(fn, { collection: col, slug: cur.slug, content: cur, prev, actor });
+      const seen = cur;
+      const patch = await hook(fn, { collection: col, slug: cur.slug, content: cur, prev, actor }).catch((e) => {
+        throw safeError(actor, col, { ...overlay((prev ?? { collection: col }) as CmsDoc, seen, prev?.version), collection: col } as CmsDoc, e);
+      });
       if (patch && typeof patch === "object") cur = validate(col, { ...cur, ...patch }, { actor, base: prev });
     }
     return cur;
@@ -1069,7 +1072,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (errors.length)
         throw fail("publish_check_failed", { checks: errors.map((e) => e.message).join("; ") }, { diagnostics: errors.map((e) => ({ path: e.path ?? "", code: "publish_check_failed" as const, params: { checks: e.message, check: e.code, line: e.line ?? null }, severity: "error" as const, message: e.message })) });
     }
-    for (const fn of collection(doc.collection).hooks?.[which] ?? []) await hook(fn, { collection: doc.collection, slug: doc.slug, content, version: doc.version, actor });
+    for (const fn of collection(doc.collection).hooks?.[which] ?? [])
+      await hook(fn, { collection: doc.collection, slug: doc.slug, content, version: doc.version, actor }).catch((e) => {
+        throw safeError(actor, doc.collection, { ...overlay((base ?? { collection: doc.collection }) as CmsDoc, content, doc.version), collection: doc.collection, slug: doc.slug } as CmsDoc, e);
+      });
   }
 
   /** The collection's own `publishChecks`. A check that throws counts as an error with its message. */
@@ -1097,7 +1103,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const errors = diagnostics.filter((d) => d.severity === "error");
     if (errors.length) {
       const e = fail(errors[0].code, errors[0].params, { diagnostics: errors });
-      throw who ? safeError(who.actor, col, { ...(who.base ?? {}), ...c, format: c.format, collection: col } as CmsDoc, e) : e;
+      // Judged on the normalized content the checks saw.
+      throw who ? safeError(who.actor, col, { ...overlay((who.base ?? { collection: col }) as CmsDoc, content, who.base?.version), collection: col } as CmsDoc, e) : e;
     }
     return content;
   }
@@ -1109,7 +1116,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const shownDiags = diagnosticsFor(actor, col, candidate, [...diags]);
     if (shownDiags.every((d, i) => d === diags[i])) return e;
     const first = shownDiags[0];
-    return first.code === ("check_hidden" as string) ? fail("check_hidden", {}, { diagnostics: shownDiags }) : fail(e.code, (e as { params?: ErrorParams }).params ?? {}, { diagnostics: shownDiags });
+    const status = (e as { status?: number }).status;
+    return first.code === ("check_hidden" as string) ? fail("check_hidden", {}, { diagnostics: shownDiags, ...(status ? { status } : {}) }) : fail(e.code, (e as { params?: ErrorParams }).params ?? {}, { diagnostics: shownDiags, ...(status ? { status } : {}) });
   }
 
   /** Check a document without saving (`existing` slug: as an update of that document). */
@@ -1121,7 +1129,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (cur) assert(actor, col, "write", cur);
     const base: DocContent = cur ?? { slug: "", title: "", summary: "", body: "", category: cfg.categories?.[0] ?? null, keywords: [], fields: {} };
     const content = merged(base, input);
-    const { diagnostics } = check(col, content);
+    const { diagnostics, content: normalized } = check(col, content);
     if (cur && content.slug !== cur.slug && cur.publishedVersion !== null) diagnostics.push({ path: "slug", code: "slug_locked", params: {}, severity: "error", message: formatMessage(messages, "slug_locked") });
     const other = content.slug ? await repo.findDoc(col, content.slug, { trashed: true }) : null;
     const taken = other?.deletedAt ? "slug_in_trash" : "slug_taken";
@@ -1130,7 +1138,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     // What is said about fields this person may not see (a file's id or name in one) stays out.
     // Judged on the copy that was checked (what was sent over what is stored), with the same
     // conservative rule as publish checks.
-    return diagnosticsFor(actor, col, { ...(cur ?? {}), ...content, format: content.format, collection: col } as CmsDoc, diagnostics);
+    return diagnosticsFor(actor, col, { ...overlay((cur ?? { collection: col }) as CmsDoc, normalized, cur?.version), collection: col } as CmsDoc, diagnostics);
   }
 
   const same = (a: DocContent, b: DocContent) => stableJson(contentOf(a)) === stableJson(contentOf(b));
@@ -1151,6 +1159,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
   // ── reads ─────────────────────────────────────────────────────────────────
 
   /** What a reader without write access sees: the published snapshot only. */
+  /** A stored copy (a version, the published or autosave copy) laid over its document, with its own format and version. */
+  function overlay(doc: CmsDoc, copy: Partial<DocContent> | null | undefined, version: number | null | undefined): CmsDoc {
+    return { ...doc, ...(copy ?? {}), format: (copy as { format?: DocContent["format"] } | null | undefined)?.format, version: version ?? doc.version } as CmsDoc;
+  }
   function publicView(doc: CmsDoc): CmsDoc | null {
     if (doc.publishedVersion === null || doc.status === "archived" || !doc.published) return null;
     // The published copy without the working copy's own state: its review notes and schedule
@@ -1207,7 +1219,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (cfg.fieldAccess) {
         const strip = <T extends { fields?: Record<string, unknown> } | null | undefined>(c: T, version: number | null): T => {
           if (!c?.fields) return c;
-          const own = hiddenPaths(actor, doc.collection, { ...doc, ...c, version: version ?? doc.version } as CmsDoc);
+          const own = hiddenPaths(actor, doc.collection, overlay(doc, c as Partial<DocContent>, version));
           const all = [...new Set([...hidden, ...own])];
           if (!all.length) return c;
           const f = structuredClone(c.fields);
@@ -1457,7 +1469,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const out: CmsVersion = { ...v, published: v.version === doc.publishedVersion };
     if (!actor) return out;
     // The rule is asked about this version's own content, not the latest draft.
-    const hidden = hiddenPaths(actor, doc.collection, { ...doc, ...v.snapshot, version: v.version } as CmsDoc);
+    const hidden = hiddenPaths(actor, doc.collection, overlay(doc, v.snapshot, v.version));
     if (!hidden.length) return out;
     // One decision for the snapshot and its change list.
     return {
@@ -1522,7 +1534,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!va) throw fail("version_not_found", { version: a });
     if (!vb) throw fail("version_not_found", { version: b });
     // A field hidden in either version is left out of both: a diff must not show it by contrast.
-    const hidden = [...new Set([...hiddenPaths(actor, col, { ...doc, ...va.snapshot, version: a } as CmsDoc), ...hiddenPaths(actor, col, { ...doc, ...vb.snapshot, version: b } as CmsDoc)])];
+    const hidden = [...new Set([...hiddenPaths(actor, col, overlay(doc, va.snapshot, a)), ...hiddenPaths(actor, col, overlay(doc, vb.snapshot, b))])];
     const sa = projectWith(hidden, va.snapshot);
     const sb = projectWith(hidden, vb.snapshot);
     return { a, b, fields: fieldChanges(sa, sb), hunks: hunks(sa.body, sb.body, o.context ?? 3) };
@@ -1611,7 +1623,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
    */
   function copyProjected<T extends { fields?: Record<string, unknown> } | null | undefined>(actor: Actor, col: string, doc: CmsDoc, copy: T, version: number | null | undefined, alsoHidden: readonly string[]): T {
     if (!copy?.fields || !collection(col).fieldAccess) return copy;
-    const own = hiddenPaths(actor, col, { ...doc, ...copy, format: (copy as { format?: string }).format, version: version ?? doc.version } as CmsDoc);
+    const own = hiddenPaths(actor, col, overlay(doc, copy as Partial<DocContent>, version));
     return projectWith([...new Set([...alsoHidden, ...own])], copy);
   }
 
@@ -2518,6 +2530,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     can,
     assert,
     isAdmin,
+    overlay,
     diagnosticsFor,
     rulesPerDocument: (col: string) => {
       const c = collections.get(col);
@@ -2630,7 +2643,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!cur) throw fail("not_found", { collection: col, slug });
     assert(actor, col, "write", cur);
     const proposed = validateLoose(col, merged(cur, input));
-    const checks = checksFor(actor, col, { ...cur, ...proposed } as CmsDoc, await appChecks(col, slug, proposed));
+    const checks = checksFor(actor, col, overlay(cur, proposed, cur.version), await appChecks(col, slug, proposed));
     return { diagnostics, checks, blocking: diagnostics.some((d) => d.severity === "error") || checks.some((c) => c.severity === "error") };
   }
   /** The content as the checks see it, even when it does not validate yet. */
@@ -2688,10 +2701,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     // may publish but not edit gets the published copy if they may read it, else only the state.
     const forCaller = (actor: Actor, d: CmsDoc): CmsDoc => {
       if (!collections.has(d.collection) || can(actor, d.collection, "write", d)) return conflictCopy(actor, d.collection, d);
-      // The working version stays (it is what the next write is checked against); everything else
-      // is either the published copy exactly as this person may read it, or nothing.
-      const pub = publicView(d);
-      if (pub && can(actor, d.collection, "read", pub)) return { ...conflictCopy(actor, d.collection, pub), published: null };
+      // Not an editable copy: only the state, with the working version (what a next write is
+      // checked against). Readers fetch the published copy with a read.
       return receipt(d);
     };
     return async (...a: A) => {

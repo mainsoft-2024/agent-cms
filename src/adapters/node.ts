@@ -91,16 +91,39 @@ export async function sendWebResponse(res: ServerResponse, response: Response): 
     void reader.cancel().catch(() => undefined);
   };
   res.on("close", onClose);
+  // A body that fails (an events stream dropping a client that does not read) ends the response at
+  // once, even while a write waits for the socket to drain.
+  let failed = false;
+  let wake: (() => void) | null = null;
+  void reader.closed.catch(() => {
+    failed = true;
+    wake?.();
+  });
   try {
     res.flushHeaders?.();
     for (;;) {
       const { done, value } = await reader.read();
       if (done || closed) break;
-      if (!res.write(value)) await new Promise<void>((ok) => res.once("drain", ok).once("close", ok));
+      if (!res.write(value))
+        await new Promise<void>((ok) => {
+          const fin = () => {
+            res.off("drain", fin);
+            res.off("close", fin);
+            wake = null;
+            ok();
+          };
+          wake = fin;
+          res.once("drain", fin).once("close", fin);
+          if (failed) fin();
+        });
+      if (failed) break;
     }
+  } catch {
+    failed = true;
   } finally {
     res.off("close", onClose);
-    if (!closed) res.end();
+    if (failed && !closed) res.destroy();
+    else if (!closed) res.end();
   }
 }
 
