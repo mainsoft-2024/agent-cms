@@ -36,7 +36,7 @@ export function PostBody({ body, files, imageSrc }: { body: string; files: Files
           return <p key={n} className="leading-7">{inlines(b.inline, files)}</p>;
         case "list": {
           const L = b.ordered ? "ol" : "ul";
-          return <L key={n} className={b.ordered ? "list-decimal pl-6" : "list-disc pl-6"}>{b.items.map((it, k) => <li key={k}>{inlines(it, files)}</li>)}</L>;
+          return <L key={n} className={b.ordered ? "list-decimal pl-6" : "list-disc pl-6"}>{b.items.map((it, k) => <li key={k}>{inlines(it, files)}{b.kids?.[k] ? draw(b.kids[k]!) : null}</li>)}</L>;
         }
         case "quote":
           return <blockquote key={n} className="border-l-2 pl-3 text-muted-foreground">{draw(b.blocks)}</blockquote>;
@@ -65,7 +65,7 @@ export function PostBody({ body, files, imageSrc }: { body: string; files: Files
           );
         }
         case "todo":
-          return <ul key={n} className="space-y-1">{b.items.map((it, k) => <li key={k} className="flex gap-2"><input type="checkbox" checked={it.checked} readOnly disabled /> <span>{inlines(it.inline, files)}</span></li>)}</ul>;
+          return <ul key={n} className="space-y-1">{b.items.map((it, k) => <li key={k} className="flex gap-2"><input type="checkbox" checked={it.checked} readOnly disabled /> <div><span>{inlines(it.inline, files)}</span>{it.kids ? draw(it.kids) : null}</div></li>)}</ul>;
         case "table":
           return (
             <div key={n} className="overflow-x-auto">

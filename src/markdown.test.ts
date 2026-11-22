@@ -151,3 +151,8 @@ test("markdown: plain text and file uses know the new blocks", () => {
   assert.ok(!text.includes("~~"));
   assert.deepEqual(assetUses(body).map((u) => [u.id, u.as, u.line]), [["abcdefabcdef", "html", 4]]);
 });
+
+test("markdown: a numbered list starting at 0 renders from 0", async () => {
+  const { markdownToHtml } = await import("./html");
+  assert.match(markdownToHtml("0. Setup\n1. Run"), /<ol start="0">/);
+});

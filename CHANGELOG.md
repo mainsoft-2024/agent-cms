@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.19.0
+
+The block editor works like Notion with the mouse, and lists can nest. No schema change. See `UPGRADE-0.19.md`.
+
+### Added
+- **Drag blocks by their handle** (pointer events, mouse and pen): a picture of the blocks follows the pointer, a blue line shows where they land, the page scrolls when you reach its edge, Esc cancels, Alt (Option) drags a copy. Drop beside a block to put both in **columns**; drop on the lower half of an open toggle or to the right under a list item to put it **inside**; drag out to the left below the last block of a toggle or list item to take it **out**. Several selected blocks move together.
+- **Columns** are blocks of their own (`/` → "Two columns", "Three columns", or by dragging); a column whose last block leaves goes away, and columns down to one become plain blocks again.
+- **Toggles** open and close in the editor (`/toggle` or `>> `), hold any blocks, ⌘/Ctrl+Enter opens and closes.
+- **Nested lists**: Tab and Shift+Tab indent and outdent list items (what follows comes along, as in Notion); Enter on an empty nested item goes up a level; Backspace at the start of text inside an item takes it out.
+- **Tables** are edited cell by cell: Tab and Shift+Tab, Enter goes down (a new row at the end), arrows, ⌘B/I/E in cells, add-row and add-column bars, column menu (align left/center/right, insert, delete) and row menu (insert above/below, delete).
+- **Picture captions** are edited under the picture (written as `![alt](… "caption")`), alt text on its own line.
+- **Box selection**: draw a box from the margin or the space between blocks to select them.
+- **Block menu** (the handle, or ⌘/Ctrl+/ with blocks selected) can be searched, turns several blocks at once, and offers indent/outdent; ⌘⌥/Ctrl+Alt+0–8 turn the block into text, headings, to-do, lists, toggle or code; Alt+click on + adds a block above.
+- `npx @mainsoft/agent-cms add cms-block-editor` now also copies `cms-blocks-tree.ts`.
+
+### Changed
+- **Markdown: lines indented under a list item (2 spaces or more, starting with a list marker) are a nested list now**, in the parser, `toMarkdown`, `markdownToHtml` and the admin preview (`list.kids`, `todo.items[].kids`). Before, they were siblings of the item. A renderer of your own that draws `list` / `todo` blocks should draw `kids` too (see `UPGRADE-0.19.md`).
+- Tables, toggles, columns and captioned pictures are no longer "source" blocks in the editor; HTML, page links and callouts with several paragraphs still are.
+
 ## 0.18.1
 
 - **`npx @mainsoft/agent-cms registry build --base-url https://your.site/r [--out public/r]`**: writes the admin screens of the installed version as a shadcn registry, so a site can serve them (`npx shadcn add https://your.site/r/cms-shell.json`) without a copy of this repository.

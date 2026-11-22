@@ -199,10 +199,10 @@ function blockHtml(b: Block, o: ToHtmlOptions): string {
       return `<p>${inlineHtml(b.inline, o)}</p>`;
     case "list": {
       const tag = b.ordered ? "ol" : "ul";
-      return `<${tag}${b.ordered && b.start ? ` start="${b.start}"` : ""}>${b.items.map((it) => `<li>${inlineHtml(it, o)}</li>`).join("")}</${tag}>`;
+      return `<${tag}${b.ordered && b.start !== undefined && b.start !== 1 ? ` start="${b.start}"` : ""}>${b.items.map((it, k) => `<li>${inlineHtml(it, o)}${b.kids?.[k] ? blocksHtml(b.kids[k]!, o) : ""}</li>`).join("")}</${tag}>`;
     }
     case "todo":
-      return `<ul class="todo">${b.items.map((it) => `<li><input type="checkbox" disabled${it.checked ? " checked" : ""}> ${inlineHtml(it.inline, o)}</li>`).join("")}</ul>`;
+      return `<ul class="todo">${b.items.map((it) => `<li><input type="checkbox" disabled${it.checked ? " checked" : ""}> ${inlineHtml(it.inline, o)}${it.kids ? blocksHtml(it.kids, o) : ""}</li>`).join("")}</ul>`;
     case "quote":
       return b.callout ? `<aside class="callout callout-${b.callout}">${blocksHtml(b.blocks, o)}</aside>` : `<blockquote>${blocksHtml(b.blocks, o)}</blockquote>`;
     case "code":

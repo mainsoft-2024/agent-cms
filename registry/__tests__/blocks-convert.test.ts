@@ -31,20 +31,28 @@ test("blocks: untouched documents come back byte for byte", () => {
 });
 
 test("blocks: what the editor has no block for is a source block with the text as written", () => {
-  const md = [":::html\n<div onclick=\"x()\">Hi</div>\n:::", "> [!tip]\n> Careful\n>\n> - more", "| a | b |\n| --: | :-- |\n| 1 | 2 |", ":::columns\n:::col\nLeft\n:::col\nRight\n:::", "![Alt](asset:abcdefabcdef/pic.png \"Other caption\")", ":::toggle More\nInside\n:::"].join("\n\n");
+  const md = [":::html\n<div onclick=\"x()\">Hi</div>\n:::", "> [!tip]\n> Careful\n>\n> - more", "[[link:pricing|Pricing]]", "A ![inline](https://x.dev/a.png) picture"].join("\n\n");
   const blocks = markdownToBlocks(md);
   assert.deepEqual(
     blocks.map((b) => [b.type, b.type === "source" ? b.kind : null]),
     [
       ["source", "html"],
       ["source", "callout"],
-      ["source", "table"],
-      ["source", "columns"],
-      ["source", "media"],
-      ["source", "toggle"],
+      ["source", "links"],
+      ["source", "p"],
     ]
   );
   assert.equal(blocksToMarkdown(fresh(blocks)), md);
+});
+
+test("blocks: tables, columns, toggles and captioned pictures are blocks of their own now", () => {
+  const md = ["| a | b |\n| --: | :-- |\n| 1 | 2 |", ":::columns\n:::col\nLeft\n:::col\nRight\n:::", "![Alt](asset:abcdefabcdef/pic.png \"Other caption\")", ":::toggle More\nInside\n:::"].join("\n\n");
+  const blocks = markdownToBlocks(md);
+  assert.deepEqual(
+    blocks.map((b) => b.type),
+    ["table", "columns", "col", "p", "col", "p", "media", "toggle", "p"]
+  );
+  assert.ok(sameMarkdown(md, blocksToMarkdown(fresh(blocks))), blocksToMarkdown(fresh(blocks)));
 });
 
 test("blocks: the editor's own blocks map both ways", () => {
