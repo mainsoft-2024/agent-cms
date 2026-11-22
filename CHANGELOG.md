@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased (0.15.0, first part of the editing and media polish)
+## 0.15.0
 
-Agents edit documents the way coding agents edit code, HTML is kept exactly as written, and markdown grows tables, task lists, toggles, columns, italic and strike. **Schema 8** (one column: `cms_documents.body_format`); run `npx @mainsoft/agent-cms migrate apply` or the step in `migrate check`.
+Agents edit documents the way coding agents edit code, HTML is kept exactly as written, and markdown grows tables, task lists, toggles, columns, italic and strike. **Schema 8** (one column: `cms_documents.body_format`); run `npx @mainsoft/agent-cms migrate apply` or the step in `migrate check`. See [UPGRADE-0.15.md](UPGRADE-0.15.md).
 
 - **Documents as files for agents.** New tools `read_document` (numbered lines, `offset`/`limit`, `outline`), `grep_documents` (literal or regex, `collections`, `glob`, `context`, `output: lines|files|count`, stops early with `partial: true`), `edit_document` (exact `oldString` → `newString`, unique unless `replaceAll`, several edits as one version, all or none; "not found" answers name the closest lines), `write_document` (whole file; replacing needs `expectedVersion`) and `document_file_link` (10-minute GET/PUT link). Fields are frontmatter lines, so one edit can change body text, HTML and fields together; a bad field fails with its line number. REST: `POST /grep`, `GET …/:slug/read`, `GET|PUT …/:slug/file`, `POST …/:slug/edit`, `POST …/:slug/file-link`, `GET|PUT /raw/:token`.
 - **CLI** `read`, `grep`, `edit`, `pull`, `push`, `status`: pull documents into files, edit them with any editor, push them back. An edit someone made in the CMS meanwhile is merged; when both changed the same lines the file gets git-style conflict markers and nothing is saved.
@@ -14,7 +14,7 @@ Agents edit documents the way coding agents edit code, HTML is kept exactly as w
 - The admin preview draws the new blocks; HTML blocks show in a sandboxed frame with what will not work listed under them. The example app and docs site render them too.
 - **Korean screen text is 음슴체** across the admin and error messages (a test keeps it that way).
 
-### Second part: block editor, admin polish, review hardening
+### Block editor, admin polish, review hardening
 
 - **Block editor** (`npx @mainsoft/agent-cms add cms-block-editor`, pass it as `slots.blockEditor`, ideally lazily). Notion-style blocks, written for agent-cms with no editor library or dependency. The body is still stored as markdown: opening a document never changes a byte, a block you did not touch keeps its exact text, and what has no block of its own (HTML, columns, tables, toggles, captions) is drawn as it looks and edited as markdown in place. Slash menu, markdown shortcuts, toolbar over selected text, links (Ctrl/⌘ K), drag handles with a block menu, block selection (Esc, Shift, drag across), copy and paste as markdown, pasted or dropped images go to the media library, its own undo history, IME input, a Blocks / Markdown switch. The editor is one column; **Preview in a new window** shows a live preview in a separate window (the Markdown view can still show it beside the text). **Full screen** (button in the body bar, `mod+Shift+F`, `Esc` to leave) covers the admin: the sidebar, header and comments step aside, the fields fold under a slim bar (one click away, and they open by themselves when a field has an error), the bar fades while you type, and a second button uses the whole monitor. Words and reading time in the status line. Every markdown file in the repository round-trips through it in a test.
 - **Publish check dialog**: with `publishChecks` on a collection, Publish asks first; errors block (with line numbers), warnings can be accepted.
