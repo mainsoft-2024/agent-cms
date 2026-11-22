@@ -1,5 +1,12 @@
 name: Publish
-# Push a tag `v<version>` (matching package.json) to publish to npmjs.com.
+# Releases: push a tag `v<version>` (matching package.json) to publish to npmjs.com as `latest`.
+#
+# Previews: every push to main that touches the package publishes
+# `<next patch>-next.<date>.<sha>` under the `next` tag, so apps built on this
+# package can try a change before it is released:
+#   npm i @mainsoft/agent-cms@next
+# Run the workflow by hand (Actions → Publish → Run workflow) to publish a
+# preview of another branch.
 #
 # Auth: npm trusted publishing (OIDC). The package's Trusted Publisher on
 # npmjs.com is this repository and this workflow file, so no token is stored.
@@ -8,11 +15,25 @@ name: Publish
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths:
+      - "src/**"
+      - "registry/**"
+      - "admin/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsup.config.ts"
+  workflow_dispatch:
 permissions:
   contents: read
   id-token: write
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   publish:
+    if: github.repository == 'mainsoft-2024/agent-cms'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +44,20 @@ jobs:
       # Trusted publishing needs npm 11.5.1 or later.
       - run: npm install -g npm@latest
       - name: Tag matches package.json
+        if: github.ref_type == 'tag'
         run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - name: Preview version
+        if: github.ref_type != 'tag'
+        run: |
+          base=$(node -p "const [a,b,c]=require('./package.json').version.split('-')[0].split('.').map(Number); [a,b,c+1].join('.')")
+          v="${base}-next.$(date -u +%Y%m%d%H%M).${GITHUB_SHA::7}"
+          npm version "$v" --no-git-tag-version
+          sed -i "s/VERSION = \".*\"/VERSION = \"$v\"/" src/version.ts
+          echo "Preview $v"
       - run: npm ci
-      - run: npm publish --provenance --access public
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        run: npm publish --provenance --access public
+      - name: Publish preview
+        if: github.ref_type != 'tag'
+        run: npm publish --provenance --access public --tag next

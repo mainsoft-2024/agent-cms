@@ -188,6 +188,9 @@ needs come along:
 npx shadcn@latest add <registry-url>/cms-doc-editor.json
 ```
 
+To serve them from your own site, write the registry from the installed version:
+`npx @mainsoft/agent-cms registry build --base-url https://your.site/r` (into `public/r`).
+
 `agent-cms add --diff` and `--update` only know about copies made with
 `agent-cms add`.
 

@@ -387,3 +387,15 @@ function deflatedZip(files: [string, Uint8Array][], deflate: (b: Uint8Array) => 
   for (const b of all) { out.set(b, p); p += b.length; }
   return out;
 }
+
+test("cli: registry build writes the screens as a shadcn registry for another site", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cms-reg-"));
+  const lines: string[] = [];
+  const code = await runCli(["registry", "build", "--base-url", "https://docs.example/r", "--out", "r"], { cwd: dir, out: (l: string) => lines.push(l), err: (l: string) => lines.push(l), registryDir: { dir: join(process.cwd(), "registry"), built: false } } as never);
+  assert.equal(code, 0, lines.join("\n"));
+  const shell = JSON.parse(readFileSync(join(dir, "r", "cms-shell.json"), "utf8")) as { registryDependencies?: string[]; files: { content?: string; target?: string }[] };
+  assert.ok(shell.files.every((f) => f.content && f.target?.startsWith("@components/cms/")));
+  assert.ok((shell.registryDependencies ?? []).some((d) => d.startsWith("https://docs.example/r/")));
+  assert.ok(existsSync(join(dir, "r", "registry.json")));
+  assert.equal(await runCli(["registry", "build"], { cwd: dir, out: () => {}, err: () => {} } as never), 1);
+});

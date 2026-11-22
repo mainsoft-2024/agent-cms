@@ -107,8 +107,10 @@ export function toShadcnItem(it: RegistryItem, own: Set<string>, o: PublicRegist
  * Build the registry for the shadcn CLI: `registry.json` (index) and one
  * `<name>.json` per item with file contents, as `shadcn build` would.
  */
-export function buildPublicRegistry(srcDir: string, outDir: string, o: PublicRegistryOptions): string[] {
-  const reg = loadRegistry({ dir: srcDir, built: false });
+export function buildPublicRegistry(src: string | { dir: string; built: boolean }, outDir: string, o: PublicRegistryOptions): string[] {
+  // A folder name is the `registry/` sources of this repo; `{ built: true }` is `dist/registry`
+  // of an installed package (what `agent-cms registry build` uses).
+  const reg = loadRegistry(typeof src === "string" ? { dir: src, built: false } : src);
   const own = new Set(reg.items.map((i) => i.name));
   const items = reg.items.map((it) => toShadcnItem(it, own, o));
   mkdirSync(outDir, { recursive: true });
