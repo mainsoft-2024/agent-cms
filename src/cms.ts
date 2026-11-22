@@ -1040,16 +1040,31 @@ export function createCmsCore(opts: CreateCmsOptions) {
    * Check results as `actor` may see them: one about a field hidden from them keeps its place and
    * severity but not its words (an app's message may quote the value).
    */
-  function checksFor(actor: Actor, col: string, doc: CmsDoc | null, results: PublishCheckResult[]): PublishCheckResult[] {
-    if (!doc || !collection(col).fieldAccess) return results;
-    const hidden = hiddenPaths(actor, col, doc);
+  function checksFor(actor: Actor, col: string, checked: CmsDoc | null, results: PublishCheckResult[]): PublishCheckResult[] {
+    if (!checked || !collection(col).fieldAccess) return results;
+    const hidden = hiddenPaths(actor, col, checked);
     if (!hidden.length) return results;
-    return results.map((r) => (r.path && isHiddenPath(hidden, r.path.replace(/^fields\./, "")) ? { code: r.code, severity: r.severity, message: message(fail("check_hidden")) } : r));
+    // Conservative: a result about a hidden field, about something that contains one, or about no
+    // field at all (its words could quote anything) keeps only its severity.
+    return results.map((r) => (!r.path || coversHidden(hidden, r.path) ? { code: "check_hidden", severity: r.severity, message: message(fail("check_hidden")) } : r));
   }
-  async function gate(which: "beforePublish" | "beforeDelete", actor: Actor, doc: { collection: string; slug: string; version: number }, content: DocContent) {
+  /** Whether a path is a hidden field, inside one, or contains one. */
+  const coversHidden = (hidden: string[], path: string) => {
+    const f = path.replace(/^fields\./, "");
+    return path === "fields" || isHiddenPath(hidden, path) || hidden.some((h) => h.startsWith(`${f}.`));
+  };
+  /** Diagnostics about the copy being checked, as `actor` may see them (same rule as `checksFor`, pathless built-in ones kept). */
+  function diagnosticsFor<D extends { path: string; code: string }>(actor: Actor, col: string, checked: CmsDoc | null, diags: D[]): D[] {
+    if (!checked || !collection(col).fieldAccess) return diags;
+    const hidden = hiddenPaths(actor, col, checked);
+    if (!hidden.length) return diags;
+    return diags.map((d) => (d.path && coversHidden(hidden, d.path) ? ({ ...d, path: "", code: "check_hidden", params: {}, message: message(fail("check_hidden")) } as D) : d));
+  }
+  async function gate(which: "beforePublish" | "beforeDelete", actor: Actor, doc: { collection: string; slug: string; version: number }, content: DocContent, base?: CmsDoc | null) {
     if (which === "beforePublish") {
-      const stored = await repo.findDoc(doc.collection, doc.slug);
-      const errors = checksFor(actor, doc.collection, stored, await appChecks(doc.collection, doc.slug, content)).filter((x) => x.severity === "error");
+      // Judged on the very copy being checked (no second read: this runs inside the transaction).
+      const checked = { ...(base ?? {}), ...content, collection: doc.collection, slug: doc.slug, version: doc.version } as CmsDoc;
+      const errors = checksFor(actor, doc.collection, checked, await appChecks(doc.collection, doc.slug, content)).filter((x) => x.severity === "error");
       if (errors.length)
         throw fail("publish_check_failed", { checks: errors.map((e) => e.message).join("; ") }, { diagnostics: errors.map((e) => ({ path: e.path ?? "", code: "publish_check_failed" as const, params: { checks: e.message, check: e.code, line: e.line ?? null }, severity: "error" as const, message: e.message })) });
     }
@@ -1121,7 +1136,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (doc.publishedVersion === null || doc.status === "archived" || !doc.published) return null;
     // The published copy without the working copy's own state: its review notes and schedule
     // belong to the draft, which this reader is not shown.
-    return { ...doc, ...contentOf(doc.published), version: doc.publishedVersion, autosave: null, review: null, schedule: null, dueAt: null };
+    // Nor who last changed the draft: the published copy says only that it is published.
+    return { ...doc, ...contentOf(doc.published), version: doc.publishedVersion, status: "published", autosave: null, review: null, schedule: null, dueAt: null, updatedBy: null, updatedByKind: null, updatedByAgent: null };
   }
 
   /**
@@ -1664,7 +1680,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const publish = !!o.publish || inPlace;
     // A new version is one nobody approved yet.
     if (publish && needsReview(actor, doc.collection)) throw reviewRequired(actor, doc.collection, doc.slug);
-    if (publish) await gate("beforePublish", actor, { collection: doc.collection, slug: next.slug, version: v }, next);
+    if (publish) await gate("beforePublish", actor, { collection: doc.collection, slug: next.slug, version: v }, next, doc);
     const wasPublic = doc.publishedVersion !== null && doc.status !== "archived";
     await htmlGate(actor, doc.collection, doc, next);
     let patch: DocPatch = { ...next, format: next.format ?? "markdown", version: v, updatedBy: who.label, updatedByKind: who.kind, updatedByAgent: who.agent, updatedAt: at, autosave: null };
@@ -1803,7 +1819,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function publishIn(r: CmsRepo, actor: Actor, doc: CmsDoc, n: number): Promise<CmsDoc> {
     const v = n === doc.version ? { snapshot: contentOf(doc) } : await r.getVersion(doc.id, n);
     if (!v) throw fail("version_not_found", { version: n });
-    await gate("beforePublish", actor, { collection: doc.collection, slug: doc.slug, version: n }, v.snapshot);
+    await gate("beforePublish", actor, { collection: doc.collection, slug: doc.slug, version: n }, v.snapshot, doc);
     const at = nowIso();
     const wasPublic = doc.publishedVersion !== null && doc.status !== "archived";
     const updated = await r.updateDoc(doc.id, {
@@ -1890,7 +1906,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
       if (cur.publishedVersion === null) throw fail("not_published");
       if (cur.status === "archived") return cur;
-      return (await r.updateDoc(cur.id, { status: "archived", updatedAt: nowIso() }))!;
+      const out = await r.updateDoc(cur.id, { status: "archived", updatedAt: nowIso() }, cur.version);
+      if (!out) throw await movedOn(r, actor, cur);
+      return out;
     }, "archive");
     audit(actor, "doc.archive", { collection: col, slug, version: doc.version });
     return doc;
@@ -1900,7 +1918,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
       if (cur.status !== "archived") return cur;
       const at = nowIso();
-      return (await r.updateDoc(cur.id, { status: cur.publishedVersion === cur.version ? "published" : "draft", republishedAt: at, updatedAt: at }))!;
+      const out = await r.updateDoc(cur.id, { status: cur.publishedVersion === cur.version ? "published" : "draft", republishedAt: at, updatedAt: at }, cur.version);
+      if (!out) throw await movedOn(r, actor, cur);
+      return out;
     });
     audit(actor, "doc.unarchive", { collection: col, slug, version: doc.version });
     return doc;
@@ -2471,6 +2491,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     can,
     assert,
     isAdmin,
+    diagnosticsFor,
     rulesPerDocument: (col: string) => {
       const c = collections.get(col);
       return !!(c?.access?.read || c?.access?.write || c?.access?.publish);
@@ -2509,6 +2530,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
     jobs,
     collections: () => [...collections.keys()],
     findDoc: (col, slug) => repo.findDoc(col, slug),
+    viewDoc: async (actor, col, slug) => {
+      const d = await repo.findDoc(col, slug);
+      if (!d || !collections.has(col)) return null;
+      if (can(actor, col, "write", d)) return { doc: conflictCopy(actor, col, d), hidden: hiddenPaths(actor, col, d) };
+      const pub = publicView(d);
+      return pub && can(actor, col, "read", pub) ? { doc: conflictCopy(actor, col, pub), hidden: hiddenPaths(actor, col, pub) } : null;
+    },
     update: (actor, col, slug, input) => update(actor, col, slug, input),
     addToRelease: (actor, id, item) => flow.releases.add(actor, id, [item]),
     sendWebhook: (id, e) => outbox.send(id, e),
@@ -2573,7 +2601,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const diagnostics = await diagnose(actor, col, input, { slug });
     const cur = await repo.findDoc(col, slug);
     if (!cur) throw fail("not_found", { collection: col, slug });
-    const checks = checksFor(actor, col, cur, await appChecks(col, slug, validateLoose(col, merged(cur, input))));
+    const proposed = validateLoose(col, merged(cur, input));
+    const checks = checksFor(actor, col, { ...cur, ...proposed } as CmsDoc, await appChecks(col, slug, proposed));
     return { diagnostics, checks, blocking: diagnostics.some((d) => d.severity === "error") || checks.some((c) => c.severity === "error") };
   }
   /** The content as the checks see it, even when it does not validate yet. */
@@ -2596,13 +2625,21 @@ export function createCmsCore(opts: CreateCmsOptions) {
   /** Wrap a write so the document it returns is projected for the actor who asked. */
   function shown<A extends [Actor, string, ...unknown[]], R>(fn: (...a: A) => Promise<R>): (...a: A) => Promise<R> {
     const isDoc = (d: unknown): d is CmsDoc => !!d && typeof d === "object" && "collection" in d && "fields" in d && "slug" in d;
+    // What the caller may receive is decided apart from what they were allowed to do: someone who
+    // may publish but not edit gets the published copy if they may read it, else only the state.
+    const forCaller = (actor: Actor, d: CmsDoc): CmsDoc => {
+      if (!collections.has(d.collection) || can(actor, d.collection, "write", d)) return conflictCopy(actor, d.collection, d);
+      const pub = publicView(d);
+      if (pub && can(actor, d.collection, "read", pub)) return conflictCopy(actor, d.collection, { ...pub, status: d.status, publishedVersion: d.publishedVersion, published: null });
+      return { ...d, title: "", summary: null, body: "", fields: {}, published: null, autosave: null, review: null, keywords: [] } as unknown as CmsDoc;
+    };
     return async (...a: A) => {
       const out = await fn(...a);
-      if (isDoc(out)) return conflictCopy(a[0], out.collection, out) as unknown as R;
-      // `{ doc, … }` (patch and friends): project the document inside.
+      if (isDoc(out)) return forCaller(a[0], out) as unknown as R;
+      // `{ doc, … }` (patch and friends): the document inside.
       if (out && typeof out === "object" && isDoc((out as { doc?: unknown }).doc)) {
         const d = (out as unknown as { doc: CmsDoc }).doc;
-        return { ...(out as object), doc: conflictCopy(a[0], d.collection, d) } as unknown as R;
+        return { ...(out as object), doc: forCaller(a[0], d) } as unknown as R;
       }
       return out;
     };

@@ -450,3 +450,50 @@ test("review round 4: a publish check that throws shows a fixed message, not the
   assert.doesNotMatch(r.checks[0].message, /12345/);
   assert.ok(errors.length >= 1, "the error went to onError");
 });
+
+test("review round 5: someone who may publish but not edit gets the published copy back, not the draft", async () => {
+  const pub = defineCollection({
+    slug: "pub",
+    label: "Pub",
+    visibility: "public",
+    access: { write: ({ actor }) => actor.kind === "user" && actor.isAdmin, publish: ({ actor }) => actor.kind === "user" },
+  });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [pub], warn: () => {} });
+  await cms.create(admin, "pub", { slug: "a", title: "Public", body: "x\n" }, { publish: true });
+  await cms.update(admin, "pub", "a", { title: "Secret draft" });
+  const out = await cms.publish(editor, "pub", "a", { version: 1 });
+  assert.doesNotMatch(JSON.stringify(out), /Secret draft/);
+  assert.equal(out.title, "Public");
+});
+
+test("review round 5: a check about no field or a containing field says nothing to someone with hidden fields", async () => {
+  const p = defineCollection({
+    slug: "p",
+    label: "P",
+    visibility: "public",
+    access: { write: ({ actor }) => actor.kind === "user" },
+    fields: z.object({ cost: z.number().optional() }),
+    fieldAccess: { cost: { read: ({ actor }) => actor.kind === "user" && actor.isAdmin } },
+    publishChecks: [(c) => [{ code: "x", message: `cost is ${(c.fields as { cost?: number }).cost}`, severity: "warning" }, { code: "y", message: "fields look odd", severity: "warning", path: "fields" }]],
+  });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [p], warn: () => {} });
+  await cms.create(admin, "p", { slug: "a", title: "A", body: "x\n", fields: { cost: 42 } });
+  const r = await cms.publishChecks(editor, "p", "a");
+  assert.doesNotMatch(JSON.stringify(r.checks), /42|odd/);
+  assert.match(JSON.stringify((await cms.publishChecks(admin, "p", "a")).checks), /cost is 42/);
+});
+
+test("review round 5: deleting a release that changed after the check is refused", async () => {
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public" });
+  const repo = new MemoryRepo();
+  const cms = createCms({ repo, collections: [guide], warn: () => {} });
+  await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" });
+  const rel = await cms.releases.create(admin, { name: "R" });
+  const stale = await repo.findRelease(rel.id);
+  await cms.releases.add(admin, rel.id, [{ collection: "guide", slug: "a" }]);
+  const real = repo.findRelease.bind(repo);
+  repo.findRelease = async () => structuredClone(stale);
+  await assert.rejects(cms.releases.remove(admin, rel.id), (e: { code: string }) => e.code === "release_changed");
+  repo.findRelease = real;
+  assert.equal((await cms.releases.get(admin, rel.id)).items.length, 1);
+});

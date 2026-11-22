@@ -108,6 +108,9 @@ export function createStats(ctx: StatsContext) {
         // A document the person may not see stays out of their dashboard, admin or not, when rules say so.
         // A deleted document is gone from every list: show its deletion only where the collection
         // has no per-document rules (in one with rules, nobody can tell whether it was theirs to see).
+        // In collections with per-document rules, an address may have held other documents: only the
+        // version list (by document id, above) speaks for them.
+        if (e.collection && ctx.rulesPerDocument?.(e.collection) === true && e.action.startsWith("doc.")) continue;
         if (e.collection && e.slug && (e.action === "doc.delete" ? ctx.rulesPerDocument?.(e.collection) !== false || !readable.includes(e.collection) : ![...docs.values()].some((d) => d.collection === e.collection && d.slug === e.slug))) continue;
         recent.push({ at: e.at, who: e.actorAgent ?? e.actorLabel, agent: e.actorKind !== "user" || !!e.actorAgent, action: e.action, collection: e.collection, slug: e.slug, title: titles.get(`${e.collection}/${e.slug}`) ?? (typeof e.detail.name === "string" ? e.detail.name : null), version: e.version });
       }

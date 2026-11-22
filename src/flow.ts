@@ -25,6 +25,8 @@ export interface FlowContext {
   can: (actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) => boolean;
   assert: (actor: Actor, col: string, what: "read" | "write" | "publish", doc?: CmsDoc | null) => void;
   isAdmin: (actor: Actor) => boolean;
+  /** Diagnostics about a checked copy as `actor` may see them (hidden fields redacted). */
+  diagnosticsFor: <D extends { path: string; code: string }>(actor: Actor, col: string, checked: CmsDoc | null, diags: D[]) => D[];
   /** Whether the collection's rules decide per document (`access`). */
   rulesPerDocument: (col: string) => boolean;
   ready: () => Promise<void> | void;
@@ -148,7 +150,7 @@ export function createFlow(ctx: FlowContext) {
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw ctx.conflict(cur, o.expectedVersion, actor, col);
       if (publishAt) {
         await ctx.assertReviewed(r, actor, cur, cur.version);
-        const errors = errorsOf(await ctx.problems(cur, cur, r));
+        const errors = ctx.diagnosticsFor(actor, col, cur, errorsOf(await ctx.problems(cur, cur, r)));
         if (errors.length) throw fail(errors[0].code, errors[0].params, { diagnostics: errors });
       } else if (cur.publishedVersion === null) throw fail("not_published");
       const s: Schedule = { publishAt, unpublishAt, version: cur.version, by: who.label, byKind: who.kind, byId: who.id, byAgent: who.agent, at: nowIso() };
@@ -206,8 +208,12 @@ export function createFlow(ctx: FlowContext) {
         ctx.changed(prev, doc);
         out[what].push(`${d.collection}/${d.slug}`);
       } catch (e) {
-        // Nothing went out. The schedule is cleared so it does not fail again every minute.
-        await repo.updateDoc(d.id, { schedule: null, dueAt: null, updatedAt: d.updatedAt }).catch((err) => ctx.report(err, "runScheduled"));
+        // Nothing went out. The schedule is cleared so it does not fail again every minute, but
+        // only if it is still the schedule that failed (not one set again meanwhile).
+        await (async () => {
+          const now = await repo.findDocById(d.id);
+          if (now && now.schedule?.at === d.schedule!.at && now.version === d.version) await repo.updateDoc(d.id, { schedule: null, dueAt: null, updatedAt: now.updatedAt }, now.version);
+        })().catch((err) => ctx.report(err, "runScheduled"));
         const code = isCmsError(e) ? e.code : "internal";
         if (!isCmsError(e)) ctx.report(e, "runScheduled");
         audit(scheduler, "doc.schedule", { collection: d.collection, slug: d.slug, version: d.schedule.version, outcome: "failed", detail: { code, scheduledBy: d.schedule.by } });
@@ -224,7 +230,8 @@ export function createFlow(ctx: FlowContext) {
         if (isCmsError(e) && e.code === "release_changed") continue;
         if (!isCmsError(e)) ctx.report(e, "runScheduled");
         const message = ctx.message(e);
-        await repo.updateRelease(rel.id, { state: "open", publishAt: null, lastError: message }, "scheduled").catch((err) => ctx.report(err, "runScheduled"));
+        // Reopened only if it is still the revision that failed.
+        await repo.updateRelease(rel.id, { state: "open", publishAt: null, lastError: message, updatedAt: nextRevision(rel.updatedAt) }, { state: "scheduled", updatedAt: rel.updatedAt }).catch((err) => ctx.report(err, "runScheduled"));
         audit(scheduler, "release.publish", { outcome: "failed", detail: { id: rel.id, name: rel.name, code: isCmsError(e) ? e.code : "internal" } });
         out.releases.push({ id: rel.id, name: rel.name, ok: false, message });
       }
@@ -594,7 +601,11 @@ export function createFlow(ctx: FlowContext) {
     needEditor(actor);
     const rel = await loadRelease(id, true);
     await assertManage(actor, rel);
-    await repo.deleteRelease(rel.id);
+    // Deleted only as it was checked: a release published or given new items meanwhile stays.
+    await repo.tx(async (r) => {
+      if (!(await r.updateRelease(rel.id, { updatedAt: nextRevision(rel.updatedAt) }, { state: rel.state, updatedAt: rel.updatedAt }))) throw fail("release_changed");
+      await r.deleteRelease(rel.id);
+    });
   }
 
   /** A revision later than `old` (the release's `updatedAt`), so a compare-and-set always sees the change. */
@@ -686,7 +697,7 @@ export function createFlow(ctx: FlowContext) {
         else if (item.action === "unpublish") ok.push({ item, doc });
         else {
           const v = await r.getVersion(doc.id, item.version);
-          const errors = v ? errorsOf(await ctx.problems(doc, { ...v.snapshot, slug: doc.slug }, r)) : [];
+          const errors = v ? ctx.diagnosticsFor(actor, doc.collection, { ...doc, ...v.snapshot, version: item.version } as CmsDoc, errorsOf(await ctx.problems(doc, { ...v.snapshot, slug: doc.slug }, r))) : [];
           if (!v) block("version_not_found", { version: item.version });
           else if (ctx.needsReview(actor, doc.collection) && !v.approvedBy) block("review_required", { collection: doc.collection });
           else if (errors.length) block(errors[0].code, errors[0].params, errors[0].message);
@@ -702,7 +713,7 @@ export function createFlow(ctx: FlowContext) {
       }
       const at = nowIso();
       const saved = await r.updateRelease(cur.id, { state: "published", publishAt: null, publishedAt: at, publishedBy: actorRef(actor).label, lastError: null, updatedAt: nextRevision(cur.updatedAt) }, { state: cur.state, updatedAt: cur.updatedAt });
-      if (!saved) throw fail("release_closed");
+      if (!saved) throw fail("release_changed");
       return saved;
     }, { atomic: true });
     for (const d of done) {

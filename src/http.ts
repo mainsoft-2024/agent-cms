@@ -607,6 +607,9 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         for (const c of q.get("collections")?.split(",").filter(Boolean) ?? []) core.assertCan(actor, c, "read");
         const only = q.get("collections")?.split(",").filter(Boolean);
         const since = Math.max(0, Math.floor(Number(q.get("since") ?? 0)) || 0);
+        // A position past the end of this log comes from another database: start over.
+        const end = await core.changes.last();
+        if (since > end) return json({ changes: [], last: end, more: false, reset: true });
         const r = await core.changes.since(actor, since, { collections: only, limit: Number(q.get("limit") ?? 200) || 200, hear: (e) => hearAs(core, actor, e, only) });
         if (!r) return json({ changes: [], last: await core.changes.last(), more: false, reset: true });
         return json({ ...r, reset: false });

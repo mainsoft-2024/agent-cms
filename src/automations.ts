@@ -92,6 +92,8 @@ export interface AutomationsContext {
   jobs: CmsJobs;
   collections: () => string[];
   findDoc: (collection: string, slug: string) => Promise<CmsDoc | null>;
+  /** The document as `actor` may see it (draft or published copy, hidden fields removed) and the field paths hidden from them; null when they may not see it. */
+  viewDoc?: (actor: Actor, collection: string, slug: string) => Promise<{ doc: CmsDoc; hidden: string[] } | null>;
   update: (actor: Actor, collection: string, slug: string, input: Partial<DocContent>) => Promise<CmsDoc>;
   addToRelease: (actor: Actor, releaseId: string, item: { collection: string; slug: string }) => Promise<unknown>;
   sendWebhook: (webhookId: string, e: OutEvent) => Promise<boolean>;
@@ -286,8 +288,17 @@ export function createAutomations(ctx: AutomationsContext) {
       admin(actor);
       await ctx.ready();
       const auto = await found(id);
-      const doc = await ctx.findDoc(target.collection, target.slug);
+      // A try runs as the person asking: only a document they may see, and no condition on a field
+      // hidden from them (its answer would tell the value).
+      const seen = ctx.viewDoc ? await ctx.viewDoc(actor, target.collection, target.slug) : null;
+      const doc = ctx.viewDoc ? (seen?.doc ?? null) : await ctx.findDoc(target.collection, target.slug);
       if (!doc) throw fail("not_found", { collection: target.collection, slug: target.slug });
+      const blind = auto.conditions.find((c) => {
+        if (c.field === "actor") return false;
+        const f = c.field.replace(/^fields\./, "");
+        return !!seen?.hidden.some((h) => f === h || f.startsWith(`${h}.`) || h.startsWith(`${f}.`));
+      });
+      if (blind) throw fail("forbidden_field", { field: blind.field });
       const conditions = evaluate(auto, doc, { actor: { kind: "user", id: null, label: "", agent: null } });
       return { matches: conditions.every((c) => c.ok), title: doc.title, conditions, actions: auto.actions.map((a) => ({ type: a.type, would: describe(a) })) };
     },

@@ -97,6 +97,8 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
       };
       // Events that arrive while the missed ones are being replayed wait here, so the order holds.
       let queue: FeedEvent[] | null = [];
+      /** Set when the client was told to reload: its position cannot be trusted until it has. */
+      let reset = false;
       /** Live numbered events at or below this were covered by the replay (or came before the start). */
       let from = Infinity;
       const deliver = (e: FeedEvent) => {
@@ -105,7 +107,8 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
         if (!heard) return;
         // Numbered events arrive in log order (the core's dispatcher), so their number is a safe
         // resume point. An event the log could not take carries no id: the client's last id stays.
-        if (e.seq === undefined) send(note(e.event, publicEvent(heard)));
+        // After a reset nothing carries an id: the client keeps its old position until it reloads.
+        if (e.seq === undefined || reset) send(note(e.event, publicEvent(e.seq === undefined ? heard : { ...heard, seq: e.seq })));
         else send(frame(e.event, String(e.seq), publicEvent({ ...heard, seq: e.seq })));
       };
       // Too many events while the replay runs: this stream cannot keep up, the client reloads.
@@ -144,8 +147,6 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
         core.telemetry({ type: "error", where: "events position", message: e instanceof Error ? e.message : String(e) });
       }
       const raw = o.since?.trim() || null;
-      /** Set when the client was told to reload: its position cannot be trusted until it has. */
-      let reset = false;
       const tellReset = () => {
         reset = true;
         send(note("resync", { since: raw, documents: [], more: true, reset: true }));
