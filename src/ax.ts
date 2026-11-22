@@ -44,6 +44,8 @@ export interface AxContext {
   collections: () => string[];
   can: (actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null) => boolean;
   assert: (actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null) => void;
+  /** Remove fields `actor` may not see from a copy of `doc` (the same projection reads use). */
+  project?: <T extends { fields?: Record<string, unknown> } | null | undefined>(actor: Actor, col: string, doc: CmsDoc | null, content: T) => T;
   get: (actor: Actor, col: string, slug: string, o?: { draft?: boolean }) => Promise<CmsDoc>;
   create: (actor: Actor, col: string, input: Input, o?: { note?: string }) => Promise<CmsDoc>;
   update: (actor: Actor, col: string, slug: string, input: Input, o?: { expectedVersion?: number; note?: string }) => Promise<CmsDoc>;
@@ -229,12 +231,15 @@ export function createAx(ctx: AxContext) {
         for (const row of rows.sort((a, b) => a.slug.localeCompare(b.slug))) {
           if (o.slugs?.length && !o.slugs.includes(row.slug)) continue;
           if (o.glob && !globMatch(o.glob, `${col}/${row.slug}`)) continue;
-          if (!writer && (row.publishedVersion === null || row.status === "archived" || !row.published || !ctx.can(actor, col, "read", row))) continue;
+          // Per document: a writer of the collection may still be kept out of one document by its rules.
+          const mine = writer && ctx.can(actor, col, "write", row);
+          if (!mine && (row.publishedVersion === null || row.status === "archived" || !row.published || !ctx.can(actor, col, "read", row))) continue;
           if (out.searched >= GREP_MAX_DOCS || bytes > GREP_MAX_BYTES || Date.now() - t0 > GREP_BUDGET_MS) {
             out.partial = true;
             break outer;
           }
-          const doc = writer ? row : { ...row, ...(row.published as object) };
+          const raw = mine ? row : ({ ...row, ...(row.published as object), version: row.publishedVersion } as CmsDoc);
+          const doc = ctx.project ? ctx.project(actor, col, row, raw) : raw;
           const text = docFile(doc as CmsDoc);
           bytes += text.length;
           out.searched++;

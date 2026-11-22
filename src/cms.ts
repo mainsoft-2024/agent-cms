@@ -474,9 +474,46 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const inFlight = new Set<Promise<unknown>>();
   /** The newest change this process has seen (its own or another's). */
   let seenSeq = -1;
+  /**
+   * Change rows written inside the transaction that made the change (0.18.0): if the process
+   * dies right after the commit, the change is still in the log. The event sent afterwards
+   * reuses that row instead of writing a second one. Key: event, collection, slug, version.
+   */
+  const preLogged = new Map<string, number[]>();
+  const logKey = (e: { event: string; collection?: string | null; slug?: string | null; version?: number | null }) => `${e.event}|${e.collection ?? ""}|${e.slug ?? ""}|${e.version ?? ""}`;
+  type TxLog = (e: OutEvent) => Promise<void>;
+  /** `repo.tx` with a `log(event)` that writes the change row in the same transaction. */
+  async function loggedTx<T>(fn: (r: CmsRepo, log: TxLog) => Promise<T>): Promise<T> {
+    const notes: { key: string; seq: number }[] = [];
+    const out = await repo.tx(async (r) => {
+      notes.length = 0;
+      const log: TxLog = async (e) => {
+        if (!logChanges || typeof r.appendChange !== "function") return;
+        const data: Record<string, unknown> = { actor: e.actor ?? null, url: e.url ?? null, ...(e.detail ? { detail: e.detail } : {}) };
+        const seq = await r.appendChange({ event: e.event, collection: e.collection ?? null, slug: e.slug ?? null, version: e.version ?? null, origin, data, at: nowIso() });
+        notes.push({ key: logKey(e), seq });
+      };
+      return fn(r, log);
+    });
+    // Only after the commit: a rolled-back transaction left no rows to reuse.
+    for (const n of notes) preLogged.set(n.key, [...(preLogged.get(n.key) ?? []), n.seq]);
+    return out;
+  }
+  function takePreLogged(e: OutEvent): number | null {
+    const k = logKey(e);
+    const q = preLogged.get(k);
+    if (!q?.length) return null;
+    const seq = q.shift()!;
+    if (!q.length) preLogged.delete(k);
+    return seq;
+  }
   function emitEvent(e: OutEvent) {
     telemetry({ type: "event", ...e });
-    if (logChanges) {
+    const pre = logChanges ? takePreLogged(e) : null;
+    if (pre !== null) {
+      tellSubscribers({ ...e, seq: pre } as FeedEvent);
+      void Promise.resolve(opts.changes?.signal?.publish()).catch((err) => report(err, "change signal"));
+    } else if (logChanges) {
       const data: Record<string, unknown> = { actor: e.actor ?? null, url: e.url ?? null, ...(e.detail ? { detail: e.detail } : {}) };
       const pending = Promise.resolve(ensureSchema())
         .then(() => repo.appendChange!({ event: e.event, collection: e.collection ?? null, slug: e.slug ?? null, version: e.version ?? null, origin, data, at: nowIso() }))
@@ -1023,6 +1060,28 @@ export function createCmsCore(opts: CreateCmsOptions) {
     for (const fn of fns) cur = (await hook((d: CmsDoc) => fn(d, { actor, draft, ...(o.list ? { list: true } : {}) }), cur)) ?? cur;
     return cur;
   }
+  /** Field paths `actor` may not see in `doc` (from `fieldAccess`). */
+  function hiddenPaths(actor: Actor, col: string, doc: CmsDoc | null): string[] {
+    const rules = collection(col).fieldAccess;
+    if (!rules) return [];
+    return Object.entries(rules)
+      .filter(([, rule]) => rule.read && !rule.read({ actor, doc: doc as CmsDoc }))
+      .map(([path]) => path);
+  }
+  /**
+   * The one projection every copy of a document goes through before it leaves the server
+   * (versions, diffs, conflicts, preview links, grep, search): fields the reader may not see
+   * are removed from that copy too, not only from the current one.
+   */
+  function project<T extends { fields?: Record<string, unknown> } | null | undefined>(actor: Actor, col: string, doc: CmsDoc | null, content: T): T {
+    if (!content?.fields) return content;
+    const hidden = hiddenPaths(actor, col, doc);
+    if (!hidden.length) return content;
+    const f = structuredClone(content.fields);
+    for (const path of hidden) unsetPath(f, path);
+    return { ...content, fields: f };
+  }
+  const isHiddenPath = (hidden: string[], path: string) => hidden.some((h) => path === h || path.startsWith(`${h}.`) || path === `fields.${h}` || path.startsWith(`fields.${h}.`));
   async function beforeRead(actor: Actor, col: string, slug: string | null, draft: boolean) {
     for (const fn of collection(col).hooks?.beforeRead ?? []) await hook(fn, { actor, collection: col, slug, draft });
   }
@@ -1188,18 +1247,29 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return doc;
   }
 
-  const withPublished = (v: StoredVersion, doc: CmsDoc): CmsVersion => ({ ...v, published: v.version === doc.publishedVersion });
+  /** A stored version as `actor` may see it: hidden fields leave the snapshot and the change list. */
+  const withPublished = (v: StoredVersion, doc: CmsDoc, actor?: Actor): CmsVersion => {
+    const out: CmsVersion = { ...v, published: v.version === doc.publishedVersion };
+    if (!actor) return out;
+    const hidden = hiddenPaths(actor, doc.collection, doc);
+    if (!hidden.length) return out;
+    return {
+      ...out,
+      snapshot: project(actor, doc.collection, doc, v.snapshot),
+      changed: v.changed ? { ...v.changed, fields: v.changed.fields.filter((f) => !isHiddenPath(hidden, f)) } : v.changed,
+    };
+  };
 
   async function versions(actor: Actor, col: string, slug: string): Promise<CmsVersion[]> {
     const doc = await editable(actor, col, slug);
-    return (await repo.listVersions(doc.id)).map((v) => withPublished(v, doc));
+    return (await repo.listVersions(doc.id)).map((v) => withPublished(v, doc, actor));
   }
 
   /** Version list without snapshots. */
   async function versionList(actor: Actor, col: string, slug: string): Promise<VersionSummary[]> {
     const doc = await editable(actor, col, slug);
     return (await repo.listVersions(doc.id)).map((v) => {
-      const { snapshot, ...rest } = withPublished(v, doc);
+      const { snapshot, ...rest } = withPublished(v, doc, actor);
       return { ...rest, title: snapshot.title };
     });
   }
@@ -1208,7 +1278,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const doc = await editable(actor, col, slug);
     const v = await repo.getVersion(doc.id, n);
     if (!v) throw fail("version_not_found", { version: n });
-    return withPublished(v, doc);
+    return withPublished(v, doc, actor);
   }
 
   /** Field changes and body hunks between two versions of a document. */
@@ -1217,7 +1287,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const [va, vb] = await Promise.all([repo.getVersion(doc.id, a), repo.getVersion(doc.id, b)]);
     if (!va) throw fail("version_not_found", { version: a });
     if (!vb) throw fail("version_not_found", { version: b });
-    return { a, b, fields: fieldChanges(va.snapshot, vb.snapshot), hunks: hunks(va.snapshot.body, vb.snapshot.body, o.context ?? 3) };
+    const sa = project(actor, col, doc, va.snapshot);
+    const sb = project(actor, col, doc, vb.snapshot);
+    return { a, b, fields: fieldChanges(sa, sb), hunks: hunks(sa.body, sb.body, o.context ?? 3) };
   }
 
   // ── writes ────────────────────────────────────────────────────────────────
@@ -1282,7 +1354,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   const conflict = (cur: CmsDoc, expected: number, actor: Actor, col: string) =>
-    fail("conflict_version", { expected, current: cur.version }, { current: can(actor, col, "write", cur) ? cur : undefined });
+    fail("conflict_version", { expected, current: cur.version }, { current: can(actor, col, "write", cur) ? conflictCopy(actor, col, cur) : undefined });
+  /** The current document sent with a conflict: the same field projection as a read. */
+  const conflictCopy = (actor: Actor, col: string, cur: CmsDoc): CmsDoc => {
+    const hidden = hiddenPaths(actor, col, cur);
+    if (!hidden.length) return cur;
+    return {
+      ...project(actor, col, cur, cur),
+      published: project(actor, col, cur, cur.published as never),
+      ...(cur.autosave ? { autosave: { ...cur.autosave, content: project(actor, col, cur, cur.autosave.content as never) } } : {}),
+    } as CmsDoc;
+  };
 
   /** True when this actor's publishes in `col` need someone's approval first (`review` in the collection). */
   function needsReview(actor: Actor, col: string): boolean {
@@ -1326,7 +1408,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await assets.assertDoc(cfg, content);
     await htmlGate(actor, col, null, content);
     const at = nowIso();
-    const doc = await repo.tx(async (r) => {
+    const doc = await loggedTx(async (r, log) => {
       const other = await r.findDoc(col, content.slug, { trashed: true });
       if (other) throw slugTaken(other);
       const publish = !!o.publish;
@@ -1347,6 +1429,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       });
       await r.insertVersion({ documentId: row.id, version: 1, snapshot: content, authorKind: who.kind, authorId: who.id, authorLabel: who.label, authorAgent: who.agent, note: o.note ?? null, createdAt: at, changed: changeOf(1, null, content) });
       await assets.syncRefs(r, row);
+      await logWrite(log, actor, null, row);
       return row;
     });
     if (o.publish) audit(actor, "doc.publish", { collection: col, slug: doc.slug, version: 1 });
@@ -1408,7 +1491,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function write(actor: Actor, col: string, slug: string, make: (cur: CmsDoc) => DocInput, o: WriteOptions = {}) {
     await ensureSchema();
     let prev: CmsDoc | null = null;
-    const doc = await repo.tx(async (r) => {
+    const doc = await loggedTx(async (r, log) => {
+      const out = await writeIn(r);
+      await logWrite(log, actor, prev, out, o.publish ? "publish" : undefined);
+      return out;
+    });
+    async function writeIn(r: CmsRepo): Promise<CmsDoc> {
       const cur = (prev = await r.findDoc(col, slug));
       if (!cur) throw fail("not_found", { collection: col, slug });
       assert(actor, col, "write", cur);
@@ -1425,7 +1513,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
         return cur.autosave ? ((await r.updateDoc(cur.id, { autosave: null, updatedAt: cur.updatedAt })) ?? cur) : cur;
       }
       return commit(r, actor, cur, next, o);
-    });
+    }
     if (o.publish && doc.publishedVersion === doc.version && prev && (prev as CmsDoc).publishedVersion !== doc.version) audit(actor, "doc.publish", { collection: col, slug: doc.slug, version: doc.version });
     changed(prev, doc);
     flow.markAgent(actor, doc);
@@ -1523,16 +1611,39 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return updated;
   }
 
+  type StateKind = "publish" | "archive" | "unpublish";
+  /**
+   * The change rows a write makes, inside its transaction: the same events `changed()` and
+   * `audit()` send afterwards (which then reuse these rows).
+   */
+  async function logWrite(log: TxLog, actor: Actor, prev: CmsDoc | null, doc: CmsDoc, kind?: StateKind) {
+    if (!logChanges) return;
+    const url = urlOf(doc.collection, doc.slug);
+    if (!doc.deletedAt && (!prev || doc.version !== prev.version)) {
+      const by = doc.updatedByKind ? { kind: doc.updatedByKind, id: null, label: doc.updatedBy ?? "", agent: doc.updatedByAgent ?? null } : null;
+      await log({ event: prev ? "doc.updated" : "doc.created", actor: by, collection: doc.collection, slug: doc.slug, version: doc.version, url });
+    }
+    if (actor.kind === "anonymous") return;
+    const me = actorRef(actor);
+    if (kind === "publish" ? true : !prev && doc.publishedVersion !== null) {
+      if (doc.publishedVersion !== null && (!prev || prev.publishedVersion !== doc.publishedVersion || kind === "publish")) await log({ event: "doc.published", actor: me, collection: doc.collection, slug: doc.slug, version: doc.publishedVersion, url });
+    }
+    if (kind === "archive") await log({ event: "doc.archived", actor: me, collection: doc.collection, slug: doc.slug, version: doc.version, url });
+    if (kind === "unpublish") await log({ event: "doc.unpublished", actor: me, collection: doc.collection, slug: doc.slug, version: doc.version, url });
+  }
+
   /** Run a publish-level state change on one document in a transaction. */
-  async function stateChange(actor: Actor, col: string, slug: string, expectedVersion: number | undefined, fn: (r: CmsRepo, cur: CmsDoc) => Promise<CmsDoc>) {
+  async function stateChange(actor: Actor, col: string, slug: string, expectedVersion: number | undefined, fn: (r: CmsRepo, cur: CmsDoc) => Promise<CmsDoc>, kind?: StateKind) {
     await ensureSchema();
     let prev: CmsDoc | null = null;
-    const doc = await repo.tx(async (r) => {
+    const doc = await loggedTx(async (r, log) => {
       const cur = (prev = await r.findDoc(col, slug));
       if (!cur) throw fail("not_found", { collection: col, slug });
       assert(actor, col, "publish", cur);
       if (expectedVersion !== undefined && expectedVersion !== cur.version) throw conflict(cur, expectedVersion, actor, col);
-      return fn(r, cur);
+      const out = await fn(r, cur);
+      await logWrite(log, actor, cur, out, kind);
+      return out;
     });
     changed(prev, doc);
     return doc;
@@ -1542,7 +1653,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
       await assertReviewed(r, actor, cur, o.version ?? cur.version);
       return publishIn(r, actor, cur, o.version ?? cur.version);
-    });
+    }, "publish");
     audit(actor, "doc.publish", { collection: col, slug, version: doc.publishedVersion });
     return doc;
   }
@@ -1552,7 +1663,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (cur.publishedVersion === null) throw fail("not_published");
       if (cur.status === "archived") return cur;
       return (await r.updateDoc(cur.id, { status: "archived", updatedAt: nowIso() }))!;
-    });
+    }, "archive");
     audit(actor, "doc.archive", { collection: col, slug, version: doc.version });
     return doc;
   }
@@ -1580,7 +1691,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
    * the first publish time is kept, so publishing again doesn't re-date it.
    */
   async function unpublish(actor: Actor, col: string, slug: string, o: { expectedVersion?: number } = {}): Promise<CmsDoc> {
-    const doc = await stateChange(actor, col, slug, o.expectedVersion, (r, cur) => unpublishIn(r, actor, cur));
+    const doc = await stateChange(actor, col, slug, o.expectedVersion, (r, cur) => unpublishIn(r, actor, cur), "unpublish");
     audit(actor, "doc.unpublish", { collection: col, slug, version: doc.version });
     return doc;
   }
@@ -1588,7 +1699,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function restore(actor: Actor, col: string, slug: string, n: number, o: WriteOptions = {}): Promise<CmsDoc> {
     await ensureSchema();
     let prev: CmsDoc | null = null;
-    const doc = await repo.tx(async (r) => {
+    const doc = await loggedTx(async (r, log) => {
       const cur = (prev = await r.findDoc(col, slug));
       if (!cur) throw fail("not_found", { collection: col, slug });
       assert(actor, col, "write", cur);
@@ -1596,7 +1707,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
       const v = await r.getVersion(cur.id, n);
       if (!v) throw fail("version_not_found", { version: n });
-      return commit(r, actor, cur, validate(col, { ...v.snapshot, slug: cur.slug }), { ...o, restoredFrom: n });
+      const out = await commit(r, actor, cur, validate(col, { ...v.snapshot, slug: cur.slug }), { ...o, restoredFrom: n });
+      await logWrite(log, actor, cur, out);
+      return out;
     });
     audit(actor, "doc.restore", { collection: col, slug, version: doc.version, detail: { from: n } });
     changed(prev, doc);
@@ -1611,8 +1724,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
     await gate("beforeDelete", actor, cur, contentOf(cur));
     // With a trash the row stays (and keeps its address) until it is restored or purged.
-    if (trashDays > 0) await repo.updateDoc(cur.id, { deletedAt: nowIso(), deletedBy: actorRef(actor).label, schedule: null, dueAt: null, updatedAt: nowIso() });
-    else await repo.deleteDoc(cur.id);
+    await loggedTx(async (r, log) => {
+      if (trashDays > 0) await r.updateDoc(cur.id, { deletedAt: nowIso(), deletedBy: actorRef(actor).label, schedule: null, dueAt: null, updatedAt: nowIso() });
+      else await r.deleteDoc(cur.id);
+      await log({ event: "doc.deleted", actor: actorRef(actor), collection: col, slug, version: cur.version, url: urlOf(col, slug) });
+    });
     audit(actor, "doc.delete", { collection: col, slug, version: cur.version, detail: { trash: trashDays > 0 } });
     changed(cur, null);
   }
@@ -1754,7 +1870,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!doc) throw fail("not_found", { collection: p.c, slug: p.s });
     const v = await repo.getVersion(doc.id, p.v);
     if (!v) throw fail("version_not_found", { version: p.v });
-    return { collection: p.c, slug: p.s, version: p.v, expiresAt: new Date(p.exp).toISOString(), doc: contentOf(v.snapshot), comments: !!p.cm };
+    // Whoever holds the link reads as an anonymous visitor: fields hidden from readers stay hidden.
+    const anon: Actor = { kind: "anonymous" };
+    return { collection: p.c, slug: p.s, version: p.v, expiresAt: new Date(p.exp).toISOString(), doc: project(anon, p.c, doc, contentOf(v.snapshot)), comments: !!p.cm };
   }
 
   // ── search ────────────────────────────────────────────────────────────────
@@ -1814,7 +1932,24 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const idx = await searchIndex();
     const limit = Math.max(1, Math.min(o.limit ?? 5, 50));
     const raw = idx.search(query, { limit: limit + 3, perDoc: o.perDoc ?? 2, filter: (u) => cols.includes(u.collection) && (!o.filter || o.filter(u)) });
-    const hits = raw.filter((h) => h.coverage >= minCoverage).slice(0, limit);
+    let hits = raw.filter((h) => h.coverage >= minCoverage);
+    // The same read policy as a read: per-document `access.read` and hidden fields.
+    if (hits.some((h) => { const c = collection(h.unit.collection); return !!(c.access?.read || c.fieldAccess); })) {
+      const docs = new Map<string, CmsDoc | null>();
+      for (const h of hits) {
+        const k = `${h.unit.collection}/${h.unit.slug}`;
+        if (!docs.has(k)) docs.set(k, await repo.findDoc(h.unit.collection, h.unit.slug));
+      }
+      hits = hits.flatMap((h) => {
+        const c = collection(h.unit.collection);
+        if (!c.access?.read && !c.fieldAccess) return [h];
+        const d = docs.get(`${h.unit.collection}/${h.unit.slug}`) ?? null;
+        const pub = d ? publicView(d) : null;
+        if (!pub || !can(actor, h.unit.collection, "read", pub)) return [];
+        return [{ ...h, unit: project(actor, h.unit.collection, pub, h.unit) }];
+      });
+    }
+    hits = hits.slice(0, limit);
     const empty = hits.length === 0;
     telemetry({ type: "search", ms: Date.now() - started, q: query.trim().slice(0, 200), hits: hits.length, collections: cols.length });
     if (empty && reportMiss && opts.onSearchMiss && query.trim()) {
@@ -2170,6 +2305,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     collections: () => [...collections.keys()],
     can,
     assert,
+    project,
     get,
     create: (actor, col, input, o) => create(actor, col, input as DocInput, o),
     update: (actor, col, slug, input, o) => update(actor, col, slug, input as DocInput, o),
