@@ -46,6 +46,8 @@ export interface AxContext {
   assert: (actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null) => void;
   /** Remove fields `actor` may not see from a copy of `doc` (the same projection reads use). */
   project?: <T extends { fields?: Record<string, unknown> } | null | undefined>(actor: Actor, col: string, doc: CmsDoc | null, content: T) => T;
+  /** The published copy as readers get it (same as reads), or null. */
+  publicView?: (doc: CmsDoc) => CmsDoc | null;
   /** Field paths `actor` may not see in the stored document (`fieldAccess`). */
   hidden?: (actor: Actor, col: string, doc: CmsDoc) => string[];
   get: (actor: Actor, col: string, slug: string, o?: { draft?: boolean }) => Promise<CmsDoc>;
@@ -260,7 +262,7 @@ export function createAx(ctx: AxContext) {
           // Per document: a writer of the collection may still be kept out of one document by its rules.
           const mine = writer && ctx.can(actor, col, "write", row);
           // Readers are judged on, and shown, the published copy.
-          const pub = mine || row.publishedVersion === null || row.status === "archived" || !row.published ? null : ({ ...row, ...(row.published as object), format: (row.published as { format?: string }).format, version: row.publishedVersion, review: null, schedule: null, dueAt: null } as CmsDoc);
+          const pub = mine ? null : ctx.publicView ? ctx.publicView(row) : row.publishedVersion === null || row.status === "archived" || !row.published ? null : ({ ...row, ...(row.published as object), format: (row.published as { format?: string }).format, version: row.publishedVersion, status: "published", review: null, schedule: null, dueAt: null, updatedBy: null, updatedByKind: null, updatedByAgent: null } as CmsDoc);
           if (!mine && (!pub || !ctx.can(actor, col, "read", pub))) continue;
           if (out.searched >= GREP_MAX_DOCS || bytes > GREP_MAX_BYTES || Date.now() - t0 > GREP_BUDGET_MS) {
             out.partial = true;

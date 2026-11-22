@@ -1417,6 +1417,7 @@ export const en = {
   webhook_only_these: "Only these",
   webhook_every_event_text: "Sends a message for every event below, including ones added in later versions.",
   webhook_pick_one: "Pick at least one event.",
+  doc_no_longer_editable: "Done. You may no longer edit this document, so it is shown as it was; reload to see the current copy.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2820,6 +2821,7 @@ export const ko: CmsMessages = {
   webhook_only_these: "고른 것만",
   webhook_every_event_text: "아래 이벤트 전부와 앞으로 추가될 이벤트까지 보냄.",
   webhook_pick_one: "이벤트를 하나 이상 고를 것.",
+  doc_no_longer_editable: "완료. 이제 이 문서를 고칠 권한이 없어 방금 화면 그대로 보여 줌. 지금 사본은 새로 고침해서 확인",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;

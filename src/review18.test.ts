@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { z } from "zod";
 import { createCms, defineCollection } from "./cms";
+import { CmsError } from "./errors";
 import { MemoryRepo } from "./repo";
 import type { Actor } from "./types";
 
@@ -465,6 +466,7 @@ test("review round 5: someone who may publish but not edit gets only the state b
   assert.doesNotMatch(JSON.stringify(out), /Secret draft/);
   assert.equal(out.title, "", "only the state: readers fetch the published copy with a read");
   assert.equal(out.version, 2);
+  assert.equal(out.receipt, true);
 });
 
 test("review round 5: a check about no field or a containing field says nothing to someone with hidden fields", async () => {
@@ -544,6 +546,29 @@ test("review round 7: a save that fails on a hidden field says so without naming
   await assert.rejects(cms.update(editor, "p", "a", { title: "B" }), (e: { code: string; diagnostics?: { path: string }[] }) => {
     assert.equal(e.code, "check_hidden");
     assert.doesNotMatch(JSON.stringify(e.diagnostics), /cost|100|999/);
+    return true;
+  });
+});
+
+test("review round 9: a hook's structured error without a field path says nothing to someone with hidden fields", async () => {
+  const p = defineCollection({
+    slug: "p",
+    label: "P",
+    visibility: "public",
+    access: { write: ({ actor }) => actor.kind === "user" },
+    fields: z.object({ cost: z.number().optional() }),
+    fieldAccess: { cost: { read: ({ actor }) => actor.kind === "user" && actor.isAdmin } },
+    hooks: {
+      beforeChange: [
+        ({ content }) => {
+          throw new CmsError("invalid_fields", { reason: `cost ${(content.fields as { cost?: number }).cost} too high` }, { message: `cost ${(content.fields as { cost?: number }).cost} too high`, diagnostics: [{ path: "", code: "invalid_fields", params: {}, severity: "error", message: `cost ${(content.fields as { cost?: number }).cost} too high` }] });
+        },
+      ],
+    },
+  });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [p], warn: () => {} });
+  await assert.rejects(cms.create(editor, "p", { slug: "a", title: "A", body: "x\n" }), (e: Error) => {
+    assert.doesNotMatch(JSON.stringify(e) + e.message, /too high/);
     return true;
   });
 });

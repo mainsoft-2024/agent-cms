@@ -1017,7 +1017,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     for (const fn of collection(col).hooks?.beforeChange ?? []) {
       const seen = cur;
       const patch = await hook(fn, { collection: col, slug: cur.slug, content: cur, prev, actor }).catch((e) => {
-        throw safeError(actor, col, { ...overlay((prev ?? { collection: col }) as CmsDoc, seen, prev?.version), collection: col } as CmsDoc, e);
+        throw safeError(actor, col, { ...overlay((prev ?? { collection: col }) as CmsDoc, seen, prev?.version), collection: col } as CmsDoc, e, { pathless: "hide" });
       });
       if (patch && typeof patch === "object") cur = validate(col, { ...cur, ...patch }, { actor, base: prev });
     }
@@ -1058,11 +1058,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return path === "fields" || isHiddenPath(hidden, path) || hidden.some((h) => h.startsWith(`${f}.`));
   };
   /** Diagnostics about the copy being checked, as `actor` may see them (same rule as `checksFor`, pathless built-in ones kept). */
-  function diagnosticsFor<D extends { path: string; code: string }>(actor: Actor, col: string, checked: CmsDoc | null, diags: D[]): D[] {
-    if (!checked || !collection(col).fieldAccess) return diags;
-    const hidden = hiddenPaths(actor, col, checked);
+  function diagnosticsFor<D extends { path: string; code: string }>(actor: Actor, col: string, checked: CmsDoc | null | (CmsDoc | null)[], diags: D[], o: { pathless?: "keep" | "hide" } = {}): D[] {
+    const copies = (Array.isArray(checked) ? checked : [checked]).filter((c): c is CmsDoc => !!c);
+    if (!copies.length || !collection(col).fieldAccess) return diags;
+    // A field hidden in any of the copies the checks looked at is hidden here.
+    const hidden = [...new Set(copies.flatMap((c) => hiddenPaths(actor, col, c)))];
     if (!hidden.length) return diags;
-    return diags.map((d) => (d.path && coversHidden(hidden, d.path) ? ({ ...d, path: "", code: "check_hidden", params: {}, message: message(fail("check_hidden")) } as D) : d));
+    const hide = (d: D) => (d.path ? coversHidden(hidden, d.path) : o.pathless === "hide");
+    return diags.map((d) => (hide(d) ? ({ ...d, path: "", code: "check_hidden", params: {}, message: message(fail("check_hidden")) } as D) : d));
   }
   async function gate(which: "beforePublish" | "beforeDelete", actor: Actor, doc: { collection: string; slug: string; version: number }, content: DocContent, base?: CmsDoc | null) {
     if (which === "beforePublish") {
@@ -1074,7 +1077,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     }
     for (const fn of collection(doc.collection).hooks?.[which] ?? [])
       await hook(fn, { collection: doc.collection, slug: doc.slug, content, version: doc.version, actor }).catch((e) => {
-        throw safeError(actor, doc.collection, { ...overlay((base ?? { collection: doc.collection }) as CmsDoc, content, doc.version), collection: doc.collection, slug: doc.slug } as CmsDoc, e);
+        throw safeError(actor, doc.collection, { ...overlay((base ?? { collection: doc.collection }) as CmsDoc, content, doc.version), collection: doc.collection, slug: doc.slug } as CmsDoc, e, { pathless: "hide" });
       });
   }
 
@@ -1109,15 +1112,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return content;
   }
   /** A fresh error that says only what `actor` may see of `candidate` (the same rule as `diagnosticsFor`). */
-  function safeError(actor: Actor, col: string, candidate: CmsDoc, e: unknown): unknown {
+  function safeError(actor: Actor, col: string, candidate: CmsDoc | CmsDoc[], e: unknown, o: { pathless?: "keep" | "hide" } = {}): unknown {
     if (!isCmsError(e) || !collections.has(col) || !collection(col).fieldAccess) return e;
     const diags = (e as { diagnostics?: Diagnostic[] }).diagnostics;
     if (!diags?.length) return e;
-    const shownDiags = diagnosticsFor(actor, col, candidate, [...diags]);
+    const shownDiags = diagnosticsFor(actor, col, candidate, [...diags], o);
     if (shownDiags.every((d, i) => d === diags[i])) return e;
+    // Something was hidden: the whole envelope is rebuilt from what is shown (the original top-level
+    // params may quote a hidden finding).
     const first = shownDiags[0];
     const status = (e as { status?: number }).status;
-    return first.code === ("check_hidden" as string) ? fail("check_hidden", {}, { diagnostics: shownDiags, ...(status ? { status } : {}) }) : fail(e.code, (e as { params?: ErrorParams }).params ?? {}, { diagnostics: shownDiags, ...(status ? { status } : {}) });
+    return fail(first.code as CmsErrorCode, (first as { params?: ErrorParams }).params ?? {}, { diagnostics: shownDiags, ...(status ? { status } : {}) });
   }
 
   /** Check a document without saving (`existing` slug: as an update of that document). */
@@ -1138,7 +1143,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     // What is said about fields this person may not see (a file's id or name in one) stays out.
     // Judged on the copy that was checked (what was sent over what is stored), with the same
     // conservative rule as publish checks.
-    return diagnosticsFor(actor, col, { ...overlay((cur ?? { collection: col }) as CmsDoc, normalized, cur?.version), collection: col } as CmsDoc, diagnostics);
+    // Schema findings were made on the normalized copy, file findings on the raw one: both count.
+    const on = (c: DocContent) => ({ ...overlay((cur ?? { collection: col }) as CmsDoc, c, cur?.version), collection: col }) as CmsDoc;
+    return diagnosticsFor(actor, col, [on(normalized), on(content)], diagnostics);
   }
 
   const same = (a: DocContent, b: DocContent) => stableJson(contentOf(a)) === stableJson(contentOf(b));
@@ -1258,7 +1265,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!content?.fields) return content;
     // The rule looks at the copy being shown (an old version, a preview) with its own version
     // number, not the latest draft.
-    const hidden = hiddenPaths(actor, col, (doc ? { ...doc, ...content, ...(version != null ? { version } : {}) } : content) as CmsDoc);
+    // A stored copy without a format is markdown: it does not inherit the draft's.
+    const hidden = hiddenPaths(actor, col, (doc ? overlay(doc, content as Partial<DocContent>, version ?? doc.version) : content) as CmsDoc);
     return projectWith(hidden, content);
   }
   /** Remove these field paths from a copy. */
@@ -1806,9 +1814,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const cur = await editable(actor, col, slug);
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
       const body = applyPatch(cur.body, ops);
-      const { diagnostics } = check(col, { ...cur, body });
+      const { diagnostics, content: normalized } = check(col, { ...cur, body });
       diagnostics.push(...(await assets.checkDoc(collection(col), { ...cur, body }, assets.idsIn(collection(col), cur))));
-      return { doc: null, diff: unifiedDiff(cur.body, body, { from: `v${cur.version}`, to: "patched" }), diagnostics: diagnosticsFor(actor, col, { ...cur, body } as CmsDoc, diagnostics), saved: false };
+      return { doc: null, diff: unifiedDiff(cur.body, body, { from: `v${cur.version}`, to: "patched" }), diagnostics: diagnosticsFor(actor, col, [overlay(cur, normalized, cur.version), { ...cur, body } as CmsDoc], diagnostics), saved: false };
     }
     let before = "";
     const r = await write(
@@ -2542,9 +2550,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
     publishIn,
     unpublishIn,
     changed,
-    problems: async (doc, c, r) => {
+    problems: async (doc, c, r, actor, version) => {
       const cfg = collection(doc.collection);
-      return [...check(doc.collection, c).diagnostics, ...(await assets.checkDoc(cfg, c, assets.idsIn(cfg, doc), r))];
+      const { diagnostics, content: normalized } = check(doc.collection, c);
+      const files = await assets.checkDoc(cfg, c, assets.idsIn(cfg, doc), r);
+      if (!actor) return [...diagnostics, ...files];
+      // Each group judged on the copy its checker saw (normalized for the schema, as sent for files).
+      return [...diagnosticsFor(actor, doc.collection, overlay(doc, normalized, version ?? doc.version), diagnostics), ...diagnosticsFor(actor, doc.collection, overlay(doc, c, version ?? doc.version), files)];
     },
     needsReview,
     assertReviewed,
@@ -2628,6 +2640,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     can,
     assert,
     project,
+    publicView,
     hidden: (actor: Actor, col: string, doc: CmsDoc) => hiddenPaths(actor, col, doc),
     get,
     create: (actor, col, input, o) => create(actor, col, input as DocInput, o),
@@ -2667,6 +2680,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   /** The state of a document and nothing of its content: what a caller who may change but not read it gets back. */
   function receipt(d: CmsDoc): CmsDoc {
     return {
+      receipt: true,
       id: d.id,
       collection: d.collection,
       slug: d.slug,

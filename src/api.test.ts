@@ -197,6 +197,44 @@ test("node adapter: a plain http server answers like the web handler (headers, b
   }
 });
 
+test("node adapter: a body that fails while the socket is full ends the response instead of hanging", async () => {
+  let fail: (e: Error) => void = () => {};
+  const big = new Uint8Array(1 << 20).fill(97);
+  const server = createServer(
+    toNodeHandler(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          // Far more than the socket takes at once: the adapter waits for "drain".
+          for (let i = 0; i < 8; i++) c.enqueue(big);
+          fail = (e) => c.error(e);
+        },
+      });
+      return new Response(body, { headers: { "content-type": "text/plain" } });
+    })
+  );
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const { request } = await import("node:http");
+    // The server's own socket closing shows the response was cut (a paused client may not notice).
+    const ended = await new Promise<string>((done) => {
+      server.once("connection", (sock) => sock.once("close", () => done("closed")));
+      const req = request({ host: "127.0.0.1", port, path: "/" }, (res) => {
+        // Do not read: the server's writes back up. Then the body fails.
+        res.pause();
+        setTimeout(() => fail(new Error("client too slow")), 200);
+      });
+      req.on("error", () => undefined);
+      req.end();
+      setTimeout(() => done("still open"), 5000);
+    });
+    assert.ok(["closed", "error"].includes(ended), `the response was cut, not finished (${ended})`);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
+  }
+});
+
 test("cli: openapi prints the document; import --from reads a WordPress file; export --with-files and import move the files too", async () => {
   const a = setup();
   const key = await a.cms.createKey(admin, { name: "cli", scopes: ["read", "write", "publish"] });

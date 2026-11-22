@@ -28,7 +28,7 @@ export interface FlowContext {
   /** Diagnostics about a checked copy as `actor` may see them (hidden fields redacted). */
   /** A stored copy over its document with its own format and version. */
   overlay: (doc: CmsDoc, copy: Partial<DocContent> | null | undefined, version: number | null | undefined) => CmsDoc;
-  diagnosticsFor: <D extends { path: string; code: string }>(actor: Actor, col: string, checked: CmsDoc | null, diags: D[]) => D[];
+  diagnosticsFor: <D extends { path: string; code: string }>(actor: Actor, col: string, checked: CmsDoc | null | (CmsDoc | null)[], diags: D[]) => D[];
   /** Whether the collection's rules decide per document (`access`). */
   rulesPerDocument: (col: string) => boolean;
   ready: () => Promise<void> | void;
@@ -39,7 +39,8 @@ export interface FlowContext {
   unpublishIn: (r: CmsRepo, actor: Actor, doc: CmsDoc) => Promise<CmsDoc>;
   changed: (prev: CmsDoc | null, doc: CmsDoc | null, o?: { quiet?: boolean }) => void;
   /** Everything wrong with this content of `doc` (errors and warnings). */
-  problems: (doc: CmsDoc, c: DocContent, r: CmsRepo) => Promise<Diagnostic[]>;
+  /** With `actor`: findings as that person may see them (hidden fields redacted, per checked copy). */
+  problems: (doc: CmsDoc, c: DocContent, r: CmsRepo, actor?: Actor, version?: number) => Promise<Diagnostic[]>;
   needsReview: (actor: Actor, col: string) => boolean;
   assertReviewed: (r: CmsRepo, actor: Actor, doc: CmsDoc, n: number) => Promise<void>;
   summaryOf: (d: CmsDoc) => DocSummary;
@@ -152,7 +153,7 @@ export function createFlow(ctx: FlowContext) {
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw ctx.conflict(cur, o.expectedVersion, actor, col);
       if (publishAt) {
         await ctx.assertReviewed(r, actor, cur, cur.version);
-        const errors = ctx.diagnosticsFor(actor, col, cur, errorsOf(await ctx.problems(cur, cur, r)));
+        const errors = errorsOf(await ctx.problems(cur, cur, r, actor, cur.version));
         if (errors.length) throw fail(errors[0].code, errors[0].params, { diagnostics: errors });
       } else if (cur.publishedVersion === null) throw fail("not_published");
       const s: Schedule = { publishAt, unpublishAt, version: cur.version, by: who.label, byKind: who.kind, byId: who.id, byAgent: who.agent, at: nowIso() };
@@ -707,7 +708,9 @@ export function createFlow(ctx: FlowContext) {
         else if (item.action === "unpublish") ok.push({ item, doc });
         else {
           const v = await r.getVersion(doc.id, item.version);
-          const errors = v ? ctx.diagnosticsFor(actor, doc.collection, ctx.overlay(doc, v.snapshot, item.version), errorsOf(await ctx.problems(doc, { ...v.snapshot, slug: doc.slug }, r))) : [];
+          // Judged on exactly what is checked: the snapshot at the document's current address.
+          const checked = v ? { ...v.snapshot, slug: doc.slug } : null;
+          const errors = v && checked ? errorsOf(await ctx.problems(doc, checked, r, actor, item.version)) : [];
           if (!v) block("version_not_found", { version: item.version });
           else if (ctx.needsReview(actor, doc.collection) && !v.approvedBy) block("review_required", { collection: doc.collection });
           else if (errors.length) block(errors[0].code, errors[0].params, errors[0].message);
