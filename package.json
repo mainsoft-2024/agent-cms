@@ -339,7 +339,7 @@
     "test:blob": "tsx --test src/storage-vercel-blob.test.ts",
     "build:admin": "node scripts/build-admin.mjs",
     "bench": "tsx scripts/bench.ts",
-    "test:examples": "node --import tsx --test examples/frameworks.test.ts"
+    "test:examples": "node scripts/link-self.mjs && node --import tsx --test examples/frameworks.test.ts"
   },
   "peerDependencies": {
     "@vercel/blob": ">=2.9.0",
