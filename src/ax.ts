@@ -233,13 +233,15 @@ export function createAx(ctx: AxContext) {
           if (o.glob && !globMatch(o.glob, `${col}/${row.slug}`)) continue;
           // Per document: a writer of the collection may still be kept out of one document by its rules.
           const mine = writer && ctx.can(actor, col, "write", row);
-          if (!mine && (row.publishedVersion === null || row.status === "archived" || !row.published || !ctx.can(actor, col, "read", row))) continue;
+          // Readers are judged on, and shown, the published copy.
+          const pub = mine || row.publishedVersion === null || row.status === "archived" || !row.published ? null : ({ ...row, ...(row.published as object), version: row.publishedVersion } as CmsDoc);
+          if (!mine && (!pub || !ctx.can(actor, col, "read", pub))) continue;
           if (out.searched >= GREP_MAX_DOCS || bytes > GREP_MAX_BYTES || Date.now() - t0 > GREP_BUDGET_MS) {
             out.partial = true;
             break outer;
           }
-          const raw = mine ? row : ({ ...row, ...(row.published as object), version: row.publishedVersion } as CmsDoc);
-          const doc = ctx.project ? ctx.project(actor, col, row, raw) : raw;
+          const raw = mine ? row : pub!;
+          const doc = ctx.project ? ctx.project(actor, col, raw, raw) : raw;
           const text = docFile(doc as CmsDoc);
           bytes += text.length;
           out.searched++;

@@ -612,7 +612,7 @@ export function createRestClient(opts: RestClientOptions) {
       const query = [o.thumb ? "thumb=1" : o.download ? "download=1" : o.size ? `size=${enc(o.size)}` : "", a.rev ? `v=${a.rev}` : ""].filter(Boolean).join("&");
       return `${base}/files/${enc(a.id)}/${enc(a.name)}${query ? `?${query}` : ""}`;
     },
-    audit: (q: { cursor?: string | null; action?: string; outcome?: string; actorKind?: "user" | "key" | "system" | "anonymous"; limit?: number } = {}) => req<{ entries: AuditEntry[]; nextCursor: string | null }>("GET", "/audit", { query: q }),
+    audit: (q: { cursor?: string | null; action?: string; group?: string; outcome?: string; actorKind?: "user" | "key" | "system" | "anonymous"; actorId?: string; who?: string; collection?: string; slug?: string; since?: string; until?: string; limit?: number } = {}) => req<{ entries: AuditEntry[]; nextCursor: string | null }>("GET", "/audit", { query: q }),
   };
 }
 

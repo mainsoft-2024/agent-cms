@@ -71,7 +71,7 @@ export interface TransferContext {
   diagnose: (actor: Actor, collection: string, input: DocInput, o: { slug?: string }) => Promise<Diagnostic[]>;
   create: (actor: Actor, collection: string, input: DocInput, o: { note?: string }) => Promise<CmsDoc>;
   update: (actor: Actor, collection: string, slug: string, input: DocInput, o: { note?: string; expectedVersion?: number }) => Promise<CmsDoc>;
-  publish: (actor: Actor, collection: string, slug: string) => Promise<CmsDoc>;
+  publish: (actor: Actor, collection: string, slug: string, o?: { version?: number; expectedVersion?: number }) => Promise<CmsDoc>;
   assetsOf: (actor: Actor, docs: CmsDoc[]) => Promise<{ id: string; store: string; key: string; name: string; alt: string; tags: string[] }[]>;
 }
 
@@ -159,7 +159,8 @@ export function createTransfer(ctx: TransferContext) {
           if (o.publish && wasPublic) {
             try {
               if (!ctx.can(actor, col, "publish")) throw fail("forbidden_publish", { collection: col });
-              await ctx.publish(actor, col, item.slug);
+              // Exactly what this import saved: an edit made meanwhile is a conflict, not published.
+              await ctx.publish(actor, col, item.slug, { version: item.toVersion ?? cur?.version, expectedVersion: item.toVersion ?? cur?.version });
               item.published = true;
               item.publishError = null;
             } catch (e) {

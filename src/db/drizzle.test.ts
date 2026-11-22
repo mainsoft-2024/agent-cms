@@ -706,8 +706,8 @@ test("db: versions in pages come from the database, newest first", async () => {
     await cms.create(admin, "guide", { slug: "a", title: "v1", body: "x" });
     for (let n = 2; n <= 5; n++) await cms.update(admin, "guide", "a", { title: `v${n}` });
     const p1 = await cms.versionPage(admin, "guide", "a", { limit: 2, summary: true });
-    assert.deepEqual([p1.versions.map((v) => v.version), p1.total, p1.nextCursor], [[5, 4], 5, "4"]);
-    const p3 = await cms.versionPage(admin, "guide", "a", { limit: 3, cursor: "4" });
+    assert.deepEqual([p1.versions.map((v) => v.version), p1.total, p1.nextCursor], [[5, 4], 5, "v.4"]);
+    const p3 = await cms.versionPage(admin, "guide", "a", { limit: 3, cursor: "v.4" });
     assert.deepEqual([p3.versions.map((v) => v.version), p3.nextCursor], [[3, 2, 1], null]);
   } finally {
     await close();

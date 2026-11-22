@@ -388,8 +388,16 @@ export class DrizzleRepo implements CmsRepo {
       conds.push(or(lt(A.at, new Date(at)), and(eq(A.at, new Date(at)), lt(A.id, id))));
     }
     if (q.action) conds.push(eq(A.action, q.action));
+    const esc = (v: string) => v.replace(/[\\%_]/g, (c) => "\\" + c);
+    if (q.actionPrefix) conds.push(sql`${A.action} like ${`${esc(q.actionPrefix)}%`}`);
     if (q.outcome) conds.push(eq(A.outcome, q.outcome));
     if (q.actorKind) conds.push(eq(A.actorKind, q.actorKind));
+    if (q.actorId) conds.push(eq(A.actorId, q.actorId));
+    if (q.who) conds.push(sql`${A.actorLabel} ilike ${`%${esc(q.who)}%`}`);
+    if (q.collection) conds.push(eq(A.collection, q.collection));
+    if (q.slug) conds.push(eq(A.slug, q.slug));
+    if (q.since) conds.push(gte(A.at, new Date(q.since)));
+    if (q.until) conds.push(lt(A.at, new Date(q.until)));
     const rows = await this.db
       .select()
       .from(A)

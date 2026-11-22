@@ -56,6 +56,19 @@ export function mayHear(core: CmsCore, actor: Actor, e: OutEvent, only?: readonl
   }
 }
 
+/**
+ * What `actor` hears of `e`, or null. In a collection whose rules decide per document who may
+ * read or edit it, people who are not admins hear that something changed in the collection,
+ * not which document, who did it or where it lives: the event goes out before anyone could
+ * check that document's rules for them, and a delete or unpublish leaves nothing to check.
+ * They reload what they show, and reads apply the rules (0.18.0).
+ */
+export function hearAs<E extends OutEvent>(core: CmsCore, actor: Actor, e: E, only?: readonly string[]): E | null {
+  if (!mayHear(core, actor, e, only)) return null;
+  if (!e.collection || actor.kind === "system" || core.isAdmin(actor) || !core.rulesPerDocument(e.collection)) return e;
+  return { ...e, slug: null, version: null, url: null, actor: null, detail: undefined };
+}
+
 const frame = (event: string, id: string, data: unknown) => `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 /** Without an id frame line, so the client's last id stays the last real event. */
 const note = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -84,7 +97,9 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
       let lastSent = 0;
       const replayed = new Set<number>();
       const deliver = (e: FeedEvent) => {
-        if (!mayHear(core, actor, e, o.collections)) return;
+        const heard = hearAs(core, actor, e, o.collections);
+        if (!heard) return;
+        e = heard;
         if (e.seq !== undefined) {
           if (replayed.has(e.seq)) return; // already sent from the log
           lastSent = Math.max(lastSent, e.seq);
@@ -119,7 +134,7 @@ export function eventStream(core: CmsCore, actor: Actor, o: EventStreamOptions =
       try {
         if (raw && /^\d+$/.test(raw)) {
           const seq = Number(raw);
-          const missed = await core.changes.since(actor, seq, { collections: o.collections, limit: REPLAY_MAX, hear: (e) => mayHear(core, actor, e, o.collections) });
+          const missed = await core.changes.since(actor, seq, { collections: o.collections, limit: REPLAY_MAX, hear: (e) => hearAs(core, actor, e, o.collections) });
           if (!missed) send(note("resync", { since: raw, documents: [], more: true, reset: true }));
           else {
             for (const c of missed.changes) {

@@ -152,10 +152,10 @@ test("versions in pages: newest first, cut by the store, continuing below the cu
   const handler = createCmsHandler({ cms, resolveUser: async () => admin });
   const get = async (q: string) => (await (await handler(new Request(`http://x/api/cms/collections/guide/a/versions?${q}`))).json()) as { versions: { version: number; title?: string }[]; total: number; nextCursor: string | null };
   const one = await get("limit=2&fields=summary");
-  assert.deepEqual([one.versions.map((v) => v.version), one.total, one.nextCursor], [[5, 4], 5, "4"]);
+  assert.deepEqual([one.versions.map((v) => v.version), one.total, one.nextCursor], [[5, 4], 5, "v.4"]);
   assert.equal(one.versions[0].title, "v5");
   const two = await get(`limit=2&fields=summary&cursor=${one.nextCursor}`);
-  assert.deepEqual([two.versions.map((v) => v.version), two.nextCursor], [[3, 2], "2"]);
+  assert.deepEqual([two.versions.map((v) => v.version), two.nextCursor], [[3, 2], "v.2"]);
   const three = await get(`limit=2&cursor=${two.nextCursor}`);
   assert.deepEqual([three.versions.map((v) => v.version), three.nextCursor], [[1], null]);
 });
@@ -192,4 +192,71 @@ test("tenants: a dropped tenant is disposed only after its requests in progress,
   assert.deepEqual(disposed, ["acme"]);
   // A request after the drop makes a fresh handler.
   assert.ok(handler.tenants().length === 0);
+});
+
+test("round 2: writes return projected copies; keys follow per-document rules; readers judged on the published copy", async () => {
+  const cms = createCms({ repo: new MemoryRepo(), collections: [products(), notes()], warn: () => {} });
+  await cms.create(admin, "products", { slug: "a", title: "A", body: "x\n", fields: { cost: 4, price: 10 } }, { publish: true });
+  const saved = await cms.update(editor, "products", "a", { title: "B" });
+  assert.doesNotMatch(JSON.stringify(saved), /"cost"/, "the document a write returns has the same projection as a read");
+  const label = await cms.labelVersion(editor, "products", "a", 1, { label: "first" });
+  assert.doesNotMatch(JSON.stringify(label), /"cost"/, "naming a version returns it projected too");
+
+  await cms.create(admin, "notes", { slug: "inner", title: "Inner", body: "x\n", fields: { members: true } }, { publish: true });
+  const key: Actor = { kind: "key", id: "k1", label: "site", scopes: ["read"], collections: null };
+  await assert.doesNotReject(cms.get(key, "notes", "inner"), "a key is not anonymous, so this rule lets it in");
+  // The draft says "for everyone" but the published copy is members-only: a visitor is judged on what they would get.
+  await cms.update(admin, "notes", "inner", { fields: { members: false } });
+  await assert.rejects(cms.get(anon, "notes", "inner"), (e: { code: string }) => e.code === "unauthorized");
+});
+
+test("round 2: events in collections with per-document rules carry no document identity for non-admins", async () => {
+  const { hearAs } = await import("./events");
+  const cms = createCms({ repo: new MemoryRepo(), collections: [notes(), products()], warn: () => {} });
+  const e = { event: "doc.published", collection: "notes", slug: "inner", version: 1, url: "/notes/inner", actor: { kind: "user", id: "u1", label: "Kim", agent: null } } as const;
+  const heard = hearAs(cms as never, editor, e as never) as { slug: unknown; url: unknown; actor: unknown } | null;
+  assert.ok(heard);
+  assert.deepEqual([heard!.slug, heard!.url, heard!.actor], [null, null, null], "something changed in Notes, not which document or who");
+  assert.equal((hearAs(cms as never, admin, e as never) as unknown as { slug: string }).slug, "inner", "admins hear everything");
+});
+
+test("round 2: change rows match the live events (no phantom publish), created before published", async () => {
+  const repo = new MemoryRepo();
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public" });
+  const cms = createCms({ repo, collections: [guide], warn: () => {} });
+  const live: string[] = [];
+  cms.subscribe((e) => void live.push(`${e.seq}:${e.event}`));
+  await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" }, { publish: true });
+  await cms.update(admin, "guide", "a", { title: "A" }, { publish: true }); // nothing to do
+  await cms.settle();
+  await new Promise((r) => setTimeout(r, 5));
+  const rows = (await repo.changesSince(0, 100)).map((r) => `${r.seq}:${r.event}`);
+  assert.deepEqual(rows, ["1:doc.created", "2:doc.published"], "the no-op publish wrote nothing");
+  assert.deepEqual(live, rows, "live subscribers heard exactly the log, in its order");
+});
+
+test("round 2: a tenant asked for while its old handler drains gets a new one only after dispose", async () => {
+  const { createTenantHandler } = await import("./tenants");
+  const log: string[] = [];
+  let close: (() => void) | null = null;
+  let made = 0;
+  const handler = createTenantHandler({
+    resolve: (req) => new URL(req.url).hostname.split(".")[0],
+    create: () => {
+      const n = ++made;
+      log.push(`create ${n}`);
+      return () => (n === 1 ? new Response(new ReadableStream({ start: (c) => void (close = () => c.close()) })) : new Response("ok"));
+    },
+    dispose: (t) => void log.push(`dispose ${t}`),
+  });
+  const first = await handler(new Request("http://acme.x/"));
+  const forgot = handler.forget("acme");
+  const second = handler(new Request("http://acme.x/"));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(log, ["create 1"], "the new request waits for the drop");
+  close!();
+  await first.body!.getReader().read();
+  await forgot;
+  assert.equal(await (await second).text(), "ok");
+  assert.deepEqual(log, ["create 1", "dispose acme", "create 2"]);
 });

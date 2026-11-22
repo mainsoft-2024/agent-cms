@@ -39,8 +39,20 @@ export interface AuditQuery {
   before?: string | null;
   limit: number;
   action?: string;
+  /** All actions of one kind: `doc.` matches `doc.publish`, `doc.delete`, … (0.18.0). */
+  actionPrefix?: string;
   outcome?: AuditEntry["outcome"];
   actorKind?: AuditEntry["actorKind"];
+  /** One person or key by id (0.18.0). */
+  actorId?: string;
+  /** Words in the name shown for who did it (0.18.0). */
+  who?: string;
+  /** What it was done to (0.18.0). */
+  collection?: string;
+  slug?: string;
+  /** A period: entries at or after `since` and before `until` (ISO times, 0.18.0). */
+  since?: string;
+  until?: string;
 }
 
 export type NewAsset = Omit<CmsAsset, "createdAt" | "updatedAt" | "deletedAt" | "deletedBy" | "focalX" | "focalY" | "rev"> & { createdAt?: string; updatedAt?: string; focalX?: number | null; focalY?: number | null; rev?: number };
@@ -524,7 +536,20 @@ export class MemoryRepo implements CmsRepo {
   }
   async listAudit(q: AuditQuery) {
     return this.audit
-      .filter((e) => (!q.before || `${e.at}|${e.id}` < q.before) && (!q.action || e.action === q.action) && (!q.outcome || e.outcome === q.outcome) && (!q.actorKind || e.actorKind === q.actorKind))
+      .filter(
+        (e) =>
+          (!q.before || `${e.at}|${e.id}` < q.before) &&
+          (!q.action || e.action === q.action) &&
+          (!q.actionPrefix || e.action.startsWith(q.actionPrefix)) &&
+          (!q.outcome || e.outcome === q.outcome) &&
+          (!q.actorKind || e.actorKind === q.actorKind) &&
+          (!q.actorId || e.actorId === q.actorId) &&
+          (!q.who || e.actorLabel.toLowerCase().includes(q.who.toLowerCase())) &&
+          (!q.collection || e.collection === q.collection) &&
+          (!q.slug || e.slug === q.slug) &&
+          (!q.since || e.at >= q.since) &&
+          (!q.until || e.at < q.until)
+      )
       .sort((a, b) => `${b.at}|${b.id}`.localeCompare(`${a.at}|${a.id}`))
       .slice(0, q.limit)
       .map((e) => structuredClone(e));

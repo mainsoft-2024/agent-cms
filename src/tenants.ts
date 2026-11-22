@@ -84,9 +84,17 @@ export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandl
   // Requests in progress per handler (until the response body has been read or cancelled).
   const busy = new Map<Promise<TenantRequestHandler>, { n: number; idle: (() => void)[] }>();
   const drainMs = o.drainMs ?? 30_000;
-  async function forget(tenant: string) {
+  // A tenant being dropped: a new request for it waits until the old one is disposed, so
+  // `dispose(tenant)` never closes what a replacement just opened.
+  const draining = new Map<string, Promise<void>>();
+  function forget(tenant: string): Promise<void> {
     const h = live.get(tenant);
-    if (!h || !live.delete(tenant)) return;
+    if (!h || !live.delete(tenant)) return draining.get(tenant) ?? Promise.resolve();
+    const done = drain(tenant, h).finally(() => draining.get(tenant) === done && draining.delete(tenant));
+    draining.set(tenant, done);
+    return done;
+  }
+  async function drain(tenant: string, h: Promise<TenantRequestHandler>) {
     // Wait for what that handler is still answering (a long upload, an events stream) first.
     const b = busy.get(h);
     if (b?.n) {
@@ -156,13 +164,17 @@ export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandl
     if (!raw || !TENANT_ID.test(raw)) return notFound();
     let h: TenantRequestHandler;
     let made: Promise<TenantRequestHandler>;
+    // Wait out a drop of this tenant in progress before making a new handler for it.
+    while (draining.has(raw) && !live.has(raw)) await draining.get(raw);
+    made = handlerOfPromise(raw);
+    // Counted from now, not from when the handler is ready: a drop meanwhile waits for this request.
+    const leave = enter(made);
     try {
-      made = handlerOfPromise(raw);
       h = await made;
     } catch {
+      leave();
       return notFound();
     }
-    const leave = enter(made);
     try {
       return watched(await h(req), leave);
     } catch (e) {

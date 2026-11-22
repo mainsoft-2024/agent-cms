@@ -110,7 +110,7 @@ import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
 import { clientIp, ipAllowed } from "./limits";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
-import { eventStream, mayHear } from "./events";
+import { eventStream, hearAs } from "./events";
 import { openApiDocument } from "./openapi";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
@@ -556,6 +556,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             cursor: q.get("cursor"),
             limit: Number(q.get("limit") ?? 50) || 50,
             action: q.get("action") ?? undefined,
+            actionPrefix: q.get("group") ? `${q.get("group")!.slice(0, 40)}.` : undefined,
+            actorId: q.get("actorId")?.slice(0, 200) || undefined,
+            who: q.get("who")?.slice(0, 120) || undefined,
+            collection: q.get("collection") ?? undefined,
+            slug: q.get("slug") ?? undefined,
+            since: q.get("since") ?? undefined,
+            until: q.get("until") ?? undefined,
             outcome: outcome === "ok" || outcome === "denied" || outcome === "failed" ? outcome : undefined,
             actorKind: (["user", "key", "system", "anonymous"] as const).find((k) => k === q.get("actorKind")),
           })
@@ -600,7 +607,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         for (const c of q.get("collections")?.split(",").filter(Boolean) ?? []) core.assertCan(actor, c, "read");
         const only = q.get("collections")?.split(",").filter(Boolean);
         const since = Math.max(0, Math.floor(Number(q.get("since") ?? 0)) || 0);
-        const r = await core.changes.since(actor, since, { collections: only, limit: Number(q.get("limit") ?? 200) || 200, hear: (e) => mayHear(core, actor, e, only) });
+        const r = await core.changes.since(actor, since, { collections: only, limit: Number(q.get("limit") ?? 200) || 200, hear: (e) => hearAs(core, actor, e, only) });
         if (!r) return json({ changes: [], last: await core.changes.last(), more: false, reset: true });
         return json({ ...r, reset: false });
       }

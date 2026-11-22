@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, RotateCw, Send } from "lucide-react";
+import { Plus, RotateCw, Send, Webhook } from "lucide-react";
 import type { WebhookDelivery, WebhookEvent, WebhookView } from "@mainsoft/agent-cms/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,11 +17,21 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { errorMessage, type T } from "./cms-messages";
-import { CodeBox, ConfirmDialog, PageHeader, StatusText, DIALOG } from "./cms-parts";
+import { CodeBox, ConfirmDialog, PageHeader, StatusText, DIALOG, EmptyState } from "./cms-parts";
 import { relativeTime, useAsync, useCms, useIsMobile } from "./use-cms";
 
 export interface CmsWebhooksProps {
   className?: string;
+}
+
+/** Events by what they are about (`doc`, `review`, `asset`, …), in the order they come. */
+export function groupEvents<E extends string>(events: readonly E[]): [string, E[]][] {
+  const out = new Map<string, E[]>();
+  for (const e of events) {
+    const g = e.split(".")[0];
+    out.set(g, [...(out.get(g) ?? []), e]);
+  }
+  return [...out];
 }
 
 /** "Publish, Unpublish" for a list of events; "All" for none. */
@@ -63,8 +73,28 @@ export function CmsWebhooks({ className }: CmsWebhooksProps) {
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <div className="relative min-w-0 flex-1 overflow-x-auto px-4 py-4 md:px-6">
           <StatusText tone={hooks.error ? "error" : "muted"} className="mb-2 text-xs">
-            {hooks.error ? errorMessage(hooks.error, t) : hooks.loading && !hooks.data ? t("loading") : off ? t("webhooks_need_key") : hooks.data && !list.length ? t("webhooks_empty") : ""}
+            {hooks.error ? errorMessage(hooks.error, t) : hooks.loading && !hooks.data ? t("loading") : ""}
           </StatusText>
+          {hooks.error ? (
+            <Button type="button" variant="outline" size="sm" className="mb-3" onClick={hooks.reload}>
+              {t("retry")}
+            </Button>
+          ) : null}
+          {/* Turned off on this server: say what it means for the person, the setting for whoever runs it. */}
+          {off ? <EmptyState icon={Webhook} title={t("webhooks_off_title")} text={t("webhooks_off_text")} action={<span className="text-xs text-muted-foreground">{t("webhooks_need_key")}</span>} /> : null}
+          {hooks.data && !off && !list.length ? (
+            <EmptyState
+              icon={Webhook}
+              title={t("webhooks_empty")}
+              text={t("webhooks_empty_text")}
+              action={
+                <Button type="button" size="sm" className="gap-1.5" onClick={() => setEditing("new")}>
+                  <Plus aria-hidden className="h-4 w-4" />
+                  {t("webhook_new")}
+                </Button>
+              }
+            />
+          ) : null}
           {list.length ? (
             <Table>
               <TableHeader>
@@ -130,7 +160,7 @@ export function CmsWebhooks({ className }: CmsWebhooksProps) {
             <DialogTitle>{t("webhook_created", { name: created?.name ?? "" })}</DialogTitle>
             <DialogDescription>{t("webhook_created_text")}</DialogDescription>
           </DialogHeader>
-          <CodeBox value={created?.secret ?? ""} label={t("webhook_secret")} multiline />
+          <CodeBox value={created?.secret ?? ""} secret={created?.secret} label={t("webhook_secret")} multiline />
           <CodeBox value={'const event = await verifyWebhook(req, process.env.CMS_WEBHOOK_SECRET);'} label="verifyWebhook" multiline />
           <DialogFooter>
             <Button type="button" onClick={() => setCreated(null)}>
@@ -214,7 +244,7 @@ function WebhookPanel({ hook, onEdit, onChanged, onDeleted }: { hook: WebhookVie
       <div className="flex flex-col gap-1.5">
         <h3 className="text-xs font-medium text-muted-foreground">{t("webhook_secret")}</h3>
         {secret ? (
-          <CodeBox value={secret} label={t("webhook_secret")} multiline />
+          <CodeBox value={secret} secret={secret} label={t("webhook_secret")} multiline />
         ) : (
           <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
             <code className="min-w-0 flex-1 truncate font-mono text-xs">whsec_••••••••••••</code>
@@ -230,8 +260,10 @@ function WebhookPanel({ hook, onEdit, onChanged, onDeleted }: { hook: WebhookVie
         <ul className="flex flex-col divide-y" aria-label={t("webhook_history")}>
           {(log.data ?? []).map((d) => (
             <li key={d.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-1.5 text-xs">
-              <span className={cn("w-9 shrink-0 font-mono font-medium", d.ok ? "text-green-700" : "text-destructive")} title={d.error ?? undefined}>
-                {d.status ?? "—"}
+              {/* In words first, the HTTP code after: "Delivered · 200", "Refused · 500", "No answer". */}
+              <span className={cn("shrink-0 font-medium", d.ok ? "text-green-700 dark:text-green-400" : "text-destructive")} title={d.error ?? undefined}>
+                {d.ok ? t("webhook_delivered") : d.status === null ? t("webhook_no_answer_short") : t("webhook_refused")}
+                {d.status !== null ? <span className="ml-1 font-mono font-normal text-muted-foreground">{d.status}</span> : null}
               </span>
               <span className="min-w-0 flex-1 truncate">
                 {d.event === "ping" ? t("webhook_ping") : t(`event.${d.event}` as never)}
@@ -250,7 +282,7 @@ function WebhookPanel({ hook, onEdit, onChanged, onDeleted }: { hook: WebhookVie
               )}
               {/* The reason is readable without hovering (phones): under the row. */}
               {!d.ok && d.error ? (
-                <span className="basis-full break-words pl-11 text-destructive">
+                <span className="basis-full break-words text-destructive">
                   {d.error}
                   <span className="text-muted-foreground"> · {new Date(d.at).toLocaleString(locale)}</span>
                 </span>
@@ -330,13 +362,29 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
           <fieldset className="flex flex-col gap-2">
             <legend className="mb-1 text-sm font-medium">{t("webhook_events")}</legend>
             <p className="text-xs text-muted-foreground">{t("webhook_events_help")}</p>
-            <div className="grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
-              {events.map((ev) => (
-                <label key={ev} className="flex items-center gap-2 text-sm">
-                  <Checkbox checked={picked.includes(ev)} onCheckedChange={(on) => setPicked((p) => toggle(p, ev, on === true))} />
-                  {t(`event.${ev}` as never)}
-                </label>
-              ))}
+            {/* Grouped by what they are about, each group with its own "all". Nothing ticked = every event. */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {groupEvents(events).map(([group, evs]) => {
+                const on = evs.filter((ev) => picked.includes(ev)).length;
+                return (
+                  <div key={group} role="group" aria-label={t(`event_group.${group}` as never)} className="flex min-w-0 flex-col gap-1.5 rounded-md border p-2.5">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                      <Checkbox
+                        checked={on === evs.length}
+                        aria-checked={on === evs.length ? "true" : on ? "mixed" : "false"}
+                        onCheckedChange={(v) => setPicked((p) => (v === true ? [...new Set([...p, ...evs])] : p.filter((x) => !evs.includes(x))))}
+                      />
+                      {t(`event_group.${group}` as never)}
+                    </label>
+                    {evs.map((ev) => (
+                      <label key={ev} className="ml-6 flex items-center gap-2 text-sm">
+                        <Checkbox checked={picked.includes(ev)} onCheckedChange={(v) => setPicked((p) => toggle(p, ev, v === true))} />
+                        {t(`event.${ev}` as never)}
+                      </label>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           </fieldset>
           {collections.length > 1 ? (

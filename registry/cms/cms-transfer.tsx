@@ -140,17 +140,27 @@ export function CmsTransfer({ className }: { className?: string }) {
       setBusy(false);
     }
   }
-  /** Publish again just the documents whose save went through but whose publish did not. */
+  /**
+   * Publish again just the documents whose save went through but whose publish did not: by
+   * document and the version the import saved. Nothing is saved again, and if someone edited
+   * the document since, it says so instead of publishing their edit.
+   */
   async function retryPublish() {
     if (!result) return;
-    const again = result.items.filter((i) => i.publishError).map((i) => i.path);
     setBusy(true);
     try {
-      const r = await client.importDocs(result.files, { onConflict: conflict, collection: collection || undefined, publish: true, only: again });
-      const byPath = new Map(r.items.map((i) => [i.path, i]));
-      setResult({ files: result.files, items: result.items.map((i) => (byPath.has(i.path) ? { ...i, published: byPath.get(i.path)!.published, publishError: byPath.get(i.path)!.publishError ?? byPath.get(i.path)!.reason } : i)) });
-    } catch (e) {
-      setStatus({ text: errorMessage(e, t), tone: "error" });
+      const items = [...result.items];
+      for (let n = 0; n < items.length; n++) {
+        const i = items[n];
+        if (!i.publishError || !i.toVersion) continue;
+        try {
+          await client.publish(i.collection, i.slug, { version: i.toVersion, expectedVersion: i.toVersion });
+          items[n] = { ...i, published: true, publishError: null };
+        } catch (e) {
+          items[n] = { ...i, publishError: errorMessage(e, t) };
+        }
+      }
+      setResult({ files: result.files, items });
     } finally {
       setBusy(false);
     }

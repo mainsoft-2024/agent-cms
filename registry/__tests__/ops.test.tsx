@@ -33,6 +33,11 @@ test("keys: list with expired badge; create shows the secret once with MCP and C
   await user.click(screen.getByRole("button", { name: "New key" }));
   const dialog = await screen.findByRole("dialog", { name: "New key" });
   await user.type(within(dialog).getByLabelText("Name"), "release-bot");
+  // Least privilege first: a new key starts as read-only, and says so.
+  const access = within(dialog).getByRole("radiogroup", { name: "What it may do" });
+  assert.equal(within(access).getByRole("radio", { name: "Read" }).getAttribute("aria-checked"), "true");
+  assert.ok(within(dialog).getByText(/reads every collection · never expires · from anywhere/));
+  await user.click(within(access).getByRole("radio", { name: "Custom" }));
   assert.equal(within(dialog).getByRole("checkbox", { name: "read" }).getAttribute("data-state"), "checked");
   await user.click(within(dialog).getByRole("checkbox", { name: "publish" }));
   await user.click(within(dialog).getByRole("checkbox", { name: "Notices" }));
@@ -65,7 +70,7 @@ test("keys: list with expired badge; create shows the secret once with MCP and C
 
   const keys = await s.cms.listKeys(admin);
   const made = keys.find((k) => k.name === "release-bot")!;
-  assert.deepEqual(made.scopes, ["read", "write", "publish"]);
+  assert.deepEqual(made.scopes, ["read", "publish"]);
   assert.deepEqual(made.collections, ["notices"]);
   assert.ok(made.expiresAt && Date.parse(made.expiresAt) > Date.now() + 29 * 86_400_000);
 

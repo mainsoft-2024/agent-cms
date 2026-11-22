@@ -43,7 +43,7 @@ export interface FlowContext {
   trashDays: number;
   assets: ReturnType<typeof createAssets>;
   /** The payload of a signed preview token (throws when it is bad or expired). */
-  previewPayload: (token: string) => { c: string; s: string; v: number; exp: number; cm?: 1 };
+  previewPayload: (token: string) => { c: string; s: string; i?: string; v: number; exp: number; cm?: 1 };
 }
 
 export interface TrashRef {
@@ -459,7 +459,7 @@ export function createFlow(ctx: FlowContext) {
     if (!p.cm) throw fail("comments_off");
     ctx.collection(p.c);
     const doc = await repo.findDoc(p.c, p.s);
-    if (!doc) throw fail("not_found", { collection: p.c, slug: p.s });
+    if (!doc || (p.i && doc.id !== p.i)) throw fail("not_found", { collection: p.c, slug: p.s });
     return doc;
   }
 
