@@ -7,7 +7,7 @@ import { blocksToClipboard, blocksToMarkdown, markdownToBlocks, sameMarkdown, ty
 import { autoFormat, hasMark, insertText, linkAt, mdToSpans, setLink, sliceSpans, spansToMd, toggleMark, type Span } from "../cms/cms-blocks-inline";
 
 const root = new URL("../../", import.meta.url).pathname;
-const files = ["README.md", "CHANGELOG.md", "TODO.md", ...["en", "ko"].flatMap((l) => readdirSync(`${root}apps/docs/content/${l}`).map((f) => `apps/docs/content/${l}/${f}`))];
+const files = ["README.md", "CHANGELOG.md", "TODO.md", ...readdirSync(`${root}docs/roadmap`).map((f) => `docs/roadmap/${f}`)];
 const fresh = (bs: EBlock[]) => bs.map((b) => ({ ...b, orig: undefined }));
 
 test("blocks: every markdown file in the repository survives the block editor, untouched and rewritten", () => {

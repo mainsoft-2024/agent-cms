@@ -1,9 +1,9 @@
 name: docs-cron
 
-# The docs site (apps/docs) runs on agent-cms. Its scheduled publishing, scheduled
-# releases and trash clean-up run when something calls /api/cms/_cron. Vercel's own
-# cron (apps/docs/vercel.json) runs once a day on the Hobby plan, so this calls the
-# route every ten minutes. GitHub may start a scheduled run a few minutes late.
+# The hosted docs site (agent-cms-docs.vercel.app, its code lives in a separate
+# repository) runs on agent-cms. Its scheduled publishing, scheduled releases and trash
+# clean-up run when something calls /api/cms/_cron. Vercel's own cron runs once a day on
+# the Hobby plan, so this calls the route every ten minutes. GitHub may start a scheduled run a few minutes late.
 on:
   schedule:
     - cron: "*/10 * * * *"
