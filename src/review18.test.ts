@@ -35,7 +35,7 @@ function notes() {
 const SECRET = "0123456789abcdef0123456789abcdef-preview";
 
 test("hidden fields leave every copy: versions, one version, diffs, conflicts and preview links", async () => {
-  const cms = createCms({ repo: new MemoryRepo(), collections: [products()], warn: () => {}, previewSecret: SECRET, siteUrl: "https://app.test" });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [products()], warn: () => {}, previewSecret: SECRET });
   await cms.create(admin, "products", { slug: "a", title: "A", body: "x\n", fields: { cost: 4, price: 10 } }, { publish: true });
   await cms.update(admin, "products", "a", { fields: { cost: 5, price: 10 } });
 
@@ -115,4 +115,81 @@ test("change log: rows are written in the write's own transaction, once per even
   await assert.rejects(cms.create(admin, "products", { slug: "", title: "", body: "" }));
   await cms.settle();
   assert.equal((await repo.changesSince(0, 100)).length, before);
+});
+
+test("import: a save that went through stays saved when its publish fails, and only the publish is tried again", async () => {
+  let block = true;
+  const guide = defineCollection({
+    slug: "guide",
+    label: "Guide",
+    visibility: "public",
+    hooks: { beforePublish: [() => { if (block) throw new Error("legal has not signed off"); }] },
+  });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [guide], warn: () => {} });
+  const files = [{ path: "guide/a.md", text: "---\ntitle: A\nstatus: published\n---\nHello.\n" }];
+  const first = await cms.transfer.import(admin, files, { publish: true });
+  const a = first.items[0];
+  assert.equal(a.change, "new");
+  assert.equal(a.toVersion, 1, "the save stands");
+  assert.equal(a.published, false);
+  assert.match(a.publishError ?? "", /legal/, "and the item says why the publish failed");
+  assert.equal((await cms.get(admin, "guide", "a", { draft: true })).publishedVersion, null);
+
+  block = false;
+  const again = await cms.transfer.import(admin, files, { publish: true, only: ["guide/a.md"] });
+  assert.equal(again.items[0].change, "same", "nothing to save the second time");
+  assert.equal(again.items[0].published, true, "only the publish ran");
+  const doc = await cms.get(admin, "guide", "a", { draft: true });
+  assert.deepEqual([doc.version, doc.publishedVersion], [1, 1], "no extra version");
+});
+
+test("versions in pages: newest first, cut by the store, continuing below the cursor", async () => {
+  const { createCmsHandler } = await import("./http");
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public" });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [guide], warn: () => {} });
+  await cms.create(admin, "guide", { slug: "a", title: "v1", body: "x\n" });
+  for (let n = 2; n <= 5; n++) await cms.update(admin, "guide", "a", { title: `v${n}` });
+  const handler = createCmsHandler({ cms, resolveUser: async () => admin });
+  const get = async (q: string) => (await (await handler(new Request(`http://x/api/cms/collections/guide/a/versions?${q}`))).json()) as { versions: { version: number; title?: string }[]; total: number; nextCursor: string | null };
+  const one = await get("limit=2&fields=summary");
+  assert.deepEqual([one.versions.map((v) => v.version), one.total, one.nextCursor], [[5, 4], 5, "4"]);
+  assert.equal(one.versions[0].title, "v5");
+  const two = await get(`limit=2&fields=summary&cursor=${one.nextCursor}`);
+  assert.deepEqual([two.versions.map((v) => v.version), two.nextCursor], [[3, 2], "2"]);
+  const three = await get(`limit=2&cursor=${two.nextCursor}`);
+  assert.deepEqual([three.versions.map((v) => v.version), three.nextCursor], [[1], null]);
+});
+
+test("tenants: a dropped tenant is disposed only after its requests in progress, streams included, have finished", async () => {
+  const { createTenantHandler } = await import("./tenants");
+  const disposed: string[] = [];
+  let push: ((s: string) => void) | null = null;
+  let end: (() => void) | null = null;
+  const handler = createTenantHandler({
+    resolve: (req) => new URL(req.url).hostname.split(".")[0],
+    create: () => () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            push = (s) => c.enqueue(new TextEncoder().encode(s));
+            end = () => c.close();
+          },
+        })
+      ),
+    dispose: (t) => void disposed.push(t),
+    drainMs: 5000,
+  });
+  const res = await handler(new Request("http://acme.example.test/api/cms/_events"));
+  const reader = res.body!.getReader();
+  push!("one");
+  assert.equal(new TextDecoder().decode((await reader.read()).value), "one");
+  const forgotten = handler.forget("acme");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(disposed, [], "the stream is still open, so the tenant is not closed under it");
+  end!();
+  await reader.read();
+  await forgotten;
+  assert.deepEqual(disposed, ["acme"]);
+  // A request after the drop makes a fresh handler.
+  assert.ok(handler.tenants().length === 0);
 });

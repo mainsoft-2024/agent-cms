@@ -157,6 +157,7 @@ export const ERROR_CODES = {
   release_empty: "precondition",
   secrets_key_missing: "precondition",
   release_blocked: "precondition",
+  transactions_required: "precondition",
   schedule_invalid: "invalid",
   comment_invalid: "invalid",
   name_invalid: "invalid",

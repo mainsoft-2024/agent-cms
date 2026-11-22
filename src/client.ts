@@ -516,7 +516,7 @@ export function createRestClient(opts: RestClientOptions) {
     filters: (c: string) => req<{ filters: (SavedFilter & { mine: boolean })[] }>("GET", `/collections/${enc(c)}/_filters`).then((r) => r.filters),
     saveFilter: (c: string, b: { name: string; query: Record<string, string>; shared?: boolean }) => req<{ filter: SavedFilter }>("POST", `/collections/${enc(c)}/_filters`, { body: b }).then((r) => r.filter),
     removeFilter: (c: string, id: string) => req<{ ok: true }>("DELETE", `/collections/${enc(c)}/_filters/${enc(id)}`),
-    trash: (kind?: TrashRef["kind"]) => req<{ items: TrashItem[]; days: number; canPurge: boolean }>("GET", "/trash", { query: { kind } }),
+    trash: (kind?: TrashRef["kind"], q?: string) => req<{ items: TrashItem[]; days: number; canPurge: boolean }>("GET", "/trash", { query: { kind, q: q || undefined } }),
     restoreTrash: (items: TrashRef[]) => req<{ restored: number; results?: { kind: TrashRef["kind"]; id: string; ok: boolean; error?: { code: string; message: string } }[] }>("POST", "/trash/_restore", { body: { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
     purgeTrash: (items: TrashRef[] | "all") => req<{ purged: number }>("POST", "/trash/_purge", { body: items === "all" ? { all: true } : { items: items.map((i) => ({ kind: i.kind, id: i.id })) } }),
     releases: () => req<{ releases: CmsRelease[] }>("GET", "/releases").then((r) => r.releases),

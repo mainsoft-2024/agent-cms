@@ -1282,6 +1282,17 @@ export const en = {
   keys_empty_text: "A key lets a script, an agent or another app read or write here without signing in. Make one with only the scopes and collections it needs.",
   release_empty_text: "A release groups changes to several documents so they go public at the same moment, now or at a set time.",
   trash_none_text: "Deleted documents and files wait here for {days} days before they are removed for good.",
+  transfer_result: "Import result",
+  transfer_saved_n: "{n} saved",
+  transfer_published_n: "{n} published",
+  transfer_publish_failed_n: "{n} saved but not published",
+  transfer_failed_n: "{n} not saved",
+  transfer_not_saved: "Not saved",
+  transfer_saved_not_published: "Saved, not published",
+  transfer_publish_again_n: "Publish these {n} again",
+  transfer_pictures_left: "{n} pictures from the Notion export are left out",
+  transfer_pictures_hint: "The text comes in here. To bring the pictures too, import the zip from the command line: npx @mainsoft/agent-cms import <zip> --from notion",
+  transfer_more_n: "and {n} more",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2550,6 +2561,17 @@ export const ko: CmsMessages = {
   keys_empty_text: "키가 있으면 스크립트, 에이전트, 다른 앱이 로그인 없이 읽고 쓸 수 있음. 꼭 필요한 권한과 컬렉션만 골라 만들 것.",
   release_empty_text: "릴리스는 여러 문서의 변경을 묶어 한 번에 공개함. 바로 또는 정한 시각에.",
   trash_none_text: "지운 문서와 파일은 {days}일 동안 여기 있다가 완전히 지워짐.",
+  transfer_result: "가져오기 결과",
+  transfer_saved_n: "{n}개 저장함",
+  transfer_published_n: "{n}개 게시함",
+  transfer_publish_failed_n: "{n}개는 저장했지만 게시 못 함",
+  transfer_failed_n: "{n}개 저장 못 함",
+  transfer_not_saved: "저장 못 함",
+  transfer_saved_not_published: "저장함, 게시 못 함",
+  transfer_publish_again_n: "이 {n}개 다시 게시",
+  transfer_pictures_left: "Notion 내보내기의 그림 {n}개는 빠짐",
+  transfer_pictures_hint: "글은 여기서 들어옴. 그림까지 가져오려면 명령줄에서 zip을 가져올 것: npx @mainsoft/agent-cms import <zip> --from notion",
+  transfer_more_n: "외 {n}개",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;

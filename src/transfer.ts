@@ -48,7 +48,14 @@ export interface ImportItem {
   /** Why it was skipped or failed. */
   reason: string | null;
   diff?: string;
+  /** Published by this import (with `publish`). */
   published?: boolean;
+  /**
+   * Saved, but publishing it failed (the save stands): why. Import again with `publish` and
+   * `only` set to these paths to publish just them; documents already saved come out `same`
+   * and are only published.
+   */
+  publishError?: string | null;
 }
 
 export interface TransferContext {
@@ -140,13 +147,25 @@ export function createTransfer(ctx: TransferContext) {
             item.reason = item.diagnostics.find((d) => d.severity === "error")!.message;
             continue;
           }
-          if (o.dryRun || (o.only && !o.only.includes(f.path)) || item.change === "same" || item.change === "skip") continue;
-          const note = "import";
-          const saved = cur ? await ctx.update(actor, col, item.slug, doc, { note, expectedVersion: cur.version }) : await ctx.create(actor, col, doc, { note });
-          item.toVersion = saved.version;
-          if (o.publish && wasPublic && ctx.can(actor, col, "publish")) {
-            await ctx.publish(actor, col, item.slug);
-            item.published = true;
+          // A document saved by an earlier run whose publish failed: publishing is all that is left.
+          const publishLeft = item.change === "same" && !!o.publish && wasPublic && !!cur && cur.publishedVersion !== cur.version && cur.status !== "archived";
+          if (o.dryRun || (o.only && !o.only.includes(f.path)) || item.change === "skip" || (item.change === "same" && !publishLeft)) continue;
+          if (item.change !== "same") {
+            const note = "import";
+            const saved = cur ? await ctx.update(actor, col, item.slug, doc, { note, expectedVersion: cur.version }) : await ctx.create(actor, col, doc, { note });
+            item.toVersion = saved.version;
+          }
+          // Publishing is its own step: when it fails the save stands and the item says so.
+          if (o.publish && wasPublic) {
+            try {
+              if (!ctx.can(actor, col, "publish")) throw fail("forbidden_publish", { collection: col });
+              await ctx.publish(actor, col, item.slug);
+              item.published = true;
+              item.publishError = null;
+            } catch (e) {
+              item.published = false;
+              item.publishError = ctx.message(e);
+            }
           }
         } catch (e) {
           item.change = "error";
@@ -155,7 +174,7 @@ export function createTransfer(ctx: TransferContext) {
         }
       }
       const applied = !o.dryRun;
-      if (applied) ctx.audit(actor, "import.run", { detail: { files: mds.length, created: items.filter((i) => i.change === "new" && i.toVersion).length, updated: items.filter((i) => i.change === "update" && i.toVersion).length, failed: items.filter((i) => i.change === "error").length } });
+      if (applied) ctx.audit(actor, "import.run", { detail: { files: mds.length, created: items.filter((i) => i.change === "new" && i.toVersion).length, updated: items.filter((i) => i.change === "update" && i.toVersion).length, failed: items.filter((i) => i.change === "error").length, published: items.filter((i) => i.published).length, publishFailed: items.filter((i) => i.publishError).length } });
       return { items: o.only && applied ? items.filter((i) => o.only!.includes(i.path)) : items, applied };
     },
   };

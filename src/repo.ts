@@ -99,7 +99,12 @@ export const inFolder = (folder: string, under: string) => under === "" || folde
 
 export interface CmsRepo {
   /** Run `fn` atomically (one DB transaction). */
-  tx<T>(fn: (repo: CmsRepo) => Promise<T>): Promise<T>;
+  /**
+   * Run `fn` in a transaction. With `atomic`, a store that cannot promise all-or-nothing (a
+   * driver without transactions) refuses with `transactions_required` instead of running the
+   * steps one by one: used where half a change would be wrong (publishing a release).
+   */
+  tx<T>(fn: (repo: CmsRepo) => Promise<T>, o?: { atomic?: boolean }): Promise<T>;
 
   /** Documents in the trash are not found unless `trashed` is set. */
   findDoc(collection: string, slug: string, o?: FindOptions): Promise<CmsDoc | null>;
@@ -112,6 +117,11 @@ export interface CmsRepo {
 
   insertVersion(v: NewVersion): Promise<void>;
   listVersions(documentId: string): Promise<StoredVersion[]>;
+  /**
+   * One page of a document's versions, newest first, older than `before` (0.18.0). Optional:
+   * without it the CMS pages `listVersions` in memory.
+   */
+  pageVersions?(documentId: string, o: { limit: number; before?: number | null }): Promise<{ versions: StoredVersion[]; total: number }>;
   getVersion(documentId: string, version: number): Promise<StoredVersion | null>;
   setVersionReviewed(documentId: string, version: number, reviewed: ReviewMark[]): Promise<void>;
   updateVersion(documentId: string, version: number, patch: VersionPatch): Promise<void>;
@@ -422,6 +432,11 @@ export class MemoryRepo implements CmsRepo {
   }
   async listVersions(documentId: string) {
     return this.versions.filter((v) => v.documentId === documentId).sort((a, b) => b.version - a.version).map((v) => structuredClone(v));
+  }
+  async pageVersions(documentId: string, o: { limit: number; before?: number | null }) {
+    const all = this.versions.filter((v) => v.documentId === documentId).sort((a, b) => b.version - a.version);
+    const rows = all.filter((v) => o.before == null || v.version < o.before).slice(0, o.limit);
+    return { versions: rows.map((v) => structuredClone(v)), total: all.length };
   }
   async getVersion(documentId: string, version: number) {
     const v = this.versions.find((x) => x.documentId === documentId && x.version === version);

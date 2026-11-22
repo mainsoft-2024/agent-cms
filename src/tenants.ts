@@ -66,8 +66,13 @@ export interface TenantHandlerOptions {
   create: (tenant: string) => TenantRequestHandler | Promise<TenantRequestHandler>;
   /** Tenants kept in memory; the one used least recently is dropped first. Default 200. */
   max?: number;
-  /** Told when a tenant's handler is dropped from memory (close what `create` opened). */
+  /**
+   * Told when a tenant's handler is dropped from memory (close what `create` opened). Called
+   * once the tenant's requests in progress have finished, streams included, or after `drainMs`.
+   */
   dispose?: (tenant: string) => void | Promise<void>;
+  /** How long a dropped tenant's requests in progress may still run before `dispose` anyway. Default 30 s. */
+  drainMs?: number;
 }
 
 const notFound = () => new Response(JSON.stringify({ error: "not_found", message: "No such site" }), { status: 404, headers: { "content-type": "application/json; charset=utf-8" } });
@@ -76,11 +81,63 @@ const notFound = () => new Response(JSON.stringify({ error: "not_found", message
 export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandler & { tenants(): string[]; forget(tenant: string): Promise<void> } {
   const max = Math.max(1, o.max ?? 200);
   const live = new Map<string, Promise<TenantRequestHandler>>();
+  // Requests in progress per handler (until the response body has been read or cancelled).
+  const busy = new Map<Promise<TenantRequestHandler>, { n: number; idle: (() => void)[] }>();
+  const drainMs = o.drainMs ?? 30_000;
   async function forget(tenant: string) {
-    if (!live.delete(tenant)) return;
+    const h = live.get(tenant);
+    if (!h || !live.delete(tenant)) return;
+    // Wait for what that handler is still answering (a long upload, an events stream) first.
+    const b = busy.get(h);
+    if (b?.n) {
+      await new Promise<void>((done) => {
+        const t = setTimeout(done, drainMs);
+        (t as { unref?: () => void }).unref?.();
+        b.idle.push(() => (clearTimeout(t), done()));
+      });
+    }
+    busy.delete(h);
     await Promise.resolve(o.dispose?.(tenant)).catch(() => {});
   }
-  async function handlerOf(tenant: string): Promise<TenantRequestHandler> {
+  function enter(h: Promise<TenantRequestHandler>) {
+    const b = busy.get(h) ?? { n: 0, idle: [] };
+    busy.set(h, b);
+    b.n++;
+    let left = false;
+    return () => {
+      if (left) return;
+      left = true;
+      if (--b.n === 0) for (const f of b.idle.splice(0)) f();
+    };
+  }
+  /** The response, with its body watched so the request counts as finished only when the body is done. */
+  function watched(res: Response, leave: () => void): Response {
+    if (!res.body) {
+      leave();
+      return res;
+    }
+    const reader = res.body.getReader();
+    const body = new ReadableStream<Uint8Array>({
+      async pull(c) {
+        try {
+          const r = await reader.read();
+          if (r.done) {
+            leave();
+            c.close();
+          } else c.enqueue(r.value);
+        } catch (e) {
+          leave();
+          c.error(e);
+        }
+      },
+      cancel(reason) {
+        leave();
+        return reader.cancel(reason);
+      },
+    });
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+  }
+  function handlerOfPromise(tenant: string): Promise<TenantRequestHandler> {
     const have = live.get(tenant);
     if (have) {
       live.delete(tenant);
@@ -98,12 +155,20 @@ export function createTenantHandler(o: TenantHandlerOptions): TenantRequestHandl
     const raw = await o.resolve(req);
     if (!raw || !TENANT_ID.test(raw)) return notFound();
     let h: TenantRequestHandler;
+    let made: Promise<TenantRequestHandler>;
     try {
-      h = await handlerOf(raw);
+      made = handlerOfPromise(raw);
+      h = await made;
     } catch {
       return notFound();
     }
-    return h(req);
+    const leave = enter(made);
+    try {
+      return watched(await h(req), leave);
+    } catch (e) {
+      leave();
+      throw e;
+    }
   };
   return Object.assign(handle, { tenants: () => [...live.keys()], forget });
 }

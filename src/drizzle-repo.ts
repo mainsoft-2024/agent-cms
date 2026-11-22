@@ -181,8 +181,11 @@ export class DrizzleRepo implements CmsRepo {
     };
   }
 
-  tx<T>(fn: (repo: CmsRepo) => Promise<T>): Promise<T> {
-    if (this.txMode === false) return fn(this);
+  tx<T>(fn: (repo: CmsRepo) => Promise<T>, o: { atomic?: boolean } = {}): Promise<T> {
+    if (this.txMode === false) {
+      if (o.atomic) return Promise.reject(new CmsError("transactions_required"));
+      return fn(this);
+    }
     let started = false;
     const run = (async () =>
       this.db.transaction((t) => {
@@ -195,6 +198,7 @@ export class DrizzleRepo implements CmsRepo {
       if (started || !/no transactions support|transactions? (are|is) not supported/i.test(e instanceof Error ? e.message : String(e))) throw e;
       this.txMode = false;
       this.warn("this database driver has no transactions: each change runs as separate statements (see DrizzleRepo `transactions`). A driver with transactions is safer: @neondatabase/serverless Pool, node-postgres or postgres.js.");
+      if (o.atomic) throw new CmsError("transactions_required");
       return fn(this);
     });
   }
@@ -274,6 +278,13 @@ export class DrizzleRepo implements CmsRepo {
     const V = this.t.versions;
     const rows = await this.db.select().from(V).where(eq(V.documentId, documentId)).orderBy(desc(V.version));
     return rows.map((r) => this.toVersion(r));
+  }
+  async pageVersions(documentId: string, o: { limit: number; before?: number | null }) {
+    const V = this.t.versions;
+    const where = o.before == null ? eq(V.documentId, documentId) : and(eq(V.documentId, documentId), lt(V.version, o.before));
+    const rows = await this.db.select().from(V).where(where).orderBy(desc(V.version)).limit(o.limit);
+    const [c] = await this.db.select({ n: sql<number>`count(*)::int` }).from(V).where(eq(V.documentId, documentId));
+    return { versions: rows.map((r) => this.toVersion(r)), total: Number(c?.n ?? 0) };
   }
   async getVersion(documentId: string, version: number) {
     const V = this.t.versions;

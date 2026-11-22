@@ -131,6 +131,7 @@ export const en: Messages = {
   release_closed: "This release was already published",
   release_empty: "The release has no documents",
   release_blocked: "{count} documents cannot go out, so nothing was published",
+  transactions_required: "This needs a database driver with transactions (all or nothing), and this one has none. Use @neondatabase/serverless Pool, node-postgres or postgres.js",
   schedule_invalid: "The time must be in the future, and unpublishing must come after publishing",
   comment_invalid: "A comment needs 1 to {max} characters",
   name_invalid: "A name needs 1 to {max} characters",

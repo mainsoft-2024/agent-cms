@@ -514,7 +514,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const Items = z.array(z.object({ kind: z.enum(["document", "asset"]), id: z.string().max(60) })).min(1).max(200);
         const kind = q.get("kind");
         if (seg.length === 1 && m === "GET") {
-          const all = await core.trash.list(actor, { kind: kind === "document" || kind === "asset" ? kind : undefined });
+          const all = await core.trash.list(actor, { kind: kind === "document" || kind === "asset" ? kind : undefined, q: q.get("q")?.slice(0, 200) || undefined });
           const p = slicePage(all.items, q);
           return json({ ...all, items: p.items, total: all.items.length, nextCursor: p.nextCursor });
         }
@@ -933,10 +933,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (slug && seg[3] === "versions") {
           if (seg.length === 4 && m === "GET") {
             // Newest first in pages when asked (`limit`, `cursor`); everything, oldest first, otherwise (as before 0.17.0).
-            const all = q.get("fields") === "summary" ? await core.versionList(actor, col, slug) : await core.versions(actor, col, slug);
-            if (!q.get("limit")) return json({ versions: all, nextCursor: null });
-            const p = slicePage([...all].reverse(), q);
-            return json({ versions: p.items, total: all.length, nextCursor: p.nextCursor });
+            const summary = q.get("fields") === "summary";
+            if (!q.get("limit")) return json({ versions: summary ? await core.versionList(actor, col, slug) : await core.versions(actor, col, slug), nextCursor: null });
+            // Pages come from the database, newest first; `cursor` is the version number to continue below.
+            const p = await core.versionPage(actor, col, slug, { limit: Math.max(1, Math.min(Number(q.get("limit")) || 100, 500)), cursor: q.get("cursor"), summary });
+            return json(p);
           }
           const n = Number(seg[4]);
           if (!Number.isInteger(n) || n < 1) throw new CmsError("invalid_version", {}, { messages: core.messages });

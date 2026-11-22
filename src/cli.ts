@@ -60,6 +60,7 @@ import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
+import { sha256 } from "./crypto";
 import { humanSize, type MediaOptions } from "./assets";
 import { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
 import { createCmsCore } from "./cms";
@@ -529,12 +530,14 @@ async function importFiles(files: { path: string; text: string }[], dir: string 
   }
   for (const it of items) {
     const what = it.change === "new" ? "new" : it.change === "update" ? `v${it.fromVersion} -> v${it.toVersion}` : it.change === "same" ? "same" : it.change === "skip" ? `skip (${it.reason})` : `ERROR ${it.reason}`;
-    io.out(`${it.path.padEnd(40)} ${what}${it.diagnostics.filter((d) => d.severity === "warning").length ? `  (${it.diagnostics.filter((d) => d.severity === "warning").length} warning(s))` : ""}`);
+    const pub = it.published ? ", published" : it.publishError ? `, saved but NOT published: ${it.publishError}` : "";
+    io.out(`${it.path.padEnd(40)} ${what}${pub}${it.diagnostics.filter((d) => d.severity === "warning").length ? `  (${it.diagnostics.filter((d) => d.severity === "warning").length} warning(s))` : ""}`);
     if (it.diff) io.out(it.diff);
   }
   const bad = items.filter((i) => i.change === "error").length;
-  io.out(`[agent-cms] ${dryRun ? "would import" : "imported"} ${items.filter((i) => i.change === "new" || i.change === "update").length} of ${items.length} file(s)${bad ? `, ${bad} with errors` : ""}.`);
-  return bad ? 1 : 0;
+  const unpublished = items.filter((i) => i.publishError).length;
+  io.out(`[agent-cms] ${dryRun ? "would import" : "imported"} ${items.filter((i) => i.change === "new" || i.change === "update").length} of ${items.length} file(s)${bad ? `, ${bad} with errors` : ""}${unpublished ? `, ${unpublished} saved but not published (run the same import with --publish again to publish just those)` : ""}.`);
+  return bad || unpublished ? 1 : 0;
 }
 
 // ── local ───────────────────────────────────────────────────────────────────
@@ -615,12 +618,15 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
       for (const stmt of splitSql(cmsDdl(tables))) await db.execute(sql.raw(stmt));
       for (const p of plugins) for (const stmt of p.sql ?? []) await db.execute(sql.raw(stmt));
       const withPlugins = plugins.filter((p) => p.sql?.length).map((p) => p.name);
+      // Remember which SQL each plugin had when it was applied, so `check` can tell when it changed.
+      for (const p of plugins.filter((x) => x.sql?.length)) await rememberPluginSql(repo, p.name, p.sql!);
       io.out(`[agent-cms] schema is at v${SCHEMA_VERSION}.${withPlugins.length ? ` Plugin tables: ${withPlugins.join(", ")}.` : ""}`);
       return 0;
     }
     if (sub === "check") {
       const r = await repo.inspect();
       let pending = migrationSql(r, tables);
+      let changed = false;
       // Plugin tables: a plugin whose `CREATE TABLE` names a table the database lacks needs its SQL.
       const { sql: q } = await import("drizzle-orm");
       for (const p of plugins) {
@@ -632,7 +638,17 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
           if (!(Array.isArray(res) ? res : (res.rows ?? [])).length) missing = true;
         }
         if (missing) pending = { sql: `${pending?.sql ?? ""}\n-- plugin ${p.name}\n${p.sql!.join(";\n").replace(/;?\s*$/, ";")}\n`, steps: [...(pending?.steps ?? []), `plugin ${p.name}: its tables`] };
+        else if (p.sql?.length && !r.missingTables.length) {
+          // Its tables exist: did its SQL change since it was applied? `CREATE TABLE IF NOT EXISTS`
+          // would not add a new column, so that needs a migration of its own.
+          const was = await appliedPluginSql(repo, p.name);
+          if (was && was !== sqlChecksum(p.sql)) {
+            io.err(`[agent-cms] plugin ${p.name}: its SQL changed since it was applied (${was.slice(0, 12)} -> ${sqlChecksum(p.sql).slice(0, 12)}). Its tables exist, so write a migration for the change (ALTER TABLE ...), then run \`npx @mainsoft/agent-cms migrate apply\` to record it.`);
+            changed = true;
+          }
+        }
       }
+      if (changed && !pending) return 1;
       if (!pending) {
         io.out(`[agent-cms] schema is up to date (v${SCHEMA_VERSION}).`);
         return 0;
@@ -1131,4 +1147,26 @@ async function userCmd(args: string[], argv: string[], config: AgentCmsConfig | 
   } finally {
     await cms.settle?.().catch(() => undefined);
   }
+}
+
+// ── plugin SQL records ──────────────────────────────────────────────────────
+
+/** A stable fingerprint of a plugin's SQL (spacing and case of keywords do not matter). */
+export function sqlChecksum(stmts: readonly string[]): string {
+  const text = stmts.map((x) => x.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim().replace(/;$/, "")).filter(Boolean).join(";\n");
+  return [...sha256(text)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+const PLUGIN_SQL = "plugin_sql";
+async function appliedPluginSql(repo: DrizzleRepo, name: string): Promise<string | null> {
+  try {
+    const [row] = await repo.listRecords({ kind: PLUGIN_SQL, scope: name, limit: 1, order: "desc" });
+    return (row?.data as { checksum?: string } | undefined)?.checksum ?? null;
+  } catch {
+    return null;
+  }
+}
+async function rememberPluginSql(repo: DrizzleRepo, name: string, stmts: readonly string[]) {
+  const checksum = sqlChecksum(stmts);
+  if ((await appliedPluginSql(repo, name)) === checksum) return;
+  await repo.insertRecord({ kind: PLUGIN_SQL, scope: name, key: checksum.slice(0, 16), data: { checksum, statements: stmts.length }, at: new Date().toISOString() });
 }

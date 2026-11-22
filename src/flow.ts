@@ -242,7 +242,7 @@ export function createFlow(ctx: FlowContext) {
   const purgeAt = (deletedAt: string) => (ctx.trashDays > 0 ? new Date(Date.parse(deletedAt) + ctx.trashDays * DAY).toISOString() : null);
 
   /** What is in the trash and this actor may see: documents of collections they edit, files of stores they read. */
-  async function trashList(actor: Actor, o: { kind?: TrashRef["kind"] } = {}): Promise<{ items: TrashItem[]; days: number; canPurge: boolean }> {
+  async function trashList(actor: Actor, o: { kind?: TrashRef["kind"]; q?: string } = {}): Promise<{ items: TrashItem[]; days: number; canPurge: boolean }> {
     await ctx.ready();
     if (actor.kind === "anonymous") throw fail("unauthorized");
     const items: TrashItem[] = [];
@@ -258,7 +258,11 @@ export function createFlow(ctx: FlowContext) {
       }
     }
     items.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
-    return { items, days: ctx.trashDays, canPurge: ctx.isAdmin(actor) };
+    // Find by title, place (collection / slug, store / key) or who deleted it. The trash is bounded
+    // by its keeping time, so it is filtered here rather than in the database.
+    const words = (o.q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = words.length ? items.filter((i) => { const text = `${i.title} ${i.where} ${i.deletedBy ?? ""}`.toLowerCase(); return words.every((w) => text.includes(w)); }) : items;
+    return { items: shown, days: ctx.trashDays, canPurge: ctx.isAdmin(actor) };
   }
 
   const refs = (v: unknown): TrashRef[] => (Array.isArray(v) ? v.filter((x): x is TrashRef => !!x && (x.kind === "document" || x.kind === "asset") && typeof x.id === "string").slice(0, 200) : []);
@@ -613,7 +617,7 @@ export function createFlow(ctx: FlowContext) {
       const saved = await r.updateRelease(cur.id, { state: "published", publishAt: null, publishedAt: at, publishedBy: actorRef(actor).label, lastError: null, updatedAt: at }, cur.state);
       if (!saved) throw fail("release_closed");
       return saved;
-    });
+    }, { atomic: true });
     for (const d of done) {
       audit(actor, d.item.action === "publish" ? "doc.publish" : "doc.unpublish", { collection: d.doc.collection, slug: d.doc.slug, version: d.item.version, detail: { release: rel.name } });
       ctx.changed(d.prev, d.doc);

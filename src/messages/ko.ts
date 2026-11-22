@@ -131,6 +131,7 @@ export const ko: Messages = {
   release_closed: "이미 게시된 릴리스임",
   release_empty: "릴리스에 문서가 없음",
   release_blocked: "문서 {count}개를 내보낼 수 없어 아무것도 게시하지 않았음",
+  transactions_required: "트랜잭션(전부 아니면 전무)이 있는 DB 드라이버가 필요한데 지금 드라이버에는 없음. @neondatabase/serverless Pool, node-postgres, postgres.js 중 하나를 쓸 것",
   schedule_invalid: "시각은 지금보다 뒤여야 하고, 게시 취소는 게시보다 뒤여야 함",
   comment_invalid: "댓글은 1자에서 {max}자까지 쓸 수 있음",
   name_invalid: "이름은 1자에서 {max}자까지 쓸 수 있음",

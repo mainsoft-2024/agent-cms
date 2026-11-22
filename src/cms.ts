@@ -528,7 +528,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
         .finally(() => inFlight.delete(pending));
       inFlight.add(pending);
     } else tellSubscribers(e);
-    void outbox.emit(e);
+    // Webhook deliveries being queued count as unfinished work too: `settle()` waits for them.
+    const queued: Promise<unknown> = Promise.resolve(outbox.emit(e)).catch((err) => report(err, "webhooks")).finally(() => inFlight.delete(queued));
+    inFlight.add(queued);
     void automations.onEvent(e);
     for (const l of eventListeners) {
       if (l.event !== "*" && l.event !== e.event) continue;
@@ -1200,7 +1202,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
         const r = await repo.pageDocs!(query);
         const rows = editor ? r.docs : r.docs.map(publicView).filter((d): d is CmsDoc => !!d);
         const shown = readsPerDoc(col) ? await Promise.all(rows.slice(0, limit).map((d) => read(actor, d, editor, { list: true }))) : rows.slice(0, limit);
-        return { rows: shown.map(summaryOf), more: rows.length > limit, total: r.total };
+        // The cursor comes from the stored row, not the copy `afterRead` may have changed:
+        // the next page starts where the database left off.
+        const raw = rows.slice(0, limit).at(-1);
+        const key = raw ? { at: editor ? raw.updatedAt : (raw.publishedAt ?? raw.updatedAt), id: raw.id } : null;
+        return { rows: shown.map(summaryOf), more: rows.length > limit, total: r.total, key };
       };
       const r = editor || readsPerDoc(col) ? await run() : await cached(col, `p:${JSON.stringify({ ...query, collection: undefined })}`, run);
       const slice = r.rows;
@@ -1208,9 +1214,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
         const counts = await hitCounts(actor, col, 7);
         for (const d of slice) d.hits7d = counts.get(d.id) ?? 0;
       }
+      // A page cached by an older version has no key: fall back to the last row shown.
       const last = slice.at(-1);
-      const at = last ? (editor ? last.updatedAt : (last.publishedAt ?? last.updatedAt)) : null;
-      return { docs: slice, total: r.total, nextCursor: r.more && last && at ? encodeCursor(at, last.id) : null };
+      const key = r.key ?? (last ? { at: editor ? last.updatedAt : (last.publishedAt ?? last.updatedAt), id: last.id } : null);
+      return { docs: slice, total: r.total, nextCursor: r.more && key?.at ? encodeCursor(key.at, key.id) : null };
     }
     const all = await list(actor, col, o);
     const offset = Math.max(0, Number(o.cursor ?? 0) || 0);
@@ -1272,6 +1279,22 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const { snapshot, ...rest } = withPublished(v, doc, actor);
       return { ...rest, title: snapshot.title };
     });
+  }
+
+  /**
+   * Versions newest first, one page at a time (0.18.0): `cursor` is the version number the
+   * next page starts below. The database cuts the page when it can.
+   */
+  async function versionPage(actor: Actor, col: string, slug: string, o: { limit: number; cursor?: string | null; summary?: boolean }): Promise<{ versions: (CmsVersion | VersionSummary)[]; total: number; nextCursor: string | null }> {
+    const doc = await editable(actor, col, slug);
+    const limit = Math.max(1, Math.min(o.limit, 500));
+    const before = o.cursor && /^\d+$/.test(o.cursor) ? Number(o.cursor) : null;
+    const r = typeof repo.pageVersions === "function"
+      ? await repo.pageVersions(doc.id, { limit: limit + 1, before })
+      : await repo.listVersions(doc.id).then((all) => ({ versions: all.filter((v) => before === null || v.version < before).slice(0, limit + 1), total: all.length }));
+    const rows = r.versions.slice(0, limit).map((v) => withPublished(v, doc, actor));
+    const out = o.summary ? rows.map(({ snapshot, ...rest }) => ({ ...rest, title: snapshot.title })) : rows;
+    return { versions: out, total: r.total, nextCursor: r.versions.length > limit ? String(rows.at(-1)!.version) : null };
   }
 
   async function version(actor: Actor, col: string, slug: string, n: number): Promise<CmsVersion> {
@@ -2349,6 +2372,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     counts,
     versions,
     versionList,
+    versionPage,
     version,
     diff,
     diagnose,
@@ -2478,7 +2502,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
         const doc = found ? (found.get(id) ?? null) : await repo.findDocById(id);
         if (!doc || !collections.has(doc.collection) || (o.collections?.length && !o.collections.includes(doc.collection))) continue;
         if (can(actor, doc.collection, "write", doc)) out.push({ collection: doc.collection, slug: doc.slug, version: doc.version, at: doc.updatedAt });
-        else if (can(actor, doc.collection, "read", doc) && publicView(doc) && versions.includes(doc.publishedVersion as number)) out.push({ collection: doc.collection, slug: doc.slug, version: doc.publishedVersion as number, at: doc.updatedAt });
+        // Readers are judged on the public copy, like a read: a rule that looks at fields sees the published ones.
+        else if (publicView(doc) && can(actor, doc.collection, "read", publicView(doc)!) && versions.includes(doc.publishedVersion as number)) out.push({ collection: doc.collection, slug: doc.slug, version: doc.publishedVersion as number, at: doc.updatedAt });
       }
       return out;
     },

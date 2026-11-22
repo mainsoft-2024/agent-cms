@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { CircleAlert, Download, FileText, Upload } from "lucide-react";
+import { CircleAlert, CircleCheck, Download, FileText, Upload } from "lucide-react";
 import { docsFromNotion, filesFromDocs, unzip, type ImportConflict, type ImportItem, type TransferFile } from "@mainsoft/agent-cms/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,8 +21,9 @@ const SELECT = "h-9 min-w-0 rounded-md border border-input bg-background px-2 te
 const CONFLICTS: ImportConflict[] = ["db-wins", "newest", "file-wins"];
 
 /** The files inside what a person picked: an export bundle, or markdown files as they are. */
-export async function readTransferFiles(picked: File[]): Promise<TransferFile[]> {
-  const out: TransferFile[] = [];
+export async function readTransferFiles(picked: File[]): Promise<TransferFile[] & { droppedPictures?: { path: string; name: string }[] }> {
+  const out: TransferFile[] & { droppedPictures?: { path: string; name: string }[] } = [];
+  const dropped: { path: string; name: string }[] = [];
   for (const f of picked) {
     if (/\.zip$/i.test(f.name)) {
       // A zip: an export folder zipped by hand (`<collection>/<slug>.md`) or a Notion export.
@@ -33,7 +34,10 @@ export async function readTransferFiles(picked: File[]): Promise<TransferFile[]>
       if (md.some((e) => /\s[0-9a-f]{32}\.md$/i.test(e.name))) {
         const { docs } = docsFromNotion(entries);
         // Pictures in a Notion export need the command line (`import --from notion`) to be uploaded; the text comes in here.
-        out.push(...filesFromDocs(docs.map((d) => ({ ...d, body: d.body?.replace(/!\[([^\]]*)\]\(asset:ntn[a-z0-9]{9}\/[^)]*\)/g, "$1") }))));
+        // The pictures are left out and listed, so the person knows which pages lost one.
+        const PIC = /!\[([^\]]*)\]\(asset:ntn[a-z0-9]{9}\/([^)]*)\)/g;
+        for (const d of docs) for (const m of (d.body ?? "").matchAll(PIC)) dropped.push({ path: `${d.collection ?? ""}/${d.slug}`.replace(/^\//, ""), name: decodeURIComponent(m[2] || m[1] || "") });
+        out.push(...filesFromDocs(docs.map((d) => ({ ...d, body: d.body?.replace(PIC, "$1") }))));
       } else {
         const dec = new TextDecoder();
         const root = md.length && md.every((e) => e.name.split("/").length > 2) ? `${md[0].name.split("/")[0]}/` : "";
@@ -49,6 +53,7 @@ export async function readTransferFiles(picked: File[]): Promise<TransferFile[]>
       out.push(...data.files.filter((x) => typeof x?.path === "string" && typeof x?.text === "string"));
     } else out.push({ path: (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name, text });
   }
+  if (dropped.length) out.droppedPictures = dropped;
   return out;
 }
 
@@ -69,6 +74,9 @@ export function CmsTransfer({ className }: { className?: string }) {
   const [on, setOn] = React.useState<Set<string>>(new Set());
   const [status, setStatus] = React.useState<{ text: string; tone: "ok" | "error" | "muted" }>({ text: "", tone: "muted" });
   const [busy, setBusy] = React.useState(false);
+  // What the last import did: saved, published, and what failed (a publish can fail after the save).
+  const [result, setResult] = React.useState<{ files: TransferFile[]; items: ImportItem[] } | null>(null);
+  const [pictures, setPictures] = React.useState<{ path: string; name: string }[]>([]);
   const fileRef = React.useRef<HTMLInputElement>(null);
   const itemsRef = React.useRef<ImportItem[] | null>(null);
   itemsRef.current = items;
@@ -104,7 +112,10 @@ export function CmsTransfer({ className }: { className?: string }) {
     if (!list?.length) return;
     try {
       const all = [...list];
-      setPicked({ name: all.length === 1 ? all[0].name : `${all[0].name} +${all.length - 1}`, size: all.reduce((n, f) => n + f.size, 0), files: await readTransferFiles(all) });
+      const files = await readTransferFiles(all);
+      setPictures(files.droppedPictures ?? []);
+      setResult(null);
+      setPicked({ name: all.length === 1 ? all[0].name : `${all[0].name} +${all.length - 1}`, size: all.reduce((n, f) => n + f.size, 0), files: [...files] });
     } catch {
       setPicked(null);
       setStatus({ text: t("transfer_bad_file"), tone: "error" });
@@ -118,8 +129,26 @@ export function CmsTransfer({ className }: { className?: string }) {
     setBusy(true);
     try {
       const r = await client.importDocs(picked.files, { onConflict: conflict, collection: collection || undefined, publish, only: [...on] });
-      setStatus({ text: t("transfer_done", { n: r.items.filter((i) => (i.change === "new" || i.change === "update") && i.toVersion).length }), tone: "ok" });
+      const saved = r.items.filter((i) => (i.change === "new" || i.change === "update") && i.toVersion).length;
+      const failed = r.items.filter((i) => i.change === "error" || i.publishError).length;
+      setStatus({ text: t("transfer_done", { n: saved }), tone: failed ? "error" : "ok" });
+      setResult({ files: picked.files, items: r.items });
       setPicked(null);
+    } catch (e) {
+      setStatus({ text: errorMessage(e, t), tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+  /** Publish again just the documents whose save went through but whose publish did not. */
+  async function retryPublish() {
+    if (!result) return;
+    const again = result.items.filter((i) => i.publishError).map((i) => i.path);
+    setBusy(true);
+    try {
+      const r = await client.importDocs(result.files, { onConflict: conflict, collection: collection || undefined, publish: true, only: again });
+      const byPath = new Map(r.items.map((i) => [i.path, i]));
+      setResult({ files: result.files, items: result.items.map((i) => (byPath.has(i.path) ? { ...i, published: byPath.get(i.path)!.published, publishError: byPath.get(i.path)!.publishError ?? byPath.get(i.path)!.reason } : i)) });
     } catch (e) {
       setStatus({ text: errorMessage(e, t), tone: "error" });
     } finally {
@@ -235,6 +264,21 @@ export function CmsTransfer({ className }: { className?: string }) {
           <StatusText tone={status.tone} className="text-sm">
             {status.text || (picked && busy ? t("transfer_checking") : "")}
           </StatusText>
+          {result ? <ImportResult items={result.items} busy={busy} onRetry={() => void retryPublish()} onClose={() => setResult(null)} /> : null}
+          {pictures.length && picked ? (
+            <div role="note" className="flex min-w-0 flex-col gap-1 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-200">
+              <p className="font-medium">{t("transfer_pictures_left", { n: pictures.length })}</p>
+              <p>{t("transfer_pictures_hint")}</p>
+              <ul className="ml-4 list-disc [overflow-wrap:anywhere]">
+                {pictures.slice(0, 8).map((p, n) => (
+                  <li key={n}>
+                    <span className="font-mono">{p.path}</span> · {p.name}
+                  </li>
+                ))}
+                {pictures.length > 8 ? <li>{t("transfer_more_n", { n: pictures.length - 8 })}</li> : null}
+              </ul>
+            </div>
+          ) : null}
           {items?.length ? (
             <p className="text-sm">
               {t("transfer_summary", {
@@ -312,5 +356,45 @@ export function CmsTransfer({ className }: { className?: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** After an import: what was saved and published, and each document that failed with why. */
+function ImportResult({ items, busy, onRetry, onClose }: { items: ImportItem[]; busy: boolean; onRetry: () => void; onClose: () => void }) {
+  const { t } = useCms();
+  const saved = items.filter((i) => (i.change === "new" || i.change === "update") && i.toVersion).length;
+  const published = items.filter((i) => i.published).length;
+  const publishFailed = items.filter((i) => i.publishError);
+  const failed = items.filter((i) => i.change === "error");
+  return (
+    <section aria-label={t("transfer_result")} className="flex min-w-0 flex-col gap-2 rounded-md border px-3 py-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        <span className="inline-flex items-center gap-1.5"><CircleCheck aria-hidden className="h-4 w-4 text-green-700 dark:text-green-400" />{t("transfer_saved_n", { n: saved })}</span>
+        {published ? <span>{t("transfer_published_n", { n: published })}</span> : null}
+        {publishFailed.length ? <span className="text-amber-700 dark:text-amber-400">{t("transfer_publish_failed_n", { n: publishFailed.length })}</span> : null}
+        {failed.length ? <span className="text-destructive">{t("transfer_failed_n", { n: failed.length })}</span> : null}
+        <Button type="button" variant="ghost" size="sm" className="ml-auto h-7" onClick={onClose}>
+          {t("close")}
+        </Button>
+      </div>
+      {publishFailed.length || failed.length ? (
+        <ul className="flex min-w-0 flex-col divide-y rounded border text-xs">
+          {[...failed, ...publishFailed].map((i) => (
+            <li key={i.path} className="flex min-w-0 flex-col gap-0.5 px-3 py-2">
+              <span className="flex min-w-0 items-center gap-2">
+                <bdi className="truncate font-medium">{i.title || i.path}</bdi>
+                <span className={cn("shrink-0", i.change === "error" ? "text-destructive" : "text-amber-700 dark:text-amber-400")}>{i.change === "error" ? t("transfer_not_saved") : t("transfer_saved_not_published")}</span>
+              </span>
+              <span className="text-muted-foreground [overflow-wrap:anywhere]">{i.change === "error" ? i.reason : i.publishError}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {publishFailed.length ? (
+        <Button type="button" variant="outline" size="sm" className="self-start" disabled={busy} onClick={onRetry}>
+          {t("transfer_publish_again_n", { n: publishFailed.length })}
+        </Button>
+      ) : null}
+    </section>
   );
 }
