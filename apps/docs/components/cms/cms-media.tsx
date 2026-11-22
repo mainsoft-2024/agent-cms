@@ -18,9 +18,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { AssetGrid, AssetThumb, folderOptions, kindName, kindTabs, SELECT_CLASS, storeLabel, UploadButton, UploadPanel, useAssetList, useUploads, type KindTab } from "./cms-media-picker";
 import { errorMessage } from "./cms-messages";
-import { ConfirmDialog, copyText, PageHeader, Segmented, StateBadge, StatusText, Who } from "./cms-parts";
+import { ConfirmDialog, copyText, PageHeader, Segmented, StateBadge, StatusText, Who, DIALOG } from "./cms-parts";
 import { fileSize } from "./cms-upload";
-import { forgetAsset, useAsync, useCms, useDebounced, useIsMobile, trashChanged, useLocalStorage, useShortcut } from "./use-cms";
+import { forgetAsset, useAsync, useCms, useDebounced, useIsMobile, useMediaQuery, trashChanged, useLocalStorage, useShortcut } from "./use-cms";
 
 export interface CmsMediaProps {
   /** Where the admin screens live, for links to the documents that use a file. Default "/admin". */
@@ -385,7 +385,7 @@ export function NewFolderDialog({ open, onOpenChange, onCreate }: { open: boolea
   }, [open]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[400px]">
+      <DialogContent className={DIALOG.sm}>
         <form
           className="grid gap-4"
           onSubmit={(e) => {
@@ -431,7 +431,7 @@ function ImportDialog({ open, onOpenChange, onImport }: { open: boolean; onOpenC
   }, [open]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[440px]">
+      <DialogContent className={DIALOG.md}>
         <form
           className="grid gap-4"
           onSubmit={(e) => {
@@ -486,7 +486,8 @@ const FOCAL_STEP = 0.02;
 
 export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDeleted, onReplace, stamp = 0 }: AssetPanelProps) {
   const { client, t, me, appUrl, slots, locale } = useCms();
-  const mobile = useIsMobile();
+  // Beside the grid only when the grid keeps room for two columns (shell rail + folders + panel).
+  const mobile = useMediaQuery("(max-width: 1099px)");
   const { data: asset, error, setData } = useAsync<AssetDetail>(() => client.asset(id), [client, id, stamp]);
   /** The file chosen as new content, waiting for a yes. */
   const [incoming, setIncoming] = React.useState<File | null>(null);
@@ -805,14 +806,14 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
   if (mobile)
     return (
       <Dialog open onOpenChange={(o) => !o && onClose()}>
-        <DialogContent className="max-h-[92dvh] overflow-y-auto">
+        <DialogContent className={DIALOG.lg}>
           <DialogTitle className="sr-only">{asset?.name ?? t("nav_media")}</DialogTitle>
-          <div className="grid gap-4">{body}</div>
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">{body}</div>
         </DialogContent>
       </Dialog>
     );
   return (
-    <aside aria-label={asset?.name ?? t("nav_media")} className="grid w-80 shrink-0 content-start gap-4 border-l p-4">
+    <aside aria-label={asset?.name ?? t("nav_media")} className="sticky top-0 grid max-h-[100dvh] w-80 min-w-0 shrink-0 grid-cols-[minmax(0,1fr)] content-start gap-4 overflow-y-auto overflow-x-hidden border-l p-4 2xl:w-96">
       {body}
     </aside>
   );

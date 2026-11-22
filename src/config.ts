@@ -10,6 +10,8 @@
  */
 
 import type { PgDatabase } from "drizzle-orm/pg-core";
+import type { Cms } from "./cms";
+import type { ServeOptions } from "./serve";
 import type { MediaOptions } from "./assets";
 import type { CmsTablesOptions } from "./tables";
 
@@ -23,6 +25,11 @@ export interface AgentCmsConfig {
   media?: MediaOptions | (() => MediaOptions | Promise<MediaOptions>);
   /** Where `agent-cms add` copies the admin screens. Default: `<components alias>/cms` from components.json. */
   ui?: { dir?: string };
+  /**
+   * For `agent-cms serve` (and `dev`): the CMS as a server of its own, with the admin and sign-in.
+   *   server: { cms: async () => (await import("./lib/cms")).cms, appName: "Acme" }
+   */
+  server?: Omit<ServeOptions, "cms"> & { cms: () => Cms | Promise<Cms> };
 }
 
 /** Checks the shape and keeps the literal types (collection slugs, field names) of what you pass. */

@@ -245,12 +245,24 @@ function JsonInput({ id, value, onChange, invalid, describedBy: by, onLocalError
   );
 }
 
+/**
+ * Fields whose text cannot be turned into a value yet (JSON that does not
+ * parse): the editor listens and refuses to save, so a save never quietly
+ * stores the last value that did parse.
+ */
+export const FieldGate = React.createContext<((key: string, bad: boolean) => void) | null>(null);
+
 // ── one custom field ─────────────────────────────────────────────────────────
 
 export function FieldInput({ spec, idPrefix, value, onChange, problems }: { spec: FieldSpec; idPrefix: string; value: unknown; onChange: (v: unknown) => void; problems?: FieldProblem[] }) {
   const { t } = useCms();
   const id = `${idPrefix}-f-${spec.key}`;
   const [localError, setLocalError] = React.useState<string | null>(null);
+  const gate = React.useContext(FieldGate);
+  React.useEffect(() => {
+    gate?.(spec.key, !!localError);
+    return () => gate?.(spec.key, false);
+  }, [gate, spec.key, localError]);
   const errors = [...(problems ?? []), ...(localError ? [{ path: spec.key, message: localError, severity: "error" as const }] : [])];
   const invalid = errors.some((e) => e.severity === "error");
   const by = describedBy({ id, help: spec.help, errors });

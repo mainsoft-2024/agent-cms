@@ -1,13 +1,16 @@
 import { createCmsHandler } from "@mainsoft/agent-cms/http";
-import { cms, demoAdmin, seed } from "@/lib/cms";
+import { auth, cms, demoAdmin, seed } from "@/lib/cms";
 
 export const dynamic = "force-dynamic";
 
-const inner = createCmsHandler({
-  cms,
-  // The example has no login. Return your session user (or null) here.
-  resolveUser: async () => demoAdmin,
-});
+const inner = auth
+  ? // The CMS's own sign-in (EXAMPLE_AUTH=own).
+    createCmsHandler({ cms, auth })
+  : createCmsHandler({
+      cms,
+      // The example has no login. Return your session user (or null) here.
+      resolveUser: async () => demoAdmin,
+    });
 
 async function handler(req: Request) {
   await seed();

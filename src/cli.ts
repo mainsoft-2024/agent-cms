@@ -60,7 +60,7 @@ import { basename, dirname, join, relative } from "node:path";
 import { humanSize, type MediaOptions } from "./assets";
 import { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
 import { createCmsCore } from "./cms";
-import { loadConfig } from "./config";
+import { loadConfig, type AgentCmsConfig } from "./config";
 import { DrizzleRepo, type DoctorReport } from "./drizzle-repo";
 import { docFromMarkdown } from "./frontmatter";
 import { filesFromSource, IMPORT_SOURCES, type ImportSource } from "./import-sources";
@@ -91,9 +91,9 @@ export interface CliIo {
   run?: (cmd: string, args: string[], cwd: string) => number;
 }
 
-const WITH_VALUE = new Set(["--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--offset", "--limit", "--context", "--glob", "--args-file"]);
+const WITH_VALUE = new Set(["--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--port", "--host", "--offset", "--limit", "--context", "--glob", "--args-file"]);
 /** Switches without a value. Anything else that starts with "--" is refused before any request. */
-const SWITCHES = new Set(["--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
+const SWITCHES = new Set(["--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--memory", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
 
 /** Problems with the flags (unknown, missing value), or null. Checked before reading any settings. */
 export function checkFlags(argv: string[]): string | null {
@@ -160,13 +160,14 @@ export function parseEnvFile(text: string): Record<string, string> {
 }
 
 const USAGE = `agent-cms ${VERSION}
+a server:      dev [--port 3000] [--memory] | serve [--port <n>] [--host <h>]
 in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync>
 with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import | openapi | retention
                read | grep | edit | pull | push | status
 options:       --env <file>  --json  --json-errors  --  (what follows is a file name, even if it starts with --)
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
-const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage"]);
+const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage", "serve", "dev"]);
 
 export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
   const out = io.out ?? ((l: string) => console.log(l));
@@ -493,6 +494,7 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
   if (cmd === "init") return init(argv, io);
   if (cmd === "add") return add(args, argv, io);
   const loaded = await loadConfig(io.cwd);
+  if (cmd === "serve" || cmd === "dev") return serveCmd(cmd, argv, loaded?.config ?? null, io);
   const tables = cmsTables(loaded?.config.tables);
   const media = async () => io.media ?? (typeof loaded?.config.media === "function" ? await loaded.config.media() : loaded?.config.media);
   if (cmd === "storage" && (args[0] ?? "check") === "check") {
@@ -979,4 +981,28 @@ async function files(cmd: "pull" | "push" | "status", args: string[], argv: stri
   }
   save();
   return failed ? 1 : 0;
+}
+
+/** `serve` and `dev`: the CMS with its admin and sign-in on one port. Runs until stopped. */
+async function serveCmd(cmd: "serve" | "dev", argv: string[], config: AgentCmsConfig | null, io: LocalIo): Promise<number> {
+  const { startServer, stopOnSignals } = await import("./serve");
+  const port = Number(flag(argv, "port")) || Number(process.env.PORT) || 3000;
+  const server = config?.server;
+  let cms;
+  if (server) cms = await server.cms();
+  else if (cmd === "serve") {
+    io.err("[agent-cms] serve needs `server: { cms }` in agent-cms.config.ts (your createCms). To try the CMS without one: npx @mainsoft/agent-cms dev");
+    return 1;
+  } else {
+    const { devCms } = await import("./dev");
+    const d = await devCms(io.cwd, io.out, { memory: argv.includes("--memory") });
+    cms = d.cms;
+    io.out(`[agent-cms] dev: a "Posts" collection, ${d.store === "pglite" ? `kept in ${d.dir}` : "in memory"}. Add \`server: { cms }\` to agent-cms.config.ts to use your own collections.`);
+  }
+  const { cms: _drop, ...rest } = server ?? ({} as NonNullable<typeof server>);
+  void _drop;
+  const running = await startServer({ ...rest, cms, port, host: flag(argv, "host") ?? rest.host ?? (cmd === "dev" ? "127.0.0.1" : "0.0.0.0"), log: io.out });
+  stopOnSignals(running, io.out);
+  await new Promise<void>((resolve) => running.server.once("close", () => resolve()));
+  return 0;
 }

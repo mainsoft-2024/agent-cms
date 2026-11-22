@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { errorMessage, type T } from "./cms-messages";
-import { CodeBox, ConfirmDialog, PageHeader, StatusText } from "./cms-parts";
+import { CodeBox, ConfirmDialog, PageHeader, StatusText, DIALOG } from "./cms-parts";
 import { relativeTime, useAsync, useCms, useIsMobile } from "./use-cms";
 
 export interface CmsWebhooksProps {
@@ -61,7 +61,7 @@ export function CmsWebhooks({ className }: CmsWebhooksProps) {
         </Button>
       </PageHeader>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <div className="min-w-0 flex-1 overflow-x-auto px-4 py-4 md:px-6">
+        <div className="relative min-w-0 flex-1 overflow-x-auto px-4 py-4 md:px-6">
           <StatusText tone={hooks.error ? "error" : "muted"} className="mb-2 text-xs">
             {hooks.error ? errorMessage(hooks.error, t) : hooks.loading && !hooks.data ? t("loading") : off ? t("webhooks_need_key") : hooks.data && !list.length ? t("webhooks_empty") : ""}
           </StatusText>
@@ -125,7 +125,7 @@ export function CmsWebhooks({ className }: CmsWebhooksProps) {
         }}
       />
       <Dialog open={!!created} onOpenChange={(o) => !o && setCreated(null)}>
-        <DialogContent>
+        <DialogContent className={DIALOG.md}>
           <DialogHeader>
             <DialogTitle>{t("webhook_created", { name: created?.name ?? "" })}</DialogTitle>
             <DialogDescription>{t("webhook_created_text")}</DialogDescription>
@@ -313,7 +313,7 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
 
   return (
     <Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto">
+      <DialogContent className={DIALOG.lg}>
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>{cur ? t("webhook_edit_title") : t("webhook_new")}</DialogTitle>

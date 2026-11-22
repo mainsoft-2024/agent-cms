@@ -313,7 +313,7 @@ export type CmsTelemetry =
   | { type: "error"; where: string; message: string };
 
 /** First path segments the CMS uses itself. A plugin cannot take one of these names. */
-export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "grep", "raw", "retention", "_events", "auth", "_stats", "_me", "_cron"]);
+export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "grep", "raw", "retention", "_events", "auth", "users", "_stats", "_me", "_cron"]);
 
 /** Audit actions that are also events (webhooks, plugin listeners). */
 const EVENT_OF: Partial<Record<AuditAction, WebhookEvent>> = {
@@ -1482,7 +1482,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   // ── keys ──────────────────────────────────────────────────────────────────
 
   const baseAdmin = (actor: Actor) => actor.kind === "system" || (actor.kind === "user" && actor.isAdmin) || (actor.kind === "key" && actor.scopes.includes("admin"));
-  const roles = createRoles({
+  const rolesCtx: Parameters<typeof createRoles>[0] = {
     repo,
     now,
     fail,
@@ -1491,7 +1491,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     ready: ensureSchema,
     users: opts.users,
     targets: () => [...collections.values()].map((c) => ({ slug: c.slug, label: c.label, coded: [...(c.access?.write ? (["write"] as const) : []), ...(c.access?.publish ? (["publish", "delete"] as const) : []), ...(c.managed ? (["write", "publish", "delete"] as const) : [])] })),
-  });
+  };
+  const roles = createRoles(rolesCtx);
   /** An admin by the app's word, by a key's scope, or through a role marked "admin". */
   const isAdmin = (actor: Actor) => roles.isAdmin(actor);
 
@@ -1978,6 +1979,19 @@ export function createCmsCore(opts: CreateCmsOptions) {
     imageUrl: assets.imageUrl,
     message,
     messages,
+    /** For modules built on the core (sign-in): write to the audit log, the clock, errors, the schema check. */
+    writeAudit: audit,
+    now,
+    fail,
+    ready: ensureSchema,
+    /** Where the roles screen finds people, when it is known only after `createCms` (the CMS's own sign-in). */
+    useUsers(u: UsersOptions) {
+      rolesCtx.users = u;
+    },
+    /** True when the roles screen has a list of people. */
+    hasUsers: () => !!rolesCtx.users,
+    /** The roles a person is in (for the people screen). */
+    rolesOf: (userId: string, email?: string | null) => roles.of(userId, email),
     /** Fails with `schema_outdated` when the database needs a migration. */
     checkSchema: async () => {
       await ensureSchema();

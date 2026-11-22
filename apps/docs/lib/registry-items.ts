@@ -17,6 +17,9 @@ export const itemByName = (name: string) => ITEMS.find((i) => i.name === name);
 export const LIVE = new Set(["cms-shell", "cms-empty", "cms-doc-list", "cms-doc-editor", "cms-versions", "cms-keys", "cms-audit", "cms-command", "cms-media", "cms-files", "cms-trash", "cms-releases"]);
 /** Why a screen has no demo of its own, and where to see it. */
 export const NOT_LIVE: Record<string, string> = {
+  "cms-login": "No live demo: the docs site signs people in with GitHub. Run `npx @mainsoft/agent-cms dev` to see these pages with the CMS's own sign-in.",
+  "cms-people": "No live demo: this screen belongs to the CMS's own sign-in. Run `npx @mainsoft/agent-cms dev`, sign up as the first admin, then open People.",
+  "cms-account": "No live demo: this screen belongs to the CMS's own sign-in. Run `npx @mainsoft/agent-cms dev` and open the account menu at the bottom of the sidebar.",
   "cms-merge": "This screen appears inside the editor when someone else saved first. Open the same document in two tabs of the editor demo, save in one, then save in the other.",
   "cms-media-picker": "This dialog opens from the editor. In the editor demo, press \"Insert media\" above the markdown.",
   "cms-webhooks": "No live demo: a webhook makes this server call an address of your choice, and the demo is shared by every visitor. To try it, add the screen to your app and register the receiver from the example app (examples/next/app/api/hook).",

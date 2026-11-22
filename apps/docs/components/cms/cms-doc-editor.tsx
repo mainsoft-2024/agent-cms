@@ -22,14 +22,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { CmsFieldForm, problemKey, type FieldProblem } from "./cms-field-form";
+import { CmsFieldForm, FieldGate, problemKey, type FieldProblem } from "./cms-field-form";
 import { AddToReleaseDialog, BodyBackdrop, CommentsPanel, offsetOf, placeOf, PublishButton, ReviewStrip, ScheduleStrip, type BodyCursor } from "./cms-flow";
 import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
 import { createUploader } from "./cms-upload";
 import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-tools";
 import { pasteAsMarkdown } from "./cms-paste";
 import { CmsMerge } from "./cms-merge";
-import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText } from "./cms-parts";
+import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, DIALOG } from "./cms-parts";
 import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type DocContent } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
@@ -297,7 +297,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     if (!schema?.canWrite) return;
     if (loading) return;
     void diagnose(content);
-    if (edited.current && doc && !sameContent(content, saved)) autosave(content, baseVersion, doc.slug);
+    if (edited.current && doc && !sameContent(content, saved) && !unparsedRef.current.length) autosave(content, baseVersion, doc.slug);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, schema?.canWrite, loading]);
 
@@ -343,8 +343,18 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
 
   // ── save ──
   const dirty = !sameContent(content, saved) || revertedIds.length > 0;
+  // Fields whose text does not parse yet (JSON): nothing is saved until they do.
+  const [unparsed, setUnparsed] = React.useState<string[]>([]);
+  const fieldGate = React.useCallback((key: string, bad: boolean) => setUnparsed((u) => (bad ? (u.includes(key) ? u : [...u, key]) : u.filter((k) => k !== key))), []);
+  const unparsedRef = React.useRef(unparsed);
+  unparsedRef.current = unparsed;
 
   const save = async (publish: boolean): Promise<CmsDoc | null> => {
+    if (unparsedRef.current.length) {
+      setStatus({ text: t("fields_unparsed", { fields: unparsedRef.current.join(", ") }), tone: "error" });
+      document.getElementById(`cms-editor-f-${unparsedRef.current[0]}`)?.focus();
+      return null;
+    }
     setBusy(true);
     setStatus(null);
     autosave.cancel();
@@ -668,15 +678,38 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   // ── a copy in this browser: survives a lost connection and a closed tab ──
   // Scoped by CMS mount and person: a shared browser never offers someone else's copy.
   const localKey = `agent-cms:draft:${baseUrl}:${me?.actor.id ?? "-"}:${collection}/${currentSlug || "_new"}`;
+  // The copy is read once per key before anything may write or remove it.
+  const localChecked = React.useRef<string | null>(null);
+  const [localBroken, setLocalBroken] = React.useState(false);
   const writeLocal = useDebounced((c: DocContent, base: number) => {
     try {
       window.localStorage.setItem(localKey, JSON.stringify({ content: c, baseVersion: base, at: new Date().toISOString() }));
+      setLocalBroken(false);
     } catch {
-      /* private mode or full */
+      // Private mode or a full disk: say that this browser keeps no copy.
+      setLocalBroken(true);
     }
   }, 400);
+  // On open: a copy left here that the server does not have becomes the restore offer.
   React.useEffect(() => {
-    if (loading) return;
+    if (loading || !me || localChecked.current === localKey) return;
+    localChecked.current = localKey;
+    if (restoreOffer) return;
+    try {
+      const raw = window.localStorage.getItem(localKey);
+      if (!raw) return;
+      const kept = JSON.parse(raw) as { content: DocContent; baseVersion: number; at: string };
+      const old = Date.now() - Date.parse(kept.at) > 14 * 864e5;
+      const server = doc ? contentOf(doc) : saved;
+      if (old || (doc && kept.baseVersion > doc.version) || sameContent(contentOf(kept.content as CmsDoc), server as CmsDoc)) return window.localStorage.removeItem(localKey);
+      setRestoreOffer({ content: contentOf(kept.content as CmsDoc), baseVersion: kept.baseVersion, at: kept.at, by: t("restore_this_browser") });
+    } catch {
+      /* bad JSON: ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, doc?.slug, me?.actor.id, localKey]);
+  React.useEffect(() => {
+    if (loading || localChecked.current !== localKey) return;
     if (edited.current && !sameContent(content, saved)) writeLocal(content, baseVersion);
     else {
       writeLocal.cancel();
@@ -688,21 +721,6 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, saved, loading, localKey]);
-  // On open: a copy left here that the server does not have becomes the restore offer.
-  React.useEffect(() => {
-    if (loading || !doc || restoreOffer || !me) return;
-    try {
-      const raw = window.localStorage.getItem(localKey);
-      if (!raw) return;
-      const kept = JSON.parse(raw) as { content: DocContent; baseVersion: number; at: string };
-      const old = Date.now() - Date.parse(kept.at) > 14 * 864e5;
-      if (old || kept.baseVersion > doc.version || sameContent(contentOf(kept.content as CmsDoc), doc)) return window.localStorage.removeItem(localKey);
-      setRestoreOffer({ content: contentOf(kept.content as CmsDoc), baseVersion: kept.baseVersion, at: kept.at, by: t("restore_this_browser") });
-    } catch {
-      /* bad JSON: ignore */
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, doc?.slug, me?.actor.id]);
   // Leaving with edits the server has not got asks first.
   const unsaved = dirty && auto.state !== "saved";
   React.useEffect(() => {
@@ -1203,11 +1221,13 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   );
 
   const form = (
-    <CmsFieldForm schema={schema} value={content} onChange={setContent} problems={byField} slugLocked={!!doc && doc.publishedVersion !== null} slugPrefix={slugPrefix} idPrefix="cms-editor" />
+    <FieldGate.Provider value={fieldGate}>
+      <CmsFieldForm schema={schema} value={content} onChange={setContent} problems={byField} slugLocked={!!doc && doc.publishedVersion !== null} slugPrefix={slugPrefix} idPrefix="cms-editor" />
+    </FieldGate.Provider>
   );
 
   const autosaveText =
-    offline && dirty ? t("offline_kept") : auto.state === "saving" ? t("autosaving") : auto.state === "saved" && auto.at ? t("autosaved_at", { time: formatTime(auto.at, locale) }) : auto.state === "failed" ? t("autosave_failed") : dirty ? t("unsaved") : "";
+    offline && dirty ? t("offline_kept") : auto.state === "saving" ? t("autosaving") : auto.state === "saved" && auto.at ? t("autosaved_at", { time: formatTime(auto.at, locale) }) : auto.state === "failed" ? t("autosave_failed") : dirty ? (localBroken ? t("unsaved_no_copy") : t("unsaved")) : "";
 
   const problemsFoot = (
     <div className="flex flex-col">
@@ -1482,12 +1502,16 @@ export function CmsPreviewLinkDialog({ open, onOpenChange, collection, slug, ver
   const [link, setLink] = React.useState<{ url: string; expiresAt: string; version: number } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
+  const [attempt, setAttempt] = React.useState(0);
+  const ttlId = React.useId();
 
   React.useEffect(() => {
     if (!open) return;
     let live = true;
     setLoading(true);
     setError(null);
+    // A link made with the old settings is not offered while the new one is made.
+    setLink(null);
     client.previewLink(collection, slug, ttl, { comments }).then(
       (l) => {
         if (!live) return;
@@ -1504,11 +1528,11 @@ export function CmsPreviewLinkDialog({ open, onOpenChange, collection, slug, ver
     return () => {
       live = false;
     };
-  }, [open, ttl, comments, client, collection, slug, t]);
+  }, [open, ttl, comments, client, collection, slug, t, attempt]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[500px]">
+      <DialogContent className={DIALOG.md}>
         <DialogHeader>
           <DialogTitle>{t("preview_link")}</DialogTitle>
           <DialogDescription className="sr-only">{t("pl_current", { version })}</DialogDescription>
@@ -1519,11 +1543,11 @@ export function CmsPreviewLinkDialog({ open, onOpenChange, collection, slug, ver
             <span className="text-sm">{t("pl_current", { version: link?.version ?? version })}</span>
           </div>
           <div className="flex flex-col gap-1.5">
-            <span id="cms-pl-ttl" className="text-xs font-medium text-muted-foreground">
+            <span id={ttlId} className="text-xs font-medium text-muted-foreground">
               {t("pl_expiry")}
             </span>
             <Segmented
-              labelledBy="cms-pl-ttl"
+              labelledBy={ttlId}
               value={ttl}
               onChange={setTtl}
               options={[
@@ -1539,10 +1563,26 @@ export function CmsPreviewLinkDialog({ open, onOpenChange, collection, slug, ver
           </label>
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">{t("pl_link")}</span>
-            {link ? <CodeBox value={/^\//.test(link.url) ? `${appUrl}${link.url}` : link.url} label={t("pl_link")} /> : null}
+            {link ? (
+              <div className="flex min-w-0 items-start gap-2">
+                <CodeBox className="flex-1" value={/^\//.test(link.url) ? `${appUrl}${link.url}` : link.url} label={t("pl_link")} />
+                <a href={/^\//.test(link.url) ? `${appUrl}${link.url}` : link.url} target="_blank" rel="noreferrer" className={buttonVariants({ variant: "outline", size: "sm", className: "h-[38px] shrink-0 gap-1.5" })}>
+                  <ExternalLink aria-hidden className="h-3.5 w-3.5" />
+                  {t("open")}
+                </a>
+              </div>
+            ) : loading ? (
+              <div aria-hidden className="h-[38px] animate-pulse rounded-md bg-muted" />
+            ) : null}
             <StatusText className="text-xs" tone={error ? "error" : "muted"}>
               {error ?? (loading ? t("pl_making") : link ? t("pl_until", { time: formatUntil(link.expiresAt, locale) }) : "")}
             </StatusText>
+            {error ? (
+              <Button type="button" variant="outline" size="sm" className="self-start" onClick={() => setAttempt((n) => n + 1)}>
+                {t("retry")}
+              </Button>
+            ) : null}
+            <p className="text-xs text-muted-foreground">{comments ? t("pl_who_comments") : t("pl_who")}</p>
           </div>
         </div>
         <DialogFooter>

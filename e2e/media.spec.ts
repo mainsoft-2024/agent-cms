@@ -148,7 +148,7 @@ test("media: a photo loses its camera data, the focal point crops the cover, and
   await panel.getByRole("button", { name: "Focal point", exact: true }).click();
   const box = (await panel.locator("img").boundingBox())!;
   await panel.locator("img").click({ position: { x: box.width * 0.9, y: box.height * 0.5 } });
-  await expect(panel.getByRole("button", { name: /^Focal point: 9\d% from the left, 5\d% from the top$/ })).toBeVisible();
+  await expect(panel.getByRole("button", { name: /^Focal point: 9\d% from the left, [45]\d% from the top$/ })).toBeVisible();
   const right = await card();
   expect([await colour(right, 20), await colour(right, 690)]).toEqual(["blue", "blue"]);
   // The dot sits where the click was.

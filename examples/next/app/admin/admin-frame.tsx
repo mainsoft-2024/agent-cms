@@ -19,6 +19,13 @@ export function AdminFrame({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const collection = /^\/admin\/([^/]+)/.exec(path)?.[1];
   const lang = useSearchParams().get("lang") === "ko" ? ko : undefined;
+  // The sign-in pages stand alone, without the sidebar.
+  if (/^\/admin\/(login|setup|invite|reset)(\/|$)/.test(path))
+    return (
+      <CmsProvider key="sign-in" baseUrl="/api/cms" messages={lang}>
+        {children}
+      </CmsProvider>
+    );
   return (
     <CmsProvider baseUrl="/api/cms" messages={lang} slots={slots}>
       <CmsShell
@@ -26,6 +33,7 @@ export function AdminFrame({ children }: { children: ReactNode }) {
         activeCollection={collection}
         activeHref={path}
         LinkComponent={Link}
+        onNavigate={(h) => router.push(h)}
         onSearch={() => setOpen(true)}
         extraNav={[{ label: "Example app", items: [{ label: "Search misses", href: "/admin/misses" }] }]}
       >

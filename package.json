@@ -1,6 +1,6 @@
 {
   "name": "@mainsoft/agent-cms",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (MCP, REST, CLI) together.",
   "license": "MIT",
   "type": "module",
@@ -22,6 +22,10 @@
     "UPGRADE-0.10.md",
     "UPGRADE-0.11.md",
     "UPGRADE-0.12.md",
+    "UPGRADE-0.13.md",
+    "UPGRADE-0.14.md",
+    "UPGRADE-0.15.md",
+    "UPGRADE-0.16.md",
     "CHANGELOG.md",
     "TODO.md",
     "LICENSE"
@@ -174,6 +178,16 @@
         "default": "./dist/html.cjs"
       }
     },
+    "./auth": {
+      "import": {
+        "types": "./dist/auth.d.ts",
+        "default": "./dist/auth.js"
+      },
+      "require": {
+        "types": "./dist/auth.d.cts",
+        "default": "./dist/auth.cjs"
+      }
+    },
     "./frontmatter": {
       "import": {
         "types": "./dist/frontmatter.d.ts",
@@ -265,10 +279,20 @@
       }
     },
     "./registry/*": "./dist/registry/*",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./serve": {
+      "import": {
+        "types": "./dist/serve.d.ts",
+        "default": "./dist/serve.js"
+      },
+      "require": {
+        "types": "./dist/serve.d.cts",
+        "default": "./dist/serve.cjs"
+      }
+    }
   },
   "scripts": {
-    "build": "tsup && tsx scripts/build-registry.ts",
+    "build": "tsup && node scripts/build-admin.mjs && tsx scripts/build-registry.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts",
     "test:db": "tsx --test src/db/*.test.ts",
@@ -280,7 +304,8 @@
     "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "build:registry": "tsx scripts/build-registry.ts",
     "test:shadcn": "bash scripts/shadcn-smoke.sh",
-    "test:blob": "tsx --test src/storage-vercel-blob.test.ts"
+    "test:blob": "tsx --test src/storage-vercel-blob.test.ts",
+    "build:admin": "node scripts/build-admin.mjs"
   },
   "peerDependencies": {
     "@vercel/blob": ">=2.9.0",
@@ -314,6 +339,7 @@
     "drizzle-orm": "0.45.2",
     "global-jsdom": "26.0.0",
     "jsdom": "26.1.0",
+    "jsqr": "^1.4.0",
     "pg": "8.23.1",
     "publint": "0.3.25",
     "react": "18.3.1",

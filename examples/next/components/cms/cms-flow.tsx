@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { Segmented, StatusText } from "./cms-parts";
+import { Segmented, StatusText, DIALOG } from "./cms-parts";
 import { formatZoned, personColor, relativeTime, useCms, zonedParts, zonedToIso } from "./use-cms";
 
 export const FLOW_SELECT = "h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -214,6 +214,8 @@ export function PublishButton({ disabled, busy, canSchedule, schedule, up, class
     }
     const publishAt = pub.date ? zonedToIso(pub.date, pub.time || "09:00", zone) : null;
     const unpublishAt = down.date ? zonedToIso(down.date, down.time || "09:00", zone) : null;
+    // A time the clocks skip (daylight saving) does not exist: say so instead of dropping it.
+    if ((pub.date && !publishAt) || (down.date && !unpublishAt)) return setError(t("sched_no_such_time", { zone }));
     const now = Date.now();
     if ((publishAt && Date.parse(publishAt) <= now) || (unpublishAt && Date.parse(unpublishAt) <= now)) return setError(t("sched_past"));
     if (publishAt && unpublishAt && Date.parse(unpublishAt) <= Date.parse(publishAt)) return setError(t("sched_order"));
@@ -387,7 +389,7 @@ export function ReviewStrip({ doc, canAnswer, canWrite, busy, onApprove, onRejec
         </Button>
       ) : null}
       <Dialog open={rejecting} onOpenChange={setRejecting}>
-        <DialogContent className="max-w-[460px]">
+        <DialogContent className={DIALOG.md}>
           <form
             className="grid gap-4"
             onSubmit={(e) => {
@@ -635,7 +637,7 @@ export function AddToReleaseDialog({ open, onOpenChange, collection, slug, publi
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[420px]">
+      <DialogContent className={DIALOG.sm}>
         <form
           className="grid gap-4"
           onSubmit={(e) => {

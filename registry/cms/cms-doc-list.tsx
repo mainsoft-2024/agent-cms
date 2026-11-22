@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 import type { MessageKey } from "./cms-messages";
 import { errorMessage } from "./cms-messages";
 import { CmsEmpty } from "./cms-empty";
-import { ConfirmDialog, flowState, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, Who } from "./cms-parts";
+import { ConfirmDialog, flowState, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, Who, DIALOG } from "./cms-parts";
 import { formatZoned, relativeTime, useAsync, useCms, trashChanged, useDebounced, useIsMobile, useShortcut } from "./use-cms";
 
 type BulkAction = Parameters<RestClient["bulk"]>[1];
@@ -133,12 +133,17 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
     [tab, q, category, by, pageSize]
   );
 
+  // Which list the rows on screen belong to: a page that arrives for an older one is dropped.
+  const generation = React.useRef(0);
+  const [moreError, setMoreError] = React.useState<unknown>(null);
   React.useEffect(() => {
     let live = true;
+    const gen = ++generation.current;
     setLoading(true);
+    setMoreError(null);
     client.list(collection, query).then(
       (r) => {
-        if (!live) return;
+        if (!live || gen !== generation.current) return;
         setDocs(r.docs);
         setTotal(r.total);
         setCursor(r.nextCursor);
@@ -160,17 +165,24 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   React.useEffect(() => setSelected(new Set()), [collection, query]);
 
   const loadMore = async () => {
-    if (!cursor) return;
+    if (!cursor || loading) return;
+    const gen = generation.current;
     setLoading(true);
+    setMoreError(null);
     try {
       const r = await client.list(collection, { ...query, cursor });
-      setDocs((d) => [...d, ...r.docs]);
+      if (gen !== generation.current) return;
+      setDocs((d) => {
+        const have = new Set(d.map((x) => x.slug));
+        return [...d, ...r.docs.filter((x) => !have.has(x.slug))];
+      });
       setCursor(r.nextCursor);
       setTotal(r.total);
     } catch (e) {
-      setLoadError(e);
+      // The rows already shown stay; Retry asks for the same page again.
+      if (gen === generation.current) setMoreError(e);
     } finally {
-      setLoading(false);
+      if (gen === generation.current) setLoading(false);
     }
   };
 
@@ -617,8 +629,8 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       )}
       {!isEmpty ? (
         <div className={cn("flex items-center justify-between gap-2 py-3 text-xs text-muted-foreground", mobile ? "px-4" : "px-6")}>
-          <StatusText className="text-xs" tone={loadError ? "error" : "muted"}>
-            {loadError ? errorMessage(loadError, t) : loading ? t("loading") : docs.length === 0 ? t("no_results") : t("shown_of", { shown: docs.length, total })}
+          <StatusText className="text-xs" tone={loadError || moreError ? "error" : "muted"}>
+            {loadError ? errorMessage(loadError, t) : moreError ? `${t("shown_of", { shown: docs.length, total })} · ${errorMessage(moreError, t)}` : loading ? t("loading") : docs.length === 0 ? t("no_results") : t("shown_of", { shown: docs.length, total })}
           </StatusText>
           {!loading && !loadError && docs.length === 0 && filtered ? (
             <Button type="button" variant="outline" size="sm" onClick={() => applyFilter({})}>
@@ -630,9 +642,9 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
               {t("retry")}
             </Button>
           ) : null}
-          {cursor ? (
+          {cursor && !loadError ? (
             <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void loadMore()}>
-              {t("load_more")}
+              {moreError ? t("retry") : t("load_more")}
             </Button>
           ) : null}
         </div>
@@ -679,7 +691,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       ) : null}
 
       <Dialog open={!!results} onOpenChange={(o) => !o && setResults(null)}>
-        <DialogContent className="max-w-[500px]">
+        <DialogContent className={DIALOG.md}>
           {results ? <BulkResults {...results} onOpen={(slug) => (setResults(null), open(slug))} canOpen={!!onOpenDocument} onClose={() => setResults(null)} /> : null}
         </DialogContent>
       </Dialog>
@@ -696,7 +708,7 @@ function SaveFilterDialog({ collection, query, onClose, onSaved }: { collection:
   const [busy, setBusy] = React.useState(false);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-[400px]">
+      <DialogContent className={DIALOG.sm}>
         <form
           className="grid gap-4"
           onSubmit={(e) => {

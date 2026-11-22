@@ -10,7 +10,8 @@ import type { DocSummary } from "@mainsoft/agent-cms/types";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { StateBadge } from "./cms-parts";
+import { errorMessage } from "./cms-messages";
+import { ConfirmDialog, StateBadge } from "./cms-parts";
 import { useCms, useDebounced } from "./use-cms";
 
 export interface CmsCommandProps {
@@ -45,7 +46,7 @@ function Mark({ text, q }: { text: string; q: string }) {
 }
 
 export function CmsCommand({ open: openProp, onOpenChange, hotkey = true, collection, onOpenDocument, onNewDocument, onOpenVersions, onPublished, limit = 8 }: CmsCommandProps) {
-  const { client, t, me } = useCms();
+  const { client, t, me, toast } = useCms();
   const [openState, setOpenState] = React.useState(false);
   const open = openProp ?? openState;
   const setOpen = React.useCallback(
@@ -72,34 +73,44 @@ export function CmsCommand({ open: openProp, onOpenChange, hotkey = true, collec
     return () => document.removeEventListener("keydown", on);
   }, [hotkey, open, setOpen]);
 
-  const cols = React.useMemo(() => (me?.collections ?? []).filter((c) => c.canWrite), [me]);
+  // Everything this person may read is searched; new and publish follow what they may do.
+  const readable = React.useMemo(() => me?.collections ?? [], [me]);
+  const cols = React.useMemo(() => readable.filter((c) => c.canWrite), [readable]);
+  // The query the hits on screen answer: actions never use hits from an older query.
+  const [hitsFor, setHitsFor] = React.useState<string | null>(null);
+  const [failed, setFailed] = React.useState(0);
+  const [publishing, setPublishing] = React.useState<Hit | null>(null);
 
   const search = useDebounced(async (text: string) => {
     const n = ++seq.current;
     setLoading(true);
+    let bad = 0;
     const results = await Promise.all(
-      cols.map((c) =>
+      readable.map((c) =>
         client.list(c.slug, { q: text || undefined, limit }).then(
           (r) => r.docs.map((d) => ({ ...d, collectionLabel: c.label })),
-          () => [] as Hit[]
+          () => (bad++, [] as Hit[])
         )
       )
     );
     if (n !== seq.current) return;
     setHits(results.flat());
+    setHitsFor(text);
+    setFailed(bad);
     setLoading(false);
   }, 200);
 
   React.useEffect(() => {
     if (open) search(q);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, q, cols]);
+  }, [open, q, readable]);
 
   React.useEffect(() => {
     if (!open) setQ("");
   }, [open]);
 
-  const first = hits[0];
+  const current = hitsFor === q;
+  const first = current ? hits[0] : undefined;
   const newIn = [...cols].sort((a, b) => (a.slug === collection ? -1 : b.slug === collection ? 1 : 0));
 
   const run = (fn: () => void) => {
@@ -108,14 +119,25 @@ export function CmsCommand({ open: openProp, onOpenChange, hotkey = true, collec
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="top-[12vh] max-w-[620px] translate-y-0 overflow-hidden p-0">
+      <DialogContent className="top-[12vh] w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] translate-y-0 grid-cols-[minmax(0,1fr)] overflow-hidden p-0 sm:max-w-[620px]">
         <DialogTitle className="sr-only">{t("cmd_title")}</DialogTitle>
         <DialogDescription className="sr-only">{t("cmd_placeholder")}</DialogDescription>
         <Command shouldFilter={false} label={t("cmd_title")} className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground">
           <CommandInput value={q} onValueChange={setQ} placeholder={t("cmd_placeholder")} aria-label={t("cmd_placeholder")} className="h-12" />
-          <CommandList className="max-h-[420px]">
-            {!loading ? <CommandEmpty>{t("cmd_empty")}</CommandEmpty> : null}
+          <CommandList className="max-h-[min(420px,60dvh)]">
+            {!loading && current ? <CommandEmpty>{failed ? t("cmd_failed") : t("cmd_empty")}</CommandEmpty> : null}
+            {loading && !hits.length ? (
+              <div role="status" className="px-4 py-6 text-center text-sm text-muted-foreground">
+                {t("loading")}
+              </div>
+            ) : null}
+            {failed && hits.length && current ? (
+              <p role="status" className="px-4 pt-2 text-xs text-amber-700 dark:text-amber-400">
+                {t("cmd_partial", { n: failed })}
+              </p>
+            ) : null}
             {hits.length ? (
               <CommandGroup heading={t("cmd_docs")}>
                 {hits.map((d) => (
@@ -125,7 +147,7 @@ export function CmsCommand({ open: openProp, onOpenChange, hotkey = true, collec
                       <Mark text={d.title || d.slug} q={q} />
                     </span>
                     <StateBadge state={d.state} label={d.state === "draft" ? t("draft_version", { version: d.version }) : undefined} />
-                    <span className="text-xs text-muted-foreground">{d.collectionLabel}</span>
+                    <span className="hidden max-w-[8rem] shrink-0 truncate text-xs text-muted-foreground sm:inline">{d.collectionLabel}</span>
                   </CommandItem>
                 ))}
               </CommandGroup>
@@ -135,11 +157,7 @@ export function CmsCommand({ open: openProp, onOpenChange, hotkey = true, collec
                 <CommandItem
                   value={`publish:${first.collection}/${first.slug}`}
                   className="gap-2"
-                  onSelect={() =>
-                    run(() => {
-                      void client.publish(first.collection, first.slug, { expectedVersion: first.version }).then(() => onPublished?.(first.collection, first.slug));
-                    })
-                  }
+                  onSelect={() => run(() => setPublishing(first))}
                 >
                   <Upload aria-hidden className="h-4 w-4 text-muted-foreground" />
                   {t("cmd_publish", { title: first.title || first.slug })}
@@ -172,5 +190,25 @@ export function CmsCommand({ open: openProp, onOpenChange, hotkey = true, collec
         </Command>
       </DialogContent>
     </Dialog>
+    <ConfirmDialog
+      open={!!publishing}
+      onOpenChange={(o) => !o && setPublishing(null)}
+      title={t("cmd_publish_title", { title: publishing?.title || publishing?.slug || "" })}
+      description={t("cmd_publish_text", { version: publishing?.version ?? 0, collection: publishing?.collectionLabel ?? "" })}
+      confirmLabel={t("publish")}
+      onConfirm={async () => {
+        const d = publishing;
+        if (!d) return;
+        setPublishing(null);
+        try {
+          await client.publish(d.collection, d.slug, { expectedVersion: d.version });
+          toast(t("cmd_published", { title: d.title || d.slug }), { tone: "ok" });
+          onPublished?.(d.collection, d.slug);
+        } catch (e) {
+          toast(errorMessage(e, t), { tone: "error" });
+        }
+      }}
+    />
+    </>
   );
 }

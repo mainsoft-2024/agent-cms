@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { errorMessage, type T } from "./cms-messages";
-import { Segmented, StatusText } from "./cms-parts";
+import { Segmented, StatusText, DIALOG } from "./cms-parts";
 import { createUploader, fileSize, type UploadItem, type UploadTarget } from "./cms-upload";
 import { useCms, useDebounced } from "./use-cms";
 
@@ -374,7 +374,7 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
   };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[min(92dvh,720px)] max-w-[820px] flex-col gap-0 p-0">
+      <DialogContent className={cn(DIALOG.xl, "flex max-h-[min(92dvh,720px)] flex-col gap-0 p-0")}>
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle>{t("media_pick_title")}</DialogTitle>
         </DialogHeader>

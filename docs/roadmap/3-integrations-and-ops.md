@@ -348,3 +348,29 @@ PR #24. 스키마 7. 검증: 단위 166개(159 통과, 7은 실제 저장소가 
 - 93의 나머지 훅(필드 단위, 목록과 검색의 `afterRead`, `beforeRead`), 92의 플러그인 표를 `migrate`가 실행하기, 134의 편집기 안 확장 자리, 80의 검색·색인 지표
 - 131의 나머지(Notion, Contentful, Strapi), 화면의 zip 가져오기, 프레임워크별 예제 앱(Hono, Express)과 CI, 다른 언어 클라이언트 예제
 - 113의 나머지(미디어 권한, 필드 단위 권한), 자동화의 에이전트 도구
+
+## 0.16.0 진행 상황 (2026-11-22, 브랜치 `agents/auth-016`)
+
+계획: `.slash/workspace/plans/c-rest-standalone-auth.plan.md`, 시안 `standalone-auth` v1(승인됨).
+
+한 것 (122 자체 로그인, 서버 쪽):
+- `@mainsoft/agent-cms/auth`의 `createAuth`, `createCmsHandler({ cms, auth })`. 스키마 변경 없음(`cms_records`: auth_user, auth_session, auth_passkey, auth_token, auth_policy, auth_fails).
+- 비밀번호: scrypt N=2^17 r=8 p=1, 파라미터를 해시에 기록하고 약하면 다음 로그인 때 다시 해시. 12자 이상, 흔한 비밀번호 1만 개·이메일 이름·연속 글자 거절. 없는 계정도 같은 시간.
+- 패스키: 라이브러리 없이 WebAuthn(CBOR, COSE, ES256/EdDSA/RS256, 출처·챌린지·rpId·카운터 확인). 소프트웨어 인증기로 테스트.
+- 2단계: TOTP(RFC 6238 벡터로 확인, 같은 코드 재사용 거절), 자체 QR 인코더(독립 디코더 jsqr로 확인), 복구 코드 10개, 30일 기기 신뢰.
+- SSO: OIDC 코드 흐름 + PKCE, state·nonce, 디스커버리·JWKS 캐시와 키 교체 대응, 도메인 제한, 초대된 사람만 또는 자동 생성, 기본 역할.
+- 첫 관리자 설정 코드(로그에 출력, 15분), 초대(7일, 역할·관리자), 재설정(1시간, 계정 유무 숨김), 세션 30일·최대 90일·`__Host-` 쿠키, 기기 목록·원격 로그아웃, 10분 본인 확인(키 만들기·교체, 2단계 끄기, 패스키 삭제, 사람 끄기·관리자 지정), `requireMfa` 정책, 로그인 잠금(이메일 15분/10회, 주소 15분/50회), 로그인 CSRF 거절, 감사 로그 `auth.*`.
+- REST `/auth/*`, `/users/*`(OpenAPI 목록 포함), `_me.auth`, 역할 화면의 사람 찾기 연결.
+- 테스트 `src/auth.test.ts` 12개.
+
+화면과 단독 서버 (같은 0.16.0, 2026-11-22 오후):
+- 화면: `cms-login`(로그인·첫 설정·2단계·복구 코드·초대 수락·재설정), `cms-people`(초대 칩 입력, 시작 역할, 메일/링크, 다시 보내기·새 링크·취소, 로그인 방법 표시, 계정 끄기, 관리자 지정, 모두 2단계 정책), `cms-account`(이름, 테마, 언어, 패스키 추가·이름·삭제, 비밀번호와 강도, 인증 앱 QR·복구 코드 받기, 기기 목록과 로그아웃), `cms-auth-kit`(패스키 브라우저 처리, 본인 확인 창, 비밀번호 칸), 셸 계정 메뉴와 어두운 테마(밝게·어둡게·시스템), 로그인 풀림 화면.
+- 단독 서버: `npx @mainsoft/agent-cms dev`(설정 없이, PGlite 있으면 `.agent-cms/dev`에 보관), `serve`(설정의 `server`), `@mainsoft/agent-cms/serve`의 `startServer`, 미리 빌드한 어드민 `dist/admin`(scripts/build-admin.mjs, esbuild + tailwind), CSP(인라인 스크립트는 해시 하나), `/healthz`, 1분 예약 작업, SIGTERM 정리, `examples/server`(Dockerfile, compose: CMS+Postgres+MinIO).
+- 역할의 사람: ID 입력 없앰. 이름·이메일 검색(앱 users + 자체 로그인 + 어드민을 쓴 사람 기록 `person`), 처음 보는 이메일은 대기 멤버로 넣고 첫 로그인 때 합류.
+- 전체 화면 레이아웃 검사 `e2e/layout.spec.ts`(17개 화면 × 4개 폭, 긴 이름, 열리는 대화상자까지) 통과. 리뷰 결과와 반영 현황: `docs/roadmap/review-ui-2026-11-22.md`.
+- 실제 브라우저 `e2e/standalone.spec.ts`(설정 코드, 인증 앱 2단계, Chrome 가상 인증기로 패스키 등록·로그인, 초대 링크 수락과 한 번만 쓰기, 어두운 테마) 5개 통과.
+
+아직 안 한 것:
+- CLI `user create`, 메일 보내기 예제(Resend 등), 실제 OIDC 공급자(Google 등)로 확인.
+- 리뷰의 [남음] 항목(`docs/roadmap/review-ui-2026-11-22.md`).
+- 0.17.0: 75, 76, 77, 78, 82, 90, 104, 106, 21, 73, 93/92/134/80 나머지, 113, 131(Notion, zip), 27.

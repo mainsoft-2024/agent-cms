@@ -1,7 +1,9 @@
 /**
  * Roles: what a person may do, set on a screen instead of in code. A role lists, per collection,
- * read, write, publish and delete. People are put into roles by the
- * id the app's `resolveUser` gives them.
+ * read, write, publish and delete. People are found by name or email: from the app
+ * (`createCms({ users })`), from the CMS's own sign-in, and from everyone who has used the
+ * admin (the CMS remembers who it has seen). Someone who has never signed in is added by
+ * email and joins the role at their first visit.
  *
  * Order of decisions: the system actor, then a collection's own `access` function (code wins; the
  * screen shows it as "set in code"), then roles, then the default (admins only). An app that
@@ -20,6 +22,14 @@ export type RolePermissions = Record<string, Partial<Record<RoleOp, boolean>>>;
 export interface RoleMember {
   id: string;
   label: string;
+  email?: string | null;
+  /** Added by email and not seen yet: joins at the first visit with that email. */
+  pending?: boolean;
+}
+/** Someone to pick: from the app, the CMS's sign-in or the people the CMS has seen. */
+export interface PersonMatch extends RoleMember {
+  /** When the CMS last saw them (null: only the app knows them). */
+  lastSeenAt?: string | null;
 }
 export interface CmsRole {
   id: string;
@@ -44,6 +54,10 @@ export interface UsersOptions {
 
 type RoleData = Omit<CmsRole, "id" | "createdAt" | "updatedAt">;
 const KIND = "role";
+/** People the CMS has seen (key: the user id). */
+const PERSON = "person";
+const SEEN_EVERY_MS = 10 * 60_000;
+const emailOk = (e: string) => /^[^\s@<>()"',;:]+@[^\s@<>()"',;:]+\.[^\s@<>()"',;:]{2,}$/.test(e) && e.length <= 254;
 const REFRESH_MS = 15_000;
 
 export interface RolesContext {
@@ -78,9 +92,58 @@ export function createRoles(ctx: RolesContext) {
     })();
     return loading;
   }
-  const rolesOf = (id: string) => cache.filter((r) => r.members.some((m) => m.id === id));
+  const lower = (e?: string | null) => (e ? e.trim().toLowerCase() : null);
+  const isMember = (m: RoleMember, id: string, email?: string | null) => m.id === id || (!!m.pending && !!email && m.email === lower(email));
+  const rolesOf = (id: string, email?: string | null) => cache.filter((r) => r.members.some((m) => isMember(m, id, email)));
+  const actorRoles = (actor: Actor) => (actor.kind === "user" ? rolesOf(actor.id, actor.email) : []);
   /** Admin through a role (read from memory: `load()` runs before every request). */
-  const roleAdmin = (actor: Actor) => actor.kind === "user" && rolesOf(actor.id).some((r) => r.admin);
+  const roleAdmin = (actor: Actor) => actorRoles(actor).some((r) => r.admin);
+
+  const lastSeen = new Map<string, number>();
+  type PersonData = { label: string; email: string | null; lastSeenAt: string };
+  async function people(): Promise<PersonMatch[]> {
+    return (await repo.listRecords({ kind: PERSON, limit: 5000 })).map((r) => {
+      const d = r.data as unknown as PersonData;
+      return { id: r.key!, label: d.label, email: d.email, lastSeenAt: d.lastSeenAt };
+    });
+  }
+  /** Notes that a person used the CMS (at most every 10 minutes each), and turns email invitations to roles into memberships. */
+  async function seen(actor: Actor): Promise<void> {
+    if (actor.kind !== "user" || actor.agent) return;
+    const t = ctx.now().getTime();
+    if (t - (lastSeen.get(actor.id) ?? 0) < SEEN_EVERY_MS) return;
+    lastSeen.set(actor.id, t);
+    if (lastSeen.size > 20_000) lastSeen.clear();
+    const data: PersonData = { label: actor.label || actor.id, email: lower(actor.email), lastSeenAt: iso() };
+    try {
+      const cur = await repo.findRecordByKey(PERSON, actor.id);
+      if (cur) await repo.updateRecord(PERSON, cur.id, { data: data as unknown as Record<string, unknown>, at: iso() });
+      else await repo.insertRecord({ kind: PERSON, key: actor.id, data: data as unknown as Record<string, unknown>, at: iso() });
+      const email = data.email;
+      if (!email) return;
+      await load();
+      for (const r of cache.filter((x) => x.members.some((m) => m.pending && m.email === email))) {
+        const members = r.members.filter((m) => !(m.pending && m.email === email));
+        if (!members.some((m) => m.id === actor.id)) members.push({ id: actor.id, label: data.label, email });
+        await save(r.id, { name: r.name, admin: r.admin, permissions: r.permissions, members });
+        ctx.audit({ kind: "system", label: "first sign-in" }, "role.member.add", { detail: { id: r.id, name: r.name, member: actor.id, label: data.label, email } });
+      }
+    } catch {
+      // Remembering people is a convenience: it never fails a request.
+    }
+  }
+  async function findPeople(q: string): Promise<PersonMatch[]> {
+    const s = q.trim().toLowerCase().slice(0, 100);
+    const known = await people();
+    const fromApp = ctx.users ? ((await ctx.users.search(s)) ?? []).map((u) => ({ id: String(u.id), label: String(u.label), email: lower((u as RoleMember).email), lastSeenAt: null as string | null })) : [];
+    const out = new Map<string, PersonMatch>();
+    for (const u of fromApp) out.set(u.id, { ...u, lastSeenAt: known.find((k) => k.id === u.id)?.lastSeenAt ?? null });
+    for (const k of known) {
+      if (out.has(k.id)) continue;
+      if (!s || k.label.toLowerCase().includes(s) || (k.email ?? "").includes(s) || k.id.toLowerCase() === s) out.set(k.id, k);
+    }
+    return [...out.values()].sort((a, b) => (b.lastSeenAt ?? "").localeCompare(a.lastSeenAt ?? "") || a.label.localeCompare(b.label)).slice(0, 20);
+  }
   const isAdmin = (actor: Actor) => ctx.baseAdmin(actor) || roleAdmin(actor);
   function admin(actor: Actor) {
     if (!isAdmin(actor)) throw fail(actor.kind === "anonymous" ? "unauthorized" : "forbidden_roles");
@@ -119,6 +182,10 @@ export function createRoles(ctx: RolesContext) {
   return {
     /** Call before deciding anything: refreshes the roles kept in memory (every 15 seconds, or now after a change). */
     load,
+    /** The roles a person is in (from memory: call `load` first). */
+    of: (userId: string, email?: string | null) => rolesOf(userId, email),
+    /** Remember that a person used the CMS; their email invitations to roles take effect. */
+    seen,
     isAdmin,
     /**
      * What the roles say about one operation: true or false when the person is in a role,
@@ -126,7 +193,7 @@ export function createRoles(ctx: RolesContext) {
      */
     allows(actor: Actor, target: string, op: RoleOp): boolean | undefined {
       if (actor.kind !== "user") return undefined;
-      const mine = rolesOf(actor.id);
+      const mine = actorRoles(actor);
       if (!mine.length) return undefined;
       return mine.some((r) => r.admin || !!r.permissions[target]?.[op]);
     },
@@ -167,17 +234,30 @@ export function createRoles(ctx: RolesContext) {
       await load(true);
       ctx.audit(actor, "role.delete", { detail: { id, name: cur.name } });
     },
-    async addMember(actor: Actor, id: string, member: { id: string; label?: string }): Promise<CmsRole> {
+    /**
+     * Adds someone: `{ id }` for a person found by search, or `{ email }`. An email the CMS
+     * knows becomes that person; an unknown one waits (`pending`) until they first sign in.
+     */
+    async addMember(actor: Actor, id: string, member: { id?: string; email?: string; label?: string }): Promise<CmsRole> {
       admin(actor);
       await ctx.ready();
       const cur = await found(id);
-      const userId = member.id.trim();
-      if (!userId || userId.length > 200) throw fail("name_invalid", { max: 200 });
-      const known = (await ctx.users?.get?.(userId)) ?? null;
-      const label = (known?.label ?? member.label ?? userId).trim().slice(0, 120) || userId;
-      if (cur.members.some((m) => m.id === userId)) return cur;
-      const role = await save(id, { name: cur.name, admin: cur.admin, permissions: cur.permissions, members: [...cur.members, { id: userId, label }] });
-      ctx.audit(actor, "role.member.add", { detail: { id, name: cur.name, member: userId, label } });
+      let entry: RoleMember;
+      if (member.email !== undefined && !member.id) {
+        const email = lower(member.email)!;
+        if (!emailOk(email)) throw fail("email_invalid", { email: member.email.slice(0, 80) });
+        const match = (await people()).find((p) => p.email === email) ?? (await findPeople(email)).find((p) => p.email === email);
+        entry = match ? { id: match.id, label: match.label, email } : { id: `email:${email}`, label: email, email, pending: true };
+      } else {
+        const userId = (member.id ?? "").trim();
+        if (!userId || userId.length > 200) throw fail("name_invalid", { max: 200 });
+        const known = (await ctx.users?.get?.(userId)) ?? (await people()).find((p) => p.id === userId) ?? null;
+        const label = (known?.label ?? member.label ?? userId).trim().slice(0, 120) || userId;
+        entry = { id: userId, label, email: lower((known as RoleMember | null)?.email) };
+      }
+      if (cur.members.some((m) => m.id === entry.id || (entry.email && m.email === entry.email))) return cur;
+      const role = await save(id, { name: cur.name, admin: cur.admin, permissions: cur.permissions, members: [...cur.members, entry] });
+      ctx.audit(actor, "role.member.add", { detail: { id, name: cur.name, member: entry.id, label: entry.label, pending: !!entry.pending } });
       return role;
     },
     async removeMember(actor: Actor, id: string, userId: string): Promise<CmsRole> {
@@ -190,10 +270,11 @@ export function createRoles(ctx: RolesContext) {
       ctx.audit(actor, "role.member.remove", { detail: { id, name: cur.name, member: userId } });
       return role;
     },
-    /** People to add, from the app (`createCms({ users })`). Empty without it. */
-    async searchUsers(actor: Actor, q: string): Promise<RoleMember[]> {
+    /** People to add, by name or email: the app's (`createCms({ users })`), the sign-in's, and everyone the CMS has seen. Most recently active first. */
+    async searchUsers(actor: Actor, q: string): Promise<PersonMatch[]> {
       admin(actor);
-      return ctx.users ? (await ctx.users.search(q.trim().slice(0, 100))).slice(0, 20).map((u) => ({ id: String(u.id), label: String(u.label) })) : [];
+      await ctx.ready();
+      return findPeople(q);
     },
   };
 }

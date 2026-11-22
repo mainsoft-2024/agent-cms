@@ -18,7 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { errorMessage, type MessageKey } from "./cms-messages";
-import { ConfirmDialog, PageHeader, Segmented, StateBadge, StatusText, Who } from "./cms-parts";
+import { ConfirmDialog, PageHeader, Segmented, StateBadge, StatusText, Who, DIALOG } from "./cms-parts";
 import { relativeTime, useAsync, useCms, useIsMobile, useLocalStorage } from "./use-cms";
 
 type DocDiff = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["diff"]>>;
@@ -396,7 +396,7 @@ export function CmsVersions({ collection, slug, onBack, onChanged, className }: 
   const confirmDialog = (
     <>
     <Dialog open={naming !== null} onOpenChange={(o) => !o && setNaming(null)}>
-      <DialogContent className="max-w-[400px]">
+      <DialogContent className={DIALOG.sm}>
         <form
           className="grid gap-4"
           onSubmit={(e) => {
