@@ -108,12 +108,18 @@ test("audit: entries, filters, 0 axe violations", async () => {
   await s.cms.createKey(admin, { name: "bot", scopes: ["read", "write"] });
   await new Promise((r) => setTimeout(r, 20));
   renderWith(s, <CmsAudit />);
-  await screen.findByText("Create key");
-  assert.ok(screen.getByText("Publish"));
-  assert.ok(screen.getByText("guide/a"));
-  assert.ok(screen.getByRole("combobox", { name: "Action" }));
+  // The table (wide screens); a phone gets the same entries as a list of cards.
+  const table = await screen.findByRole("table");
+  await within(table).findByText("Create key");
+  assert.ok(within(table).getByText("Publish"));
+  assert.ok(within(table).getByText("guide/a"));
+  const cards = screen.getByRole("list", { name: "Audit log" });
+  assert.ok(within(cards).getByText("Create key"));
+  assert.ok(screen.getByRole("combobox", { name: "Kind" }));
   assert.ok(screen.getByRole("combobox", { name: "Who" }));
   assert.ok(screen.getByRole("combobox", { name: "Result" }));
+  assert.ok(screen.getByRole("combobox", { name: "Period" }));
+  assert.ok(screen.getByRole("searchbox", { name: "Who (name)" }));
   assert.deepEqual(await axeViolations(), []);
 });
 
