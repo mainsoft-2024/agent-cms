@@ -1017,7 +1017,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     for (const fn of collection(col).hooks?.beforeChange ?? []) {
       const seen = cur;
       const patch = await hook(fn, { collection: col, slug: cur.slug, content: cur, prev, actor }).catch((e) => {
-        throw safeError(actor, col, { ...overlay((prev ?? { collection: col }) as CmsDoc, seen, prev?.version), collection: col } as CmsDoc, e, { pathless: "hide" });
+        // The hook saw the candidate and the previous copy: a field hidden in either stays hidden.
+        throw safeError(actor, col, [{ ...overlay((prev ?? { collection: col }) as CmsDoc, seen, prev?.version), collection: col } as CmsDoc, ...(prev ? [prev] : [])], e, { pathless: "hide" });
       });
       if (patch && typeof patch === "object") cur = validate(col, { ...cur, ...patch }, { actor, base: prev });
     }
@@ -1120,8 +1121,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (shownDiags.every((d, i) => d === diags[i])) return e;
     // Something was hidden: the whole envelope is rebuilt from what is shown (the original top-level
     // params may quote a hidden finding).
+    // The status goes with the code: kept when the first finding is still the error's own, else the
+    // status of the code shown.
     const first = shownDiags[0];
-    const status = (e as { status?: number }).status;
+    const status = first.code === e.code ? (e as { status?: number }).status : undefined;
     return fail(first.code as CmsErrorCode, (first as { params?: ErrorParams }).params ?? {}, { diagnostics: shownDiags, ...(status ? { status } : {}) });
   }
 
@@ -1139,13 +1142,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const other = content.slug ? await repo.findDoc(col, content.slug, { trashed: true }) : null;
     const taken = other?.deletedAt ? "slug_in_trash" : "slug_taken";
     if (other && other.id !== cur?.id) diagnostics.push({ path: "slug", code: taken, params: { slug: content.slug }, severity: "error", message: formatMessage(messages, taken, { slug: content.slug }) });
-    diagnostics.push(...(await assets.checkDoc(cfg, content, cur ? assets.idsIn(cfg, cur) : undefined)));
+    const files = await assets.checkDoc(cfg, content, cur ? assets.idsIn(cfg, cur) : undefined);
     // What is said about fields this person may not see (a file's id or name in one) stays out.
     // Judged on the copy that was checked (what was sent over what is stored), with the same
     // conservative rule as publish checks.
-    // Schema findings were made on the normalized copy, file findings on the raw one: both count.
+    // Each group judged on the copy its checker saw: the schema's on the normalized copy, the
+    // files' on the one as sent.
     const on = (c: DocContent) => ({ ...overlay((cur ?? { collection: col }) as CmsDoc, c, cur?.version), collection: col }) as CmsDoc;
-    return diagnosticsFor(actor, col, [on(normalized), on(content)], diagnostics);
+    return [...diagnosticsFor(actor, col, on(normalized), diagnostics), ...diagnosticsFor(actor, col, on(content), files)];
   }
 
   const same = (a: DocContent, b: DocContent) => stableJson(contentOf(a)) === stableJson(contentOf(b));
@@ -1815,8 +1819,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (o.expectedVersion !== undefined && o.expectedVersion !== cur.version) throw conflict(cur, o.expectedVersion, actor, col);
       const body = applyPatch(cur.body, ops);
       const { diagnostics, content: normalized } = check(col, { ...cur, body });
-      diagnostics.push(...(await assets.checkDoc(collection(col), { ...cur, body }, assets.idsIn(collection(col), cur))));
-      return { doc: null, diff: unifiedDiff(cur.body, body, { from: `v${cur.version}`, to: "patched" }), diagnostics: diagnosticsFor(actor, col, [overlay(cur, normalized, cur.version), { ...cur, body } as CmsDoc], diagnostics), saved: false };
+      const files = await assets.checkDoc(collection(col), { ...cur, body }, assets.idsIn(collection(col), cur));
+      const shown = [...diagnosticsFor(actor, col, overlay(cur, normalized, cur.version), diagnostics), ...diagnosticsFor(actor, col, { ...cur, body } as CmsDoc, files)];
+      return { doc: null, diff: unifiedDiff(cur.body, body, { from: `v${cur.version}`, to: "patched" }), diagnostics: shown, saved: false };
     }
     let before = "";
     const r = await write(
@@ -2259,7 +2264,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
           return [];
         }
         if (!can(actor, h.unit.collection, "read", pub)) return [];
-        const unit = project(actor, h.unit.collection, pub, h.unit);
+        // The rules judge the published copy itself (its format, version and fields); a search unit
+        // carries only some of them.
+        const unit = projectWith(hiddenPaths(actor, h.unit.collection, pub), h.unit);
         if (o.filter && !o.filter(unit)) return [];
         return [{ ...h, unit }];
       });

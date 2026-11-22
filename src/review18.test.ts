@@ -561,13 +561,14 @@ test("review round 9: a hook's structured error without a field path says nothin
     hooks: {
       beforeChange: [
         ({ content }) => {
-          throw new CmsError("invalid_fields", { reason: `cost ${(content.fields as { cost?: number }).cost} too high` }, { message: `cost ${(content.fields as { cost?: number }).cost} too high`, diagnostics: [{ path: "", code: "invalid_fields", params: {}, severity: "error", message: `cost ${(content.fields as { cost?: number }).cost} too high` }] });
+          throw new CmsError("invalid_field", { reason: `cost ${(content.fields as { cost?: number }).cost} too high` }, { message: `cost ${(content.fields as { cost?: number }).cost} too high`, diagnostics: [{ path: "", code: "invalid_field", params: {}, severity: "error", message: `cost ${(content.fields as { cost?: number }).cost} too high` }] });
         },
       ],
     },
   });
   const cms = createCms({ repo: new MemoryRepo(), collections: [p], warn: () => {} });
-  await assert.rejects(cms.create(editor, "p", { slug: "a", title: "A", body: "x\n" }), (e: Error) => {
+  await assert.rejects(cms.create(editor, "p", { slug: "a", title: "A", body: "x\n" }), (e: Error & { code?: string }) => {
+    assert.equal(e.code, "check_hidden");
     assert.doesNotMatch(JSON.stringify(e) + e.message, /too high/);
     return true;
   });

@@ -8,7 +8,7 @@
 
 import * as React from "react";
 import { GitMerge } from "lucide-react";
-import type { CmsDoc } from "@mainsoft/agent-cms/types";
+import type { CmsDoc, DocContent } from "@mainsoft/agent-cms/types";
 import { diffWords, mergeDocs, resolveDocMerge, type DocLike, type MergeChoice } from "@mainsoft/agent-cms/diff";
 import { isCmsRemoteError } from "@mainsoft/agent-cms/client";
 import { Badge } from "@/components/ui/badge";
@@ -32,7 +32,7 @@ export interface CmsMergeProps {
   /** The copy someone else saved (`CmsRemoteError.current` of the 409). */
   theirs: CmsDoc;
   /** Saved: the new document. */
-  onSaved: (doc: CmsDoc) => void;
+  onSaved: (doc: CmsDoc, submitted?: DocContent) => void;
   /** Back to the editor without saving. */
   onCancel: () => void;
   /** Breadcrumb before the title (e.g. the collection and document). */
@@ -108,7 +108,7 @@ export function CmsMerge({ collection, slug, base: base0, baseVersion: baseVersi
     const merged = resolveDocMerge(m, { body, fields });
     try {
       const doc = await client.update(collection, slug, toInput(merged, round.theirs.fields), { expectedVersion: round.theirs.version });
-      onSaved(doc);
+      onSaved(doc, merged);
     } catch (e) {
       if (isCmsRemoteError(e) && e.code === "conflict_version" && e.current) {
         // They saved again: merge what we resolved against the newest copy.

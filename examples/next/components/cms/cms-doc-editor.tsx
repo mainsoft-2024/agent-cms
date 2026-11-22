@@ -308,12 +308,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   };
 
   React.useEffect(() => {
-    if (!schema?.canWrite) return;
+    if (!schema?.canWrite || lostWrite) return;
     if (loading) return;
     void diagnose(content);
     if (edited.current && doc && !sameContent(content, saved) && !unparsedRef.current.length) autosave(content, baseVersion, doc.slug);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [content, schema?.canWrite, loading]);
+  }, [content, schema?.canWrite, lostWrite, loading]);
 
   React.useEffect(() => () => autosave.cancel(), [autosave]);
 
@@ -624,7 +624,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const publishRef = React.useRef(publish);
   publishRef.current = publish;
   const keys = React.useRef({ save, dirty, busy, isNew, canWrite: false, canPublish: false });
-  keys.current = { save, dirty, busy, isNew, canWrite: !!schema?.canWrite, canPublish: !!schema?.canPublish && !schema?.needsReview };
+  keys.current = { save, dirty, busy, isNew, canWrite: !!schema?.canWrite && !lostWrite, canPublish: !!schema?.canPublish && !schema?.needsReview };
   useShortcut(mode.kind === "edit" && "mod+s", () => {
     const k = keys.current;
     if (k.canWrite && !k.busy && (k.dirty || k.isNew)) void k.save(false);
@@ -791,9 +791,14 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         crumbs={[schema?.label ?? collection, content.title || doc.slug]}
         className={className}
         onCancel={() => setMode({ kind: "edit" })}
-        onSaved={(d) => {
+        onSaved={(d, submitted) => {
           setMode({ kind: "edit" });
           setReviewed({});
+          // A state-only answer: what is on screen becomes what was submitted.
+          if (d.receipt && submitted) {
+            setContentRaw(submitted);
+            live.current.content = submitted;
+          }
           applyDoc(d);
           void loadChanges(d.slug);
           setStatus({ text: t("saved", { version: d.version }), tone: "ok" });
@@ -1276,7 +1281,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
 
   const form = (
     <FieldGate.Provider value={fieldGate}>
-      <CmsFieldForm schema={schema} value={content} onChange={setContent} problems={byField} slugLocked={!!doc && doc.publishedVersion !== null} slugPrefix={slugPrefix} idPrefix="cms-editor" slotContext={slotCtx} />
+      <CmsFieldForm disabled={!canWrite} schema={schema} value={content} onChange={setContent} problems={byField} slugLocked={!!doc && doc.publishedVersion !== null} slugPrefix={slugPrefix} idPrefix="cms-editor" slotContext={slotCtx} />
       {slots.editorPanel ? <div className="mt-4 min-w-0">{slots.editorPanel(slotCtx)}</div> : null}
     </FieldGate.Provider>
   );
@@ -1392,7 +1397,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
             </TabsList>
           </div>
           <TabsContent value="edit" className="mt-0 flex min-h-0 flex-1 flex-col">
-            {agentBanner || restoreBanner ? (
+            {agentBanner || restoreBanner || lostBanner ? (
               <div className="flex flex-col gap-2 px-4 pt-2.5">
                 {lostBanner}
                 {restoreBanner}
@@ -1506,7 +1511,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         )}
       </div>
       {focus ? null : strips}
-      {agentBanner || restoreBanner ? (
+      {agentBanner || restoreBanner || lostBanner ? (
         <div className="flex flex-col gap-2 px-6 pt-2.5">
           {lostBanner}
                 {restoreBanner}
