@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.20.0
+
+The block editor runs on Tiptap 3 / ProseMirror (MIT) and was redesigned. The body is still markdown, written by our own converter; opening a document still never changes it. No schema change, no API change. See `UPGRADE-0.20.md`.
+
+### Changed
+- **One document instead of one editable box per block**: select text across blocks, copy, cut, paste and undo across them; input methods (Korean, Japanese, Chinese, phone keyboards) go through ProseMirror. A real composition session (letter by letter) is tested in the browser.
+- **Design**: one writing column, ease-out motion everywhere (menus, handle, toggles, check boxes, drop line), block selection drawn with an outline (text selection stays a fill), the table cell with the caret outlined, table toolbar grouped into Row / Column / Align with the current alignment shown, picture cards with loading, failed-upload (Retry) and broken-picture (Replace, Delete) states, reduced motion respected (including the landing flash).
+- `npx @mainsoft/agent-cms add` now names the npm packages the copied screens import and your app lacks, with the install command for your package manager; `--yes` installs them. `cms-block-editor` needs `@tiptap/core`, `@tiptap/react`, `@tiptap/pm`, `@tiptap/extensions` and `@tiptap/extension-table` (3.35). Nothing else in the admin uses them, and the package itself still has no editor dependency.
+
+### Added
+- ⌘A selects the block's text, ⌘A again every block; ⌘X / ⌘C with blocks selected put markdown on the clipboard (cut deletes only once it is there); a pasted web address at the caret is a link; ⌘-click opens a link; editing a link takes the whole link even across bold or italic parts.
+- `"` + space makes a quote; `[ ] ` at the start of a bullet item makes it a to-do; `---` at the start of a line puts a divider above the text instead of replacing it.
+- Tables: ⌘Enter leaves the table; the header row cannot get a row above it or be deleted; adding or removing a column and its alignment are one undo step.
+- Block menu: Add a block above / below (also on phones); phones and narrow windows get a 40px block options button in a reserved margin; menus and popovers stay above the phone keyboard; the source preview of a raw block can be reached with Tab and opened with Enter.
+- Screen readers: the slash menu's active choice is announced through the text box, with the number of matches.
+
+### Fixed
+- Code containing a line of three backticks: the fence closes only on a line of the same number of backticks or more (`closesFence` in `./markdown`); the writer picks a longer fence when needed. Before, such code swallowed the text after it on the next load.
+- An untouched numbered list written `1. 1. 1.` is no longer renumbered when another block is edited.
+- The blank lines at the start and end of a document stay when another block is edited.
+- An update from outside (an agent, a restore) waits while a word is being composed or a raw block is being edited, and replaces only the blocks that changed.
+- Tab moves on to the next control when the block cannot be nested; Esc on selected blocks clears the selection and steps out of the text, so a second Esc reaches full screen or a dialog.
+
 ## 0.19.0
 
 The block editor works like Notion with the mouse, and lists can nest. No schema change. See `UPGRADE-0.19.md`.

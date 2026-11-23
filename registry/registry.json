@@ -202,9 +202,14 @@
       "name": "cms-block-editor",
       "type": "registry:component",
       "title": "Block editor",
-      "description": "A Notion-style block editor for the document body, written for agent-cms (no editor library). The body stays markdown: opening a document never changes it, untouched blocks keep their exact text, and what has no block of its own (HTML, columns, tables, toggles) is drawn as it will look and edited as markdown in place. Slash menu, markdown shortcuts, a toolbar over selected text, links, drag handles, block selection, copy and paste as markdown, image paste and drop into the media library, its own undo, IME input. Pass it as `slots.blockEditor`.",
+      "description": "A Notion-style block editor for the document body, on Tiptap 3 / ProseMirror (MIT). The body stays markdown: opening a document never changes it and untouched blocks keep their exact text. Hover handles to drag blocks (beside a block for columns, into toggles and list items, Alt to copy), + and / menus, searchable block menu, box selection, nested lists with Tab, toggles, tables, pictures with captions, markdown shortcuts, a toolbar over selected text, links, paste and drop of images into the media library, text selection across blocks, undo. Pass it as `slots.blockEditor`.",
       "dependencies": [
-        "@mainsoft/agent-cms"
+        "@mainsoft/agent-cms",
+        "@tiptap/core@^3.35.0",
+        "@tiptap/react@^3.35.0",
+        "@tiptap/pm@^3.35.0",
+        "@tiptap/extensions@^3.35.0",
+        "@tiptap/extension-table@^3.35.0"
       ],
       "registryDependencies": [
         "cms-lib"
@@ -213,6 +218,10 @@
         {
           "path": "registry/cms/cms-block-editor.tsx",
           "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-blocks-pm.ts",
+          "type": "registry:lib"
         },
         {
           "path": "registry/cms/cms-blocks-convert.ts",

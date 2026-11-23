@@ -197,8 +197,27 @@ export function inlineText(inline: Inline[]): string {
 
 const CONTAINER = /^:::([a-z][a-z0-9-]*)(?:[ \t]+(.*?))?\s*$/;
 const CLOSE = /^:::\s*$/;
-const FENCE_OPEN = /^```(\S*)\s*$/;
-const FENCE_CLOSE = /^```\s*$/;
+const FENCE_OPEN = /^(`{3,})([^`\s]*)\s*$/;
+/** Reads code fences line by line: true for lines inside a fence, the fence lines included. */
+function fenceTracker(): (line: string) => boolean {
+  let open = "";
+  return (line) => {
+    if (open) {
+      if (closesFence(line, open)) open = "";
+      return true;
+    }
+    // The same openers the parser accepts (backticks, then at most a language).
+    const m = FENCE_OPEN.exec(line);
+    if (m) open = m[1];
+    return !!m;
+  };
+}
+
+/** Whether a line closes a fence opened with `open` (a fence of the same or more backticks, nothing else). */
+export function closesFence(line: string, open: string): boolean {
+  const m = /^(`{3,})\s*$/.exec(line);
+  return !!m && m[1].length >= /^`*/.exec(open)![0].length;
+}
 const TABLE_DELIM = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
 /** Cells of a table row: split at `|` that is not escaped or inside `code`. */
@@ -254,7 +273,7 @@ function closeOf(lines: string[], from: number, html: boolean): number {
     const l = lines[j];
     if (FENCE_OPEN.test(l)) {
       j++;
-      while (j < lines.length && !FENCE_CLOSE.test(lines[j])) j++;
+      while (j < lines.length && !closesFence(lines[j], l)) j++;
       continue;
     }
     const c = CONTAINER.exec(l);
@@ -386,8 +405,8 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
       flush();
       const buf: string[] = [];
       const from = i++;
-      while (i < lines.length && !FENCE_CLOSE.test(lines[i])) buf.push(lines[i++]);
-      push({ t: "code", lang: fence[1] ?? "", v: buf.join("\n") }, from, Math.min(i, lines.length - 1));
+      while (i < lines.length && !closesFence(lines[i], line)) buf.push(lines[i++]);
+      push({ t: "code", lang: fence[2] ?? "", v: buf.join("\n") }, from, Math.min(i, lines.length - 1));
       continue;
     }
     const box = CONTAINER.exec(line);
@@ -415,7 +434,7 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
             cols[cols.length - 1].push(l);
             while (++k < inner.length) {
               cols[cols.length - 1].push(inner[k]);
-              if (FENCE_CLOSE.test(inner[k])) break;
+              if (closesFence(inner[k], l)) break;
             }
             continue;
           }
@@ -662,7 +681,11 @@ function blockMd(b: Block): string {
         .join("\n");
     }
     case "code":
-      return "```" + b.lang + "\n" + b.v + "\n```";
+    {
+      let f = "```";
+      while (b.v.split("\n").some((x) => closesFence(x, f))) f += "`";
+      return f + b.lang + "\n" + b.v + "\n" + f;
+    }
     case "hr":
       return "---";
     case "media": {
@@ -750,11 +773,10 @@ export interface AssetUse {
 /** Every use of a media library file in a body, in order (code blocks skipped). */
 export function assetUses(body: string): AssetUse[] {
   const out: AssetUse[] = [];
-  let inFence = false;
+  const inCode = fenceTracker();
   let inHtml = false;
   body.replace(/\r/g, "").split("\n").forEach((line, i) => {
-    if (!inHtml && /^```/.test(line)) inFence = !inFence;
-    if (inFence) return;
+    if (!inHtml && inCode(line)) return;
     if (!inHtml && /^:::html(\s+isolated)?\s*$/.test(line)) {
       inHtml = true;
       return;
@@ -777,10 +799,9 @@ export function assetUses(body: string): AssetUse[] {
 /** External images (`![alt](https://…)`) in a body: line and alt. */
 export function externalImages(body: string): { src: string; alt: string; line: number }[] {
   const out: { src: string; alt: string; line: number }[] = [];
-  let inFence = false;
+  const inCode = fenceTracker();
   body.replace(/\r/g, "").split("\n").forEach((line, i) => {
-    if (/^```/.test(line)) inFence = !inFence;
-    if (inFence) return;
+    if (inCode(line)) return;
     for (const m of line.matchAll(IMAGE_ANY)) if (/^https:\/\//i.test(m[2])) out.push({ src: m[2], alt: m[1].trim(), line: i + 1 });
   });
   return out;
@@ -829,13 +850,13 @@ export function splitSections(body: string): Section[] {
   const out: Section[] = [];
   const used = new Map<string, number>();
   let cur: Section = { anchor: "", heading: "", markdown: "" };
-  let inFence = false;
+  const inCode = fenceTracker();
   const push = () => {
     cur.markdown = cur.markdown.trim();
     if (cur.markdown || cur.heading) out.push(cur);
   };
   for (const line of lines) {
-    if (/^```/.test(line)) inFence = !inFence;
+    const inFence = inCode(line);
     const h = !inFence ? /^#{1,2}\s+(.+?)\s*#*\s*$/.exec(line) : null;
     if (h) {
       push();
@@ -880,10 +901,9 @@ export function htmlBlocks(blocks: Block[]): Extract<Block, { t: "html" }>[] {
 export function htmlRegions(body: string): { line: number; v: string; isolated: boolean }[] {
   const lines = body.replace(/\r/g, "").split("\n");
   const out: { line: number; v: string; isolated: boolean }[] = [];
-  let fence = false;
+  const inCode = fenceTracker();
   for (let i = 0; i < lines.length; i++) {
-    if (/^```/.test(lines[i])) fence = !fence;
-    if (fence) continue;
+    if (inCode(lines[i])) continue;
     const m = /^:::html(\s+isolated)?\s*$/.exec(lines[i]);
     if (!m) continue;
     const end = closeOf(lines, i, true);

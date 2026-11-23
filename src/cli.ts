@@ -73,7 +73,7 @@ import { docsFromNotion, filesFromDocs, filesFromSource, IMPORT_SOURCES, type Im
 import { unzip } from "./zip";
 import { imageSize } from "./net-guard";
 import { DEFAULT_ACCEPT, DEFAULT_MAX_FILE_SIZE } from "./storage";
-import { addItems, buildPublicRegistry, findRegistryDir, loadRegistry, type Registry } from "./registry";
+import { addItems, buildPublicRegistry, findRegistryDir, installCommand, loadRegistry, type Registry } from "./registry";
 import { cmsDdl, cmsTables, SCHEMA_VERSION, schemaVersionSql, splitSql, upgradeSteps } from "./tables";
 import { VERSION } from "./version";
 
@@ -997,6 +997,16 @@ function add(args: string[], argv: string[], io: LocalIo): number {
   for (const f of r.unchanged) io.out(`same   ${f}`);
   for (const s of r.skipped) io.out(`skip   ${s.file} (${s.reason})`);
   for (const f of r.conflicts) io.out(`keep   ${f} (you changed it; the new version is in ${f}.new)`);
+  if (r.missingPackages.length) {
+    const [bin, args] = installCommand(io.cwd, r.missingPackages);
+    if (argv.includes("--yes")) {
+      const code = (io.run ?? ((c, a, cwd) => spawnSync(c, a, { cwd, stdio: "inherit", shell: process.platform === "win32" }).status ?? 1))(bin, args, io.cwd);
+      if (code !== 0) {
+        io.err(`[agent-cms] \`${bin} ${args.join(" ")}\` failed`);
+        return 1;
+      }
+    } else io.out(`\nthese screens import npm packages your app does not have yet:\n  ${bin} ${args.join(" ")}\n(or run add again with --yes)`);
+  }
   if (r.missingParts.length) {
     const cmd = ["shadcn@latest", "add", ...r.missingParts];
     if (argv.includes("--yes")) {

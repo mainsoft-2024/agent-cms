@@ -156,3 +156,20 @@ test("markdown: a numbered list starting at 0 renders from 0", async () => {
   const { markdownToHtml } = await import("./html");
   assert.match(markdownToHtml("0. Setup\n1. Run"), /<ol start="0">/);
 });
+
+test("markdown: a fence closes only on as many backticks or more; HTML after such code is still found", async () => {
+  const { htmlRegions, parseMarkdown, toMarkdown } = await import("./markdown");
+  const body = "````md\n```\n:::html\n<b>not html</b>\n:::\n```\n````\n\n:::html\n<i>real</i>\n:::\n";
+  assert.deepEqual(htmlRegions(body).map((r) => r.v), ["<i>real</i>"]);
+  const blocks = parseMarkdown(body);
+  assert.deepEqual(blocks.map((b) => b.t), ["code", "html"]);
+  assert.equal(toMarkdown(blocks).startsWith("````md\n```\n"), true);
+});
+
+test("markdown: the HTML gate and the parser agree on what opens a code fence", async () => {
+  const { htmlRegions, parseMarkdown } = await import("./markdown");
+  const body = "```not a fence here\n```also not\n\n:::html\n<i>real</i>\n:::\n";
+  const parsed = parseMarkdown(body).filter((b) => b.t === "html").length;
+  assert.equal(htmlRegions(body).length, parsed);
+  assert.equal(parsed, 1);
+});

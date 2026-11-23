@@ -10,7 +10,11 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => window.localStorage.setItem("cms-body-view", JSON.stringify("blocks")));
 });
 
-const line = (page: Page, type: string, text?: string) => page.locator(`.cms-blocks [data-block-type=${type}] [role=textbox]`, text ? { hasText: text } : undefined).first();
+/** The text of a block: the block itself, or the line of a list item or toggle. */
+const LINED = new Set(["bullet", "number", "todo", "toggle"]);
+const textOf = (type: string) => (LINED.has(type) ? `.cms-blocks [data-block-type=${type}] > .cms-line` : `.cms-blocks [data-block-type=${type}]`);
+const line = (page: Page, type: string, text?: string) => page.locator(textOf(type), text ? { hasText: text } : undefined).first();
+const handle = (page: Page) => page.locator("[data-cms-handle] button[aria-label^='Drag to move']");
 const markdown = async (page: Page) => {
   await page.getByRole("button", { name: "Markdown", exact: true }).click();
   return page.locator("#cms-editor-body");
@@ -21,6 +25,7 @@ async function open(page: Page, request: import("@playwright/test").APIRequestCo
   expect(made.status()).toBe(201);
   await page.goto(`/admin/posts/${slug}`);
   await expect(page.locator(".cms-blocks [role=textbox]").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".cms-blocks [data-block-id]").first()).toBeVisible();
   return slug;
 }
 
@@ -140,10 +145,10 @@ test("blocks: moving a block with the keyboard and the handle menu", async ({ pa
   await line(page, "p", "Gamma").click();
   await page.keyboard.press(`${mod}+Shift+ArrowUp`);
   await page.keyboard.press(`${mod}+Shift+ArrowUp`);
-  const texts = () => page.locator(".cms-blocks [data-block-type=p] [role=textbox]").allInnerTexts();
+  const texts = () => page.locator(".cms-blocks [data-block-type=p]").allInnerTexts();
   await expect.poll(texts).toEqual(["Gamma", "Alpha", "Beta"]);
   await line(page, "p", "Beta").hover();
-  await page.locator('[data-block-type=p]:has-text("Beta") button[aria-label^="Drag to move"]').click();
+  await handle(page).click();
   await page.getByRole("option", { name: /Heading/ }).first().click();
   await expect(line(page, "h2", "Beta")).toBeVisible();
 });
@@ -237,4 +242,22 @@ test("publish checks: a warning can be accepted, an error stops publishing", asy
   await dlg.getByRole("button", { name: "Close" }).first().click();
   const draft = (await (await request.get(`${api}/collections/guide/${slug}?draft=1`)).json()) as { doc: { status?: string; publishedVersion?: number | null } };
   expect(draft.doc.publishedVersion ?? null).toBeNull();
+});
+
+test("blocks: Korean composed letter by letter (a real composition session) lands once", async ({ page, request }) => {
+  await open(page, request, "시작");
+  await line(page, "p", "시작").click();
+  await page.keyboard.press("End");
+  const cdp = await page.context().newCDPSession(page);
+  // 한 → ㅎ, 하, 한; 글 → ㄱ, 그, 글 (as a Korean keyboard sends it).
+  for (const word of [["ㅎ", "하", "한"], ["ㄱ", "그", "글"]]) {
+    for (const step of word) await cdp.send("Input.imeSetComposition", { text: step, selectionStart: step.length, selectionEnd: step.length });
+    await cdp.send("Input.insertText", { text: word[word.length - 1] });
+  }
+  await page.keyboard.press("Enter");
+  await cdp.send("Input.imeSetComposition", { text: "ㄷ", selectionStart: 1, selectionEnd: 1 });
+  await cdp.send("Input.imeSetComposition", { text: "다", selectionStart: 1, selectionEnd: 1 });
+  await cdp.send("Input.insertText", { text: "다" });
+  const md = await markdown(page);
+  await expect(md).toHaveValue("시작한글\n\n다");
 });

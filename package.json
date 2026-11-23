@@ -1,6 +1,6 @@
 {
   "name": "@mainsoft/agent-cms",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (MCP, REST, CLI) together.",
   "license": "MIT",
   "type": "module",
@@ -28,6 +28,8 @@
     "UPGRADE-0.16.md",
     "UPGRADE-0.17.md",
     "UPGRADE-0.18.md",
+    "UPGRADE-0.19.md",
+    "UPGRADE-0.20.md",
     "CHANGELOG.md",
     "TODO.md",
     "LICENSE"
@@ -363,6 +365,11 @@
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.12",
+    "@tiptap/core": "^3.35.0",
+    "@tiptap/extension-table": "^3.35.0",
+    "@tiptap/extensions": "^3.35.0",
+    "@tiptap/pm": "^3.35.0",
+    "@tiptap/react": "^3.35.0",
     "@types/express": "^5.0.6",
     "@types/jsdom": "21.1.7",
     "@types/node": "^22.10.0",
