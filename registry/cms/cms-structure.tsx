@@ -270,7 +270,7 @@ function TreeRowMenu({ title, moves, disabled }: { title: string; moves: Record<
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {items.map(([k, label]) => (
-            <DropdownMenuItem key={k} disabled={!moves[k]} onSelect={() => moves[k]?.()}>
+            <DropdownMenuItem key={k} disabled={!moves[k]} onClick={() => moves[k]?.()}>
               {label}
             </DropdownMenuItem>
           ))}

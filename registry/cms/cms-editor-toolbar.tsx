@@ -413,7 +413,7 @@ const ToolButton = React.forwardRef<HTMLButtonElement, { b: Btn; t: (k: MessageK
 });
 
 /** A button that opens a menu (text style, insert, More). */
-const MenuButton = React.forwardRef<HTMLButtonElement, { label: string; keys?: string; children: React.ReactNode; wide?: boolean; disabled?: boolean } & React.ButtonHTMLAttributes<HTMLButtonElement>>(function MenuButton({ label, keys, children, wide, disabled, className, ...rest }, ref) {
+const MenuButton = React.forwardRef<HTMLButtonElement, { label: string; keys?: string; children?: React.ReactNode; wide?: boolean; disabled?: boolean } & React.ButtonHTMLAttributes<HTMLButtonElement>>(function MenuButton({ label, keys, children, wide, disabled, className, ...rest }, ref) {
   const tip = useTip();
   return (
     <button
@@ -430,6 +430,14 @@ const MenuButton = React.forwardRef<HTMLButtonElement, { label: string; keys?: s
       onPointerDown={(e) => {
         tip.hide();
         rest.onPointerDown?.(e);
+      }}
+      onFocus={(e) => {
+        tip.props.onFocus(e);
+        rest.onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        tip.props.onBlur();
+        rest.onBlur?.(e);
       }}
     >
       {children}
@@ -578,30 +586,46 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
 
   // Closing a menu: after an action that moved focus on purpose (into the text, a dialog, the find bar) focus
   // stays where the action put it; closed with Esc or a click outside, Radix puts it back on the menu button.
+  // Radix calls `onCloseAutoFocus` (cancelled below). Base UI has no such event and puts focus back on the
+  // button itself, so the button's focus handler sends it on: back where the action left it, or to `after`.
   const acted = React.useRef(false);
-  const act = (fn: () => void) => () => {
+  const back = React.useRef<{ until: number; after?: () => void } | null>(null);
+  const act = (fn: () => void, after?: () => void) => () => {
     acted.current = true;
+    back.current = { until: Date.now() + 800, after };
     fn();
   };
-  const closeFocus = (after?: () => void) => (e: Event) => {
-    if (acted.current) {
-      e.preventDefault();
-      after?.();
-    }
+  const closeFocus = (after?: () => void) => ({
+    onCloseAutoFocus: (e: Event) => {
+      if (acted.current) {
+        e.preventDefault();
+        after?.();
+      }
+      acted.current = false;
+      back.current = null;
+    },
+  }) as object;
+  const onTriggerFocus = (e: React.FocusEvent) => {
+    const b = back.current;
+    back.current = null;
     acted.current = false;
+    if (!b || Date.now() > b.until) return;
+    const from = e.relatedTarget as HTMLElement | null;
+    if (from && from.isConnected && !from.closest("[role=menu]")) from.focus();
+    else b.after?.();
   };
 
   const styleMenu = (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <MenuButton label={t("tb_style")} wide disabled={!styleEnabled} className="min-w-[4.5rem] justify-between">
+        <MenuButton onFocus={onTriggerFocus} label={t("tb_style")} wide disabled={!styleEnabled} className="min-w-[4.5rem] justify-between">
           <span className="truncate">{t(styleNow.label)}</span>
           <ChevronDown className="size-3 text-muted-foreground" />
         </MenuButton>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-52" onCloseAutoFocus={closeFocus(() => commands?.focus())}>
+      <DropdownMenuContent align="start" className="w-52" {...closeFocus(() => commands?.focus())}>
         {styles.map((x) => (
-          <DropdownMenuItem key={x.cmd} onSelect={act(() => run(x.cmd))} className="gap-2">
+          <DropdownMenuItem key={x.cmd} onClick={act(() => run(x.cmd), () => commands?.focus())} className="gap-2">
             <x.icon className="size-4" />
             <span className="grow">{t(x.label)}</span>
             <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(x.keys)}</kbd>
@@ -613,15 +637,15 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
   const insertMenu = (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <MenuButton label={t("tb_insert")} wide disabled={!insertEnabled}>
+        <MenuButton onFocus={onTriggerFocus} label={t("tb_insert")} wide disabled={!insertEnabled}>
           <Plus className="size-4" />
           <span>{t("tb_insert_short")}</span>
           <ChevronDown className="size-3 text-muted-foreground" />
         </MenuButton>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-60" onCloseAutoFocus={closeFocus()}>
+      <DropdownMenuContent align="start" className="w-60" {...closeFocus()}>
         {inserts.map((x) => (
-          <DropdownMenuItem key={x.cmd} onSelect={act(() => run(x.cmd))} className="gap-2">
+          <DropdownMenuItem key={x.cmd} onClick={act(() => run(x.cmd))} className="gap-2">
             <x.icon className="size-4" />
             <span className="grow">{t(x.label)}</span>
             <span className="font-mono text-[11px] text-muted-foreground">{x.hint}</span>
@@ -657,11 +681,11 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
   const more = hidden.size ? (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <MenuButton label={t("tb_more")}>
+        <MenuButton onFocus={onTriggerFocus} label={t("tb_more")}>
           <Ellipsis className="size-4" />
         </MenuButton>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60" onCloseAutoFocus={closeFocus()}>
+      <DropdownMenuContent align="end" className="w-60" {...closeFocus()}>
         {hidden.has("style") ? (
           <DropdownMenuSub>
             <DropdownMenuSubTrigger className="gap-2">
@@ -670,7 +694,7 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {styles.map((x) => (
-                <DropdownMenuItem key={x.cmd} disabled={!st(x.cmd).enabled} onSelect={act(() => run(x.cmd))} className="gap-2">
+                <DropdownMenuItem key={x.cmd} disabled={!st(x.cmd).enabled} onClick={act(() => run(x.cmd))} className="gap-2">
                   <x.icon className="size-4" />
                   {t(x.label)}
                 </DropdownMenuItem>
@@ -686,7 +710,7 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {marks.map((x) => (
-                <DropdownMenuItem key={x.key} disabled={x.disabled} onSelect={act(() => run(x.cmd!))} className="gap-2">
+                <DropdownMenuItem key={x.key} disabled={x.disabled} onClick={act(() => run(x.cmd!))} className="gap-2">
                   <x.icon className="size-4" />
                   <span className="grow">{t(x.label)}</span>
                   {x.keys ? <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(x.keys)}</kbd> : null}
@@ -703,7 +727,7 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {blocks.map((x) => (
-                <DropdownMenuItem key={x.key} disabled={x.disabled} onSelect={act(() => run(x.cmd!))} className="gap-2">
+                <DropdownMenuItem key={x.key} disabled={x.disabled} onClick={act(() => run(x.cmd!))} className="gap-2">
                   <x.icon className="size-4" />
                   {t(x.label)}
                 </DropdownMenuItem>
@@ -719,7 +743,7 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {inserts.map((x) => (
-                <DropdownMenuItem key={x.cmd} onSelect={act(() => run(x.cmd))} className="gap-2">
+                <DropdownMenuItem key={x.cmd} onClick={act(() => run(x.cmd))} className="gap-2">
                   <x.icon className="size-4" />
                   {t(x.label)}
                 </DropdownMenuItem>
@@ -728,7 +752,7 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
           </DropdownMenuSub>
         ) : null}
         {hidden.has("media") && onMedia ? (
-          <DropdownMenuItem onSelect={act(onMedia)} disabled={!canWrite} className="gap-2">
+          <DropdownMenuItem onClick={act(onMedia)} disabled={!canWrite} className="gap-2">
             <ImagePlus className="size-4" />
             {t("media_insert_button")}
           </DropdownMenuItem>
@@ -737,7 +761,7 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
           <>
             <DropdownMenuSeparator />
             {history.map((x) => (
-              <DropdownMenuItem key={x.key} disabled={x.disabled} onSelect={act(() => run(x.cmd!))} className="gap-2">
+              <DropdownMenuItem key={x.key} disabled={x.disabled} onClick={act(() => run(x.cmd!))} className="gap-2">
                 <x.icon className="size-4" />
                 <span className="grow">{t(x.label)}</span>
                 {x.keys ? <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(x.keys)}</kbd> : null}
@@ -751,7 +775,7 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
             {right
               .filter((x) => x.key === "find" || x.key === "outline")
               .map((x) => (
-                <DropdownMenuItem key={x.key} onSelect={act(() => x.run?.())} className="gap-2">
+                <DropdownMenuItem key={x.key} onClick={act(() => x.run?.())} className="gap-2">
                   <x.icon className="size-4" />
                   <span className="grow">{t(x.label)}</span>
                   {x.keys ? <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(x.keys)}</kbd> : null}

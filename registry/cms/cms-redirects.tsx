@@ -188,8 +188,8 @@ export function CmsRedirects({ className }: CmsRedirectsProps) {
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
-                                <DropdownMenuItem onSelect={() => setEditing(r)}>{t("edit")}</DropdownMenuItem>
-                                <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => (setRemoveError(null), setRemoving(r))}>
+                                <DropdownMenuItem onClick={() => setEditing(r)}>{t("edit")}</DropdownMenuItem>
+                                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => (setRemoveError(null), setRemoving(r))}>
                                   {t("redir_delete")}
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
