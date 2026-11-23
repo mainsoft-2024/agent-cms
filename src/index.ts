@@ -79,7 +79,11 @@ export {
   schemaVersionSql,
   splitSql,
   upgradeSteps,
+  fillLocaleSql,
+  localeDuplicatesSql,
 } from "./tables";
+export { localeAddress, splitAddress, translatableFields, LOCALE_RE } from "./locale";
+export type { TranslationInfo, TranslationList, TranslationStatus } from "./locale";
 export type { CmsTables, CmsTablesOptions } from "./tables";
 export { citationId, envelope, ENVELOPE_PREAMBLE, lookupForAgent, verifyCitations } from "./agent";
 export type { AgentLink, AgentLookup, AgentSection, Citation, LookupOptions } from "./agent";
@@ -95,7 +99,8 @@ export type { AssetInfo, AssetListOptions, AssetUsage, AssetView, CmsAssets, Med
 export { DEFAULT_ACCEPT, MemoryStorage } from "./storage";
 export type { StorageAdapter } from "./storage";
 export type { CallToolOptions, CmsToolDef, ToolErrorResult, ToolOutcome } from "./tools";
-export { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
+export { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError, localeSlug } from "./client";
+export type { TranslationView, TranslationsView } from "./client";
 export type { CmsClient, CmsClientOptions, RestClient, RestClientOptions } from "./client";
 export { docFromMarkdown, parseFrontmatter } from "./frontmatter";
 export { VERSION } from "./version";

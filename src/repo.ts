@@ -65,7 +65,14 @@ export type NewFilter = Omit<SavedFilter, "id">;
 /** `trashed`: also find rows that are in the trash. */
 export interface FindOptions {
   trashed?: boolean;
+  /**
+   * 0.22.0: the row in exactly this locale. Left out: the source document (the row that is not a
+   * translation), which is the only row in apps without locales.
+   */
+  locale?: string;
 }
+/** A translation row (0.22.0): it belongs to the group of another document. */
+export const isTranslation = (d: Pick<CmsDoc, "id"> & { groupId?: string | null }): boolean => !!d.groupId && d.groupId !== d.id;
 export interface DocFilter {
   collection?: string;
   statuses?: DocStatus[];
@@ -74,6 +81,12 @@ export interface DocFilter {
   trashed?: boolean;
   /** Only documents whose schedule is due at or before this time. */
   dueBefore?: string;
+  /** 0.22.0: source documents only, no translations (in apps without locales every row is a source). */
+  sources?: boolean;
+  /** 0.22.0: translations in this language only. */
+  locale?: string;
+  /** 0.22.0: only the rows of one translation group (the source and its translations). */
+  groupId?: string;
 }
 export type AssetPatch = Partial<Omit<CmsAsset, "id" | "store" | "createdAt">>;
 
@@ -333,6 +346,8 @@ export interface DocPageQuery {
   /** Title, slug or summary contains (case-insensitive). On the published copy for readers. */
   q?: string;
   by?: "user" | "key" | "system";
+  /** 0.22.0: translations in this locale. Left out: source documents. */
+  locale?: string;
   limit: number;
   after?: { at: string; id: string } | null;
 }
@@ -445,7 +460,11 @@ export class MemoryRepo implements CmsRepo {
     }
   }
   async findDoc(collection: string, slug: string, o: FindOptions = {}) {
-    for (const d of this.docs.values()) if (d.collection === collection && d.slug === slug) return d.deletedAt && !o.trashed ? null : structuredClone(d);
+    for (const d of this.docs.values()) {
+      if (d.collection !== collection || d.slug !== slug) continue;
+      if (o.locale !== undefined ? (d.locale ?? "") !== o.locale : isTranslation(d)) continue;
+      return d.deletedAt && !o.trashed ? null : structuredClone(d);
+    }
     return null;
   }
   async findDocById(id: string, o: FindOptions = {}) {
@@ -457,6 +476,9 @@ export class MemoryRepo implements CmsRepo {
       .filter(
         (d) =>
           !!d.deletedAt === !!f.trashed &&
+          (!f.groupId || d.groupId === f.groupId || d.id === f.groupId) &&
+          (!f.sources || !isTranslation(d)) &&
+          (f.locale === undefined || (isTranslation(d) && d.locale === f.locale)) &&
           (!f.dueBefore || (d.dueAt !== null && d.dueAt <= f.dueBefore)) &&
           (!f.collection || d.collection === f.collection) &&
           (!f.statuses || f.statuses.includes(d.status)) &&
@@ -465,7 +487,7 @@ export class MemoryRepo implements CmsRepo {
       .map((d) => structuredClone(d));
   }
   async insertDoc(doc: NewDoc) {
-    for (const d of this.docs.values()) if (d.collection === doc.collection && d.slug === doc.slug) throw new Error("duplicate slug");
+    for (const d of this.docs.values()) if (d.collection === doc.collection && d.slug === doc.slug && (d.locale ?? "") === (doc.locale ?? "")) throw new Error("duplicate slug");
     const now = new Date().toISOString();
     const row: CmsDoc = { republishedAt: null, autosave: null, updatedByAgent: null, deletedAt: null, deletedBy: null, schedule: null, dueAt: null, review: null, ...doc, id: doc.id ?? this.id(), createdAt: doc.createdAt ?? now, updatedAt: doc.updatedAt ?? now };
     this.docs.set(row.id, structuredClone(row));
@@ -476,7 +498,7 @@ export class MemoryRepo implements CmsRepo {
     if (!d) return null;
     if (expectedVersion !== undefined && (d.version !== expectedVersion || d.deletedAt)) return null;
     if (patch.slug && patch.slug !== d.slug) {
-      for (const o of this.docs.values()) if (o.id !== id && o.collection === d.collection && o.slug === patch.slug) throw new Error("duplicate slug");
+      for (const o of this.docs.values()) if (o.id !== id && o.collection === d.collection && o.slug === patch.slug && (o.locale ?? "") === (patch.locale ?? d.locale ?? "")) throw new Error("duplicate slug");
     }
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     Object.assign(d, structuredClone(clean), { updatedAt: patch.updatedAt ?? new Date().toISOString() });
@@ -1007,6 +1029,7 @@ export class MemoryRepo implements CmsRepo {
     const needle = q.q?.trim().toLowerCase();
     const rows = [...this.docs.values()].filter((d) => {
       if (d.deletedAt || d.collection !== q.collection) return false;
+      if (q.locale !== undefined ? !isTranslation(d) || d.locale !== q.locale : isTranslation(d)) return false;
       if (q.published && (d.publishedVersion === null || d.status === "archived" || !d.published)) return false;
       if (q.statuses && !q.statuses.includes(d.status)) return false;
       const view = q.published && d.published ? d.published : d;

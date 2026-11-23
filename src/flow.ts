@@ -10,6 +10,7 @@ import type { createAssets } from "./assets";
 import type { AnyCollection } from "./cms";
 import { isCmsError, type CmsErrorCode, type CmsErrorOptions, type Diagnostic, type ErrorParams } from "./errors";
 import { sectionRanges } from "./patch";
+import { docAddress } from "./locale";
 import { docsById, type CmsRepo } from "./repo";
 import { docState, type Actor, type ActorKind, type AuditAction, type AuditEntry, type CmsComment, type CmsDoc, type CmsRelease, type CmsVersion, type DocContent, type DocSummary, type Presence, type ReleaseItem, type ReviewRequest, type SavedFilter, type Schedule } from "./types";
 
@@ -207,9 +208,9 @@ export function createFlow(ctx: FlowContext) {
         });
         const what = did as "published" | "unpublished" | null; // assigned inside the transaction
         if (!doc || !what) continue;
-        audit(scheduler, what === "published" ? "doc.publish" : "doc.unpublish", { collection: d.collection, slug: d.slug, version: doc.publishedVersion ?? doc.version, detail: { scheduledBy: d.schedule.by, scheduledAt: d.schedule.at } });
+        audit(scheduler, what === "published" ? "doc.publish" : "doc.unpublish", { collection: d.collection, slug: docAddress(d), version: doc.publishedVersion ?? doc.version, detail: { scheduledBy: d.schedule.by, scheduledAt: d.schedule.at } });
         ctx.changed(prev, doc);
-        out[what].push(`${d.collection}/${d.slug}`);
+        out[what].push(`${d.collection}/${docAddress(d)}`);
       } catch (e) {
         // Nothing went out. The schedule is cleared so it does not fail again every minute, but
         // only if it is still the schedule that failed (not one set again meanwhile).
@@ -219,8 +220,8 @@ export function createFlow(ctx: FlowContext) {
         })().catch((err) => ctx.report(err, "runScheduled"));
         const code = isCmsError(e) ? e.code : "internal";
         if (!isCmsError(e)) ctx.report(e, "runScheduled");
-        audit(scheduler, "doc.schedule", { collection: d.collection, slug: d.slug, version: d.schedule.version, outcome: "failed", detail: { code, scheduledBy: d.schedule.by } });
-        out.failed.push({ collection: d.collection, slug: d.slug, code, message: ctx.message(e) });
+        audit(scheduler, "doc.schedule", { collection: d.collection, slug: docAddress(d), version: d.schedule.version, outcome: "failed", detail: { code, scheduledBy: d.schedule.by } });
+        out.failed.push({ collection: d.collection, slug: docAddress(d), code, message: ctx.message(e) });
       }
     }
     for (const rel of await repo.listReleases()) {
@@ -246,7 +247,7 @@ export function createFlow(ctx: FlowContext) {
       for (const d of await repo.listDocs({ trashed: true })) {
         if (!d.deletedAt || d.deletedAt > cutoff) continue;
         await repo.deleteDoc(d.id);
-        audit(scheduler, "doc.purge", { collection: d.collection, slug: d.slug, detail: { auto: true } });
+        audit(scheduler, "doc.purge", { collection: d.collection, slug: docAddress(d), detail: { auto: true } });
         out.purged.documents++;
       }
       out.purged.assets = await ctx.assets.purgeOlder(cutoff);
@@ -267,7 +268,7 @@ export function createFlow(ctx: FlowContext) {
     if (o.kind !== "asset") {
       for (const d of await repo.listDocs({ trashed: true })) {
         if (!known(d.collection) || !can(actor, d.collection, "write", d)) continue;
-        items.push({ kind: "document", id: d.id, title: d.title, where: `${ctx.collection(d.collection).label} / ${d.slug}`, collection: d.collection, slug: d.slug, state: docState(d).state, deletedAt: d.deletedAt!, deletedBy: d.deletedBy, purgeAt: purgeAt(d.deletedAt!), canRestore: can(actor, d.collection, "publish", d) });
+        items.push({ kind: "document", id: d.id, title: d.title, where: `${ctx.collection(d.collection).label} / ${docAddress(d)}`, collection: d.collection, slug: docAddress(d), state: docState(d).state, deletedAt: d.deletedAt!, deletedBy: d.deletedBy, purgeAt: purgeAt(d.deletedAt!), canRestore: can(actor, d.collection, "publish", d) });
       }
     }
     if (o.kind !== "document" && ctx.assets.enabled) {
@@ -314,7 +315,7 @@ export function createFlow(ctx: FlowContext) {
         if (!d?.deletedAt || !known(d.collection)) throw fail("trash_not_found", { id: it.id });
         assert(actor, d.collection, "publish", d);
         const doc = (await repo.updateDoc(d.id, { deletedAt: null, deletedBy: null, updatedAt: nowIso() }))!;
-        audit(actor, "doc.undelete", { collection: d.collection, slug: d.slug, version: d.version });
+        audit(actor, "doc.undelete", { collection: d.collection, slug: docAddress(d), version: d.version });
         ctx.changed(null, doc, { quiet: true }); // told as doc.restored, not as a new document
       }
     }
@@ -334,7 +335,7 @@ export function createFlow(ctx: FlowContext) {
         const d = await repo.findDocById(it.id, { trashed: true });
         if (!d?.deletedAt) continue;
         await repo.deleteDoc(d.id);
-        audit(actor, "doc.purge", { collection: d.collection, slug: d.slug, version: d.version });
+        audit(actor, "doc.purge", { collection: d.collection, slug: docAddress(d), version: d.version });
       }
       purged++;
     }
@@ -730,7 +731,7 @@ export function createFlow(ctx: FlowContext) {
       return saved;
     }, { atomic: true });
     for (const d of done) {
-      audit(actor, d.item.action === "publish" ? "doc.publish" : "doc.unpublish", { collection: d.doc.collection, slug: d.doc.slug, version: d.item.version, detail: { release: rel.name } });
+      audit(actor, d.item.action === "publish" ? "doc.publish" : "doc.unpublish", { collection: d.doc.collection, slug: docAddress(d.doc), version: d.item.version, detail: { release: rel.name } });
       ctx.changed(d.prev, d.doc);
     }
     audit(actor, "release.publish", { detail: { id: rel.id, name: rel.name, documents: done.length } });
@@ -828,7 +829,7 @@ export function createFlow(ctx: FlowContext) {
     await ctx.ready();
     assert(actor, col, "write");
     // Only documents this person may edit: who is in the others is not theirs to know.
-    const docs = (await repo.listDocs({ collection: col })).filter((d) => can(actor, col, "write", d));
+    const docs = (await repo.listDocs({ collection: col, sources: true })).filter((d) => can(actor, col, "write", d));
     const bySlug = new Map(docs.map((d) => [d.id, d.slug]));
     const out = new Map<string, Presence[]>();
     for (const p of await repo.listPresence(since(), docs.map((d) => d.id))) {

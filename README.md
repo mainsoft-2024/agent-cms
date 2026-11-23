@@ -761,6 +761,34 @@ createCms({
 
 Every change goes to a numbered change log (`cms_changes`); each server follows it, so the events stream, a read cache (`cache: memoryCache()`) and search hear what any server did. Lists are paged in the database. `@mainsoft/agent-cms/db` connects pg, postgres.js, Neon or PGlite; `@mainsoft/agent-cms/tenants` gives each site its own Postgres schema; the core runs on Edge runtimes; `/metrics` speaks Prometheus. Single fields can be hidden or locked per reader (`fieldAccess`). See the [guide](https://agent-cms-docs.vercel.app/docs/scaling) and [UPGRADE-0.17.md](UPGRADE-0.17.md).
 
+## Languages (0.22)
+
+```ts
+const cms = createCms({
+  locales: ["ko", "en", "ja"],          // off when left out
+  defaultLocale: "ko",                  // translations are made from this one (default: the first)
+  collections: [
+    defineCollection({
+      slug: "guide",
+      localized: true,
+      url: (d) => `/${d.locale}/guide/${d.slug}`,
+      fields: z.object({ subtitle: z.string(), sku: z.string(), order: z.number() }),  // text is translated, order is shared
+      admin: { fields: { sku: { localized: false } } },                               // override either way
+    }),
+  ],
+});
+
+await cms.create(user, "guide", { slug: "start", title: "Getting started" }, { locale: "en" });  // starts from the Korean text
+await cms.get(anon, "guide", "start", { locale: "en", fallback: true });  // Korean, with requestedLocale "en", until English is published
+await cms.translations(user, "guide", "start");   // ko: source, en: current | outdated, ja: missing
+await cms.sourceDiff(user, "guide", "start", "en"); // what changed in Korean since the English was aligned
+await cms.markAligned(user, "guide", "start", "en"); // "matches the current Korean version"
+```
+
+A translation is a document of its own, with the source's address: its own versions, drafts, publishing, schedule and review. Title, summary, body, keywords, SEO and text fields are translated; everything else follows the source and is filled in when read (a different value sent to a translation answers `locale_field_shared`). Publishing the source again makes its translations `outdated` until they are updated and aligned.
+
+REST: `?locale=` on every document route (and `&fallback=1` on reads), `GET|POST /collections/<c>/<slug>/_translations`, `POST …/_align`, `GET …/_source-diff?locale=`, `GET /search?locale=`. Agents: `locale` on the document tools and `list_translations`. The sitemap names every language with `hreflang`. Search takes one language at a time; Korean 2-grams only for Korean. Upgrading a big table: [UPGRADE-0.22.md](UPGRADE-0.22.md).
+
 ## Export, import, OpenAPI
 
 ```

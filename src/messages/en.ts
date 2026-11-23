@@ -186,5 +186,13 @@ export const en: Messages = {
   seo_description_long: "The description is {length} characters; search engines show about {max}",
   seo_description_missing: "No description: search engines will pick some text themselves",
   seo_image_small: "The share image is {width}×{height}; 1200×630 or larger looks best",
+  // 0.22.0 multilingual documents
+  locale_unknown: "Unknown language: {locale}. This CMS has {locales}",
+  locale_not_localized: "The collection {collection} is not translated (set localized: true)",
+  translation_exists: "{slug} already has a {locale} translation",
+  translation_not_found: "{slug} has no {locale} translation yet. Start one first",
+  locale_field_shared: "{field} is shared by every language: change it in the {source} document",
+  locale_source_missing: "{slug} has no {source} document to translate from",
+  locale_is_source: "{locale} is the source language of {slug}; it is not a translation",
   internal: "Something went wrong",
 };

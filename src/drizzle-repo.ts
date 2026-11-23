@@ -86,7 +86,16 @@ export class DrizzleRepo implements CmsRepo {
       ...(r.parentId != null ? { parentId: r.parentId } : {}),
       ...(r.position != null ? { position: r.position } : {}),
       ...(r.seo != null ? { seo: r.seo } : {}),
+      // 0.22.0: only on documents of localized collections, so apps without locales see the same rows as before.
+      ...(r.locale ? { locale: r.locale } : {}),
+      ...(r.groupId != null ? { groupId: r.groupId } : {}),
+      ...(r.sourceVersion != null ? { sourceVersion: r.sourceVersion } : {}),
     };
+  }
+  /** Not a translation (0.22.0): no group, or the group's own source. */
+  private sourceRow() {
+    const D = this.t.documents;
+    return sql`(${D.groupId} is null or ${D.groupId} = ${D.id})`;
   }
 
   private toRedirect(r: typeof this.t.redirects.$inferSelect): CmsRedirect {
@@ -307,7 +316,11 @@ export class DrizzleRepo implements CmsRepo {
 
   async findDoc(collection: string, slug: string, o: FindOptions = {}) {
     const D = this.t.documents;
-    const [r] = await this.db.select().from(D).where(and(eq(D.collection, collection), eq(D.slug, slug))).limit(1);
+    const [r] = await this.db
+      .select()
+      .from(D)
+      .where(and(eq(D.collection, collection), eq(D.slug, slug), o.locale !== undefined ? eq(D.locale, o.locale) : this.sourceRow()))
+      .limit(1);
     return r && (!r.deletedAt || o.trashed) ? this.toDoc(r) : null;
   }
   async findDocById(id: string, o: FindOptions = {}) {
@@ -318,6 +331,9 @@ export class DrizzleRepo implements CmsRepo {
   async listDocs(f: DocFilter) {
     const D = this.t.documents;
     const conds = [f.trashed ? isNotNull(D.deletedAt) : isNull(D.deletedAt)];
+    if (f.groupId) conds.push(this.uuidLike(f.groupId) ? sql`(${D.groupId} = ${f.groupId} or ${D.id} = ${f.groupId})` : sql`false`);
+    if (f.sources) conds.push(this.sourceRow());
+    if (f.locale !== undefined) conds.push(eq(D.locale, f.locale), sql`not ${this.sourceRow()}`);
     if (f.dueBefore) conds.push(lte(D.dueAt, new Date(f.dueBefore)));
     if (f.collection) conds.push(eq(D.collection, f.collection));
     if (f.statuses) conds.push(inArray(D.status, f.statuses));
@@ -940,6 +956,8 @@ export class DrizzleRepo implements CmsRepo {
   async pageDocs(q: DocPageQuery): Promise<DocPage> {
     const D = this.t.documents;
     const conds: SQL[] = [isNull(D.deletedAt), eq(D.collection, q.collection)];
+    if (q.locale !== undefined) conds.push(eq(D.locale, q.locale), sql`not ${this.sourceRow()}`);
+    else conds.push(this.sourceRow());
     if (q.published) conds.push(isNotNull(D.publishedVersion), ne(D.status, "archived"), isNotNull(D.published));
     if (q.statuses?.length) conds.push(inArray(D.status, q.statuses));
     if (q.by) conds.push(eq(D.updatedByKind, q.by));
@@ -1011,6 +1029,7 @@ export class DrizzleRepo implements CmsRepo {
     }
     // 0.17.0: indexes, published pointers without their version, rows left behind.
     let missingIndexes: string[] = [];
+    let staleIndexes: string[] = [];
     let publishedWithoutVersion = 0;
     let orphanAssetRefs = 0;
     let orphanComments = 0;
@@ -1019,6 +1038,7 @@ export class DrizzleRepo implements CmsRepo {
       const idx = await this.rows<{ indexname: string }>(sql`select indexname from pg_indexes where schemaname = coalesce(${sch}, current_schema()) and indexname like ${prefix.replace(/_/g, "\\_") + "%"}`);
       const haveIdx = new Set(idx.map((r) => r.indexname));
       missingIndexes = EXPECTED_INDEXES.map((n) => prefix + n).filter((n) => !haveIdx.has(n));
+      staleIndexes = STALE_INDEXES.map((n) => prefix + n).filter((n) => haveIdx.has(n));
       const D = this.t.documents;
       const V = this.t.versions;
       const [pv] = await this.db
@@ -1053,6 +1073,7 @@ export class DrizzleRepo implements CmsRepo {
       badPublished,
       orphanVersions,
       missingIndexes,
+      staleIndexes,
       publishedWithoutVersion,
       orphanAssetRefs,
       orphanComments,
@@ -1089,6 +1110,8 @@ export interface DoctorReport {
   orphanVersions: number;
   /** 0.17.0: indexes the DDL makes that the database does not have. */
   missingIndexes?: string[];
+  /** 0.22.0: indexes an upgrade should have dropped (the old one-slug-per-collection unique index). */
+  staleIndexes?: string[];
   /** Documents whose published version has no row in the version table. */
   publishedWithoutVersion?: number;
   /** File uses whose document or file is gone. */
@@ -1100,4 +1123,6 @@ export interface DoctorReport {
 }
 
 /** Index names (without the prefix) the DDL creates; `doctor` reports the ones missing. */
-export const EXPECTED_INDEXES = ["changes_at_idx", "changes_doc_idx", "documents_list_idx", "documents_public_idx", "documents_trash_idx", "documents_updated_idx", "versions_created_idx", "audit_doc_idx", "jobs_done_idx", "assets_trash_idx", "comments_thread_idx"];
+export const EXPECTED_INDEXES = ["changes_at_idx", "changes_doc_idx", "documents_list_idx", "documents_public_idx", "documents_trash_idx", "documents_updated_idx", "versions_created_idx", "audit_doc_idx", "jobs_done_idx", "assets_trash_idx", "comments_thread_idx", "documents_collection_slug_locale_idx", "documents_group_idx"];
+/** Indexes an upgrade drops (0.22.0: one slug per collection became one slug per collection and language). */
+export const STALE_INDEXES = ["documents_collection_slug_idx"];

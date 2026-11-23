@@ -186,5 +186,13 @@ export const ko: Messages = {
   seo_description_long: "설명이 {length}자. 검색 엔진은 {max}자쯤 보여 줌",
   seo_description_missing: "설명 없음. 검색 엔진이 본문에서 아무 글이나 고름",
   seo_image_small: "공유 그림이 {width}×{height}. 1200×630 이상이 보기 좋음",
+  // 0.22.0 다국어 문서
+  locale_unknown: "모르는 언어: {locale}. 이 CMS의 언어: {locales}",
+  locale_not_localized: "{collection} 컬렉션은 번역하지 않음 (localized: true 필요)",
+  translation_exists: "{slug}에 {locale} 번역이 이미 있음",
+  translation_not_found: "{slug}에 {locale} 번역이 아직 없음. 먼저 번역을 시작해야 함",
+  locale_field_shared: "{field}은(는) 모든 언어가 함께 씀: {source} 문서에서 바꿔야 함",
+  locale_source_missing: "{slug}에 번역할 {source} 원문이 없음",
+  locale_is_source: "{locale}은(는) {slug}의 원문 언어라 번역이 아님",
   internal: "처리 중 오류가 났음",
 };

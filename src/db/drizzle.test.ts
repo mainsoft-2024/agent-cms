@@ -248,12 +248,13 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_jobs", "cms_presence", "cms_releases", "cms_saved_filters", "cms_webhook_deliveries", "cms_webhooks"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 8], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 7], /0\.10\.0/);
-    assert.match(pending.steps[pending.steps.length - 6], /0\.11\.0/);
-    assert.match(pending.steps[pending.steps.length - 5], /0\.12\.0/);
-    assert.match(pending.steps[pending.steps.length - 4], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.15\.0/);
+    assert.match(pending.steps[pending.steps.length - 9], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 8], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 7], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 6], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.15\.0/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.22\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -433,10 +434,11 @@ test("db: schema 6 → 7 adds cms_records; automations, runs and roles work on a
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [6, ["cms_records"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.match(pending.steps[pending.steps.length - 4], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.15\.0: body format/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.17\.0: change log/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.21\.0: relations/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.15\.0: body format/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.17\.0: change log/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.21\.0: relations/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.22\.0: multilingual/);
     await run(db, pending.sql);
     await run(db, pending.sql); // safe to run again
     assert.deepEqual([(await repo.inspect()).schemaVersion, (await repo.inspect()).missingTables], [SCHEMA_VERSION, []]);
@@ -519,7 +521,7 @@ test("db: schema 8 → 9 adds the change log and indexes; paging, the log and do
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [8, ["cms_changes"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs", "agent-cms 0.21.0: relations, document trees, SEO, heading anchor aliases, redirects"]);
+    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs", "agent-cms 0.21.0: relations, document trees, SEO, heading anchor aliases, redirects", "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale)"]);
     await run(db, pending.sql);
     const after = await repo.inspect();
     assert.deepEqual([after.schemaVersion, after.missingTables, after.missingIndexes], [SCHEMA_VERSION, [], []]);
@@ -813,6 +815,76 @@ test("drizzle: 0.21 second pass on Postgres (opposite tree moves from two server
     await assert.rejects(one.archive(admin, "people", "kim-minji"), (e: unknown) => isCmsError(e) && e.code === "doc_referenced");
     await one.archive(admin, "people", "kim-minji", { force: true });
     assert.equal(await one.redirects.resolve("/team/kim"), null, "hidden: nowhere to go");
+  } finally {
+    await close();
+  }
+});
+
+test("db: schema 10 → 11 swaps the unique index for one slug per language; translations on Postgres; migrate locales fills the default", async () => {
+  const { z } = await import("zod");
+  const { fillLocaleSql, localeDuplicatesSql } = await import("../tables");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    // A 0.21.0 database: no locale columns, the old unique index, one document already there.
+    await run(
+      db,
+      `DROP INDEX cms_documents_collection_slug_locale_idx; DROP INDEX cms_documents_group_idx;
+       ALTER TABLE cms_documents DROP COLUMN "locale"; ALTER TABLE cms_documents DROP COLUMN "group_id"; ALTER TABLE cms_documents DROP COLUMN "source_version";
+       CREATE UNIQUE INDEX cms_documents_collection_slug_idx ON cms_documents ("collection", "slug");
+       UPDATE cms_meta SET value = '10'::jsonb WHERE key = 'schema_version';`
+    );
+    const repo = new DrizzleRepo(db);
+    // A document written by 0.21.0 (the row as it had it).
+    await run(db, `INSERT INTO cms_documents ("collection", "slug", "title", "body", "status", "version", "published_version", "published", "published_at") VALUES ('guide', 'old', '예전 문서', 'x', 'published', 1, 1, '{"slug":"old","title":"예전 문서","summary":"","body":"x","category":null,"keywords":[],"fields":{}}'::jsonb, now());
+       INSERT INTO cms_versions ("document_id", "version", "snapshot", "author_kind", "author_label") SELECT "id", 1, "published", 'system', 'seed' FROM cms_documents WHERE "slug" = 'old';`);
+    const before = await repo.inspect();
+    assert.equal(before.schemaVersion, 10);
+    assert.deepEqual(before.missingColumns.sort(), ["cms_documents.group_id", "cms_documents.locale", "cms_documents.source_version"]);
+    const pending = migrationSql(before, cmsTables())!;
+    assert.equal(pending.steps.at(-1), "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale)");
+    // The safe order for big tables (UPGRADE-0.22.md): columns first, check, then the index by hand.
+    await run(db, `ALTER TABLE cms_documents ADD COLUMN IF NOT EXISTS "locale" text NOT NULL DEFAULT '';`);
+    assert.deepEqual(await rows(db, localeDuplicatesSql()), [], "nothing would break the new index");
+    await run(db, `CREATE UNIQUE INDEX IF NOT EXISTS cms_documents_collection_slug_locale_idx ON cms_documents ("collection", "slug", "locale");`);
+    await run(db, pending.sql);
+    const after = await repo.inspect();
+    assert.deepEqual([after.schemaVersion, after.missingColumns, after.missingIndexes, after.staleIndexes], [SCHEMA_VERSION, [], [], []]);
+    // The old index left behind (built the new one by hand, forgot the drop): check still offers the step.
+    await run(db, `CREATE UNIQUE INDEX cms_documents_collection_slug_idx ON cms_documents ("collection", "slug");`);
+    const stale = await repo.inspect();
+    assert.deepEqual(stale.staleIndexes, ["cms_documents_collection_slug_idx"]);
+    await run(db, migrationSql(stale, cmsTables())!.sql);
+    assert.deepEqual((await repo.inspect()).staleIndexes, []);
+
+    // Locales on: the old document (locale "") reads as the default language.
+    const localized = defineCollection({ slug: "guide", label: "Guide", visibility: "public", localized: true, url: (d) => `/${d.locale}/guide/${d.slug}`, fields: z.object({ order: z.number().optional() }) });
+    const cms = createCms({ repo, collections: [localized], locales: ["ko", "en"], searchRefreshMs: 0 });
+    assert.equal((await cms.get(anon, "guide", "old")).locale, "ko");
+    const en = await cms.create(admin, "guide", { slug: "old", title: "Old page" }, { locale: "en", publish: true });
+    assert.deepEqual([en.slug, en.locale, en.sourceVersion], ["old", "en", 1]);
+    assert.equal((await cms.get(anon, "guide", "old", { locale: "en" })).title, "Old page");
+    assert.equal((await cms.get(anon, "guide", "old")).title, "예전 문서");
+    // The database itself refuses a second English row for the slug.
+    await assert.rejects(repo.insertDoc({ collection: "guide", slug: "old", locale: "en", groupId: en.groupId, title: "x", summary: "", body: "", category: null, keywords: [], fields: {}, status: "draft", version: 1, publishedVersion: null, published: null, publishedAt: null, updatedBy: null, updatedByKind: null } as never), (e: unknown) => isCmsError(e) && e.code === "slug_taken");
+    await cms.update(admin, "guide", "old", { fields: { order: 2 } }, { publish: true });
+    assert.equal((await cms.translations(admin, "guide", "old")).translations[1].status, "outdated");
+    assert.equal((await cms.get(anon, "guide", "old", { locale: "en" })).fields.order, 2, "shared fields from the source");
+    assert.deepEqual((await cms.list(anon, "guide", { locale: "en" })).map((d) => d.slug), ["old"]);
+    assert.deepEqual((await cms.page(anon, "guide", { locale: "en" })).docs.map((d) => [d.slug, d.locale]), [["old", "en"]]);
+    assert.deepEqual((await cms.page(anon, "guide", {})).docs.map((d) => [d.slug, d.locale]), [["old", "ko"]]);
+    // Filling the default language for good: in batches, until nothing is left.
+    assert.equal((await rows<{ locale: string }>(db, `select locale from cms_documents where slug = 'old' and group_id is null`))[0].locale, "", "rows written before keep \"\" until filled");
+    const io = { db, cwd: mkdtempSync(join(tmpdir(), "acms-loc-")), out: (_l: string) => {}, err: (_l: string) => {} };
+    const said: string[] = [];
+    io.out = (l: string) => void said.push(l);
+    io.err = (l: string) => void said.push(l);
+    assert.equal(await runCli(["migrate", "locales", "--default", "ko", "--collections", "guide", "--batch", "1"], io), 0, said.join("\n") + JSON.stringify(await rows(db, "select slug, locale, group_id, collection from cms_documents")));
+    assert.match(said.join("\n"), /1 document\(s\) in guide now have locale ko/);
+    assert.equal((await rows<{ n: number }>(db, `select count(*)::int as n from cms_documents where locale = ''`))[0].n, 0);
+    assert.match(fillLocaleSql(undefined, { collections: ["guide"], defaultLocale: "ko" }), /LIMIT 1000/);
   } finally {
     await close();
   }

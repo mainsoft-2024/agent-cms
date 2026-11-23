@@ -32,6 +32,11 @@
  *   GET    /collections/:c/:slug/versions[/:n]        (?fields=summary)
  *   GET    /collections/:c/:slug/diff?a=&b=
  *   POST   /collections/:c/:slug/versions/:n/restore  {publish?}
+ *   (0.22.0) ?locale= on every document route picks the language; GET also takes &fallback=1
+ *   GET    /collections/:c/:slug/_translations        every language with its status
+ *   POST   /collections/:c/:slug/_translations        {locale, doc?, publish?, note?} start a translation
+ *   POST   /collections/:c/:slug/_align               {locale, version?} the translation matches that source version
+ *   GET    /collections/:c/:slug/_source-diff?locale= what changed in the source since the translation was aligned
  *   GET    /search?q=&collections=a,b&miss=1          miss=1: call onSearchMiss when nothing is found
  *   GET    /preview?token=                            the version a preview link points at
  *   GET    /keys | POST /keys {name, scopes, collections?, expiresAt?} | DELETE /keys/:id
@@ -111,6 +116,7 @@ import { keyFromHeader } from "./keys";
 import { clientIp, ipAllowed } from "./limits";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
 import { eventStream, hearAs } from "./events";
+import { localeTag } from "./locale";
 import { openApiDocument } from "./openapi";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
@@ -182,6 +188,9 @@ const WriteBody = z.object({
   publish: z.boolean().optional(),
   note: z.string().max(300).nullable().optional(),
   template: z.string().max(100).optional(),
+  /** 0.22.0: the language of a new document; another than the default starts a translation of `from` (or `doc.slug`). */
+  locale: z.string().max(35).optional(),
+  from: z.string().max(200).optional(),
 });
 const TemplateBody = z.object({ label: z.string().max(80).optional(), description: z.string().max(200).optional(), title: z.string().max(300).optional(), summary: z.string().max(1000).optional(), body: z.string().max(500_000).optional(), fields: z.record(z.unknown()).optional() });
 const RedirectBody = z.object({ from: z.string().max(500).optional(), to: z.string().max(2000).optional(), toDocumentId: z.string().max(64).nullable().optional(), status: z.union([z.literal(301), z.literal(302)]).optional() });
@@ -348,19 +357,20 @@ async function body<T>(req: Request, schema: z.ZodType<T>, optional = false): Pr
 /** `If-Match: "v12"` (or W/"v12", or 12) → 12. */
 export function versionFromIfMatch(h: string | null): number | undefined {
   if (!h) return undefined;
-  const m = /^(?:W\/)?"?v?(\d+)(?:-[a-z0-9]+)?"?$/.exec(h.trim());
+  const m = /^(?:W\/)?"?v?(\d+)(?:-[a-z0-9]+){0,2}"?$/.exec(h.trim());
   if (!m) throw new CmsError("invalid_version", {}, { status: 400 });
   return Number(m[1]);
 }
 
-const etag = (d: { version: number }) => `"v${d.version}"`;
+/** 0.22.0: documents of localized collections carry their language in the tag (`"v3-en"`): each language is its own document. */
+const etag = (d: { version: number; locale?: string }) => `"v${d.version}${d.locale ? `-${localeTag(d.locale)}` : ""}"`;
 /** 0.21.0: when snippets or `?expand` change what is sent, the tag also follows the content (FNV-1a). */
 function contentTag(raw: CmsDoc, sent: CmsDoc, dynamic: boolean): string {
   if (!dynamic) return etag(raw);
   const text = JSON.stringify([sent.body, sent.fields]);
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
-  return `W/"v${raw.version}-${(h >>> 0).toString(36)}"`;
+  return `W/"v${raw.version}${raw.locale ? `-${localeTag(raw.locale)}` : ""}-${(h >>> 0).toString(36)}"`;
 }
 
 /** A doc on the wire: editors see the autosave, nobody else does. */
@@ -462,6 +472,9 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           previewLinks: core.previewEnabled(),
           trashDays: core.trash.days,
           timeZone: core.timeZone,
+          /** 0.22.0: languages documents are written in (empty: off) and the one translations are made from. */
+          locales: core.locales,
+          defaultLocale: core.defaultLocale || null,
           media: core.assets.describe(actor),
           /** True when webhooks can be made (a `secretsKey` is set) and this caller may manage them. */
           webhooks: core.webhooks.enabled() && core.isAdmin(actor),
@@ -476,7 +489,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           collections: core
             .collections()
             .filter((c) => core.can(actor, c.slug, "read"))
-            .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish"), ...(c.single ? { single: true } : {}), ...(c.tree ? { tree: true } : {}), ...(c.snippets ? { snippets: true } : {}) })),
+            .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish"), ...(c.single ? { single: true } : {}), ...(c.tree ? { tree: true } : {}), ...(c.snippets ? { snippets: true } : {}), ...(core.localized(c.slug) ? { localized: true } : {}) })),
           /** 0.21.0: redirects are on and this caller manages them; hosts `:::video` may embed. */
           redirects: core.redirects.enabled() && core.isAdmin(actor),
           videoHosts: core.videoHosts,
@@ -516,10 +529,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const r = await core.search(actor, cols.length ? cols : readable, q.get("q") ?? "", {
           limit: Math.max(1, Math.min(Number(q.get("limit") ?? 8) || 8, 20)),
           reportMiss: q.get("miss") === "1" || q.get("log") === "1",
+          ...(q.get("locale") ? { locale: q.get("locale")! } : {}),
         });
         return json({
           empty: r.empty,
-          hits: r.hits.map((h) => ({ collection: h.unit.collection, slug: h.unit.slug, title: h.unit.title, summary: h.unit.summary, category: h.unit.category, heading: h.unit.heading, anchor: h.unit.anchor, score: Number(h.score.toFixed(3)) })),
+          hits: r.hits.map((h) => ({ collection: h.unit.collection, slug: h.unit.slug, ...(h.unit.locale ? { locale: h.unit.locale } : {}), title: h.unit.title, summary: h.unit.summary, category: h.unit.category, heading: h.unit.heading, anchor: h.unit.anchor, score: Number(h.score.toFixed(3)) })),
         });
       }
 
@@ -778,6 +792,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             templates: (cfg.templates?.length ?? 0) > 0,
             redirects: core.redirects.enabled(),
             snippetCollections: core.collections().filter((c) => c.snippets).map((c) => c.slug),
+            // 0.22.0: languages; per field, whether a translation has its own value (else it shows the source's, read-only).
+            locales: core.locales,
+            defaultLocale: core.defaultLocale || null,
+            localized: core.localized(col),
+            translatable: core.localized(col) ? core.translatableFields(col) : null,
           });
         }
         if (seg.length === 3 && seg[2] === "_diagnose" && m === "POST") {
@@ -831,6 +850,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
               by: (["user", "key", "system"] as const).find((x) => x === by),
               category: q.get("category") ?? undefined,
               q: q.get("q") ?? undefined,
+              locale: q.get("locale") ?? undefined,
+              fallback: q.get("fallback") === "1",
             };
             if (q.get("fields") === "summary") {
               return json(await core.page(actor, col, { ...lo, limit: Number(q.get("limit") ?? 50) || 50, cursor: q.get("cursor"), hits: q.get("hits") === "1" }));
@@ -846,10 +867,29 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           }
         }
 
-        const slug = seg[2];
+        // 0.22.0: `?locale=` picks the language of the document (a translation has the same slug as its source).
+        const locale = q.get("locale");
+        const reading = m === "GET" || m === "HEAD";
+        const slug = seg[2] && locale ? core.address(col, seg[2], locale, { write: !reading }) : seg[2];
+        if (slug && seg.length === 4 && seg[3] === "_translations") {
+          if (m === "GET") return json(await core.translations(actor, col, seg[2]));
+          if (m === "POST") {
+            const b = await body(req, z.object({ locale: z.string().max(35), doc: DocInput.optional(), publish: z.boolean().optional(), note: z.string().max(300).nullable().optional() }));
+            const doc = await core.create(actor, col, { ...(b.doc ?? {}), slug: seg[2] }, { locale: b.locale, from: seg[2], publish: b.publish, note: b.note });
+            return json({ doc: wire(doc) }, 201, { etag: etag(doc) });
+          }
+        }
+        if (slug && seg.length === 4 && seg[3] === "_align" && m === "POST") {
+          const b = await body(req, z.object({ locale: z.string().max(35), version: z.number().int().positive().optional() }));
+          const doc = await core.markAligned(actor, col, seg[2], b.locale, { version: b.version });
+          return json({ doc: wire(doc) }, 200, { etag: etag(doc) });
+        }
+        if (slug && seg.length === 4 && seg[3] === "_source-diff" && m === "GET") {
+          return json(await core.sourceDiff(actor, col, seg[2], locale ?? "", { context: q.get("context") ? Number(q.get("context")) : undefined }));
+        }
         if (slug && seg.length === 3) {
           if (m === "GET" || m === "HEAD") {
-            const raw = await core.get(actor, col, slug, { draft: q.get("draft") === "1", snippets: q.get("snippets") === "raw" ? "raw" : undefined });
+            const raw = await core.get(actor, col, seg[2], { draft: q.get("draft") === "1", snippets: q.get("snippets") === "raw" ? "raw" : undefined, locale, fallback: q.get("fallback") === "1" });
             const doc = await core.expand(actor, raw, expandOf(q), q.get("draft") === "1");
             const tag = contentTag(raw, doc, expandOf(q).length > 0 || (q.get("draft") !== "1" && q.get("snippets") !== "raw" && core.collections().some((c) => c.snippets)));
             if (req.headers.get("if-none-match") === tag) return new Response(null, { status: 304, headers: { etag: tag } });

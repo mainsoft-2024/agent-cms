@@ -73,11 +73,20 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       position: text("position"),
       /** Search engine details of the working copy (0.21.0). */
       seo: jsonb("seo").$type<DocSeo | null>(),
+      /**
+       * Multilingual documents (0.22.0, schema 11). `locale`: "" when the app has no locales or the
+       * collection is not localized. `groupId`: links the translations of one document (the source's
+       * id). `sourceVersion`: the source version a translation was last aligned to (null: a source).
+       */
+      locale: text("locale").notNull().default(""),
+      groupId: uuid("group_id"),
+      sourceVersion: integer("source_version"),
       createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
       updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     },
     (t) => ({
-      slugIdx: uniqueIndex(n("documents_collection_slug_idx")).on(t.collection, t.slug),
+      slugIdx: uniqueIndex(n("documents_collection_slug_locale_idx")).on(t.collection, t.slug, t.locale),
+      groupIdx: index(n("documents_group_idx")).on(t.groupId),
       statusIdx: index(n("documents_collection_status_idx")).on(t.collection, t.status),
       dueIdx: index(n("documents_due_idx")).on(t.dueAt),
     })
@@ -486,7 +495,7 @@ function names(t?: CmsTables | CmsTablesOptions) {
 
 /** Columns added after the first release, by schema version: `ALTER … ADD COLUMN IF NOT EXISTS`. */
 export function upgradeSteps(t?: CmsTables | CmsTablesOptions): { version: number; name: string; sql: string }[] {
-  const { tbl, idx } = names(t);
+  const { tbl, idx, schema, q } = names(t);
   return [
     {
       version: 2,
@@ -790,7 +799,41 @@ CREATE TABLE IF NOT EXISTS ${tbl("redirect_hits")} (
 );
 CREATE INDEX IF NOT EXISTS ${idx("redirect_hits_day_idx")} ON ${tbl("redirect_hits")} ("day");`.trim(),
     },
+    {
+      version: 11,
+      name: "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale)",
+      // The unique index swap: the new one is built before the old one goes, so a slug is never
+      // unguarded. On a big table build it by hand first with CREATE UNIQUE INDEX CONCURRENTLY
+      // (UPGRADE-0.22.md); then this step finds it and only drops the old one.
+      sql: `
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "locale" text NOT NULL DEFAULT '';
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "group_id" uuid;
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "source_version" integer;
+CREATE UNIQUE INDEX IF NOT EXISTS ${idx("documents_collection_slug_locale_idx")} ON ${tbl("documents")} ("collection", "slug", "locale");
+DROP INDEX IF EXISTS ${schema ? `${q(schema)}.` : ""}${idx("documents_collection_slug_idx")};
+CREATE INDEX IF NOT EXISTS ${idx("documents_group_idx")} ON ${tbl("documents")} ("group_id");`.trim(),
+    },
   ];
+}
+
+/**
+ * Turning locales on (0.22.0): documents of localized collections written before have locale ""
+ * (the CMS reads them as the default language). This gives them the default language for good, in
+ * batches of `batch` rows so a big table is never locked for long. Run it until it changes 0 rows
+ * (`npx @mainsoft/agent-cms migrate locales` does).
+ */
+export function fillLocaleSql(t: CmsTables | CmsTablesOptions | undefined, o: { collections: readonly string[]; defaultLocale: string; batch?: number }): string {
+  const { tbl } = names(t);
+  const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
+  if (!o.collections.length) return "SELECT 0";
+  const batch = Math.max(1, Math.floor(o.batch ?? 1000));
+  return `UPDATE ${tbl("documents")} SET "locale" = ${lit(o.defaultLocale)} WHERE "id" IN (SELECT "id" FROM ${tbl("documents")} WHERE "locale" = '' AND "collection" IN (${o.collections.map(lit).join(", ")}) LIMIT ${batch}) RETURNING "id"`;
+}
+
+/** Rows that would break the new unique index (collection, slug, locale): run before building it by hand. */
+export function localeDuplicatesSql(t?: CmsTables | CmsTablesOptions): string {
+  const { tbl } = names(t);
+  return `SELECT "collection", "slug", "locale", count(*) AS "n" FROM ${tbl("documents")} GROUP BY "collection", "slug", "locale" HAVING count(*) > 1`;
 }
 
 /** Records the schema version (run after the DDL or upgrade steps). */
@@ -826,7 +869,6 @@ ${schema ? `CREATE SCHEMA IF NOT EXISTS ${q(schema)};\n` : ""}CREATE TABLE IF NO
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ${idx("documents_collection_slug_idx")} ON ${tbl("documents")} ("collection", "slug");
 CREATE INDEX IF NOT EXISTS ${idx("documents_collection_status_idx")} ON ${tbl("documents")} ("collection", "status");
 
 CREATE TABLE IF NOT EXISTS ${tbl("versions")} (

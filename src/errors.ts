@@ -203,6 +203,14 @@ export const ERROR_CODES = {
   seo_description_long: "invalid",
   seo_description_missing: "invalid",
   seo_image_small: "invalid",
+  // 0.22.0 multilingual documents
+  locale_unknown: "invalid",
+  locale_not_localized: "invalid",
+  translation_exists: "conflict",
+  translation_not_found: "not_found",
+  locale_field_shared: "invalid",
+  locale_source_missing: "invalid",
+  locale_is_source: "invalid",
   internal: "internal",
 } as const satisfies Record<string, CmsErrorKind>;
 

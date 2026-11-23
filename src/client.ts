@@ -207,7 +207,10 @@ export interface Me {
   timeZone?: string;
   /** The media library, when the app has one and this actor may see it. */
   media?: MediaInfo | null;
-  collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean; single?: boolean; tree?: boolean; snippets?: boolean }[];
+  collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean; single?: boolean; tree?: boolean; snippets?: boolean; localized?: boolean }[];
+  /** 0.22.0: languages documents are written in (empty: off) and the one translations are made from. */
+  locales?: string[];
+  defaultLocale?: string | null;
   /** 0.21.0: redirects are on and this caller manages them. */
   redirects?: boolean;
   /** 0.21.0: hosts `:::video` blocks may embed. */
@@ -385,6 +388,12 @@ export interface CollectionSchema {
   redirects?: boolean;
   /** 0.21.0: collections whose documents are snippets. */
   snippetCollections?: string[];
+  /** 0.22.0: languages (empty: off), the one translations are made from, and whether this collection is translated. */
+  locales?: string[];
+  defaultLocale?: string | null;
+  localized?: boolean;
+  /** 0.22.0: per top-level field, whether a translation has its own value (false: it shows the source's, read-only). */
+  translatable?: Record<string, boolean> | null;
 }
 
 /** 0.21.0 content model shapes. */
@@ -455,7 +464,34 @@ export interface ListQuery {
   limit?: number;
   cursor?: string | null;
   hits?: boolean;
+  /** 0.22.0: documents in this language (localized collections). */
+  locale?: string;
 }
+
+/** 0.22.0: one language of a document, as `GET …/_translations` lists it. */
+export interface TranslationView {
+  locale: string;
+  status: "source" | "missing" | "outdated" | "current";
+  version: number | null;
+  sourceVersion: number | null;
+  publishedVersion: number | null;
+  updatedAt: string | null;
+  docStatus: "draft" | "published" | "archived" | null;
+}
+export interface TranslationsView {
+  collection: string;
+  slug: string;
+  defaultLocale: string;
+  /** The source version translations are compared with (published, else latest). */
+  sourceVersion: number;
+  translations: TranslationView[];
+}
+
+/**
+ * 0.22.0: name a document in a language for any client method that takes a slug (`publish`,
+ * `versions`, `autosave`…): `slug@en`. The default language is the slug itself.
+ */
+export const localeSlug = (slug: string, locale?: string | null, defaultLocale?: string | null): string => (locale && locale !== defaultLocale ? `${slug}@${locale}` : slug);
 
 export function createRestClient(opts: RestClientOptions) {
   const base = opts.url.replace(/\/+$/, "");
@@ -567,8 +603,20 @@ export function createRestClient(opts: RestClientOptions) {
     schema: (c: string, o: { slug?: string | null } = {}) => req<CollectionSchema>("GET", `/collections/${enc(c)}/_schema${o.slug ? `?slug=${enc(o.slug)}` : ""}`),
     list: (c: string, q: ListQuery = {}) => req<{ docs: DocSummary[]; total: number; nextCursor: string | null }>("GET", `/collections/${enc(c)}`, { query: { fields: "summary", ...q } }),
     counts: (c: string) => req<{ counts: DocCounts }>("GET", `/collections/${enc(c)}/_counts`).then((r) => r.counts),
-    get: (c: string, s: string, o: { draft?: boolean; expand?: string[] } = { draft: true }) => req<{ doc: CmsDoc }>("GET", doc(c, s), { query: { draft: o.draft, ...(o.expand?.length ? { expand: o.expand.join(",") } : {}) } }).then((r) => r.doc),
-    create: (c: string, d: DocInputWire, o: { publish?: boolean; note?: string; template?: string } = {}) => req<{ doc: CmsDoc }>("POST", `/collections/${enc(c)}`, { body: { doc: d, ...o } }).then((r) => r.doc),
+    /** 0.22.0: `locale` reads that language; `fallback` gives the default language's document when it has none (with `requestedLocale`). */
+    get: (c: string, s: string, o: { draft?: boolean; expand?: string[]; locale?: string; fallback?: boolean } = { draft: true }) =>
+      req<{ doc: CmsDoc }>("GET", doc(c, s), { query: { draft: o.draft, ...(o.expand?.length ? { expand: o.expand.join(",") } : {}), locale: o.locale, fallback: o.fallback } }).then((r) => r.doc),
+    /** 0.22.0: `locale` other than the default starts a translation of `from` (or `d.slug`). */
+    create: (c: string, d: DocInputWire, o: { publish?: boolean; note?: string; template?: string; locale?: string; from?: string } = {}) => req<{ doc: CmsDoc }>("POST", `/collections/${enc(c)}`, { body: { doc: d, ...o } }).then((r) => r.doc),
+    // 0.22.0 translations
+    /** Every language of a document with its status (source, missing, outdated, current). */
+    translations: (c: string, s: string) => req<TranslationsView>("GET", `${doc(c, s)}/_translations`),
+    /** Start a translation in `locale`: its text starts as a copy of the source unless `d` brings its own. */
+    startTranslation: (c: string, s: string, locale: string, d: DocInputWire = {}, o: { publish?: boolean; note?: string } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/_translations`, { body: { locale, doc: d, ...o } }).then((r) => r.doc),
+    /** Say the translation in `locale` matches source version `version` (default: the source's published one). */
+    markAligned: (c: string, s: string, locale: string, version?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/_align`, { body: { locale, version } }).then((r) => r.doc),
+    /** What changed in the source since the translation in `locale` was aligned. */
+    sourceDiff: (c: string, s: string, locale: string) => req<DocDiff & { collection: string; slug: string; locale: string; status: TranslationView["status"] }>("GET", `${doc(c, s)}/_source-diff`, { query: { locale } }),
     update: (c: string, s: string, d: DocInputWire, o: { expectedVersion: number; publish?: boolean; note?: string }) =>
       req<{ doc: CmsDoc }>("PATCH", doc(c, s), { body: { doc: d, publish: o.publish, note: o.note }, ifMatch: o.expectedVersion }).then((r) => r.doc),
     remove: (c: string, s: string, expectedVersion?: number, o: { force?: boolean } = {}) => req<{ ok: true }>("DELETE", doc(c, s), { ifMatch: expectedVersion, query: o.force ? { force: "1" } : undefined }),
@@ -662,7 +710,8 @@ export function createRestClient(opts: RestClientOptions) {
     searchUsers: (q: string) => req<{ users: PersonMatch[] }>("GET", "/roles/_users", { query: { q } }).then((r) => r.users),
     jobs: (q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number } = {}) => req<{ waiting: number; failed: number; jobs: CmsJob[] }>("GET", "/jobs", { query: q }),
     retryJob: (id: string) => req<{ ok: true }>("POST", `/jobs/${enc(id)}/retry`),
-    search: (q: string, collections?: string[]) => req<{ empty: boolean; hits: { collection: string; slug: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(",") } }),
+    search: (q: string, collections?: string[], o: { locale?: string } = {}) =>
+      req<{ empty: boolean; hits: { collection: string; slug: string; locale?: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(","), locale: o.locale } }),
     keys: () => req<{ keys: CmsKey[] }>("GET", "/keys").then((r) => r.keys),
     createKey: (k: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null; rateLimit?: number | null; allowedIps?: string[] | null }) => req<{ key: CmsKey; secret: string }>("POST", "/keys", { body: k }),
     revokeKey: (id: string, o: { reason?: string } = {}) => req<{ ok: true }>("DELETE", `/keys/${enc(id)}${o.reason ? `?reason=${encodeURIComponent(o.reason)}` : ""}`),

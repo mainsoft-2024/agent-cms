@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.22.0
+
+Multilingual documents. **Schema 11** (three columns, the unique index on addresses becomes one per language). See `UPGRADE-0.22.md`.
+
+### Added
+- **Locales**: `createCms({ locales: ["ko", "en"], defaultLocale: "ko" })` and `localized: true` on a collection. A translation is a document of its own with the source's address, its own language, versions, drafts, publishing, schedule and review; it belongs to the source's group (`groupId`) and remembers which source version it was last aligned to (`sourceVersion`). Apps without `locales` are unchanged.
+- **What is translated**: title, summary, body, keywords, SEO and the text fields of the schema (`z.string()` without a format, and lists of them). Everything else (numbers, dates, switches, choices, relations, files, nested objects), the category and the body format follow the source and are filled in on every read. `admin.fields.<name>.localized: true | false` overrides. Sending a different shared value to a translation answers `locale_field_shared` (422) with the field, so agents learn to change it in the source; sending the same value is fine.
+- **Starting a translation**: `cms.create(actor, col, { slug, ...own text }, { locale: "en", from? })`, `POST /collections/<c>/<slug>/_translations` `{ locale, doc?, publish? }`, `create_document` with `locale`, `client.startTranslation()`. The text starts as a copy of the source's published copy unless you send your own.
+- **Status per language**: `cms.translations(actor, col, slug)`, `GET …/_translations`, tool `list_translations`, `client.translations()`: every language with `source`, `missing`, `outdated` (the source was published again since the translation was aligned) or `current`, its version, published version, source version and last change.
+- **What changed in the source**: `cms.sourceDiff(actor, col, slug, locale)`, `GET …/_source-diff?locale=`, `client.sourceDiff()`: the diff of the source between the aligned version and its published one. `cms.markAligned(…, locale, { version? })`, `POST …/_align`, `client.markAligned()` record "matches source v7" without a new version.
+- **Reading a language**: `cms.get(…, { locale, fallback })`, `?locale=&fallback=1` on REST, `get_document`'s `locale` and `fallback`. With `fallback`, a missing or unpublished translation gives the default language's document with `requestedLocale` set. Lists (`cms.list`, `cms.page`, `GET /collections/<c>?locale=`) and search (`cms.search(…, { locale })`, `GET /search?locale=`, `search_documents`'s `locale`) take one language at a time; lists for readers also take `fallback`.
+- **Every document route and tool works on a translation**: `?locale=` on REST document routes (publish, versions, autosave, schedule, review…), `locale` on every document tool, and inside the CMS the address `slug@en` wherever a slug is taken (`cms.address(col, slug, locale)`, `localeSlug()` for the REST client).
+- **Sitemap**: documents of localized collections list each published language with `<xhtml:link rel="alternate" hreflang>` for every language and `x-default` for the default one. `url(doc)` gets `doc.locale`.
+- `_me` and `_schema` say `locales`, `defaultLocale`, whether a collection is `localized`, and per field whether it is `translatable` (the admin shows shared fields read-only). `list_collections` says `localized`, `locales` and `sharedFields`.
+- `npx @mainsoft/agent-cms migrate locales --default ko --collections a,b` gives documents written before locales were on the default language, in batches (`fillLocaleSql()`); `localeDuplicatesSql()` checks rows before building the new unique index by hand.
+- Error codes `locale_unknown`, `locale_not_localized`, `translation_exists`, `translation_not_found`, `locale_field_shared`, `locale_source_missing`, `locale_is_source` (English and Korean messages). Audit actions `doc.translate` and `doc.align`.
+
+### Changed
+- In localized collections, ETags carry the language (`"v3-en"`); events, the change log, webhooks (`locale`) and the audit log (`detail.locale`) say which language a change was in, with the plain slug.
+- Search: Hangul 2-grams are made for Korean text (and text with no language, as before), not for documents in other languages.
+- Renaming a source renames its translations; deleting a source moves its translations to the trash with it.
+- `doctor` fails while the old `(collection, slug)` unique index is still there; `migrate check` offers the step that drops it.
+
 ## 0.21.0
 
 The content model, first half: documents point at each other, nest, hold one document only, start from templates and share snippets; the body editor gets three new blocks and a new top bar; addresses can change after publishing and redirect. **Schema 10** (three columns, four tables). See `UPGRADE-0.21.md`.

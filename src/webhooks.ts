@@ -26,6 +26,8 @@ export interface WebhookPayload {
   url: string | null;
   /** For file and release events: which one (ids and names, never content). */
   detail?: Record<string, unknown>;
+  /** 0.22.0: the document's language, in localized collections only (a translation has the same slug as its source). */
+  locale?: string;
 }
 
 export const SIGNATURE_HEADER = "x-cms-signature";

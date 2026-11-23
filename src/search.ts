@@ -28,6 +28,8 @@ export interface SearchUnit {
   fields: Record<string, unknown>;
   /** The published version this unit was cut from (0.18.0): results are checked against that copy. */
   version?: number;
+  /** 0.22.0: the language of the document (localized collections only). */
+  locale?: string;
 }
 
 export interface SearchHit {
@@ -91,12 +93,18 @@ function stemOf(w: string): string {
   return s;
 }
 
-/** Index/query tokens for one word: the word itself, its stem, Hangul 2-grams. */
-function tokensOf(w: string): { tok: string; weight: number }[] {
+/**
+ * 0.22.0: Hangul 2-grams are for Korean text. Text with no language (apps without locales,
+ * collections that are not translated) keeps them as before; documents in another language do not.
+ */
+export const usesHangulGrams = (locale: string | undefined | null): boolean => !locale || locale === "ko" || locale.startsWith("ko-");
+
+/** Index/query tokens for one word: the word itself, its stem, Hangul 2-grams (Korean or no language). */
+function tokensOf(w: string, grams = true): { tok: string; weight: number }[] {
   const out: { tok: string; weight: number }[] = [{ tok: w, weight: 1 }];
   const stem = stemOf(w);
   if (stem !== w) out.push({ tok: stem, weight: 1 });
-  if (HANGUL.test(w) && w.length >= 3) {
+  if (grams && HANGUL.test(w) && w.length >= 3) {
     for (let i = 0; i + 2 <= w.length; i++) out.push({ tok: w.slice(i, i + 2), weight: 0.6 });
   }
   return out;
@@ -122,9 +130,10 @@ export class SearchIndex {
 
   private add(u: SearchUnit) {
     const idx = this.units.push(u) - 1;
+    const grams = usesHangulGrams(u.locale);
     const put = (text: string, field: Field) => {
       for (const w of words(text)) {
-        for (const { tok, weight } of tokensOf(w)) {
+        for (const { tok, weight } of tokensOf(w, grams)) {
           let m = this.postings.get(tok);
           if (!m) this.postings.set(tok, (m = new Map()));
           const v = FIELD_WEIGHT[field] * weight;
@@ -144,7 +153,8 @@ export class SearchIndex {
     return Math.log(1 + (this.units.length + 1) / (df + 0.5));
   }
 
-  search(query: string, opts: { limit?: number; perDoc?: number; filter?: (u: SearchUnit) => boolean } = {}): SearchHit[] {
+  search(query: string, opts: { limit?: number; perDoc?: number; filter?: (u: SearchUnit) => boolean; locale?: string } = {}): SearchHit[] {
+    const grams = usesHangulGrams(opts.locale);
     const limit = opts.limit ?? 5;
     const perDoc = opts.perDoc ?? 2;
     const qWords = [...new Set(words(query).filter((w) => !STOP.has(w)))];
@@ -164,7 +174,7 @@ export class SearchIndex {
           if ((best.get(u) ?? 0) < s) best.set(u, s);
         }
       };
-      for (const { tok, weight } of tokensOf(w)) consider(tok, weight);
+      for (const { tok, weight } of tokensOf(w, grams)) consider(tok, weight);
       if (!HANGUL.test(w) && w.length >= 3) {
         for (const v of this.latinVocab) {
           if (v !== w && (v.startsWith(w) || (w.length >= 5 && editDistance1(v, w)))) consider(v, 0.5);
@@ -253,6 +263,7 @@ export function unitsOf(doc: {
   publishedAt: string | null;
   fields: Record<string, unknown>;
   version?: number;
+  locale?: string;
 }): SearchUnit[] {
   const sections = splitSections(doc.body);
   const base = {
@@ -266,6 +277,7 @@ export function unitsOf(doc: {
     publishedAt: doc.publishedAt,
     fields: doc.fields,
     ...(doc.version !== undefined ? { version: doc.version } : {}),
+    ...(doc.locale ? { locale: doc.locale } : {}),
   };
   if (!sections.length) return [{ ...base, anchor: "", heading: "", markdown: "" }];
   return sections.map((s) => ({ ...base, anchor: s.anchor, heading: s.heading, markdown: s.markdown }));
