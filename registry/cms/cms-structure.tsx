@@ -8,8 +8,9 @@
 "use client";
 
 import * as React from "react";
-import { ChevronDown, ChevronRight, FileText, GripVertical, LayoutTemplate, Link2, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleAlert, FileText, GripVertical, LayoutTemplate, Link2, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import type { DocRefView, TemplateView, TreeNodeView } from "@mainsoft/agent-cms/client";
+import type { CmsDoc } from "@mainsoft/agent-cms/types";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -540,60 +541,81 @@ export function SaveTemplateDialog({ collection, content, onClose }: { collectio
 
 // ── documents that point here ────────────────────────────────────────────────
 
-/** Before deleting a document others point at: the list, and "delete anyway". */
-export function ReferencedDialog({ collection, slug, title, onDone, onClose }: { collection: string; slug: string; title: string; onDone: () => void; onClose: () => void }) {
+/**
+ * Asked when deleting or archiving a document that other documents point at: who points here (the ones
+ * this person cannot see are only counted), and the same action again with `force`.
+ */
+export function ReferencedDialog({ collection, slug, title, action = "delete", expectedVersion, onDone, onClose }: { collection: string; slug: string; title: string; action?: "delete" | "archive"; expectedVersion?: number; onDone: (doc?: CmsDoc) => void; onClose: () => void }) {
   const { client, t, me } = useCms();
   const q = useAsync(() => client.referencedBy(collection, slug), [client, collection, slug]);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const refs: DocRefView[] = q.data ?? [];
   const hidden = refs.filter((r) => !r.id).length;
+  const archive = action === "archive";
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
+    <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
       <DialogContent className={DIALOG.md} role="alertdialog">
         <DialogHeader>
           <DialogTitle>{t("refs_title", { title })}</DialogTitle>
-          <DialogDescription>{t("refs_help", { n: refs.length })}</DialogDescription>
+          <DialogDescription>{q.loading && !q.data ? t("loading") : t("refs_help", { n: refs.length })}</DialogDescription>
         </DialogHeader>
-        <ul className="grid max-h-64 gap-1 overflow-y-auto" aria-label={t("refs_list")}>
-          {refs
-            .filter((r) => r.id)
-            .map((r) => (
-              <li key={`${r.collection}/${r.slug}`} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
-                <Link2 aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{r.title || r.slug}</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {me?.collections.find((c) => c.slug === r.collection)?.label ?? r.collection} · {r.fields.join(", ")}
-                  </span>
-                </span>
-              </li>
+        {q.loading && !q.data ? (
+          <div className="grid gap-1" aria-hidden>
+            {[0, 1].map((i) => (
+              <div key={i} className="h-12 animate-pulse rounded-md bg-muted" />
             ))}
-          {hidden ? <li className="px-3 py-1 text-xs text-muted-foreground">{t("refs_hidden", { n: hidden })}</li> : null}
-        </ul>
-        <p className="text-xs text-muted-foreground">{t("refs_after")}</p>
+          </div>
+        ) : q.error && !q.data ? (
+          <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive">
+            <span className="min-w-0 flex-1">{errorMessage(q.error, t)}</span>
+            <Button type="button" size="sm" variant="outline" onClick={() => q.reload()}>
+              {t("retry")}
+            </Button>
+          </div>
+        ) : (
+          <ul className="grid max-h-64 gap-1 overflow-y-auto" aria-label={t("refs_list")}>
+            {refs
+              .filter((r) => r.id)
+              .map((r) => (
+                <li key={`${r.collection}/${r.slug}`} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                  <Link2 aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{r.title || r.slug}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {me?.collections.find((c) => c.slug === r.collection)?.label ?? r.collection} · {r.fields.join(", ")}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            {hidden ? <li className="px-3 py-1 text-xs text-muted-foreground">{t("refs_hidden", { n: hidden })}</li> : null}
+          </ul>
+        )}
+        <p className="text-xs text-muted-foreground">{t(archive ? "refs_after_archive" : "refs_after")}</p>
         {error ? (
           <p role="alert" className="text-sm text-destructive">
             {error}
           </p>
         ) : null}
         <DialogFooter>
-          <Button type="button" variant="outline" autoFocus onClick={onClose}>
+          <Button type="button" variant="outline" autoFocus disabled={busy} onClick={onClose}>
             {t("cancel")}
           </Button>
           <Button
             type="button"
-            variant="destructive"
+            variant={archive ? "default" : "destructive"}
             disabled={busy}
+            aria-busy={busy || undefined}
             onClick={() => {
               setBusy(true);
-              client.remove(collection, slug, undefined, { force: true }).then(
-                () => onDone(),
+              setError(null);
+              (archive ? client.archive(collection, slug, expectedVersion, { force: true }) : client.remove(collection, slug, expectedVersion, { force: true })).then(
+                (r) => onDone(r && "id" in r ? r : undefined),
                 (e) => (setBusy(false), setError(errorMessage(e, t)))
               );
             }}
           >
-            {t("refs_delete_anyway")}
+            {t(archive ? "refs_archive_anyway" : "refs_delete_anyway")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -660,6 +682,12 @@ export function SeoPanel({ value, onChange, fallback, limits, url, disabled, idP
   const title = v.title || fallback.title;
   const desc = v.description || fallback.description;
   const image = v.image || fallback.image;
+  // A share image from the media library: its real size, and a warning below 1200×630 (the same rule as
+  // the server's `seo_image_small`). Pictures from other sites have no known size.
+  const assetId = image ? (/^asset:([a-z0-9]{12})(?:\/|$)/.exec(image)?.[1] ?? null) : null;
+  const size = useAsync(() => (assetId ? client.asset(assetId).then((a) => (a.width && a.height ? { width: a.width, height: a.height } : null)) : Promise.resolve(null)), [client, assetId]);
+  const dims = assetId && !size.error ? size.data : null;
+  const small = !!dims && (dims.width < 1200 || dims.height < 630);
   const imgSrc = image ? (/^asset:([a-z0-9]{12})(?:\/(.*))?$/.exec(image) ? (() => { const m = /^asset:([a-z0-9]{12})(?:\/(.*))?$/.exec(image)!; return client.fileUrl({ id: m[1], name: m[2] ? decodeURIComponent(m[2]) : "file" }); })() : image) : null;
   const counter = (n: number, max: number) => <span className={cn("tabular-nums", n > max ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>{t("seo_count", { n, max })}</span>;
   return (
@@ -691,7 +719,13 @@ export function SeoPanel({ value, onChange, fallback, limits, url, disabled, idP
           <Label htmlFor={`${idPrefix}-image`} className="text-xs font-medium text-muted-foreground">
             {t("seo_field_image")}
           </Label>
-          <Input id={`${idPrefix}-image`} placeholder={fallback.image ?? "asset:… / https://…"} value={v.image ?? ""} onChange={(e) => set("image", e.target.value)} className="font-mono text-xs" />
+          <Input id={`${idPrefix}-image`} placeholder={fallback.image ?? "asset:… / https://…"} value={v.image ?? ""} onChange={(e) => set("image", e.target.value)} className="font-mono text-xs" aria-describedby={dims ? `${idPrefix}-image-size` : undefined} />
+          {dims ? (
+            <p id={`${idPrefix}-image-size`} className={cn("flex items-start gap-1.5 text-xs", small ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")} role={small ? "status" : undefined}>
+              {small ? <CircleAlert aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : null}
+              <span>{small ? t("seo_image_small", { width: dims.width, height: dims.height }) : t("seo_image_size", { width: dims.width, height: dims.height })}</span>
+            </p>
+          ) : null}
         </div>
         <div className="grid gap-1">
           <Label htmlFor={`${idPrefix}-canonical`} className="text-xs font-medium text-muted-foreground">

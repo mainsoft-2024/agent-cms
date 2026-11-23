@@ -117,3 +117,52 @@ test("editor document: steps, cards, videos, snippets and pinned anchors map bot
   tr.setNodeAttribute(cardPos, "description", "Changed");
   assert.equal(save(tr.doc), md.replace(" {#pin-me}", "").replace("Read them", "Changed"));
 });
+
+test("editor document: #### is a level 4 heading block, with its pinned anchor, both ways", () => {
+  const md = "## Two\n\n### Three\n\n#### Four {#four-pin}\n\n#### Plain four";
+  const blocks = markdownToBlocks(md);
+  assert.deepEqual(
+    blocks.map((b) => b.type),
+    ["h2", "h3", "h4", "h4"],
+  );
+  assert.equal((blocks[2] as EBlock & { anchor?: string }).anchor, "four-pin");
+  const { doc, save } = load(md);
+  const levels: number[] = [];
+  doc.forEach((n) => levels.push(n.attrs.level as number));
+  assert.deepEqual(levels, [2, 3, 4, 4]);
+  assert.equal(save(), md);
+  assert.equal(blocksToMarkdown(docToBlocks(doc)), md, "written fresh, the same");
+  // Turning a heading into level 4 writes ####.
+  const tr = new Transform(doc);
+  tr.setNodeAttribute(0, "level", 4);
+  assert.equal(save(tr.doc).split("\n")[0], "#### Two");
+});
+
+test("editor document: a snippet inside a line is an inline chip and writes back exactly [[snippet:key]]", () => {
+  const md = "Call [[snippet:support-phone]] or write to **[[snippet:support-mail]]** today.\n\n[[snippet:footer]]\n\n`[[snippet:in-code]]` stays code.";
+  const { doc, save } = load(md);
+  const chips: string[] = [];
+  doc.descendants((n) => {
+    if (n.type.name === "snippetRef") chips.push(n.attrs.key as string);
+  });
+  assert.deepEqual(chips, ["support-phone", "support-mail"], "two chips; the one in code stays text");
+  assert.equal(doc.child(1).type.name, "snippet", "a token alone on its line is still the snippet block");
+  assert.equal(save(), md);
+  assert.equal(blocksToMarkdown(docToBlocks(doc)), md, "written fresh, the same");
+  // Changing a chip's key changes only that token; a chip without a key writes nothing.
+  let first = -1;
+  doc.descendants((n, pos) => {
+    if (n.type.name === "snippetRef" && first < 0) first = pos;
+  });
+  const tr = new Transform(doc);
+  tr.setNodeAttribute(first, "key", "sales-phone");
+  assert.equal(save(tr.doc).split("\n")[0], "Call [[snippet:sales-phone]] or write to **[[snippet:support-mail]]** today.");
+  const tr2 = new Transform(doc);
+  tr2.setNodeAttribute(first, "key", "");
+  assert.equal(save(tr2.doc).split("\n")[0], "Call  or write to **[[snippet:support-mail]]** today.");
+  // Typed in: a chip put into a line.
+  const s = cmsSchema();
+  const p = s.nodes.paragraph.create({ bid: "x" }, [s.text("See "), s.nodes.snippetRef.create({ key: "terms" }), s.text(".")]);
+  const made = s.nodes.doc.create(null, [p]);
+  assert.equal(blocksToMarkdown(docToBlocks(made)), "See [[snippet:terms]].");
+});

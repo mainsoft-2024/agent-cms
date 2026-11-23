@@ -184,7 +184,7 @@ const WriteBody = z.object({
   template: z.string().max(100).optional(),
 });
 const TemplateBody = z.object({ label: z.string().max(80).optional(), description: z.string().max(200).optional(), title: z.string().max(300).optional(), summary: z.string().max(1000).optional(), body: z.string().max(500_000).optional(), fields: z.record(z.unknown()).optional() });
-const RedirectBody = z.object({ from: z.string().max(500).optional(), to: z.string().max(2000).optional(), status: z.union([z.literal(301), z.literal(302)]).optional() });
+const RedirectBody = z.object({ from: z.string().max(500).optional(), to: z.string().max(2000).optional(), toDocumentId: z.string().max(64).nullable().optional(), status: z.union([z.literal(301), z.literal(302)]).optional() });
 /** `?expand=author,related` (0.21.0). */
 const expandOf = (q: URLSearchParams) => (q.get("expand") ?? "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 20);
 
@@ -963,13 +963,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json(await core.diff(actor, col, slug, a, b));
           }
           if (m === "POST" && ["publish", "archive", "unarchive", "unpublish"].includes(action)) {
-            const b = await body(req, z.object({ version: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), documentId: z.string().max(64).optional() }), true);
+            const b = await body(req, z.object({ version: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), documentId: z.string().max(64).optional(), force: z.boolean().optional() }), true);
             const o = { expectedVersion: expected(b.expectedVersion) };
             const doc =
               action === "publish"
                 ? await core.publish(actor, col, slug, { ...o, version: b.version, documentId: b.documentId })
                 : action === "archive"
-                  ? await core.archive(actor, col, slug, o)
+                  ? await core.archive(actor, col, slug, { ...o, force: b.force === true || q.get("force") === "1" })
                   : action === "unarchive"
                     ? await core.unarchive(actor, col, slug, o)
                     : await core.unpublish(actor, col, slug, o);
@@ -1038,9 +1038,10 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (seg.length === 1 && m === "GET") return json({ redirects: await rd.list(actor) });
         if (seg.length === 1 && m === "POST") {
           const b = await body(req, RedirectBody);
-          return json({ redirect: await rd.create(actor, { from: b.from ?? "", to: b.to ?? "", status: b.status }) }, 201);
+          return json({ redirect: await rd.create(actor, { from: b.from ?? "", to: b.to ?? "", toDocumentId: b.toDocumentId ?? null, status: b.status }) }, 201);
         }
         if (seg.length === 2 && seg[1] === "_resolve" && m === "GET") return json({ redirect: await rd.resolve(q.get("path") ?? "") });
+        if (seg.length === 3 && seg[2] === "hits" && m === "GET") return json(await rd.hits(actor, seg[1], { days: Number(q.get("days")) || undefined }));
         if (seg.length === 2 && m === "PATCH") return json({ redirect: await rd.update(actor, seg[1], await body(req, RedirectBody)) });
         if (seg.length === 2 && m === "DELETE") {
           await rd.remove(actor, seg[1]);

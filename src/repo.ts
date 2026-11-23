@@ -26,7 +26,7 @@ export type NewVersion = Omit<CmsVersion, "id" | "createdAt" | "published" | "re
   changed?: CmsVersion["changed"];
 };
 
-export type PruneTarget = "audit" | "hits" | "keys" | "deliveries";
+export type PruneTarget = "audit" | "hits" | "keys" | "deliveries" | "redirect_hits";
 
 export interface KeyRow extends CmsKey {
   hash: string;
@@ -293,8 +293,15 @@ export interface CmsRepo {
   insertRedirect?(r: NewRedirect): Promise<CmsRedirect>;
   updateRedirect?(id: string, patch: RedirectPatch): Promise<CmsRedirect | null>;
   deleteRedirect?(id: string): Promise<void>;
-  /** Add counted visits (one statement per redirect). */
-  addRedirectHits?(hits: ReadonlyMap<string, number>, at: string): Promise<void>;
+  /** Add counted visits: the running total and the count for calendar day `day` (YYYY-MM-DD, the CMS's time zone). */
+  addRedirectHits?(hits: ReadonlyMap<string, number>, at: string, day: string): Promise<void>;
+  /**
+   * Inside `tx`: wait until no other transaction is moving documents in this collection's tree, and keep
+   * others waiting until this transaction ends (0.21.0; Postgres: an advisory transaction lock).
+   */
+  lockTree?(collection: string): Promise<void>;
+  /** Visits per redirect and day from `sinceDay` on (days without visits have no row). */
+  redirectHitDays?(sinceDay: string): Promise<{ redirectId: string; day: string; n: number }[]>;
 }
 
 export type NewRedirect = Pick<CmsRedirect, "from" | "to" | "toDocumentId" | "status" | "source" | "createdBy">;
@@ -401,6 +408,8 @@ export class MemoryRepo implements CmsRepo {
   docRefs: DocRef[] = [];
   anchorAliases: AnchorAlias[] = [];
   redirects: CmsRedirect[] = [];
+  /** Redirect visits per day: `id|YYYY-MM-DD` → count. */
+  redirectHits = new Map<string, number>();
   private seq = 0;
   private id = () => `00000000-0000-4000-8000-${String(++this.seq).padStart(12, "0")}`;
 
@@ -526,15 +535,26 @@ export class MemoryRepo implements CmsRepo {
   }
   async deleteRedirect(id: string) {
     this.redirects = this.redirects.filter((r) => r.id !== id);
+    for (const k of [...this.redirectHits.keys()]) if (k.startsWith(`${id}|`)) this.redirectHits.delete(k);
   }
-  async addRedirectHits(hits: ReadonlyMap<string, number>, at: string) {
+  async addRedirectHits(hits: ReadonlyMap<string, number>, at: string, day: string) {
     for (const [id, n] of hits) {
       const r = this.redirects.find((x) => x.id === id);
       if (r) {
         r.hits += n;
         r.lastHitAt = at;
+        const key = `${id}|${day}`;
+        this.redirectHits.set(key, (this.redirectHits.get(key) ?? 0) + n);
       }
     }
+  }
+  async redirectHitDays(sinceDay: string) {
+    const out: { redirectId: string; day: string; n: number }[] = [];
+    for (const [k, n] of this.redirectHits) {
+      const [redirectId, day] = k.split("|");
+      if (day >= sinceDay) out.push({ redirectId, day, n });
+    }
+    return out;
   }
   async insertVersion(v: NewVersion) {
     if (this.versions.some((x) => x.documentId === v.documentId && x.version === v.version)) throw new Error("duplicate version");
@@ -604,6 +624,15 @@ export class MemoryRepo implements CmsRepo {
       const keep = this.keys.filter((k) => !(k.revokedAt && k.revokedAt < before));
       const n = this.keys.length - keep.length;
       if (!dryRun) this.keys = keep;
+      return n;
+    }
+    if (what === "redirect_hits") {
+      let n = 0;
+      for (const k of [...this.redirectHits.keys()]) {
+        if (k.split("|")[1] >= before) continue;
+        n++;
+        if (!dryRun) this.redirectHits.delete(k);
+      }
       return n;
     }
     let n = 0;

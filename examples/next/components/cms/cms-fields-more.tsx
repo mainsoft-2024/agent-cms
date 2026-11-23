@@ -336,7 +336,21 @@ export function GalleryField({ id, label, value, onChange, max, accept, store, f
       <span className="sr-only" aria-live="polite">
         {say}
       </span>
-      <CmsMediaPicker open={open} onOpenChange={setOpen} onPick={(a) => !ids.includes(a.id) && set([...ids, a.id])} kinds={accept?.every((x) => x.startsWith("image/")) ? ["image"] : undefined} accept={accept} store={store} field={field} />
+      <CmsMediaPicker
+        open={open}
+        onOpenChange={setOpen}
+        onPick={(a) => !ids.includes(a.id) && set([...ids, a.id])}
+        many={{
+          room: max === null ? null : Math.max(0, max - ids.length),
+          taken: ids,
+          onPick: (list) => {
+            const fresh = list.map((a) => a.id).filter((x) => !ids.includes(x));
+            if (!fresh.length) return;
+            set([...ids, ...fresh]);
+            setSay(t("gallery_added", { n: fresh.length, total: ids.length + fresh.length }));
+          },
+        }}
+        kinds={accept?.every((x) => x.startsWith("image/")) ? ["image"] : undefined} accept={accept} store={store} field={field} />
     </div>
   );
 }

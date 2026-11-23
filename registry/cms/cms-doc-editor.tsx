@@ -18,7 +18,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { RelatedLabels, type RelatedLabel } from "./cms-fields-more";
-import { contentFromTemplate, fitsSchema, SaveTemplateDialog, SeoPanel, SlugChangeDialog, SnippetUses, takeTemplate } from "./cms-structure";
+import { contentFromTemplate, fitsSchema, ReferencedDialog, SaveTemplateDialog, SeoPanel, SlugChangeDialog, SnippetUses, takeTemplate } from "./cms-structure";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -30,7 +30,7 @@ import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
 import { createUploader } from "./cms-upload";
 import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-tools";
 import { pasteAsMarkdown } from "./cms-paste";
-import { EditorToolbar, FindBar, markdownCommands } from "./cms-editor-toolbar";
+import { bodyStats, EditorToolbar, FindBar, markdownCommands, TipButton } from "./cms-editor-toolbar";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, DIALOG } from "./cms-parts";
 import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type BlockEditorCommands, type DocContent, type EditorSlotContext } from "./use-cms";
@@ -237,6 +237,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const [singleNew, setSingleNew] = React.useState(false);
   const isNew = !slug || singleNew;
   const [tplDialog, setTplDialog] = React.useState(false);
+  /** Hiding (archiving) was refused because other documents point here: ask before hiding anyway. */
+  const [hideAsk, setHideAsk] = React.useState(false);
   const [seoOpen, setSeoOpen] = React.useState(false);
   const [slugAsk, setSlugAsk] = React.useState<{ publish: boolean } | null>(null);
   const [relLabels, setRelLabels] = React.useState<Record<string, RelatedLabel | null>>({});
@@ -1015,6 +1017,30 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const publicUrl = published && schema.hasUrl && publicUrlFor && doc ? publicUrlFor(collection, doc.slug) : null;
   const previewAllowed = !!doc && !!me?.previewLinks && schema.hasUrl;
   const title = content.title || (isNew ? t("new_doc_title") : currentSlug);
+  // Hide (archive) a published document or show it again. Only the state changes, so what is being
+  // edited stays as it is.
+  const canHide = !!doc && canPublish && !schema.single && doc.publishedVersion !== null && doc.status !== "archived";
+  const canUnhide = !!doc && canPublish && doc.status === "archived";
+  const takeState = (d: CmsDoc) => setDoc((prev) => (prev ? { ...prev, status: d.status, publishedAt: d.publishedAt, republishedAt: d.republishedAt, updatedAt: d.updatedAt } : prev));
+  const setHidden = (hide: boolean) => {
+    if (!doc) return;
+    (hide ? client.archive(collection, doc.slug) : client.unarchive(collection, doc.slug)).then(
+      (d) => {
+        takeState(d);
+        toast(t(hide ? "done_archive" : "done_unarchive"), { tone: "ok" });
+      },
+      (e) => {
+        if (hide && isCmsRemoteError(e) && e.code === "doc_referenced") setHideAsk(true);
+        else toast(errorMessage(e, t), { tone: "error" });
+      }
+    );
+  };
+  const hideItems = (
+    <>
+      {canHide ? <DropdownMenuItem onClick={() => setHidden(true)}>{t("action_archive")}</DropdownMenuItem> : null}
+      {canUnhide ? <DropdownMenuItem onClick={() => setHidden(false)}>{t("action_unarchive")}</DropdownMenuItem> : null}
+    </>
+  );
   const fieldCount = Object.keys(((schema.fields ?? {}) as { properties?: object }).properties ?? {}).length;
 
   const stateBits = st ? (
@@ -1253,26 +1279,28 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     readOnly: !canWrite,
   };
   const insertAsset = (a: Parameters<typeof assetMarkdown>[0]) => {
+    // A video file goes into a `:::video` block (what the Video block writes for a library file).
+    const video = a.kind === "video";
+    const md = video ? `:::video\n${targetOf(assetMarkdown(a))}\n:::` : assetMarkdown(a);
     if (pickWaiter.current) {
-      pickWaiter.current(assetMarkdown(a));
+      pickWaiter.current(md);
       pickWaiter.current = null;
       return;
     }
-    if (blocksOn && insertRef.current) return insertRef.current(assetMarkdown(a));
+    if (blocksOn && insertRef.current) return insertRef.current(md);
     const el = bodyRef.current;
     const [at, end] = caretRef.current ?? [content.body.length, content.body.length];
     const before = content.body.slice(0, at);
     const after = content.body.slice(end);
-    const md = assetMarkdown(a);
-    const block = md.startsWith("!");
+    const block = video || md.startsWith("!");
     const lead = !block || !before || before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
     const tail = !block || after.startsWith("\n\n") ? "" : after.startsWith("\n") || !after ? "\n" : "\n\n";
     setContent({ ...content, body: `${before}${lead}${md}${tail}${after}` });
-    const caret = before.length + lead.length + (block ? 2 : md.length);
+    // An image without alt text: leave the cursor between the brackets; otherwise after what was put in.
+    const caret = block && !video && !a.alt ? before.length + lead.length + 2 : before.length + lead.length + md.length;
     requestAnimationFrame(() => {
       el?.focus();
-      // An image without alt text: leave the cursor between the brackets.
-      el?.setSelectionRange(block && !a.alt ? caret : before.length + lead.length + md.length, block && !a.alt ? caret : before.length + lead.length + md.length);
+      el?.setSelectionRange(caret, caret);
     });
   };
   const bodyErr = byField.body;
@@ -1299,30 +1327,35 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
       openFind(true);
     }
   };
+  /** The formatting toolbar: over the body, or inside the full-screen header (`inline`). */
+  const toolbar = (inline: boolean) => (
+    <EditorToolbar
+      commands={toolbarCommands}
+      tick={tbTick}
+      view={BlockEditor && !inline ? view : undefined}
+      onView={BlockEditor && !inline ? setView : undefined}
+      canWrite={canWrite}
+      body={content.body}
+      inline={inline}
+      label={
+        <Label htmlFor={bodyId} className={cn("shrink-0 text-xs font-medium text-muted-foreground", (BlockEditor || inline) && "sr-only")}>
+          {blocksOn ? t("blk_body") : t("field_body")}
+        </Label>
+      }
+      outline={canWrite && sectionCount > 1 && !blocksOn ? { on: outline, toggle: () => setOutline((v) => !v) } : null}
+      onMedia={me?.media && canWrite ? () => setPicking(true) : null}
+      sidePreview={!mobile && !blocksOn ? { on: sidePreview, toggle: () => setSidePreview(!sidePreview) } : null}
+      previewWindow={!mobile ? { on: previewWindow, toggle: () => setPreviewWindow((v) => !v) } : null}
+      fullscreen={!mobile && !focus ? { onEnter: () => setFocus(true), buttonRef: focusButton } : null}
+      onFind={(replace) => openFind(replace)}
+      findOpen={!!finding}
+    />
+  );
   const bodyPane = schema.hideBody ? null : (
     <section className="relative flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onBodyKeys}>
       {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={doc.slug} canWrite={canWrite} onApplied={() => void client.get(collection, doc.slug, { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
-      <EditorToolbar
-        commands={toolbarCommands}
-        tick={tbTick}
-        view={BlockEditor ? view : undefined}
-        onView={BlockEditor ? setView : undefined}
-        canWrite={canWrite}
-        body={content.body}
-        label={
-          <Label htmlFor={bodyId} className={cn("shrink-0 text-xs font-medium text-muted-foreground", BlockEditor && "sr-only")}>
-            {blocksOn ? t("blk_body") : t("field_body")}
-          </Label>
-        }
-        outline={canWrite && sectionCount > 1 && !blocksOn ? { on: outline, toggle: () => setOutline((v) => !v) } : null}
-        onMedia={me?.media && canWrite ? () => setPicking(true) : null}
-        sidePreview={!mobile && !blocksOn ? { on: sidePreview, toggle: () => setSidePreview(!sidePreview) } : null}
-        previewWindow={!mobile ? { on: previewWindow, toggle: () => setPreviewWindow((v) => !v) } : null}
-        fullscreen={!mobile && !focus ? { onEnter: () => setFocus(true), buttonRef: focusButton } : null}
-        onFind={(replace) => openFind(replace)}
-        findOpen={!!finding}
-      />
-      {finding ? <FindBar key={finding.n} commands={toolbarCommands} replace={finding.replace} canWrite={canWrite} initial={finding.initial} onClose={() => setFinding(null)} /> : null}
+      {focus ? null : toolbar(false)}
+      {finding ? <FindBar key={finding.n} commands={toolbarCommands} replace={finding.replace} canWrite={canWrite} initial={finding.initial} onClose={() => setFinding(null)} className={focus ? "top-2" : undefined} /> : null}
       <ConfirmDialog
         open={!!checks}
         onOpenChange={(o) => !o && setChecks(null)}
@@ -1513,6 +1546,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     </FieldGate.Provider>
   );
 
+  const focusStats = (() => {
+    if (!focus) return "";
+    const s = bodyStats(content.body);
+    const n = (x: number) => x.toLocaleString(locale);
+    return s.words ? `${t("blk_words", { n: n(s.words) })} · ${t("blk_read_min", { n: n(s.minutes) })}` : t("blk_words", { n: n(0) });
+  })();
   const autosaveText =
     offline && dirty ? t("offline_kept") : auto.state === "saving" ? t("autosaving") : auto.state === "saved" && auto.at ? t("autosaved_at", { time: formatTime(auto.at, locale) }) : auto.state === "failed" ? t("autosave_failed") : dirty ? (localBroken ? t("unsaved_no_copy") : t("unsaved")) : "";
 
@@ -1539,6 +1578,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
           {autosaveText ? <Cloud aria-hidden className="h-3.5 w-3.5" /> : null}
           {autosaveText}
         </span>
+        {/* In full screen the toolbar sits in the header without its word count: it shows here. */}
+        {focus && !schema.hideBody ? <span className="tabular-nums">{focusStats}</span> : null}
       </div>
       {shownProblems.length && showProblems ? (
         <ul id="cms-editor-problems" aria-label={t("problems_list")} className="border-t px-4 py-2 text-xs md:px-6">
@@ -1555,6 +1596,20 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const previewDialog = (
     <>
       {tplDialog ? <SaveTemplateDialog collection={collection} content={content} onClose={() => setTplDialog(false)} /> : null}
+      {hideAsk && doc ? (
+        <ReferencedDialog
+          collection={collection}
+          slug={doc.slug}
+          title={content.title || doc.slug}
+          action="archive"
+          onClose={() => setHideAsk(false)}
+          onDone={(d) => {
+            setHideAsk(false);
+            if (d) takeState(d);
+            toast(t("done_archive"), { tone: "ok" });
+          }}
+        />
+      ) : null}
       {slugAsk && doc ? (
         <SlugChangeDialog
           from={publicUrlFor ? publicUrlFor(collection, doc.slug) : `${slugPrefix ?? ""}${doc.slug}`}
@@ -1605,7 +1660,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
             </Button>
           ) : null}
           <People people={others} max={2} />
-          {publicUrl || previewAllowed || canRelease || (canWrite && !schema.single) ? (
+          {publicUrl || previewAllowed || canRelease || (canWrite && !schema.single) || canHide || canUnhide ? (
             <DropdownMenu>
               <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon", className: "h-8 w-8" })} aria-label={t("more")}>
                 <MoreHorizontal aria-hidden className="h-4 w-4" />
@@ -1615,6 +1670,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
                 {previewAllowed ? <DropdownMenuItem onClick={() => setPreviewOpen(true)}>{t("preview_link")}</DropdownMenuItem> : null}
                 {canRelease ? <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem> : null}
                 {canWrite && !schema.single ? <DropdownMenuItem onClick={() => setTplDialog(true)}>{t("doc_more_template")}</DropdownMenuItem> : null}
+                {hideItems}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
@@ -1686,28 +1742,29 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
         {focus ? (
           <div
             className={cn(
-              "flex h-12 items-center gap-2 border-b px-3 transition-opacity duration-300 motion-reduce:transition-none focus-within:opacity-100 hover:opacity-100",
+              "flex h-12 items-center gap-1.5 border-b px-3 transition-opacity duration-300 ease-out motion-reduce:transition-none focus-within:opacity-100 hover:opacity-100",
               barQuiet && "opacity-0",
             )}
           >
-            <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={() => setFocus(false)} title={`${t("focus_exit")} (${modLabel()}+Shift+F)`}>
-              <Minimize2 aria-hidden className="h-4 w-4" />
-              <span className="hidden md:inline">{t("focus_exit")}</span>
-            </Button>
-            <span className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>
+            <TipButton label={t("focus_exit")} keys="Mod+Shift+F" tipAlign="start" onClick={() => setFocus(false)}>
+              <Minimize2 aria-hidden className="size-4" />
+            </TipButton>
+            <span className="min-w-0 max-w-[16rem] shrink truncate text-sm font-medium" title={title}>
               <bdi>{title}</bdi>
             </span>
-            <span className="hidden items-center gap-1.5 lg:flex">{stateBits}</span>
-            <Button type="button" variant="ghost" size="sm" className={cn("gap-1.5", focusFields && "bg-muted")} aria-pressed={focusFields} aria-controls="cms-focus-fields" onClick={() => setFocusFields((v) => !v)}>
-              <SlidersHorizontal aria-hidden className="h-4 w-4" />
-              <span className="hidden md:inline">{focusFields ? t("focus_fields_hide") : t("focus_fields")}</span>
-              {fieldErrors && !focusFields ? <span aria-label={t("problems_n", { n: fieldErrors })} className="h-2 w-2 rounded-full bg-destructive" /> : null}
-            </Button>
+            {/* The save state (the status line below announces it). */}
+            <span className="hidden shrink-0 whitespace-nowrap text-xs text-muted-foreground sm:inline">{autosaveText}</span>
+            {bodyPane ? toolbar(true) : <span className="flex-1" />}
+            <TipButton label={focusFields ? t("focus_fields_hide") : t("focus_fields")} tipAlign="end" className={cn("relative", focusFields && "bg-muted text-foreground")} aria-pressed={focusFields} aria-controls="cms-focus-fields" onClick={() => setFocusFields((v) => !v)}>
+              <SlidersHorizontal aria-hidden className="size-4" />
+              {fieldErrors && !focusFields ? <span aria-label={t("problems_n", { n: fieldErrors })} className="absolute right-1 top-1 size-2 rounded-full bg-destructive" /> : null}
+            </TipButton>
             {typeof document !== "undefined" && document.fullscreenEnabled ? (
-              <Button type="button" variant="ghost" size="icon" aria-pressed={screenFull} aria-label={screenFull ? t("focus_screen_off") : t("focus_screen")} title={screenFull ? t("focus_screen_off") : t("focus_screen")} onClick={toggleScreen}>
-                <Monitor aria-hidden className="h-4 w-4" />
-              </Button>
+              <TipButton label={screenFull ? t("focus_screen_off") : t("focus_screen")} tipAlign="end" aria-pressed={screenFull} onClick={toggleScreen}>
+                <Monitor aria-hidden className="size-4" />
+              </TipButton>
             ) : null}
+            {canWrite ? <span aria-hidden className="mx-[3px] h-5 w-px shrink-0 bg-border" /> : null}
             {saveButtons()}
           </div>
         ) : (
@@ -1737,7 +1794,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
               {t("versions")}
             </Button>
           ) : null}
-          {canRelease || (canWrite && !schema.single) ? (
+          {canRelease || (canWrite && !schema.single) || canHide || canUnhide ? (
             <DropdownMenu>
               <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon" })} aria-label={t("more")}>
                 <MoreHorizontal aria-hidden className="h-4 w-4" />
@@ -1745,6 +1802,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
               <DropdownMenuContent align="end">
                 {canRelease ? <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem> : null}
                 {canWrite && !schema.single ? <DropdownMenuItem onClick={() => setTplDialog(true)}>{t("doc_more_template")}</DropdownMenuItem> : null}
+                {hideItems}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}

@@ -169,12 +169,18 @@ export const site = defineSingle({ slug: "site", label: "Site", visibility: "pub
 createCms({ ..., redirects: true });        // published addresses may change; the old one redirects
 ```
 
-`?expand=author` fills in related documents; deleting a document others point
-at answers `409 doc_referenced` until you pass `force`. `[[snippet:key]]` in a
-body shows the published snippet to readers. `cms.single(actor, "site")`
-returns the defaults until the first save. `GET /sitemap.xml` lists published
-public documents (`noindex` left out). New blocks: `:::steps`, `:::card`,
-`:::video`; `## Title {#id}` pins an anchor. Details in `UPGRADE-0.21.md`.
+`?expand=author` fills in related documents; deleting or hiding (archiving) a
+document others point at answers `409 doc_referenced` until you pass `force`.
+`[[snippet:key]]` in a body shows the published snippet to readers, on a line
+of its own or, for a one-paragraph snippet, inside a sentence.
+`cms.single(actor, "site")` returns the defaults until the first save.
+`cms.seoFor(doc)` fills a page's head (and warns about a share image under
+1200×630). `GET /sitemap.xml` lists published public documents (`noindex` left
+out). New blocks: `:::steps`, `:::card`, `:::video`; `## Title {#id}` pins an
+anchor. With redirects on, `cms.resolveRedirect(path)` answers your 404 page;
+admins add redirects to an address or to a document (it follows the document's
+current address) and see visits per day for 30 days. Details in
+`UPGRADE-0.21.md`.
 
 **3. The route** (`app/api/cms/[...path]/route.ts`):
 

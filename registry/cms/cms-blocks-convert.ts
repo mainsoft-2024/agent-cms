@@ -16,8 +16,8 @@
 import { closesFence, inlineToMarkdown, parseMarkdown, sameBlocks, toMarkdown, type Block, type Inline, type TableAlign } from "@mainsoft/agent-cms/markdown";
 import { mdToSpans, spansToMd, type Span } from "./cms-blocks-inline";
 
-export type TextType = "p" | "h2" | "h3" | "quote" | "callout" | "bullet" | "number" | "todo" | "toggle";
-export const TEXT_TYPES: readonly TextType[] = ["p", "h2", "h3", "quote", "callout", "bullet", "number", "todo", "toggle"];
+export type TextType = "p" | "h2" | "h3" | "h4" | "quote" | "callout" | "bullet" | "number" | "todo" | "toggle";
+export const TEXT_TYPES: readonly TextType[] = ["p", "h2", "h3", "h4", "quote", "callout", "bullet", "number", "todo", "toggle"];
 export type Tone = "note" | "tip" | "warning";
 export const LIST_TYPES: readonly TextType[] = ["bullet", "number", "todo"];
 export type { TableAlign };
@@ -246,7 +246,7 @@ function astToBlocks(b: Block, src: string, parent: string | undefined): EBlock[
       return hasImage(b.inline) ? source() : [text("p", spansOf(b.inline))];
     }
     case "heading":
-      return hasImage(b.inline) ? source() : [text(b.level === 3 ? "h3" : "h2", spansOf(b.inline), b.pinned ? { anchor: b.id } : {})];
+      return hasImage(b.inline) ? source() : [text(`h${b.level}` as TextType, spansOf(b.inline), b.pinned ? { anchor: b.id } : {})];
     case "steps": {
       const box: EBlock = { id: newId(), parent, type: "steps" };
       return [box, ...markdownToBlocks(innerOf(src), box.id)];
@@ -446,9 +446,10 @@ function ownMd(b: EBlock, num: number): string {
     case "p":
       return spansToMd(b.spans);
     case "h2":
-    case "h3": {
+    case "h3":
+    case "h4": {
       const pin = b.anchor && ANCHOR_ID.test(b.anchor) ? ` {#${b.anchor}}` : "";
-      return `${b.type === "h3" ? "###" : "##"} ${spansToMd(b.spans).replace(/\\\n/g, " ")}${pin}`;
+      return `${"#".repeat(Number(b.type[1]))} ${spansToMd(b.spans).replace(/\\\n/g, " ")}${pin}`;
     }
     case "quote":
       return spansToMd(b.spans)

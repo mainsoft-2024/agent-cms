@@ -459,7 +459,7 @@
       "name": "cms-redirects",
       "type": "registry:component",
       "title": "Redirects",
-      "description": "Old addresses and where they send people: made automatically when a published document gets a new address, or by hand. Search, automatic or manual, visits, create, edit and delete.",
+      "description": "Old addresses and where they send people: made automatically when a published document gets a new address, or by hand to an address or a document (it follows the document's current address). Search, automatic or manual, visits over the last 30 days (sortable), create, edit and delete.",
       "dependencies": [
         "@mainsoft/agent-cms",
         "lucide-react"
@@ -472,11 +472,16 @@
         "input",
         "label",
         "table",
-        "cms-lib"
+        "cms-lib",
+        "cms-media-picker"
       ],
       "files": [
         {
           "path": "registry/cms/cms-redirects.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-fields-more.tsx",
           "type": "registry:component"
         }
       ]

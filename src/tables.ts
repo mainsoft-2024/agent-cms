@@ -432,7 +432,20 @@ export function cmsTables(o: CmsTablesOptions = {}) {
     (t) => ({ fromIdx: uniqueIndex(n("redirects_from_idx")).on(t.fromPath) })
   );
 
-  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, records, changes, docRefs, anchorAliases, redirects, options: { prefix, schema: o.schema ?? null } };
+  /** Visits of a redirect per calendar day (0.21.0); the redirects screen shows the last 30 days. */
+  const redirectHits = table(
+    n("redirect_hits"),
+    {
+      redirectId: uuid("redirect_id")
+        .notNull()
+        .references(() => redirects.id, { onDelete: "cascade" }),
+      day: date("day").notNull(),
+      n: integer("n").notNull().default(0),
+    },
+    (t) => ({ pk: primaryKey({ columns: [t.redirectId, t.day] }), dayIdx: index(n("redirect_hits_day_idx")).on(t.day) })
+  );
+
+  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, records, changes, docRefs, anchorAliases, redirects, redirectHits, options: { prefix, schema: o.schema ?? null } };
 }
 
 export type CmsTables = ReturnType<typeof cmsTables>;
@@ -459,6 +472,7 @@ export const cmsChanges = defaultTables.changes;
 export const cmsDocRefs = defaultTables.docRefs;
 export const cmsAnchorAliases = defaultTables.anchorAliases;
 export const cmsRedirects = defaultTables.redirects;
+export const cmsRedirectHits = defaultTables.redirectHits;
 
 function names(t?: CmsTables | CmsTablesOptions) {
   const o = t && "options" in t ? t.options : ((t as CmsTablesOptions | undefined) ?? {});
@@ -767,7 +781,14 @@ CREATE TABLE IF NOT EXISTS ${tbl("redirects")} (
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ${idx("redirects_from_idx")} ON ${tbl("redirects")} ("from_path");`.trim(),
+CREATE UNIQUE INDEX IF NOT EXISTS ${idx("redirects_from_idx")} ON ${tbl("redirects")} ("from_path");
+CREATE TABLE IF NOT EXISTS ${tbl("redirect_hits")} (
+  "redirect_id" uuid NOT NULL REFERENCES ${tbl("redirects")}("id") ON DELETE CASCADE,
+  "day" date NOT NULL,
+  "n" integer NOT NULL DEFAULT 0,
+  PRIMARY KEY ("redirect_id", "day")
+);
+CREATE INDEX IF NOT EXISTS ${idx("redirect_hits_day_idx")} ON ${tbl("redirect_hits")} ("day");`.trim(),
     },
   ];
 }

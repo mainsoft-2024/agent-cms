@@ -166,3 +166,16 @@ test("blocks: new blocks not in the exact form stay source blocks, and edited on
   assert.equal(blocksToMarkdown([{ id: "s", type: "steps" }]), ":::steps\n:::");
   assert.equal(blocksToMarkdown([{ id: "v", type: "video", src: "", caption: "x" }]), "");
 });
+
+test("blocks: #### headings and snippets inside a line convert both ways", () => {
+  const md = "#### Rotate {#rotate}\n\n#### Plain\n\nCall [[snippet:support-phone]] now.";
+  const blocks = markdownToBlocks(md);
+  assert.deepEqual(
+    blocks.map((b) => b.type),
+    ["h4", "h4", "p"],
+  );
+  assert.equal(blocksToMarkdown(blocks), md);
+  assert.equal(blocksToMarkdown(fresh(blocks)), md);
+  // The token stays as written in the text (not escaped).
+  assert.equal(spansToMd((blocks[2] as TextBlock).spans), "Call [[snippet:support-phone]] now.");
+});

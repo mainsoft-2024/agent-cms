@@ -58,6 +58,7 @@ import {
   Hash,
   Heading2,
   Heading3,
+  Heading4,
   ImageIcon,
   ImagePlus,
   Images,
@@ -110,7 +111,7 @@ import {
   type Tone,
 } from "./cms-blocks-convert";
 import { APP_LINK, mdToSpans, plain, sliceSpans, spansLength, spansToMd, type Span } from "./cms-blocks-inline";
-import { blockAt, blocksToDoc, cmsSchema, docToBlocks, nodeSpans, schemaExtensions, textStartOf } from "./cms-blocks-pm";
+import { blockAt, blocksToDoc, cmsSchema, docToBlocks, headingLevel, nodeSpans, schemaExtensions, textStartOf } from "./cms-blocks-pm";
 import {
   accepts,
   ancestors,
@@ -173,6 +174,7 @@ const ITEMS: Item[] = [
   { key: "p", label: "blk_t_p", hint: "blk_t_p_text", group: "blk_group_basic", icon: Pilcrow, words: "text paragraph plain 텍스트 문단 본문", make: () => text("p") },
   { key: "h2", label: "blk_t_h2", hint: "blk_t_h2_text", group: "blk_group_basic", icon: Heading2, words: "heading title h2 ## 제목 헤딩", keys: "##", make: () => text("h2") },
   { key: "h3", label: "blk_t_h3", hint: "blk_t_h3_text", group: "blk_group_basic", icon: Heading3, words: "subheading heading h3 ### 작은 제목 소제목", keys: "###", make: () => text("h3") },
+  { key: "h4", label: "blk_t_h4", hint: "blk_t_h4_text", group: "blk_group_basic", icon: Heading4, words: "heading h4 #### 제목 4 소소제목", keys: "####", make: () => text("h4") },
   { key: "bullet", label: "blk_t_bullet", hint: "blk_t_bullet_text", group: "blk_group_basic", icon: List, words: "bullet list ul - 글머리 목록 리스트", keys: "-", make: () => text("bullet") },
   { key: "number", label: "blk_t_number", hint: "blk_t_number_text", group: "blk_group_basic", icon: ListOrdered, words: "numbered list ol 1. 번호 목록 순서", keys: "1.", make: () => text("number") },
   { key: "todo", label: "blk_t_todo", hint: "blk_t_todo_text", group: "blk_group_basic", icon: ListChecks, words: "todo task check checkbox [] 할 일 체크", keys: "[]", make: () => text("todo", { checked: false }) },
@@ -206,6 +208,7 @@ const TURN_INTO: { type: TurnType; label: Key; icon: Icon; digit: string }[] = [
   { type: "p", label: "blk_t_p", icon: Pilcrow, digit: "0" },
   { type: "h2", label: "blk_t_h2", icon: Heading2, digit: "2" },
   { type: "h3", label: "blk_t_h3", icon: Heading3, digit: "3" },
+  { type: "h4", label: "blk_t_h4", icon: Heading4, digit: "" },
   { type: "todo", label: "blk_t_todo", icon: ListChecks, digit: "4" },
   { type: "bullet", label: "blk_t_bullet", icon: List, digit: "5" },
   { type: "number", label: "blk_t_number", icon: ListOrdered, digit: "6" },
@@ -800,8 +803,22 @@ function SourceView({ node, updateAttributes, selected }: NodeViewProps) {
 
 const FIELD = "h-8 w-full rounded-md border bg-background px-2 text-sm outline-none transition-shadow duration-150 focus:ring-2 focus:ring-sky-500/40";
 
+/** A file that goes into a `:::video` block when uploaded. */
+export const isVideoFile = (f: { type: string; name: string }) => /^video\//i.test(f.type) || (!f.type && VIDEO_FILE.test(f.name));
+const VIDEO_FILE = /\.(mp4|webm|mov|m4v|ogv)$/i;
+
+/**
+ * A file picked from the library, as blocks: a video file (by its name) goes into a `:::video` block, like
+ * an uploaded one; anything else is what the picker wrote (a picture, or a link to the file).
+ */
+export function pickedMarkdown(md: string): string {
+  const m = /^!\[[^\]]*\]\((asset:[a-z0-9]+\/[^\s)]+)\)$/i.exec(md.trim());
+  if (m && VIDEO_FILE.test(m[1].split(/[?#]/)[0])) return `:::video\n${m[1]}\n:::`;
+  return md;
+}
+
 /** The address part of a picked file's markdown (`![alt](asset:ID/name)` → `asset:ID/name`). */
-const targetOf = (md: string | null) => (md ? (/\]\((\S+?)(?:\s+"[^"]*")?\)/.exec(md)?.[1] ?? null) : null);
+const targetOf = (md: string | null) => (md ? (/\]\((\S+?)(?:\s+"[^"]*")?\)/.exec(md)?.[1] ?? /^:::video\n(\S+)\n/.exec(md)?.[1] ?? null) : null);
 
 /** Opens its form when asked (just put in) or empty; Esc or Done closes it. */
 function useForm(id: string, empty: boolean) {
@@ -910,9 +927,13 @@ function CardView({ node, updateAttributes, deleteNode, selected }: NodeViewProp
 }
 
 function VideoView({ node, updateAttributes, deleteNode, selected }: NodeViewProps) {
-  const { t, editable, resolveFileUrl, onPickMedia, videoHosts } = useEd();
+  const { t, editable, resolveFileUrl, onPickMedia, videoHosts, uploads, retryUpload } = useEd();
   const a = node.attrs as { bid: string; src: string; caption: string };
-  const { open, setOpen } = useForm(a.bid, !a.src);
+  // A video file being uploaded shows its progress (or the failure) instead of the empty form.
+  const upload = a.src ? undefined : uploads.get(a.bid);
+  const form = useForm(a.bid, !a.src && !upload);
+  const open = form.open && !upload;
+  const setOpen = form.setOpen;
   const [draft, setDraft] = React.useState(a.src);
   React.useEffect(() => setDraft(a.src), [a.src]);
   const first = React.useRef<HTMLInputElement>(null);
@@ -944,7 +965,28 @@ function VideoView({ node, updateAttributes, deleteNode, selected }: NodeViewPro
   return (
     <NodeViewWrapper data-block-id={a.bid} data-block-type="video" className="cms-b group/video my-2">
       <figure contentEditable={false} className={cn("m-0 rounded-xl transition-shadow duration-200", selected && "ring-2 ring-sky-500/70 ring-offset-2 ring-offset-background")} style={{ transitionTimingFunction: EASE }}>
-        {blocked ? (
+        {upload && !upload.failed ? (
+          <div role="status" className="flex aspect-video w-full max-w-[640px] items-center justify-center gap-2 rounded-xl border border-dashed text-sm text-muted-foreground">
+            <span className="size-3.5 animate-spin rounded-full border-2 border-current border-r-transparent" />
+            {t("blk_media_uploading", { name: upload.name })}
+          </div>
+        ) : upload?.failed ? (
+          <div role="alert" className="flex min-h-28 flex-col items-center justify-center gap-2 rounded-xl border border-dashed px-4 py-5 text-center text-sm">
+            <Clapperboard className="size-5 text-muted-foreground" />
+            <span className="max-w-full truncate font-medium">{upload.name}</span>
+            <span className="text-xs text-muted-foreground">{t("blk_media_upload_failed")}</span>
+            {editable ? (
+              <span className="flex flex-wrap justify-center gap-1.5 pt-1">
+                <button type="button" className="rounded-md border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted" onClick={() => retryUpload(a.bid)}>
+                  {t("retry")}
+                </button>
+                <button type="button" className="rounded-md px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10" onClick={() => deleteNode()}>
+                  {t("blk_delete")}
+                </button>
+              </span>
+            ) : null}
+          </div>
+        ) : blocked ? (
           <div role="alert" className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm">
             <Clapperboard className="mt-0.5 size-4 shrink-0 text-amber-600" />
             <span className="min-w-0">
@@ -1180,9 +1222,123 @@ function SnippetView({ node, updateAttributes, deleteNode, selected }: NodeViewP
   );
 }
 
+/** Asks a snippet chip to open its popover (Enter on a selected chip). */
+const OPEN_CHIP = "cms-snippet-ref-open";
+
+/**
+ * A snippet inside a line of text (`[[snippet:key]]`): an uneditable chip with its key. Click or Enter
+ * opens a small popover to change the key or take the snippet out. A chip just put in (no key) opens at once.
+ */
+function SnippetRefView({ node, updateAttributes, deleteNode, selected, editor, getPos }: NodeViewProps) {
+  const { t, editable } = useEd();
+  const key = node.attrs.key as string;
+  const [open, setOpen] = React.useState(editable && !key);
+  const ref = React.useRef<HTMLSpanElement>(null);
+  const popId = React.useId();
+  React.useEffect(() => {
+    const el = ref.current?.closest("[data-snippet-ref-view]");
+    const onOpen = () => editable && setOpen(true);
+    el?.addEventListener(OPEN_CHIP, onOpen);
+    return () => el?.removeEventListener(OPEN_CHIP, onOpen);
+  }, [editable]);
+  /** Back into the text, after the chip. */
+  const backToText = () => {
+    const pos = typeof getPos === "function" ? getPos() : undefined;
+    if (typeof pos === "number") editor.chain().focus().setTextSelection(pos + node.nodeSize).run();
+    else editor.commands.focus();
+  };
+  const close = () => {
+    setOpen(false);
+    if (!key) deleteNode();
+    else backToText();
+  };
+  // A click outside closes it.
+  React.useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => {
+      if (!ref.current?.contains(e.target as Node)) close();
+    };
+    document.addEventListener("pointerdown", away, true);
+    return () => document.removeEventListener("pointerdown", away, true);
+  }); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <NodeViewWrapper as="span" data-snippet-ref-view="" className="relative inline" contentEditable={false}>
+      <span ref={ref} className="relative">
+        <button
+          type="button"
+          data-snippet-ref={key}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={open ? popId : undefined}
+          aria-label={key ? `${t("blk_snippet")}: ${key}` : t("blk_snippet_pick")}
+          disabled={!editable && !key}
+          className={cn(
+            "mx-px inline-flex translate-y-[-1px] items-center gap-1 rounded-md border border-dashed border-sky-500/50 bg-sky-500/10 px-1.5 py-px align-baseline font-mono text-[0.82em] leading-normal text-sky-800 outline-none transition-shadow duration-150 hover:bg-sky-500/15 focus-visible:ring-2 focus-visible:ring-sky-500/60 dark:text-sky-300",
+            selected && "ring-2 ring-sky-500/70",
+          )}
+          style={{ transitionTimingFunction: EASE }}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => editable && setOpen((v) => !v)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              if (editable) setOpen(true);
+            }
+          }}
+        >
+          <Puzzle aria-hidden className="size-3 shrink-0" />
+          {key || "…"}
+        </button>
+        {open ? (
+          <span
+            id={popId}
+            role="dialog"
+            aria-label={t("blk_snippet")}
+            className="absolute left-0 top-[calc(100%+4px)] z-50 block w-72 font-sans text-sm font-normal not-italic text-foreground"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                close();
+              }
+            }}
+          >
+            <SnippetPicker
+              onPick={(k) => {
+                updateAttributes({ key: k });
+                setOpen(false);
+                requestAnimationFrame(backToText);
+              }}
+              onClose={close}
+            />
+            {key ? (
+              <span className="mt-1 flex justify-end rounded-xl border bg-popover p-1 shadow-lg" style={{ animation: `cms-pop 160ms ${EASE} both` }}>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-destructive outline-none hover:bg-destructive/10 focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => {
+                    setOpen(false);
+                    const pos = typeof getPos === "function" ? getPos() : undefined;
+                    deleteNode();
+                    if (typeof pos === "number") editor.chain().focus().setTextSelection(pos).run();
+                  }}
+                >
+                  <Trash2 aria-hidden className="size-3.5" />
+                  {t("blk_snippet_remove")}
+                </button>
+              </span>
+            ) : null}
+          </span>
+        ) : null}
+      </span>
+    </NodeViewWrapper>
+  );
+}
+
 // ── the editor ────────────────────────────────────────────────────────────────
 
-type Menu = { query: string; from: number; x: number; y: number; index: number; opened?: boolean } | null;
+/** `inline`: the line has other text, so a snippet goes inside it. */
+type Menu = { query: string; from: number; x: number; y: number; index: number; opened?: boolean; inline?: boolean } | null;
 type Hover = { id: string; top: number; left: number; inCol: boolean } | null;
 interface Drag {
   ids: string[];
@@ -1351,6 +1507,7 @@ function buildExtensions(ctl: React.MutableRefObject<Ctl>) {
       return [
         block(/^(#{1,2})\s$/, (_m, c, bid) => schema.nodes.heading.create({ bid, level: 2 }, c)),
         block(/^###\s$/, (_m, c, bid) => schema.nodes.heading.create({ bid, level: 3 }, c)),
+        block(/^####\s$/, (_m, c, bid) => schema.nodes.heading.create({ bid, level: 4 }, c)),
         block(/^[-*+]\s$/, item("bullet"), 2),
         block(/^(\d{1,9})[.)]\s$/, (m, c, bid) => schema.nodes.listItem.create({ bid, kind: "number", start: Number(m[1]) === 1 ? null : Number(m[1]) }, line(c)), 2),
         block(/^\[( |x)?\]\s$/i, (m, c, bid) => schema.nodes.listItem.create({ bid, kind: "todo", checked: (m[1] ?? "").toLowerCase() === "x" }, line(c)), 2),
@@ -1415,6 +1572,7 @@ function buildExtensions(ctl: React.MutableRefObject<Ctl>) {
       if (ext.name === "card") return (ext as typeof ext & { extend: (c: object) => typeof ext }).extend({ addNodeView: () => ReactNodeViewRenderer(CardView) });
       if (ext.name === "video") return (ext as typeof ext & { extend: (c: object) => typeof ext }).extend({ addNodeView: () => ReactNodeViewRenderer(VideoView) });
       if (ext.name === "snippet") return (ext as typeof ext & { extend: (c: object) => typeof ext }).extend({ addNodeView: () => ReactNodeViewRenderer(SnippetView) });
+      if (ext.name === "snippetRef") return (ext as typeof ext & { extend: (c: object) => typeof ext }).extend({ addNodeView: () => ReactNodeViewRenderer(SnippetRefView, { as: "span" }) });
       return ext;
     }),
   ];
@@ -1431,7 +1589,7 @@ function buildExtensions(ctl: React.MutableRefObject<Ctl>) {
       showOnlyCurrent: true,
       placeholder: ({ node, editor }) => {
         const t = ctl.current.t;
-        if (node.type.name === "heading") return node.attrs.level === 3 ? t("blk_t_h3") : t("blk_t_h2");
+        if (node.type.name === "heading") return t(`blk_t_h${headingLevel(node.attrs.level)}`);
         if (editor.state.doc.childCount === 1 && editor.state.doc.firstChild?.type.name === "paragraph" && !editor.state.doc.textContent) return t("blk_placeholder");
         if (node.type.name === "line") {
           const parent = editor.state.selection.$from.node(editor.state.selection.$from.depth - 1);
@@ -1497,8 +1655,8 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
   /** The editor's document → markdown (untouched blocks write their original text). */
   const serialize = React.useCallback((doc: PMNode) => {
     const blocks = docToBlocks(doc)
-      // A picture still uploading (or failed) is not written yet.
-      .filter((b) => b.type !== "media" || !!b.target)
+      // A picture still uploading (or failed) is not written yet, nor a video file being uploaded.
+      .filter((b) => (b.type !== "media" || !!b.target) && (b.type !== "video" || !!b.src || !uploadingRef.current.has(b.id)))
       .map((b) => {
         const o = origs.current.get(b.id);
         return o ? ({ ...b, orig: o.orig, gap: o.gap } as EBlock) : b;
@@ -1507,6 +1665,8 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
   }, []);
 
   const pendingRef = React.useRef<string | null>(null);
+  /** Blocks whose file is being uploaded (or failed): a video block among them is not written yet. */
+  const uploadingRef = React.useRef(new Set<string>());
   const ctl = React.useRef<Ctl>(null!);
   const extensions = React.useMemo(() => buildExtensions(ctl), []);
 
@@ -1867,6 +2027,9 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     editor.state.doc.descendants((n, pos) => {
       const target = n.type.name === "media" && !n.attrs.target ? done.current.get(n.attrs.bid as string) : undefined;
       if (target) tr.setNodeMarkup(pos, undefined, { ...n.attrs, target });
+      // An uploaded video file goes into its `:::video` block.
+      const src = n.type.name === "video" && !n.attrs.src ? done.current.get(n.attrs.bid as string) : undefined;
+      if (src) tr.setNodeMarkup(pos, undefined, { ...n.attrs, src });
     });
     if (tr.docChanged) editor.view.dispatch(tr.setMeta("addToHistory", false));
   }, [editor]);
@@ -1879,9 +2042,11 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
   const runUpload = async (bid: string, f: File) => {
     if (!uploadFile) return;
     setUpload(bid, { name: f.name, file: f });
+    uploadingRef.current.add(bid);
     try {
       const target = await uploadFile(f);
       done.current.set(bid, target);
+      uploadingRef.current.delete(bid);
       setUpload(bid, null);
       fillIn();
     } catch {
@@ -1893,7 +2058,8 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
   const uploadInto = async (files: File[], at: number | null) => {
     if (!uploadFile || !files.length || !editor) return;
     const made = files.map(() => newId());
-    const nodes = made.map((bid) => editor.schema.nodes.media.create({ bid }));
+    // A video file becomes a `:::video` block (the form the Video block writes for a library file); the rest are media.
+    const nodes = made.map((bid, k) => (isVideoFile(files[k]) ? editor.schema.nodes.video.create({ bid }) : editor.schema.nodes.media.create({ bid })));
     const state = editor.state;
     // After the innermost block at that place (inside a column, toggle or list item it stays there).
     const b = blockAt(state.doc, at ?? state.selection.from);
@@ -1904,7 +2070,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
 
   // ── the / menu ──
   const menuItems = React.useMemo(() => {
-    const all = onPickMedia ? ITEMS : ITEMS.filter((i) => i.key !== "media");
+    const all = (onPickMedia ? ITEMS : ITEMS.filter((i) => i.key !== "media")).map((i) => (i.key === "snippet" && menu?.inline ? { ...i, hint: "blk_snippet_inline_text" as Key } : i));
     return menu ? matchItems(all, menu.query, t) : [];
   }, [menu, onPickMedia, t]);
   const menuItemsRef = React.useRef(menuItems);
@@ -1930,6 +2096,12 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     setMenu(null);
     const state = editor.state;
     const end = m.from + 1 + m.query.length;
+    // In a line with other text, a snippet goes inside the line as a chip (its popover opens to pick the key).
+    if (item.key === "snippet" && m.inline && state.schema.nodes.snippetRef) {
+      const tr = state.tr.replaceWith(m.from, Math.min(end, state.selection.from), state.schema.nodes.snippetRef.create({ key: "" }));
+      editor.view.dispatch(tr.setSelection(NodeSelection.create(tr.doc, m.from)));
+      return;
+    }
     editor.view.dispatch(state.tr.delete(m.from, Math.min(end, state.selection.from)));
     const cur = caretBlock();
     if (!cur) return;
@@ -1937,7 +2109,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     if (made === "media") {
       void onPickMedia?.().then((md) => {
         if (!md) return;
-        const blocksMade = markdownToBlocks(md).map((x) => ({ ...x, orig: undefined, gap: undefined }) as EBlock);
+        const blocksMade = markdownToBlocks(pickedMarkdown(md)).map((x) => ({ ...x, orig: undefined, gap: undefined }) as EBlock);
         insertBlocks(cur.id, blocksMade);
       });
       return;
@@ -1969,7 +2141,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     } else if (q === "library") {
       void onPickMedia?.().then((md) => {
         if (!md) return;
-        insertBlocks(cur.id, markdownToBlocks(md).map((x) => ({ ...x, orig: undefined, gap: undefined }) as EBlock));
+        insertBlocks(cur.id, markdownToBlocks(pickedMarkdown(md)).map((x) => ({ ...x, orig: undefined, gap: undefined }) as EBlock));
       });
     } else insertBlocks(cur.id, [{ id: newId(), type: "video", src: "", caption: "" }, text("p")]);
   };
@@ -1980,7 +2152,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     const first = made.find((b) => isText(b) && b.parent && set.has(b.parent)) ?? (made[0].type === "hr" ? made[1] : made[0]);
     if (made[0].type === "source") setEditingSource(made[0].id);
     // A card, video or snippet just put in opens its form.
-    if (made[0].type === "card" || made[0].type === "video" || made[0].type === "snippet") setFormFor(made[0].id);
+    if (made[0].type === "card" || (made[0].type === "video" && !made[0].src) || made[0].type === "snippet") setFormFor(made[0].id);
     applyTree((list) => {
       const cur = list.find((b) => b.id === afterId);
       const empty = cur && cur.type === "p" && !plain(cur.spans).trim() && !list.some((b) => b.parent === cur.id);
@@ -2033,8 +2205,12 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     }
     const from = sel.from - m[2].length - 1;
     const r = view.coordsAtPos(from);
+    // Other text on the line (before the slash or after the caret): a snippet then goes inside the line.
+    const parent = sel.$from.parent;
+    const after = parent.textBetween(sel.$from.parentOffset, parent.content.size, "\n", "\ufffc");
+    const inline = (parent.type.name === "paragraph" || parent.type.name === "line" || parent.type.name === "heading" || parent.type.name === "quote" || parent.type.name === "callout") && !!(before.slice(0, before.length - m[0].length + m[1].length) + after).trim();
     // A new search starts at the first match.
-    setMenu((old) => ({ query: m[2], from, x: r.left, y: r.bottom, index: old && old.from === from && old.query === m[2] ? old.index : 0, opened: old?.from === from ? old.opened : undefined }));
+    setMenu((old) => ({ query: m[2], from, x: r.left, y: r.bottom, index: old && old.from === from && old.query === m[2] ? old.index : 0, opened: old?.from === from ? old.opened : undefined, inline }));
   }, [editor, editable]);
 
   /** Where the table toolbar sits, and which row and column the caret is in. */
@@ -2424,6 +2600,14 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
           setMenu(null);
         }
       }
+      // Enter on a selected snippet chip opens its popover.
+      const ps = view.state.selection;
+      if (e.key === "Enter" && !e.shiftKey && !mod && ps instanceof NodeSelection && ps.node.type.name === "snippetRef") {
+        const dom = view.nodeDOM(ps.from) as HTMLElement | null;
+        (dom?.matches("[data-snippet-ref-view]") ? dom : dom?.querySelector("[data-snippet-ref-view]"))?.dispatchEvent(new Event(OPEN_CHIP));
+        e.preventDefault();
+        return true;
+      }
       const sel = selectedRef.current;
       if (!sel.length) {
         // ⌘A: the text of this block first; again, every block (as in Notion).
@@ -2614,7 +2798,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
   // The screen's toolbar: commands, their state, find and replace.
   React.useEffect(() => {
     if (!commandsRef) return;
-    const TURN: Partial<Record<EditorCommand, TurnType>> = { p: "p", h2: "h2", h3: "h3", bullet: "bullet", number: "number", todo: "todo", quote: "quote", callout: "callout", codeblock: "code" };
+    const TURN: Partial<Record<EditorCommand, TurnType>> = { p: "p", h2: "h2", h3: "h3", h4: "h4", bullet: "bullet", number: "number", todo: "todo", quote: "quote", callout: "callout", codeblock: "code" };
     const MARK: Partial<Record<EditorCommand, string>> = { bold: "bold", italic: "italic", strike: "strike", code: "code" };
     const MAKE: Partial<Record<EditorCommand, () => EBlock[]>> = {
       table: () => [newTable()],
@@ -2623,6 +2807,9 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       card: () => [{ id: newId(), type: "card", href: "", label: "", description: "", image: "", alt: "" }, text("p")],
       video: () => [{ id: newId(), type: "video", src: "", caption: "" }, text("p")],
       snippet: () => [{ id: newId(), type: "snippet", key: "" }, text("p")],
+      columns: () => makeColumns(2),
+      toggle: () => [text("toggle")],
+      html: () => [{ id: newId(), type: "source", md: ":::html\n\n:::", kind: "html" }],
     };
     const report = () => {
       const f = editor ? findKey.getState(editor.state) : null;
@@ -3309,7 +3496,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
                   if (what === "image") {
                     if (onPickMedia)
                       void onPickMedia().then((md) => {
-                        if (md) insertBlocks(bid, markdownToBlocks(md).map((x) => ({ ...x, orig: undefined, gap: undefined }) as EBlock));
+                        if (md) insertBlocks(bid, markdownToBlocks(pickedMarkdown(md)).map((x) => ({ ...x, orig: undefined, gap: undefined }) as EBlock));
                       });
                     else {
                       quickAt.current = editor?.state.selection.from ?? null;
@@ -3772,7 +3959,7 @@ function Toolbar({
     const b = blockAt(editor.state.doc, at.from);
     return b;
   })();
-  const kind = ids?.node.type.name === "heading" ? (ids.node.attrs.level === 3 ? "h3" : "h2") : ids?.node.type.name === "listItem" ? (ids.node.attrs.kind as string) : ids?.node.type.name === "paragraph" ? "p" : ids?.node.type.name ?? "p";
+  const kind = ids?.node.type.name === "heading" ? `h${headingLevel(ids.node.attrs.level)}` : ids?.node.type.name === "listItem" ? (ids.node.attrs.kind as string) : ids?.node.type.name === "paragraph" ? "p" : ids?.node.type.name ?? "p";
   const cur = TURN_INTO.find((x) => x.type === kind) ?? TURN_INTO[0];
   return (
     <Floating x={at.x} y={at.y} above label={t("blk_toolbar")} className="flex items-center gap-0.5 p-1">
@@ -4082,7 +4269,8 @@ const EDITOR_CSS = `
 .cms-blocks .cms-p { padding: 3px 2px; min-height: 1.75em; }
 .cms-blocks .cms-h2 { font-size: 1.6em; font-weight: 650; line-height: 1.3; letter-spacing: -0.015em; margin-top: 1.4em; padding: 3px 2px; }
 .cms-blocks .cms-h3 { font-size: 1.25em; font-weight: 620; line-height: 1.35; margin-top: 1em; padding: 3px 2px; }
-.cms-blocks .cms-pm > .cms-h2:first-child, .cms-blocks .cms-pm > .cms-h3:first-child { margin-top: 0.2em; }
+.cms-blocks .cms-h4 { font-size: 1.05em; font-weight: 620; line-height: 1.4; margin-top: 0.8em; padding: 3px 2px; }
+.cms-blocks .cms-pm > .cms-h2:first-child, .cms-blocks .cms-pm > .cms-h3:first-child, .cms-blocks .cms-pm > .cms-h4:first-child { margin-top: 0.2em; }
 .cms-blocks .cms-quote { border-left: 3px solid currentColor; padding: 2px 2px 2px 16px; margin: 6px 0; }
 .cms-blocks .cms-callout { display: block; padding: 12px 16px 12px 44px; margin: 6px 0; border-radius: 10px; border: 1px solid transparent; }
 .cms-blocks .cms-callout::before { position: absolute; left: 14px; top: 13px; font-size: 16px; line-height: 1.6; }
@@ -4103,7 +4291,7 @@ const EDITOR_CSS = `
 .cms-blocks .cms-steps { border-left: 2px solid color-mix(in srgb, currentColor 14%, transparent); margin: 8px 0 8px 10px; padding: 2px 0 2px 12px; }
 .cms-blocks .cms-steps > .cms-item[data-kind="number"] { padding-left: 34px; }
 .cms-blocks .cms-steps > .cms-item[data-kind="number"] + .cms-item[data-kind="number"] { margin-top: 8px; }
-.cms-blocks .cms-h2 .cms-anchor, .cms-blocks .cms-h3 .cms-anchor { font-size: 13px; font-weight: 400; margin-left: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: color-mix(in srgb, currentColor 45%, transparent); user-select: none; }
+.cms-blocks .cms-h2 .cms-anchor, .cms-blocks .cms-h3 .cms-anchor, .cms-blocks .cms-h4 .cms-anchor { font-size: 13px; font-weight: 400; margin-left: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: color-mix(in srgb, currentColor 45%, transparent); user-select: none; }
 .cms-blocks[data-file-drag] .cms-dropcursor { display: none; }
 .cms-blocks .cms-find { background: rgb(250 204 21 / .35); border-radius: 2px; }
 .cms-blocks .cms-find-current { background: rgb(249 115 22 / .55); box-shadow: 0 0 0 1px rgb(249 115 22 / .7); }

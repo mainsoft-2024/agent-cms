@@ -173,3 +173,29 @@ test("markdown: the HTML gate and the parser agree on what opens a code fence", 
   assert.equal(htmlRegions(body).length, parsed);
   assert.equal(parsed, 1);
 });
+
+test("markdown: #### is a level 4 heading; its pinned anchor and its text read back as written", async () => {
+  const { headingAnchors } = await import("./markdown");
+  const body = "## Setup\n\n### Keys\n\n#### Rotate a key {#rotate}\n\n#### Plain four\n\n##### Five stays text";
+  const blocks = parseMarkdown(body);
+  const h4 = blocks.filter((b): b is Extract<Block, { t: "heading" }> => b.t === "heading" && b.level === 4);
+  assert.deepEqual(
+    h4.map((b) => [b.id, b.text, b.pinned ?? false]),
+    [
+      ["rotate", "Rotate a key", true],
+      ["plain-four", "Plain four", false],
+    ],
+  );
+  assert.equal(blocks[blocks.length - 1].t, "p", "five hashes are not a heading");
+  assert.equal(toMarkdown(blocks), body);
+  assert.deepEqual(
+    headingAnchors(body).map((h) => [h.id, h.pinned]),
+    [
+      ["setup", false],
+      ["keys", false],
+      ["rotate", true],
+      ["plain-four", false],
+    ],
+  );
+  assert.equal(plainText(body).includes("{#rotate}"), false, "the anchor is not text");
+});

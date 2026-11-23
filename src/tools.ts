@@ -270,9 +270,9 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "archive_document",
     needs: "publish",
-    description: "Hide a published document (archived=true) or show it again (archived=false).",
-    input: z.object({ collection: col, slug, archived: z.boolean() }),
-    run: async (cms, actor, a) => (a.archived ? cms.archive(actor, a.collection as string, a.slug as string) : cms.unarchive(actor, a.collection as string, a.slug as string)),
+    description: "Hide a published document (archived=true) or show it again (archived=false). When other documents link to it, hiding answers doc_referenced with their list; force=true hides it anyway (ask the person first).",
+    input: z.object({ collection: col, slug, archived: z.boolean(), force: z.boolean().optional() }),
+    run: async (cms, actor, a) => (a.archived ? cms.archive(actor, a.collection as string, a.slug as string, { force: !!a.force }) : cms.unarchive(actor, a.collection as string, a.slug as string)),
   },
   {
     name: "delete_document",
@@ -316,7 +316,6 @@ export const CMS_TOOLS: CmsToolDef[] = [
   },
   {
     name: "list_templates",
-    needs: "write",
     description: "Templates for new documents in a collection (the collection's own and the ones editors saved). Pass one's key or id as create_document's template.",
     input: z.object({ collection: col }),
     run: async (cms, actor, a) => ({ templates: (await cms.templates(actor, a.collection as string)).map((t) => ({ key: t.key, label: t.label, description: t.description ?? null, source: t.source ?? "code" })) }),

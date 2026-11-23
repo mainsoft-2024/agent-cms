@@ -11,7 +11,7 @@ import { CmsDocList } from "../cms/cms-doc-list";
 import { CmsRedirects } from "../cms/cms-redirects";
 import { CmsShell } from "../cms/cms-shell";
 import { RelationPicker } from "../cms/cms-fields-more";
-import { chooseTemplate } from "../cms/cms-structure";
+import { chooseTemplate, SeoPanel } from "../cms/cms-structure";
 import type { TemplateView } from "@mainsoft/agent-cms/client";
 import { setMobile } from "./setup";
 import { admin, axeViolations, makeServer, renderWith } from "./server";
@@ -354,4 +354,128 @@ test("templates: values the schema no longer takes are left out, and the editor 
   fireEvent.change(screen.getByLabelText(/^Slug/), { target: { value: "from-old" } });
   await userEvent.setup().click(screen.getByRole("button", { name: "Save" }));
   await waitFor(async () => assert.deepEqual((await s.cms.get(admin, "guide", "from-old", { draft: true })).fields, { featured: true, plans: ["pro"] }));
+});
+
+test("referenced: hiding a document others point at lists them, then hides anyway (list row and editor menu)", async () => {
+  const s = makeServer({ model: true });
+  const paul = await s.cms.create(admin, "team", { slug: "paul", title: "Paul Park", body: "x" }, { publish: true });
+  await s.cms.create(admin, "docs", { slug: "intro", title: "Intro", body: "x", fields: { author: paul.id } }, { publish: true });
+  renderWith(s, <CmsDocList collection="team" onOpenDocument={() => {}} />);
+  await screen.findByText("Paul Park");
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("checkbox", { name: "Select Paul Park" }));
+  await user.click(within(screen.getByRole("toolbar", { name: "Bulk actions" })).getByRole("button", { name: "Hide" }));
+  const confirm = await screen.findByRole("dialog", { name: /Hide/ });
+  await user.click(within(confirm).getByRole("button", { name: "Hide" }));
+  const refs = await screen.findByRole("alertdialog", { name: "Other documents point at “Paul Park”" });
+  await within(refs).findByText("Intro");
+  assert.ok(within(refs).getByText(/readers following those fields will find nothing/));
+  assert.equal((await s.cms.get(admin, "team", "paul", { draft: true })).status, "published", "nothing hidden yet");
+  assert.deepEqual(await axeViolations(), []);
+  await user.click(within(refs).getByRole("button", { name: "Hide anyway" }));
+  await waitFor(() => assert.ok(!screen.queryByRole("alertdialog")));
+  await waitFor(async () => assert.equal((await s.cms.get(admin, "team", "paul", { draft: true })).status, "archived"));
+  const forced = s.requests.find((r) => r.method === "POST" && r.path.endsWith("/team/paul/archive"));
+  assert.deepEqual(forced?.body, { force: true });
+  cleanup();
+
+  // The editor: More → Hide asks the same, Cancel leaves it, Hide anyway hides it; then Unhide.
+  await s.cms.unarchive(admin, "team", "paul");
+  renderWith(s, <CmsDocEditor collection="team" slug="paul" />);
+  await screen.findByLabelText(/^Title/);
+  await user.click(screen.getAllByRole("button", { name: "More" })[0]);
+  await user.click(await screen.findByRole("menuitem", { name: "Hide" }));
+  let ask = await screen.findByRole("alertdialog", { name: "Other documents point at “Paul Park”" });
+  await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => assert.ok(!screen.queryByRole("alertdialog")));
+  assert.equal((await s.cms.get(admin, "team", "paul", { draft: true })).status, "published");
+  await user.click(screen.getAllByRole("button", { name: "More" })[0]);
+  await user.click(await screen.findByRole("menuitem", { name: "Hide" }));
+  ask = await screen.findByRole("alertdialog", { name: "Other documents point at “Paul Park”" });
+  await user.click(within(ask).getByRole("button", { name: "Hide anyway" }));
+  await waitFor(async () => assert.equal((await s.cms.get(admin, "team", "paul", { draft: true })).status, "archived"));
+  await user.click(screen.getAllByRole("button", { name: "More" })[0]);
+  await user.click(await screen.findByRole("menuitem", { name: "Unhide" }));
+  await waitFor(async () => assert.equal((await s.cms.get(admin, "team", "paul", { draft: true })).status, "published"));
+});
+
+test("redirects: a redirect can follow a document (picker); the list shows its title and 30-day visits, sortable", async () => {
+  const s = makeServer({ model: true });
+  await s.cms.create(admin, "docs", { slug: "pricing", title: "Pricing page", body: "x" }, { publish: true });
+  await s.cms.redirects.create(admin, { from: "/busy", to: "/docs" });
+  for (let i = 0; i < 3; i++) await s.cms.redirects.resolve("/busy");
+  renderWith(s, <CmsRedirects />);
+  await screen.findByText("/busy");
+  const user = userEvent.setup();
+  await user.click(screen.getAllByRole("button", { name: "New redirect" })[0]);
+  const dlg = await screen.findByRole("dialog", { name: "New redirect" });
+  await user.clear(within(dlg).getByLabelText("Old address"));
+  await user.type(within(dlg).getByLabelText("Old address"), "/old-pricing");
+  await user.click(within(dlg).getByRole("radio", { name: "Document" }));
+  const create = within(dlg).getByRole("button", { name: "Create" }) as HTMLButtonElement;
+  assert.equal(create.disabled, true, "no document yet");
+  await user.click(within(dlg).getByRole("button", { name: /Choose a document/ }));
+  const picker = await screen.findByRole("dialog", { name: "Choose: Document" });
+  await user.click(within(picker).getByRole("tab", { name: "Docs" }));
+  await user.type(within(picker).getByRole("combobox"), "pricing");
+  await within(picker).findByText("Pricing page");
+  await user.keyboard("{Enter}");
+  await waitFor(() => assert.ok(!screen.queryByRole("dialog", { name: "Choose: Document" })));
+  // Focus goes back to the button that opened the search, which now names the document.
+  await waitFor(() => assert.match(document.activeElement?.textContent ?? "", /Pricing page/));
+  assert.deepEqual(await axeViolations(), []);
+  await user.click(within(screen.getByRole("dialog", { name: "New redirect" })).getByRole("button", { name: "Create" }));
+  await waitFor(() => assert.ok(!screen.queryByRole("dialog")));
+  const saved = (await s.cms.redirects.list(admin)).find((r) => r.from === "/old-pricing")!;
+  assert.ok(saved.toDocumentId);
+  const row = (await screen.findByText("/old-pricing")).closest("tr")!;
+  assert.match(row.textContent ?? "", /Pricing page/);
+  // The document moves: the redirect follows it.
+  await s.cms.update(admin, "docs", "pricing", { slug: "plans" }, { publish: true });
+  assert.deepEqual(await s.cms.redirects.resolve("/old-pricing"), { to: "/docs/plans", status: 301 });
+
+  // 30-day visits: a chart with a spoken summary, and sorting by it.
+  const busy = screen.getByText("/busy").closest("tr")!;
+  assert.ok(within(busy).getByRole("img", { name: /^3 visits in the last 30 days; busiest day 3; today 3$/ }));
+  await user.click(screen.getByRole("button", { name: "Sort by visits in the last 30 days" }));
+  const firstRow = screen.getAllByRole("row")[1];
+  assert.match(firstRow.textContent ?? "", /\/busy/);
+  assert.equal(screen.getByRole("columnheader", { name: /Last 30 days/ }).getAttribute("aria-sort"), "descending");
+  assert.deepEqual(await axeViolations(), []);
+
+  // Editing back to an address stops following the document.
+  await user.click(screen.getByRole("button", { name: "Actions for /old-pricing" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Edit" }));
+  const edit = await screen.findByRole("dialog", { name: "Edit redirect" });
+  assert.equal(within(edit).getByRole("radio", { name: "Document" }).getAttribute("aria-checked"), "true");
+  await user.click(within(edit).getByRole("radio", { name: "Address" }));
+  await user.clear(within(edit).getByLabelText("New address"));
+  await user.type(within(edit).getByLabelText("New address"), "/docs");
+  await user.click(within(edit).getByRole("button", { name: "Save" }));
+  await waitFor(async () => assert.equal((await s.cms.redirects.list(admin)).find((r) => r.from === "/old-pricing")?.toDocumentId, null));
+});
+
+test("seo panel: a library share image smaller than 1200×630 shows its size with a warning", async () => {
+  const s = makeServer({ media: true });
+  const add = async (name: string, w: number, h: number) => {
+    const bytes = new Uint8Array(200);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, w >> 8, w & 255, 0, 0, h >> 8, h & 255]);
+    const { asset, upload } = await s.cms.assets.requestUpload(admin, { name, size: bytes.length });
+    if (upload.kind === "single") await s.stores.public.send(upload.url, bytes);
+    return s.cms.assets.completeUpload(admin, asset.id);
+  };
+  const small = await add("small.png", 800, 400);
+  const big = await add("big.png", 1600, 900);
+  function Panel({ image }: { image: string }) {
+    const [v, setV] = React.useState<{ image?: string | null } | null>({ image });
+    return <SeoPanel value={v} onChange={setV} fallback={{ title: "T", description: "D", image: null }} limits={{ titleMax: 60, descriptionMax: 160 }} url="/x" />;
+  }
+  renderWith(s, <Panel image={`asset:${small.id}/small.png`} />);
+  const warn = await screen.findByText(/800×400: smaller than 1200×630/);
+  assert.equal(screen.getByLabelText("Share image").getAttribute("aria-describedby"), warn.closest("p")?.id);
+  assert.deepEqual(await axeViolations(), []);
+  cleanup();
+  renderWith(s, <Panel image={`asset:${big.id}/big.png`} />);
+  await screen.findByText("1600×900");
+  assert.ok(!screen.queryByText(/smaller than 1200×630/));
 });

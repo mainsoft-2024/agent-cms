@@ -127,6 +127,16 @@ export interface CmsRedirect {
   updatedAt: string;
 }
 
+/** A redirect as the admin list shows it (0.21.0). */
+export interface RedirectListItem extends CmsRedirect {
+  /** Visits over the last 30 days. */
+  hits30d: number;
+  /** Visits per day over the last 30 days, oldest first (today last). */
+  daily: number[];
+  /** The document a redirect follows (`toDocumentId`); null when it follows none or the document is gone. */
+  target: { id: string; collection: string; slug: string; title: string; published: boolean } | null;
+}
+
 /** A starting point for a new document (0.21.0). */
 export interface DocTemplate {
   key: string;

@@ -90,6 +90,7 @@ export type EditorCommand =
   | "p"
   | "h2"
   | "h3"
+  | "h4"
   | "bold"
   | "italic"
   | "strike"
@@ -106,7 +107,13 @@ export type EditorCommand =
   | "steps"
   | "card"
   | "video"
-  | "snippet";
+  | "snippet"
+  /** Two columns side by side (`:::columns`). */
+  | "columns"
+  /** A toggle: a title that opens to show what is inside (`:::toggle`). */
+  | "toggle"
+  /** An HTML block (`:::html`). */
+  | "html";
 
 /** What the block editor offers the toolbar (find and replace included). */
 export interface BlockEditorCommands {

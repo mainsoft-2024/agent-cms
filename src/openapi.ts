@@ -59,7 +59,7 @@ const docInput = z
 const expectedVersion = z.number().int().positive().optional().describe("The version you read. A mismatch answers 409 with the current copy. `If-Match: \"v<n>\"` does the same.");
 const writeBody = z.object({ doc: docInput, expectedVersion, publish: z.boolean().optional(), note: z.string().max(300).nullable().optional(), template: z.string().max(100).optional().describe("Start from a template (its key or id; 0.21.0)") });
 const templateBody = z.object({ label: z.string().max(80).optional(), description: z.string().max(200).optional(), title: z.string().optional(), summary: z.string().optional(), body: z.string().optional(), fields: z.record(z.unknown()).optional() });
-const redirectBody = z.object({ from: z.string().max(500).optional(), to: z.string().max(2000).optional(), status: z.union([z.literal(301), z.literal(302)]).optional() });
+const redirectBody = z.object({ from: z.string().max(500).optional(), to: z.string().max(2000).optional(), toDocumentId: z.string().max(64).nullable().optional().describe("Follow this document's current public address (0.21.0)"), status: z.union([z.literal(301), z.literal(302)]).optional() });
 const expected = z.object({ expectedVersion });
 const comment = z.object({ body: z.string().max(8000), anchor: z.string().max(300).nullable().optional(), quote: z.string().max(2000).nullable().optional(), threadId: z.string().max(60).nullable().optional() });
 const tags = z.array(z.string().max(40)).max(30).optional();
@@ -111,14 +111,15 @@ const BASE_ROUTES: readonly ApiRoute[] = [
   { method: "get", path: `${C}/_tree`, summary: "The collection's documents as a tree (collections with tree)", tag: "content model", auth: "public", query: { draft: "1: working copies (needs write)" }, returns: obj({ tree: arr(any) }) },
   { method: "post", path: `${C}/_move`, summary: "Move a document in the tree (no new version)", tag: "content model", auth: "write", body: z.object({ slug: z.string(), parentId: z.string().nullable().optional(), before: z.string().nullable().optional() }), returns: obj({ doc: ref("Doc") }) },
   { method: "get", path: `${C}/_suggest-slug`, summary: "An address for a title (Korean romanized unless slugs.hangul says otherwise)", tag: "content model", auth: "write", query: { title: "" }, returns: obj({ slug: { type: "string" } }) },
-  { method: "get", path: `${C}/_templates`, summary: "Templates for new documents (the collection's own and the ones editors saved)", tag: "content model", auth: "write", returns: obj({ templates: arr(any) }) },
+  { method: "get", path: `${C}/_templates`, summary: "Templates for new documents (the collection's own and the ones editors saved)", tag: "content model", auth: "read", returns: obj({ templates: arr(any) }) },
   { method: "post", path: `${C}/_templates`, summary: "Save a template", tag: "content model", auth: "write", body: templateBody, returns: obj({ template: any }), status: 201 },
   { method: "patch", path: `${C}/_templates/{id}`, summary: "Change a saved template (its maker or an admin)", tag: "content model", auth: "write", body: templateBody, returns: obj({ template: any }) },
   { method: "delete", path: `${C}/_templates/{id}`, summary: "Delete a saved template (its maker or an admin)", tag: "content model", auth: "write", returns: OK },
   { method: "get", path: "/singles/{collection}", summary: "The one document of a single (defaults until it is saved)", tag: "content model", auth: "public", query: { draft: "1: the working copy", expand: "" }, returns: obj({ doc: ref("Doc") }) },
   { method: "put", path: "/singles/{collection}", summary: "Save the one document of a single", tag: "content model", auth: "write", body: writeBody, returns: obj({ doc: ref("Doc") }) },
   { method: "post", path: "/singles/{collection}/_publish", summary: "Publish the one document of a single", tag: "content model", auth: "write", body: expected, returns: obj({ doc: ref("Doc") }) },
-  { method: "get", path: "/redirects", summary: "Redirects (admins)", tag: "redirects", auth: "admin", returns: obj({ redirects: arr(any) }), needs: "redirects" },
+  { method: "get", path: "/redirects", summary: "Redirects (admins), each with hits30d, daily (30 days, oldest first) and the target document", tag: "redirects", auth: "admin", returns: obj({ redirects: arr(any) }), needs: "redirects" },
+  { method: "get", path: "/redirects/{id}/hits", summary: "Visits of a redirect per day (admins)", tag: "redirects", auth: "admin", query: { days: "How many days back (1 to 90, default 30)" }, returns: obj({ days: arr(any), total: { type: "integer" } }), needs: "redirects" },
   { method: "post", path: "/redirects", summary: "Add a redirect (chains are shortened, loops refused)", tag: "redirects", auth: "admin", body: redirectBody, returns: obj({ redirect: any }), status: 201, needs: "redirects" },
   { method: "get", path: "/redirects/_resolve", summary: "Where an old address goes now", tag: "redirects", auth: "public", query: { path: "" }, returns: obj({ redirect: any }), needs: "redirects" },
   { method: "patch", path: "/redirects/{id}", summary: "Change a redirect", tag: "redirects", auth: "admin", body: redirectBody, returns: obj({ redirect: any }), needs: "redirects" },
@@ -152,7 +153,7 @@ const BASE_ROUTES: readonly ApiRoute[] = [
   { method: "delete", path: `${D}/schedule`, summary: "Cancel the schedule", tag: "publishing", auth: "write", returns: obj({ doc: ref("Doc") }) },
   { method: "post", path: `${D}/publish`, summary: "Publish", tag: "publishing", auth: "write", body: z.object({ version: z.number().int().positive().optional(), expectedVersion }), returns: obj({ doc: ref("Doc") }) },
   { method: "post", path: `${D}/unpublish`, summary: "Take the public copy down", tag: "publishing", auth: "write", body: expected, returns: obj({ doc: ref("Doc") }) },
-  { method: "post", path: `${D}/archive`, summary: "Archive", tag: "publishing", auth: "write", body: expected, returns: obj({ doc: ref("Doc") }) },
+  { method: "post", path: `${D}/archive`, summary: "Archive (409 doc_referenced when other documents point at it; force: true hides it anyway)", tag: "publishing", auth: "write", body: z.object({ expectedVersion, force: z.boolean().optional() }), returns: obj({ doc: ref("Doc") }) },
   { method: "post", path: `${D}/unarchive`, summary: "Bring back from the archive", tag: "publishing", auth: "write", body: expected, returns: obj({ doc: ref("Doc") }) },
   { method: "get", path: `${D}/comments`, summary: "Comments", tag: "review", auth: "write", query: { limit: "Page size (at most 500). Without it, everything", cursor: "nextCursor of the previous page" }, returns: obj({ comments: arr(any), nextCursor: { type: ["string", "null"] } }) },
   { method: "post", path: `${D}/comments`, summary: "Add a comment", tag: "review", auth: "write", body: comment, returns: obj({ comment: any }), status: 201 },

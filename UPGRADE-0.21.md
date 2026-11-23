@@ -1,6 +1,6 @@
 # Upgrading to 0.21
 
-**Schema 10**: three columns on the documents table (`parent_id`, `position`, `seo`), one index, and three new tables (`cms_doc_refs`, `cms_anchor_aliases`, `cms_redirects`). Run
+**Schema 10**: three columns on the documents table (`parent_id`, `position`, `seo`), one index, and four new tables (`cms_doc_refs`, `cms_anchor_aliases`, `cms_redirects`, `cms_redirect_hits`). Run
 
 ```sh
 npx @mainsoft/agent-cms migrate check   # prints the SQL
@@ -9,7 +9,7 @@ npx @mainsoft/agent-cms migrate apply   # or run it yourself
 
 The step is safe to run again (`IF NOT EXISTS`). Nothing is copied or rewritten: existing documents get no parent, no position and no SEO details.
 
-If you write your own `CmsRepo`, the new methods (`setDocRefs`, `listDocRefsTo`, `addAnchorAliases`, `listAnchorAliases`, `listRedirects`, `insertRedirect`, `updateRedirect`, `deleteRedirect`, `addRedirectHits`) are optional. Without them relations are still checked, but "who points here" is empty and redirects stay off.
+If you write your own `CmsRepo`, the new methods (`setDocRefs`, `listDocRefsTo`, `addAnchorAliases`, `listAnchorAliases`, `listRedirects`, `insertRedirect`, `updateRedirect`, `deleteRedirect`, `addRedirectHits(hits, at, day)`, `redirectHitDays`, `lockTree`) are optional; `prune` gets a fifth target, `"redirect_hits"`. Without them relations are still checked, but "who points here" is empty and redirects stay off.
 
 ## What changes without you doing anything
 
@@ -17,7 +17,9 @@ If you write your own `CmsRepo`, the new methods (`setDocRefs`, `listDocRefsTo`,
 - **`## Title {#id}`** pins a heading's anchor; it no longer shows `{#id}` as text. A renamed heading's old anchor is remembered and still leads to it (`cms.anchorAliases()`, `markdownToHtml(body, { anchorAliases })`).
 - **`:::steps`, `:::card` and `:::video`** are blocks now. Text that is not in their exact form stays as it was (a raw block), so old bodies render the same. A `:::video` from a site that is not allowed is refused on save (`video_host_blocked`); YouTube and Vimeo are allowed by default.
 - **A published document's address changes only when you publish** (with redirects on): a draft save with a new address answers `slug_needs_publish`.
-- **Deleting a document that relation fields point at** answers `409 doc_referenced` with the list. `DELETE …?force=1`, `cms.remove(…, { force: true })` or the tool's `force` deletes anyway. Collections without relation fields are not affected.
+- **Deleting or archiving a document that relation fields point at** answers `409 doc_referenced` with the list. `DELETE …?force=1`, `POST …/archive` with `{ "force": true }`, `cms.remove(…, { force: true })`, `cms.archive(…, { force: true })` or the tools' `force` go ahead anyway. Collections without relation fields are not affected.
+- **`[[snippet:key]]` inside a line of text** is filled in for readers too when the snippet is one paragraph (before, only a token on a line of its own was). A longer snippet keeps the token there and editors get `snippet_inline_multi`.
+- **`list_templates` needs read rights only.**
 - **Agent tools**: six new (`get_tree`, `move_document`, `get_single`, `update_single`, `list_templates`, `list_redirects`). `list_collections` says which collections are trees, singles, snippets, have SEO, templates and relation fields.
 
 ## New, when you want it
@@ -31,8 +33,9 @@ If you write your own `CmsRepo`, the new methods (`setDocRefs`, `listDocRefsTo`,
 | `defineSingle({ slug: "site", fields })` | One document (site settings). `cms.single()`, `cms.updateSingle()`, `/singles/<c>` |
 | `templates: [{ key, label, title, body, fields }]` | Starting points for new documents; editors can save their own in the admin. `create(…, { template })` |
 | `snippets: true` | A collection whose documents are snippets (`[[snippet:slug]]`) |
-| `seo: true` | Search title, description, share image, canonical, noindex per document, with length warnings; `cms.seoFor()`, `GET …/_seo` |
-| `createCms({ redirects: true })` | A published document's address may change; the old one redirects (301). Admins manage redirects (`/redirects`, admin screen). `cms.redirects.resolve(path)` for your 404 page |
+| `seo: true` | Search title, description, share image, canonical, noindex per document, with warnings (lengths, a missing description, a share image under 1200×630); `cms.seoFor(doc)`, `GET …/_seo` |
+| `createCms({ redirects: true })` | A published document's address may change; the old one redirects (301). Admins manage redirects (`/redirects`, admin screen), to an address or to a document (`toDocumentId`: follows its current address), with visits per day for 30 days (`GET /redirects/<id>/hits`). `cms.resolveRedirect(path)` (= `cms.redirects.resolve`) for your 404 page |
+| `retention: { redirectHitsDays: 90 }` | How long redirect visits per day are kept (default 90 with redirects on; 0 keeps them) |
 | `createCms({ slugs: { hangul: "keep" } })` | Korean addresses. Default `"romanize"`: suggested addresses from Korean titles are romanized (`cms.suggestSlug()`) |
 | `createCms({ video: { hosts: ["loom.com"] } })` | More sites for `:::video` |
 | `handler({ publicOrigin })` | The site `GET /sitemap.xml` names (published public documents with `url()`, `noindex` left out). `cms.sitemap(origin)` |

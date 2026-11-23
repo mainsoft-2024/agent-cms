@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { createRestClient } from "@mainsoft/agent-cms/client";
 import { PART_SIZE } from "@mainsoft/agent-cms/storage";
 import { CmsDocEditor } from "../cms/cms-doc-editor";
+import { GalleryField } from "../cms/cms-fields-more";
 import { CmsMedia } from "../cms/cms-media";
 import { ko } from "../cms/cms-messages";
 import { CmsShell } from "../cms/cms-shell";
@@ -338,4 +339,39 @@ test("media: the focal point by keyboard, and replacing a file asks first", asyn
   await user.click(within(dialog).getByRole("button", { name: "바꾸기" }));
   await waitFor(() => assert.deepEqual(s.requests.find((r) => r.method === "POST" && r.path === "/assets/uploads")?.body, { name: "logo-2026.png", mime: "image/png", size: 1500, replace: logo.id }));
   assert.ok(screen.queryByRole("dialog", { name: /내용을 바꿀까요/ }) === null);
+});
+
+test("gallery: several files in one go, in the order picked; files already in the field and the limit are respected", async () => {
+  const s = makeServer({ media: true });
+  const a = await s.addFile("a.png", { alt: "A" });
+  const b = await s.addFile("b.png", { alt: "B" });
+  const c = await s.addFile("c.png", { alt: "C" });
+  const d = await s.addFile("d.png", { alt: "D" });
+  const seen: unknown[] = [];
+  function Harness() {
+    const [v, setV] = React.useState<unknown>([a.id]);
+    seen.push(v);
+    return <GalleryField id="g" label="Photos" value={v} onChange={setV} max={3} accept={["image/*"]} />;
+  }
+  const user = userEvent.setup();
+  renderWith(s, <Harness />);
+  await user.click(await screen.findByRole("button", { name: "Add" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose media" });
+  await within(dialog).findByText("already added");
+  assert.ok(!within(dialog).queryByRole("button", { name: "a.png" }), "a file already in the field cannot be picked again");
+  within(dialog).getByText("2 more can be added");
+  await user.click(await within(dialog).findByRole("button", { name: "c.png" }));
+  await user.click(within(dialog).getByRole("button", { name: "b.png" }));
+  assert.ok(within(dialog).getByRole("button", { name: "c.png, picked 1" }));
+  assert.ok(within(dialog).getByRole("button", { name: "b.png, picked 2" }));
+  // The field takes three: a fourth pick is refused with a note.
+  await user.click(within(dialog).getByRole("button", { name: "d.png" }));
+  within(dialog).getByText("No more room: the field takes 3");
+  assert.equal(within(dialog).getByRole("button", { name: "d.png" }).getAttribute("aria-pressed"), "false");
+  // Un-picking frees the place; picking again puts it last.
+  await user.click(within(dialog).getByRole("button", { name: "c.png, picked 1" }));
+  await user.click(within(dialog).getByRole("button", { name: "c.png" }));
+  await user.click(within(dialog).getByRole("button", { name: "Insert 2" }));
+  await waitFor(() => assert.deepEqual(seen.at(-1), [a.id, b.id, c.id]));
+  void d;
 });

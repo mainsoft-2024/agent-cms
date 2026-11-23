@@ -7,7 +7,7 @@
 // unchanged writes its original markdown, byte for byte.
 //
 // The schema is small and strict, the same blocks the markdown dialect has:
-//   paragraph, heading (2, 3), quote, callout, listItem (bullet, number, todo:
+//   paragraph, heading (2, 3, 4), quote, callout, listItem (bullet, number, todo:
 //   a line of text and the blocks inside it), toggle (the same, can be closed),
 //   codeBlock, rule, media (picture or file with alt text and caption), table,
 //   columns (two or more columns of blocks), source (markdown kept as text).
@@ -52,6 +52,9 @@ const Paragraph = Node.create({
   renderHTML: ({ node, HTMLAttributes }) => ["p", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "p", class: "cms-b cms-p" }), 0],
 });
 
+/** A heading node's level as the markdown has it: 2, 3 or 4. */
+export const headingLevel = (level: unknown): 2 | 3 | 4 => (level === 3 ? 3 : level === 4 ? 4 : 2);
+
 const Heading = Node.create({
   name: "heading",
   group: "block",
@@ -62,9 +65,11 @@ const Heading = Node.create({
     { tag: "h1", attrs: { level: 2 } },
     { tag: "h2", attrs: { level: 2 } },
     { tag: "h3", attrs: { level: 3 } },
-    { tag: "h4", attrs: { level: 3 } },
+    { tag: "h4", attrs: { level: 4 } },
+    { tag: "h5", attrs: { level: 4 } },
+    { tag: "h6", attrs: { level: 4 } },
   ],
-  renderHTML: ({ node, HTMLAttributes }) => [node.attrs.level === 3 ? "h3" : "h2", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": `h${node.attrs.level}`, class: `cms-b cms-h${node.attrs.level}` }), 0],
+  renderHTML: ({ node, HTMLAttributes }) => [`h${headingLevel(node.attrs.level)}`, mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": `h${headingLevel(node.attrs.level)}`, class: `cms-b cms-h${headingLevel(node.attrs.level)}` }), 0],
 });
 
 const Quote = Node.create({
@@ -289,6 +294,23 @@ const Snippet = Node.create({
   renderHTML: ({ node, HTMLAttributes }) => ["div", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "snippet", "data-snippet": node.attrs.key, class: "cms-b cms-snippet" })],
 });
 
+/** A snippet inside a line of text (`[[snippet:key]]` among other words): one uneditable piece. */
+const SnippetRef = Node.create({
+  name: "snippetRef",
+  inline: true,
+  group: "inline",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes: () => ({ key: { default: "", rendered: false } }),
+  parseHTML: () => [{ tag: "span[data-snippet-ref]", getAttrs: (el) => ({ key: (el as HTMLElement).dataset.snippetRef ?? "" }) }],
+  renderHTML: ({ node, HTMLAttributes }) => ["span", mergeAttributes(HTMLAttributes, { "data-snippet-ref": node.attrs.key, class: "cms-snippet-ref" }), `[[snippet:${node.attrs.key}]]`],
+  renderText: ({ node }) => (node.attrs.key ? `[[snippet:${node.attrs.key}]]` : ""),
+});
+
+/** A snippet token inside text, as the server reads it. */
+export const SNIPPET_IN_TEXT = /\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]/gi;
+
 const Columns = Node.create({
   name: "columns",
   group: "block",
@@ -427,6 +449,7 @@ export const schemaExtensions: Extensions = [
   Card,
   Video,
   Snippet,
+  SnippetRef,
   Columns,
   Column,
   CmsTable,
@@ -458,10 +481,19 @@ export function spansToContent(spans: Span[]): JSONContent[] {
     if (s.s) marks.push({ type: "strike" });
     if (s.code) marks.push({ type: "code" });
     if (s.href) marks.push({ type: "link", attrs: { href: s.href } });
+    const withMarks = (n: JSONContent): JSONContent => (marks.length ? { ...n, marks } : n);
     s.text.split(/(\n)/).forEach((part) => {
       if (!part) return;
-      if (part === "\n") out.push({ type: "hardBreak" });
-      else out.push(marks.length ? { type: "text", text: part, marks } : { type: "text", text: part });
+      if (part === "\n") return void out.push({ type: "hardBreak" });
+      // A snippet token in plain text (not in code or a link) is a chip.
+      if (s.code || s.href) return void out.push(withMarks({ type: "text", text: part }));
+      let last = 0;
+      for (const m of part.matchAll(SNIPPET_IN_TEXT)) {
+        if (m.index! > last) out.push(withMarks({ type: "text", text: part.slice(last, m.index) }));
+        out.push(withMarks({ type: "snippetRef", attrs: { key: m[1] } }));
+        last = m.index! + m[0].length;
+      }
+      if (last < part.length) out.push(withMarks({ type: "text", text: part.slice(last) }));
     });
   }
   return out;
@@ -475,8 +507,11 @@ export function nodeSpans(node: PMNode): Span[] {
       out.push({ text: "\n" });
       return;
     }
-    if (!child.isText) return;
-    const s: Span = { text: child.text ?? "" };
+    const ref = child.type.name === "snippetRef";
+    if (!child.isText && !ref) return;
+    // A chip without a key (being picked) writes nothing.
+    if (ref && !child.attrs.key) return;
+    const s: Span = { text: ref ? `[[snippet:${child.attrs.key as string}]]` : (child.text ?? "") };
     for (const m of child.marks) {
       if (m.type.name === "bold") s.b = true;
       else if (m.type.name === "italic") s.i = true;
@@ -504,7 +539,8 @@ export function blocksToDoc(blocks: readonly EBlock[], o: { open?: ReadonlySet<s
         return { type: "paragraph", attrs: id, content: spansToContent(b.spans) };
       case "h2":
       case "h3":
-        return { type: "heading", attrs: { ...id, level: b.type === "h3" ? 3 : 2, anchor: b.anchor ?? null }, content: spansToContent(b.spans) };
+      case "h4":
+        return { type: "heading", attrs: { ...id, level: Number(b.type[1]), anchor: b.anchor ?? null }, content: spansToContent(b.spans) };
       case "quote":
         return { type: "quote", attrs: id, content: spansToContent(b.spans) };
       case "callout":
@@ -571,7 +607,7 @@ export function docToBlocks(doc: PMNode): EBlock[] {
         out.push({ ...base, type: "p", spans: nodeSpans(n) } as TextBlock);
         return;
       case "heading": {
-        const h = { ...base, type: n.attrs.level === 3 ? "h3" : "h2", spans: nodeSpans(n) } as TextBlock;
+        const h = { ...base, type: `h${headingLevel(n.attrs.level)}`, spans: nodeSpans(n) } as TextBlock;
         if (n.attrs.anchor) h.anchor = n.attrs.anchor as string;
         out.push(h);
         return;

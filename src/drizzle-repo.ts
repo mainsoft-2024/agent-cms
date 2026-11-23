@@ -153,13 +153,38 @@ export class DrizzleRepo implements CmsRepo {
   async deleteRedirect(id: string) {
     await this.db.delete(this.t.redirects).where(eq(this.t.redirects.id, id));
   }
-  async addRedirectHits(hits: ReadonlyMap<string, number>, at: string) {
+  async addRedirectHits(hits: ReadonlyMap<string, number>, at: string, day: string) {
     const R = this.t.redirects;
-    for (const [id, n] of hits)
-      await this.db
+    const H = this.t.redirectHits;
+    for (const [id, n] of hits) {
+      const [row] = await this.db
         .update(R)
         .set({ hits: sql`${R.hits} + ${n}`, lastHitAt: new Date(at) })
-        .where(eq(R.id, id));
+        .where(eq(R.id, id))
+        .returning({ id: R.id });
+      // A redirect deleted since the visit: nothing to count against.
+      if (!row) continue;
+      await this.db
+        .insert(H)
+        .values({ redirectId: id, day, n })
+        .onConflictDoUpdate({ target: [H.redirectId, H.day], set: { n: sql`${H.n} + ${n}` } })
+        .catch((e: unknown) => {
+          // Deleted between the two statements (foreign key): the visit has nowhere to go.
+          const err = e as { code?: string; cause?: { code?: string } };
+          if (err?.code !== "23503" && err?.cause?.code !== "23503") throw e;
+        });
+    }
+  }
+  async redirectHitDays(sinceDay: string) {
+    const H = this.t.redirectHits;
+    return (await this.db.select().from(H).where(gte(H.day, sinceDay))).map((r) => ({ redirectId: r.redirectId, day: String(r.day).slice(0, 10), n: r.n }));
+  }
+  /**
+   * Serialises tree moves of one collection inside a transaction (Postgres advisory lock, released at commit),
+   * so two concurrent moves cannot each pass the cycle check and together make a loop.
+   */
+  async lockTree(collection: string) {
+    await this.db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`agent-cms:tree:${collection}`}))`);
   }
 
   private patchRow(p: DocPatch): Partial<typeof this.t.documents.$inferInsert> {
@@ -423,7 +448,9 @@ export class DrizzleRepo implements CmsRepo {
           ? ([t.webhookDeliveries, lt(t.webhookDeliveries.at, new Date(before))] as const)
           : what === "keys"
             ? ([t.apiKeys, lt(t.apiKeys.revokedAt, new Date(before))] as const)
-            : ([t.hits, lt(t.hits.day, before)] as const);
+            : what === "redirect_hits"
+              ? ([t.redirectHits, lt(t.redirectHits.day, before)] as const)
+              : ([t.hits, lt(t.hits.day, before)] as const);
     if (dryRun) {
       const [r] = await this.db.select({ n: sql<number>`count(*)::int` }).from(table).where(where);
       return r?.n ?? 0;
@@ -952,7 +979,7 @@ export class DrizzleRepo implements CmsRepo {
       have.get(c.table_name)!.add(c.column_name);
     }
     const expected: Record<string, string[]> = {};
-    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries, records: this.t.records, changes: this.t.changes })) {
+    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries, records: this.t.records, changes: this.t.changes, doc_refs: this.t.docRefs, anchor_aliases: this.t.anchorAliases, redirects: this.t.redirects, redirect_hits: this.t.redirectHits })) {
       expected[prefix + key] = Object.values(tbl).filter((c) => c && typeof c === "object" && "name" in c && "columnType" in c).map((c) => (c as { name: string }).name);
     }
     const missingTables = Object.keys(expected).filter((t) => !have.has(t));

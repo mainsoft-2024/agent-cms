@@ -7,7 +7,7 @@
 import type { AnyCollection } from "./cms";
 import type { CmsError, CmsErrorCode, CmsErrorOptions, Diagnostic, ErrorParams } from "./errors";
 import { fieldMarks, DOC_ID_RE, type FieldMark } from "./fields";
-import { anchorOf, headingAnchors, snippetKeys, SNIPPET_RE, videoUses } from "./markdown";
+import { anchorOf, headingAnchors, parseMarkdown, snippetKeys, SNIPPET_RE, videoUses } from "./markdown";
 import type { CmsRepo } from "./repo";
 import type { CmsDoc, CmsRedirect, DocContent, DocRef, DocSeo } from "./types";
 import { DEFAULT_VIDEO_HOSTS, hostAllowed, videoEmbed, videoHost } from "./video";
@@ -19,12 +19,16 @@ export interface ModelContext {
   fail: (code: CmsErrorCode, params?: ErrorParams, o?: CmsErrorOptions) => CmsError;
   diag: (path: string, code: CmsErrorCode, params: ErrorParams, severity: Diagnostic["severity"]) => Diagnostic;
   nowIso: () => string;
+  /** Today's calendar day (YYYY-MM-DD) in the CMS's time zone. */
+  today: () => string;
   report: (e: unknown, where: string) => void;
   urlOf: (col: string, slug: string) => string | null;
   redirects: false | { ttlMs: number };
   videoHosts: readonly string[];
   /** An anonymous reader may read this document (`beforeRead` hooks). */
   publicReadable: (col: string, slug: string) => Promise<boolean>;
+  /** The published copy of `doc` an anonymous reader may see under the collection's rules, or null. */
+  publicCopy?: (doc: CmsDoc) => CmsDoc | null;
 }
 
 /** What `?expand=` puts in place of an id. Null: gone, or not for this reader. */
@@ -50,6 +54,9 @@ export interface TreeNode {
 }
 
 type RelationMark = Extract<FieldMark, { kind: "relation" }>;
+
+/** The size share cards are drawn at (Open Graph); a smaller share image gets `seo_image_small`. */
+export const SHARE_MIN = { width: 1200, height: 630 } as const;
 
 const getPath = (obj: unknown, path: string): unknown => path.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), obj);
 function setPath(obj: Record<string, unknown>, path: string, v: unknown) {
@@ -257,15 +264,21 @@ export function createModel(ctx: ModelContext) {
     // The published text is cached; whether readers may see it is asked every time.
     return hit && (await ctx.publicReadable(hit.col, hit.slug)) ? hit.body : null;
   }
-  /** A body with `[[snippet:key]]` replaced by published snippets (3 levels; a missing one becomes nothing). Code fences stay as they are. */
+  /**
+   * A body with `[[snippet:key]]` replaced by published snippets (3 levels; a missing one becomes nothing).
+   * A token on a line of its own takes the whole snippet. A token inside a line of text takes the snippet's
+   * text when it is one paragraph; a longer snippet cannot sit in a line, so the token stays (editors get
+   * `snippet_inline_multi`). Code fences stay as they are.
+   */
   async function expandSnippets(body: string, depth = 0, seen: string[] = []): Promise<string> {
     if (!snippetCols().length || !body.includes("[[snippet:")) return body;
     const keys = snippetKeys(body);
     if (!keys.length) return body;
-    const bodies = new Map<string, string>();
+    const bodies = new Map<string, { block: string; inline: string | null }>();
     for (const k of keys) {
       const b = depth < 3 && !seen.includes(k) ? await snippetBody(k) : null;
-      bodies.set(k, b === null ? "" : await expandSnippets(b, depth + 1, [...seen, k]));
+      const block = b === null ? "" : await expandSnippets(b, depth + 1, [...seen, k]);
+      bodies.set(k, { block, inline: b === null ? "" : inlineText(block) });
     }
     let inFence: string | null = null;
     return body
@@ -278,9 +291,56 @@ export function createModel(ctx: ModelContext) {
           return line;
         }
         if (inFence) return line;
-        return line.replace(SNIPPET_RE, (_m, k: string) => bodies.get(k.toLowerCase()) ?? "");
+        const alone = /^\s*\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]\s*$/i.exec(line);
+        if (alone) return bodies.get(alone[1].toLowerCase())?.block ?? "";
+        // Inline code (`…`) shows the token as written.
+        return outsideCode(line, (part) =>
+          part.replace(SNIPPET_RE, (m, k: string) => {
+            const s = bodies.get(k.toLowerCase());
+            if (!s) return "";
+            return s.inline ?? m;
+          })
+        );
       })
       .join("\n");
+  }
+  /** Keys used inside a line of text (not on a line of their own), code fences skipped. */
+  function inlineSnippetKeys(body: string): Set<string> {
+    const out = new Set<string>();
+    let inFence: string | null = null;
+    for (const line of body.replace(/\r/g, "").split("\n")) {
+      const f = /^\s*(`{3,}|~{3,})/.exec(line);
+      if (f) {
+        if (!inFence) inFence = f[1];
+        else if (line.trim().startsWith(inFence)) inFence = null;
+        continue;
+      }
+      if (inFence || /^\s*\[\[snippet:[a-z0-9][a-z0-9._-]*\]\]\s*$/i.test(line)) continue;
+      outsideCode(line, (part) => {
+        for (const m of part.matchAll(SNIPPET_RE)) out.add(m[1].toLowerCase());
+        return part;
+      });
+    }
+    return out;
+  }
+  /** `fn` applied to the parts of a line outside inline code spans (`` `…` ``, ``` ``…`` ```). */
+  function outsideCode(line: string, fn: (part: string) => string): string {
+    if (!line.includes("`")) return fn(line);
+    let out = "";
+    let last = 0;
+    for (const m of line.matchAll(/(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g)) {
+      out += fn(line.slice(last, m.index)) + m[0];
+      last = m.index! + m[0].length;
+    }
+    return out + fn(line.slice(last));
+  }
+  /** The text of a snippet that is one paragraph (soft line breaks become spaces); null when it is more. */
+  function inlineText(body: string): string | null {
+    const t = body.replace(/\r/g, "").trim();
+    if (!t) return "";
+    const blocks = parseMarkdown(t);
+    if (blocks.length !== 1 || blocks[0].t !== "p") return null;
+    return t.split("\n").map((l) => l.trim()).join(" ");
   }
   /** Snippets a body names that do not exist (as warnings) and loops through snippets (as errors). */
   async function snippetDiagnostics(col: string, slug: string, body: string, r: CmsRepo = repo): Promise<Diagnostic[]> {
@@ -296,7 +356,13 @@ export function createModel(ctx: ModelContext) {
       }
       return null;
     };
-    for (const k of keys) if (!(await find(k))) out.push(ctx.diag("body", "snippet_missing", { key: k }, "warning"));
+    const inline = inlineSnippetKeys(body);
+    for (const k of keys) {
+      const d = await find(k);
+      if (!d) out.push(ctx.diag("body", "snippet_missing", { key: k }, "warning"));
+      // Inside a line of text only one paragraph fits: what readers would get (the published copy, else the draft).
+      else if (inline.has(k) && inlineText(d.published && d.publishedVersion !== null ? (d.published.body ?? "") : d.body) === null) out.push(ctx.diag("body", "snippet_inline_multi", { key: k }, "warning"));
+    }
     if (cols.includes(col)) {
       // Follow the working copies from this snippet: coming back to it is a loop.
       const walk = async (k: string, path: string[]): Promise<string[] | null> => {
@@ -474,9 +540,36 @@ export function createModel(ctx: ModelContext) {
     if (!hits.size || !repo.addRedirectHits) return;
     const batch = new Map(hits);
     hits.clear();
-    await repo.addRedirectHits(batch, ctx.nowIso()).catch((e) => ctx.report(e, "redirect hits"));
+    await repo.addRedirectHits(batch, ctx.nowIso(), ctx.today()).catch((e) => ctx.report(e, "redirect hits"));
   }
-  /** Where `path` goes now, or null. Counts the visit (written once a minute). */
+  /**
+   * Public address of a document a redirect follows, cached like the table (TTL; a change in this
+   * process forgets it at once). Null: gone, not published, archived, or its collection has no `url()`.
+   */
+  let targets: { at: number; rows: Map<string, { col: string; slug: string; url: string } | null> } | null = null;
+  function forgetTargets() {
+    targets = null;
+  }
+  async function targetOf(id: string): Promise<{ col: string; slug: string; url: string } | null> {
+    const ttl = ctx.redirects ? ctx.redirects.ttlMs : 30_000;
+    if (!targets || Date.now() - targets.at >= ttl) targets = { at: Date.now(), rows: new Map() };
+    const rows = targets.rows;
+    let t = rows.get(id);
+    if (t === undefined) {
+      const d = DOC_ID_RE.test(id) ? await repo.findDocById(id) : null;
+      const pub = d && !d.deletedAt ? (ctx.publicCopy ? ctx.publicCopy(d) : d.published && d.publishedVersion !== null && d.status !== "archived" ? d : null) : null;
+      const slug = pub ? (pub.published?.slug ?? pub.slug) : null;
+      const c = d && slug && ctx.collections.has(d.collection) ? ctx.collection(d.collection) : null;
+      const url = c && slug && c.visibility === "public" ? ctx.urlOf(d!.collection, slug) : null;
+      t = url && slug ? { col: d!.collection, slug, url } : null;
+      rows.set(id, t);
+    }
+    return t;
+  }
+  /**
+   * Where `path` goes now, or null. A redirect that follows a document goes to that document's current
+   * public address, and nowhere (null) once it is gone or no longer public. Counts the visit (written once a minute).
+   */
   async function resolveRedirect(path: string): Promise<{ to: string; status: 301 | 302 } | null> {
     if (!redirectsOn()) return null;
     const p = normalizePath(path);
@@ -484,18 +577,39 @@ export function createModel(ctx: ModelContext) {
     const rows = await loadTable();
     const hit = rows.get(p);
     if (!hit) return null;
+    let to = hit.to;
+    if (hit.toDocumentId) {
+      const t = await targetOf(hit.toDocumentId);
+      // The cached address is public; whether an anonymous reader may open it is asked every time.
+      if (!t || !(await ctx.publicReadable(t.col, t.slug))) return null;
+      to = t.url;
+      // The document now lives at the address this redirect starts from: no redirect.
+      if (normalizePath(to) === p) return null;
+    }
     hits.set(hit.id, (hits.get(hit.id) ?? 0) + 1);
     if (!hitTimer) {
       hitTimer = setTimeout(() => void flushHits(), 60_000);
       (hitTimer as { unref?: () => void }).unref?.();
     }
-    let to = hit.to;
-    if (hit.toDocumentId) {
-      const d = await repo.findDocById(hit.toDocumentId);
-      const u = d ? ctx.urlOf(d.collection, d.slug) : null;
-      if (u) to = u;
-    }
     return { to, status: hit.status };
+  }
+  /** Visits per redirect over the last `days` days (oldest first) with their sum. Counts not written yet are included. */
+  async function redirectHitSeries(days = 30): Promise<Map<string, { daily: number[]; total: number }>> {
+    const today = ctx.today();
+    const dayList = Array.from({ length: days }, (_, i) => new Date(Date.parse(`${today}T00:00:00Z`) - (days - 1 - i) * 86_400_000).toISOString().slice(0, 10));
+    const at = new Map(dayList.map((d, i) => [d, i]));
+    const out = new Map<string, { daily: number[]; total: number }>();
+    const add = (id: string, day: string, n: number) => {
+      const i = at.get(day);
+      if (i === undefined) return;
+      const s = out.get(id) ?? { daily: new Array<number>(days).fill(0), total: 0 };
+      s.daily[i] += n;
+      s.total += n;
+      out.set(id, s);
+    };
+    for (const r of repo.redirectHitDays ? await repo.redirectHitDays(dayList[0]) : []) add(r.redirectId, r.day, r.n);
+    for (const [id, n] of hits) add(id, today, n);
+    return out;
   }
   const validTarget = (to: string) => normalizePath(to) ?? (/^https?:\/\/[^\s]+$/i.test(to) && to.length <= 2000 ? to : null);
 
@@ -503,12 +617,22 @@ export function createModel(ctx: ModelContext) {
   async function saveRedirect(r: CmsRepo, input: { id?: string; from: string; to: string; status?: 301 | 302; toDocumentId?: string | null; source: "auto" | "manual"; createdBy: string | null }): Promise<CmsRedirect> {
     const from = normalizePath(input.from);
     if (!from) throw fail("redirect_invalid", { reason: "from" });
-    let to = validTarget(input.to);
-    if (!to) throw fail("redirect_invalid", { reason: "to" });
+    let to: string | null;
     const rows = await loadTable(r);
-    // Follow the target's own redirect (one step is enough: the table never holds chains).
-    const next = rows.get(to);
-    if (next && next.id !== input.id) to = next.to;
+    if (input.toDocumentId && input.source === "manual") {
+      // A document target: the address is the document's own (it follows later moves when read).
+      const d = DOC_ID_RE.test(input.toDocumentId) ? await r.findDocById(input.toDocumentId) : null;
+      const c = d && ctx.collections.has(d.collection) ? ctx.collection(d.collection) : null;
+      const u = d && c ? ctx.urlOf(d.collection, d.published?.slug ?? d.slug) : null;
+      to = u ? normalizePath(u) ?? validTarget(u) : null;
+      if (!to) throw fail("redirect_document");
+    } else {
+      to = validTarget(input.to);
+      if (!to) throw fail("redirect_invalid", { reason: "to" });
+      // Follow the target's own redirect (one step is enough: the table never holds chains).
+      const next = rows.get(to);
+      if (next && next.id !== input.id) to = next.to;
+    }
     if (to === from) throw fail("redirect_loop");
     const taken = rows.get(from);
     if (taken && taken.id !== input.id) {
@@ -522,8 +646,8 @@ export function createModel(ctx: ModelContext) {
       if (!u) throw fail("redirect_not_found");
       saved = u;
     } else saved = await r.insertRedirect!({ from, to, status, toDocumentId: input.toDocumentId ?? null, source: input.source, createdBy: input.createdBy });
-    // Others that led to `from` now lead straight to `to`.
-    for (const x of rows.values()) if (x.to === from && x.id !== saved.id) {
+    // Others that led to `from` now lead straight to `to` (those following a document keep following it).
+    for (const x of rows.values()) if (x.to === from && x.id !== saved.id && !(x.toDocumentId && x.source === "manual")) {
       if (x.from === to) await r.deleteRedirect!(x.id);
       else await r.updateRedirect!(x.id, { to });
     }
@@ -574,6 +698,19 @@ export function createModel(ctx: ModelContext) {
     if (!desc) out.push(ctx.diag("seo.description", "seo_description_missing", {}, "warning"));
     else if (desc.length > rules.descriptionMax) out.push(ctx.diag(c.seo?.description ? "seo.description" : "summary", "seo_description_long", { length: desc.length, max: rules.descriptionMax }, "warning"));
     return out;
+  }
+  /**
+   * A share image (the SEO image, else the body's first picture) from the media library that is smaller
+   * than 1200×630: a warning with its real size. Pictures from other sites have no known size: nothing said.
+   */
+  async function seoImageDiagnostics(col: string, c: DocContent, r: CmsRepo = repo): Promise<Diagnostic[]> {
+    if (!seoRules(col)) return [];
+    const image = seoFor({ collection: col, slug: c.slug, title: c.title, summary: c.summary, body: c.body, seo: c.seo }).image;
+    const m = image ? /^asset:([a-z0-9]{12})(?:\/|$)/.exec(image) : null;
+    if (!m) return [];
+    const a = await r.findAsset(m[1]).catch(() => null);
+    if (!a || !a.width || !a.height || (a.width >= SHARE_MIN.width && a.height >= SHARE_MIN.height)) return [];
+    return [ctx.diag(c.seo?.image ? "seo.image" : "body", "seo_image_small", { width: a.width, height: a.height, minWidth: SHARE_MIN.width, minHeight: SHARE_MIN.height }, "warning")];
   }
   /** What a page puts in its head: SEO values with the title, summary and first image filling gaps. */
   function seoFor(doc: Pick<CmsDoc, "collection" | "slug" | "title" | "summary" | "body"> & { seo?: DocSeo | null }): { title: string; description: string; image: string | null; canonical: string | null; noindex: boolean; url: string | null } {
@@ -641,8 +778,11 @@ export function createModel(ctx: ModelContext) {
     listRedirects,
     redirectAt,
     forgetRedirects,
+    forgetTargets,
+    redirectHitSeries,
     flushHits,
     seoDiagnostics,
+    seoImageDiagnostics,
     seoFor,
     sitemap,
     videoHosts: ctx.videoHosts.length ? ctx.videoHosts : DEFAULT_VIDEO_HOSTS,

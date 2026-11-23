@@ -423,6 +423,12 @@ export interface RedirectView {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Visits over the last 30 days (list only). */
+  hits30d?: number;
+  /** Visits per day over the last 30 days, oldest first (list only). */
+  daily?: number[];
+  /** The document this redirect follows (list only; null when none or gone). */
+  target?: { id: string; collection: string; slug: string; title: string; published: boolean } | null;
 }
 export interface DocRefView {
   id: string | null;
@@ -552,8 +558,11 @@ export function createRestClient(opts: RestClientOptions) {
     removeTemplate: (c: string, id: string) => req<{ ok: true }>("DELETE", `/collections/${enc(c)}/_templates/${enc(id)}`),
     single: (c: string, o: { draft?: boolean } = {}) => req<{ doc: CmsDoc }>("GET", `/singles/${enc(c)}${o.draft ? "?draft=1" : ""}`).then((r) => r.doc),
     redirects: () => req<{ redirects: RedirectView[] }>("GET", "/redirects").then((r) => r.redirects),
-    createRedirect: (r: { from: string; to: string; status?: 301 | 302 }) => req<{ redirect: RedirectView }>("POST", "/redirects", { body: r }).then((x) => x.redirect),
-    updateRedirect: (id: string, r: { from?: string; to?: string; status?: 301 | 302 }) => req<{ redirect: RedirectView }>("PATCH", `/redirects/${enc(id)}`, { body: r }).then((x) => x.redirect),
+    /** `toDocumentId`: follow that document's current address instead of `to`. */
+    createRedirect: (r: { from: string; to?: string; toDocumentId?: string | null; status?: 301 | 302 }) => req<{ redirect: RedirectView }>("POST", "/redirects", { body: r }).then((x) => x.redirect),
+    updateRedirect: (id: string, r: { from?: string; to?: string; toDocumentId?: string | null; status?: 301 | 302 }) => req<{ redirect: RedirectView }>("PATCH", `/redirects/${enc(id)}`, { body: r }).then((x) => x.redirect),
+    /** Visits of a redirect per day (default 30 days, oldest first). */
+    redirectHits: (id: string, days?: number) => req<{ days: { day: string; n: number }[]; total: number }>("GET", `/redirects/${enc(id)}/hits`, { query: days ? { days: String(days) } : undefined }),
     removeRedirect: (id: string) => req<{ ok: true }>("DELETE", `/redirects/${enc(id)}`),
     schema: (c: string, o: { slug?: string | null } = {}) => req<CollectionSchema>("GET", `/collections/${enc(c)}/_schema${o.slug ? `?slug=${enc(o.slug)}` : ""}`),
     list: (c: string, q: ListQuery = {}) => req<{ docs: DocSummary[]; total: number; nextCursor: string | null }>("GET", `/collections/${enc(c)}`, { query: { fields: "summary", ...q } }),
@@ -577,7 +586,8 @@ export function createRestClient(opts: RestClientOptions) {
     /** `documentId`: publish only if the address still holds that document (else `document_replaced`). */
     publish: (c: string, s: string, o: { expectedVersion?: number; version?: number; documentId?: string } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/publish`, { body: { version: o.version, documentId: o.documentId }, ifMatch: o.expectedVersion }).then((r) => r.doc),
     unpublish: (c: string, s: string, expectedVersion?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/unpublish`, { body: {}, ifMatch: expectedVersion }).then((r) => r.doc),
-    archive: (c: string, s: string, expectedVersion?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/archive`, { body: {}, ifMatch: expectedVersion }).then((r) => r.doc),
+    /** `force`: hide it although other documents point at it (otherwise 409 `doc_referenced`). */
+    archive: (c: string, s: string, expectedVersion?: number, o: { force?: boolean } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/archive`, { body: o.force ? { force: true } : {}, ifMatch: expectedVersion }).then((r) => r.doc),
     unarchive: (c: string, s: string, expectedVersion?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/unarchive`, { body: {}, ifMatch: expectedVersion }).then((r) => r.doc),
     bulk: (c: string, action: BulkAction, items: { slug: string; expectedVersion?: number }[]) => req<{ results: BulkResult[] }>("POST", `/collections/${enc(c)}/_bulk`, { body: { action, items } }).then((r) => r.results),
     versions: (c: string, s: string) => req<{ versions: VersionSummary[] }>("GET", `${doc(c, s)}/versions`, { query: { fields: "summary" } }).then((r) => r.versions),

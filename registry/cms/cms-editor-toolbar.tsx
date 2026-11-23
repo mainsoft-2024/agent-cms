@@ -13,18 +13,23 @@ import {
   AppWindow,
   Bold,
   CaseSensitive,
+  Check,
   ChevronDown,
   ChevronUp,
   Clapperboard,
   Code,
+  CodeXml,
+  Columns2,
   Ellipsis,
   Heading2,
   Heading3,
+  Heading4,
   ImagePlus,
   Italic,
   Link as LinkIcon,
   List,
   ListChecks,
+  ListCollapse,
   ListOrdered,
   ListTree,
   Maximize2,
@@ -136,6 +141,7 @@ export function markdownCommands(m: MarkdownTarget): BlockEditorCommands {
   };
   const lineType = (): EditorCommand => {
     const l = lines().text.split("\n")[0];
+    if (/^####\s/.test(l)) return "h4";
     if (/^###\s/.test(l)) return "h3";
     if (/^#{1,2}\s/.test(l)) return "h2";
     if (/^[-*+]\s+\[[ xX]\]\s/.test(l)) return "todo";
@@ -188,6 +194,8 @@ export function markdownCommands(m: MarkdownTarget): BlockEditorCommands {
           return (setLines(() => "## "), true);
         case "h3":
           return (setLines(() => "### "), true);
+        case "h4":
+          return (setLines(() => "#### "), true);
         case "bullet":
           return (setLines(() => "- "), true);
         case "number":
@@ -216,13 +224,19 @@ export function markdownCommands(m: MarkdownTarget): BlockEditorCommands {
           return (block(":::video\nhttps://\n:::", "https://"), true);
         case "snippet":
           return (block("[[snippet:key]]", "key"), true);
+        case "columns":
+          return (block(":::columns\n:::col\nLeft\n:::col\nRight\n:::", "Left"), true);
+        case "toggle":
+          return (block(":::toggle Title\nText\n:::", "Title"), true);
+        case "html":
+          return (block(":::html\n<div></div>\n:::", "<div></div>"), true);
       }
       return false;
     },
     state: (cmd) => {
       if (m.readOnly?.()) return { enabled: false, active: false };
       if (cmd === "undo" || cmd === "redo") return { enabled: typeof document.execCommand === "function", active: false };
-      if (["p", "h2", "h3", "bullet", "number", "todo", "quote", "callout"].includes(cmd)) return { enabled: true, active: lineType() === cmd };
+      if (["p", "h2", "h3", "h4", "bullet", "number", "todo", "quote", "callout"].includes(cmd)) return { enabled: true, active: lineType() === cmd };
       if (cmd === "link") return { enabled: true, active: false };
       return { enabled: true, active: false };
     },
@@ -277,6 +291,11 @@ export function markdownCommands(m: MarkdownTarget): BlockEditorCommands {
 
 // ── word count ────────────────────────────────────────────────────────────────
 
+/** Reading speed for the word count's minutes: words a minute (most languages)... */
+export const READ_WPM = 200;
+/** ...and characters a minute for Korean (and Chinese, Japanese). */
+export const READ_CPM = 500;
+
 /** Words, characters and reading time of the body (markup left out). */
 export function bodyStats(body: string): { words: number; chars: number; minutes: number } {
   const text = body
@@ -289,9 +308,12 @@ export function bodyStats(body: string): { words: number; chars: number; minutes
     .replace(/[*_~`|]/g, "");
   const words = text.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)?.length ?? 0;
   const chars = text.replace(/\s/g, "").length;
-  // Hangul and other scripts without spaces read by characters, the rest by words.
-  const cjk = text.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g)?.length ?? 0;
-  const minutes = Math.max(1, Math.round(cjk > chars / 2 ? chars / 500 : words / 230));
+  // Korean reads at 500 characters a minute (Hangul syllables, spaces left out), other text at 200
+  // words a minute; a body that mixes them adds the two. Chinese and Japanese count like Korean.
+  const wide = /[\uac00-\ud7af\u3040-\u30ff\u3400-\u9fff]/g;
+  const syllables = text.match(wide)?.length ?? 0;
+  const otherWords = text.replace(wide, " ").match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)?.length ?? 0;
+  const minutes = Math.max(1, Math.round(syllables / READ_CPM + otherWords / READ_WPM));
   return { words, chars, minutes };
 }
 
@@ -319,6 +341,8 @@ export interface EditorToolbarProps {
   findOpen?: boolean;
   /** The box's label (for screen readers; the switch says what the box is). */
   label?: React.ReactNode;
+  /** Drawn inside another bar (the full-screen header): no border or padding of its own, no word count. */
+  inline?: boolean;
 }
 
 interface Btn {
@@ -334,25 +358,38 @@ interface Btn {
 }
 
 /** A shortcut as this computer writes it ("⌘B" / "Ctrl+B"). */
-function shortcut(keys: string): string {
+export function shortcut(keys: string): string {
   if (isApple()) return keys.replace(/Mod\+/g, "⌘").replace(/Shift\+/g, "⇧").replace(/Alt\+/g, "⌥");
   return keys.replace(/Mod\+/g, "Ctrl+");
 }
 const ariaKeys = (keys: string) => [keys.replace(/Mod/g, "Control"), keys.replace(/Mod/g, "Meta")].filter((k, i, a) => a.indexOf(k) === i).join(" ");
 
 /** A small bubble under a button: its name and shortcut. */
-function Tip({ text, keys, show }: { text: string; keys?: string; show: boolean }) {
+function Tip({ text, keys, show, align = "center" }: { text: string; keys?: string; show: boolean; align?: "center" | "start" | "end" }) {
   if (!show) return null;
   return (
     <span
       role="tooltip"
-      className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-50 inline-flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-md bg-primary px-2 py-1 text-xs font-normal text-primary-foreground shadow-md"
-      style={{ animation: `cms-tip-in 120ms ${EASE} both` }}
+      className={cn(
+        "pointer-events-none absolute top-[calc(100%+6px)] z-50 inline-flex items-center gap-2 whitespace-nowrap rounded-md bg-primary px-2 py-1 text-xs font-normal text-primary-foreground shadow-md",
+        align === "center" ? "left-1/2 -translate-x-1/2" : align === "start" ? "left-0" : "right-0",
+      )}
+      style={{ animation: `${align === "center" ? "cms-tip-in" : "cms-tip-in-side"} 120ms ${EASE} both` }}
     >
       {text}
       {keys ? <kbd className="font-mono text-[11px] opacity-70">{shortcut(keys)}</kbd> : null}
     </span>
   );
+}
+const TIP_KEYFRAMES = `@keyframes cms-tip-in { from { opacity: 0; transform: translate(-50%, -2px) } to { opacity: 1; transform: translate(-50%, 0) } } @keyframes cms-tip-in-side { from { opacity: 0; transform: translateY(-2px) } to { opacity: 1; transform: none } }`;
+
+/** The tooltip's keyframes, put in the page once. */
+function tipStyle() {
+  if (typeof document === "undefined" || document.getElementById("cms-tip-style")) return;
+  const el = document.createElement("style");
+  el.id = "cms-tip-style";
+  el.textContent = TIP_KEYFRAMES;
+  document.head.appendChild(el);
 }
 
 /** Shows the tooltip after a short hover, or at once on keyboard focus. */
@@ -363,7 +400,10 @@ function useTip() {
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = null;
   };
-  React.useEffect(() => clear, []);
+  React.useEffect(() => {
+    tipStyle();
+    return clear;
+  }, []);
   return {
     show,
     hide: () => (clear(), setShow(false)),
@@ -383,6 +423,9 @@ function useTip() {
 }
 
 const BTN = "relative inline-grid size-7 shrink-0 place-items-center rounded-md text-foreground/80 outline-none transition-colors duration-100 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:text-muted-foreground/45 aria-pressed:bg-muted aria-pressed:text-foreground";
+/** A menu button with text (text style, insert): a row, not a square. */
+const WIDE = "inline-flex w-auto items-center gap-1 px-1.5 text-[13px]";
+const STAT = "shrink-0 whitespace-nowrap px-1 text-xs tabular-nums text-muted-foreground";
 
 const ToolButton = React.forwardRef<HTMLButtonElement, { b: Btn; t: (k: MessageKey) => string; onRun: () => void } & React.ButtonHTMLAttributes<HTMLButtonElement>>(function ToolButton({ b, t, onRun, className, ...rest }, ref) {
   const tip = useTip();
@@ -392,6 +435,7 @@ const ToolButton = React.forwardRef<HTMLButtonElement, { b: Btn; t: (k: MessageK
       ref={ref}
       type="button"
       data-tb-item=""
+      data-tb-key={b.key}
       aria-label={t(b.label)}
       aria-keyshortcuts={b.keys ? ariaKeys(b.keys) : undefined}
       aria-pressed={b.pressed === undefined ? undefined : b.pressed}
@@ -412,6 +456,32 @@ const ToolButton = React.forwardRef<HTMLButtonElement, { b: Btn; t: (k: MessageK
   );
 });
 
+/**
+ * An icon button with the toolbar's tooltip (name and shortcut), for bars around the editor
+ * (the full-screen header). Children are optional so it can be a menu trigger's child.
+ */
+export const TipButton = React.forwardRef<HTMLButtonElement, { label: string; tip?: string; keys?: string; tipAlign?: "center" | "start" | "end"; children?: React.ReactNode } & React.ButtonHTMLAttributes<HTMLButtonElement>>(function TipButton({ label, tip: tipText, keys, tipAlign, children, className, onClick, ...rest }, ref) {
+  const tip = useTip();
+  return (
+    <button
+      ref={ref}
+      type="button"
+      aria-label={label}
+      aria-keyshortcuts={keys ? ariaKeys(keys) : undefined}
+      className={cn(BTN, "size-8", className)}
+      onClick={(e) => {
+        tip.hide();
+        onClick?.(e);
+      }}
+      {...tip.props}
+      {...rest}
+    >
+      {children}
+      <Tip text={tipText ?? label} keys={keys} show={tip.show} align={tipAlign} />
+    </button>
+  );
+});
+
 /** A button that opens a menu (text style, insert, More). */
 const MenuButton = React.forwardRef<HTMLButtonElement, { label: string; keys?: string; children?: React.ReactNode; wide?: boolean; disabled?: boolean } & React.ButtonHTMLAttributes<HTMLButtonElement>>(function MenuButton({ label, keys, children, wide, disabled, className, ...rest }, ref) {
   const tip = useTip();
@@ -423,7 +493,7 @@ const MenuButton = React.forwardRef<HTMLButtonElement, { label: string; keys?: s
       aria-label={label}
       disabled={disabled}
       tabIndex={-1}
-      className={cn(BTN, wide && "w-auto gap-1 px-1.5 text-[13px]", className)}
+      className={cn(BTN, wide && WIDE, className)}
       onMouseDown={(e) => e.preventDefault()}
       {...tip.props}
       {...rest}
@@ -446,11 +516,98 @@ const MenuButton = React.forwardRef<HTMLButtonElement, { label: string; keys?: s
   );
 });
 
-const Sep = () => <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />;
+const Sep = (p: { "data-tb-m"?: string }) => <span aria-hidden className="mx-[3px] h-5 w-px shrink-0 bg-border" {...p} />;
 
-type GroupKey = "history" | "style" | "marks" | "blocks" | "media" | "insert" | "find" | "right";
+// ── what fits ─────────────────────────────────────────────────────────────────
 
-export function EditorToolbar({ commands, tick, view, onView, canWrite, body, outline, onMedia, sidePreview, previewWindow, fullscreen, onFind, findOpen, label }: EditorToolbarProps) {
+/** The bar's groups, in the order they are drawn. A line separates groups (not inside "right"). */
+export type ToolbarGroup = "history" | "style" | "marks" | "lists" | "blocks" | "media" | "insert" | "right" | "stat";
+const LEFT_GROUPS: ToolbarGroup[] = ["history", "style", "marks", "lists", "blocks", "media", "insert"];
+
+/**
+ * How long each item stays when the bar gets narrow: the lowest goes first. The word count first
+ * drops its reading time ("stat-min"), the rarer blocks and marks follow, then find, lists, the
+ * menus and the everyday marks; history and media stay longest among the editing buttons, and
+ * the view buttons (section order, previews, full screen) are the very last to go.
+ */
+export const TOOLBAR_PRIORITY: Readonly<Record<string, number>> = {
+  "stat-min": 1,
+  hr: 2,
+  codeblock: 3,
+  table: 4,
+  callout: 5,
+  quote: 6,
+  todo: 7,
+  strike: 8,
+  code: 9,
+  find: 10,
+  number: 11,
+  bullet: 12,
+  insert: 13,
+  style: 14,
+  link: 15,
+  italic: 16,
+  bold: 17,
+  stat: 18,
+  redo: 19,
+  undo: 20,
+  media: 21,
+  window: 22,
+  side: 23,
+  outline: 24,
+  full: 25,
+};
+
+export interface FitItem {
+  key: string;
+  group: ToolbarGroup;
+  /** Width it takes in the bar (gap included). */
+  width: number;
+}
+
+/**
+ * Which items to hide so the bar fits `avail` pixels. `fixed` is what never leaves (padding, the
+ * label and view switch, the spacer); `sep` a group line; `more` the More button, counted once
+ * anything goes into it (the word count's two parts do not). Items leave one by one by
+ * `TOOLBAR_PRIORITY`; a group left empty also loses its line.
+ */
+export function fitToolbar(o: { avail: number; fixed: number; items: readonly FitItem[]; sep: number; more: number; leadSep: boolean }): Set<string> {
+  const hidden = new Set<string>();
+  const total = () => {
+    let sum = o.fixed;
+    let before = o.leadSep;
+    for (const g of LEFT_GROUPS) {
+      const shown = o.items.filter((i) => i.group === g && !hidden.has(i.key));
+      if (!shown.length) continue;
+      sum += (before ? o.sep : 0) + shown.reduce((s, i) => s + i.width, 0);
+      before = true;
+    }
+    for (const i of o.items) if (i.group === "right" && !hidden.has(i.key)) sum += i.width;
+    const stat = o.items.filter((i) => i.group === "stat" && !hidden.has(i.key));
+    if (stat.some((i) => i.key === "stat")) sum += o.sep + stat.reduce((s, i) => s + i.width, 0);
+    if ([...hidden].some((k) => !k.startsWith("stat"))) sum += o.more;
+    return sum;
+  };
+  const order = [...o.items].sort((a, b) => (TOOLBAR_PRIORITY[a.key] ?? 50) - (TOOLBAR_PRIORITY[b.key] ?? 50));
+  for (const i of order) {
+    if (total() <= o.avail) break;
+    hidden.add(i.key);
+    // The reading time goes with the word count.
+    if (i.key === "stat") hidden.add("stat-min");
+  }
+  return hidden;
+}
+
+/** The width an item takes beyond its own box (the bar's 1px gap). */
+const GAP = 1;
+
+interface Slot {
+  key: string;
+  group: ToolbarGroup;
+  btn?: Btn;
+}
+
+export function EditorToolbar({ commands, tick, view, onView, canWrite, body, outline, onMedia, sidePreview, previewWindow, fullscreen, onFind, findOpen, label, inline }: EditorToolbarProps) {
   const { t, locale } = useCms();
   void tick;
   const st = (cmd: EditorCommand) => (commands && canWrite ? commands.state(cmd) : { enabled: false, active: false });
@@ -464,20 +621,19 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
 
   const history = [b("undo", "tb_undo", Undo2, "undo", "Mod+Z"), b("redo", "tb_redo", Redo2, "redo", isApple() ? "Mod+Shift+Z" : "Mod+Y")];
   const marks = [b("bold", "tb_bold", Bold, "bold", "Mod+B", true), b("italic", "tb_italic", Italic, "italic", "Mod+I", true), b("strike", "tb_strike", Strikethrough, "strike", "Mod+Shift+X", true), b("code", "tb_code", Code, "code", "Mod+E", true), b("link", "tb_link", LinkIcon, "link", "Mod+K", true)];
-  const blocks = [
+  const lists = [
     b("bullet", "tb_bullet", List, "bullet", undefined, true),
     b("number", "tb_number", ListOrdered, "number", undefined, true),
     b("todo", "tb_todo", ListChecks, "todo", undefined, true),
     b("quote", "tb_quote", TextQuote, "quote", undefined, true),
     b("callout", "tb_callout", MessageSquareWarning, "callout", undefined, true),
-    b("table", "tb_table", Table, "table"),
-    b("codeblock", "tb_codeblock", SquareCode, "codeblock"),
-    b("hr", "tb_hr", Minus, "hr"),
   ];
-  const styles: { cmd: EditorCommand; label: MessageKey; icon: Icon; keys: string }[] = [
+  const blocks = [b("table", "tb_table", Table, "table"), b("codeblock", "tb_codeblock", SquareCode, "codeblock"), b("hr", "tb_hr", Minus, "hr")];
+  const styles: { cmd: EditorCommand; label: MessageKey; icon: Icon; keys?: string }[] = [
     { cmd: "p", label: "tb_style_p", icon: Pilcrow, keys: "Mod+Alt+0" },
     { cmd: "h2", label: "tb_style_h2", icon: Heading2, keys: "Mod+Alt+2" },
     { cmd: "h3", label: "tb_style_h3", icon: Heading3, keys: "Mod+Alt+3" },
+    { cmd: "h4", label: "tb_style_h4", icon: Heading4 },
   ];
   const styleNow = styles.find((s) => st(s.cmd).active) ?? styles[0];
   const styleEnabled = styles.some((s) => st(s.cmd).enabled);
@@ -486,8 +642,12 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
     { cmd: "card", label: "blk_card", icon: SquareArrowOutUpRight, hint: ":::card" },
     { cmd: "video", label: "blk_video", icon: Clapperboard, hint: ":::video" },
     { cmd: "snippet", label: "blk_snippet", icon: Puzzle, hint: "[[snippet:…]]" },
+    { cmd: "columns", label: "blk_slash_columns", icon: Columns2, hint: ":::columns" },
+    { cmd: "toggle", label: "blk_t_toggle", icon: ListCollapse, hint: ":::toggle" },
+    { cmd: "html", label: "blk_slash_html", icon: CodeXml, hint: ":::html" },
   ];
   const insertEnabled = !!commands && canWrite && st("steps").enabled;
+  const media: Btn[] = onMedia ? [{ key: "media", label: "media_insert_button", icon: ImagePlus, run: onMedia, disabled: !canWrite }] : [];
 
   const right: Btn[] = [
     { key: "find", label: "tb_find", icon: Search, keys: "Mod+F", run: () => onFind(false), pressed: !!findOpen },
@@ -497,35 +657,69 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
     ...(fullscreen ? [{ key: "full", label: "focus_enter" as MessageKey, icon: Maximize2, keys: "Mod+Shift+F", run: fullscreen.onEnter, pressed: false, ref: fullscreen.buttonRef }] : []),
   ];
 
-  // ── which groups fit; the rest go into More ──
+  const slots: Slot[] = [
+    ...history.map((x) => ({ key: x.key, group: "history" as const, btn: x })),
+    { key: "style", group: "style" },
+    ...marks.map((x) => ({ key: x.key, group: "marks" as const, btn: x })),
+    ...lists.map((x) => ({ key: x.key, group: "lists" as const, btn: x })),
+    ...blocks.map((x) => ({ key: x.key, group: "blocks" as const, btn: x })),
+    ...media.map((x) => ({ key: x.key, group: "media" as const, btn: x })),
+    { key: "insert", group: "insert" },
+    ...right.map((x) => ({ key: x.key, group: "right" as const, btn: x })),
+  ];
+
+  const s = React.useMemo(() => bodyStats(body), [body]);
+  const n = (x: number) => x.toLocaleString(locale);
+  const wordsText = t("blk_words", { n: n(s.words) });
+  const minText = s.words ? t("blk_read_min", { n: n(s.minutes) }) : "";
+
+  // ── which items fit; the rest go into More ──
   const barRef = React.useRef<HTMLDivElement>(null);
   const measureRef = React.useRef<HTMLDivElement>(null);
-  const [hidden, setHidden] = React.useState<Set<GroupKey>>(new Set());
-  // The order groups leave in when the bar gets narrow.
-  const DROP: GroupKey[] = ["blocks", "insert", "style", "find", "marks", "media", "history"];
+  const [hidden, setHidden] = React.useState<ReadonlySet<string>>(new Set());
+  const fitRef = React.useRef<() => void>(() => undefined);
+  fitRef.current = () => {
+    const bar = barRef.current;
+    const m = measureRef.current;
+    if (!bar || !m) return;
+    const avail = bar.clientWidth;
+    if (!avail) return;
+    // Width with the side margins (the group line has some).
+    const w = (k: string) => {
+      const el = m.querySelector<HTMLElement>(`[data-tb-m="${k}"]`);
+      if (!el) return 0;
+      const st = getComputedStyle(el);
+      return el.getBoundingClientRect().width + (parseFloat(st.marginLeft) || 0) + (parseFloat(st.marginRight) || 0);
+    };
+    const cs = getComputedStyle(bar);
+    const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    const lead = bar.querySelector<HTMLElement>('[data-tb-group="lead"]')?.getBoundingClientRect().width ?? 0;
+    const items: FitItem[] = slots.map((x) => ({ key: x.key, group: x.group, width: w(x.key) + GAP }));
+    if (!inline) {
+      const full = w("stat-full");
+      const short = w("stat-short");
+      items.push({ key: "stat-min", group: "stat", width: Math.max(0, full - short) }, { key: "stat", group: "stat", width: short + GAP });
+    }
+    // Padding, the label and view switch, the spacer (at least 4px) and 2px to spare for rounding.
+    // Inside the full-screen header a second spacer before the buttons centres them.
+    const fixed = pad + lead + GAP + 4 + GAP + 2 + (inline ? 4 + GAP : 0);
+    const out = fitToolbar({ avail, fixed, items, sep: w("sep") + GAP, more: w("more") + GAP, leadSep: !!view });
+    setHidden((old) => (old.size === out.size && [...out].every((k) => old.has(k)) ? old : out));
+  };
+  // Fit again when the bar or what is in it changes size, and when the set of buttons changes.
+  const signature = `${slots.map((x) => x.key).join(",")}|${view ?? ""}|${styleNow.cmd}|${wordsText}|${minText}|${locale}|${inline ? 1 : 0}`;
+  React.useLayoutEffect(() => fitRef.current(), [signature]);
   React.useLayoutEffect(() => {
     const bar = barRef.current;
     const m = measureRef.current;
     if (!bar || !m || typeof ResizeObserver === "undefined") return;
-    const fit = () => {
-      const avail = bar.clientWidth;
-      if (!avail) return;
-      const width = (k: string) => (m.querySelector<HTMLElement>(`[data-tb-group="${k}"]`)?.offsetWidth ?? 0) + 9;
-      const fixed = width("lead") + width("right") + width("stat") + 40;
-      let total = fixed + DROP.reduce((s, k) => s + width(k), 0);
-      const out = new Set<GroupKey>();
-      for (const k of DROP) {
-        if (total <= avail) break;
-        out.add(k);
-        total -= width(k);
-      }
-      setHidden((old) => (old.size === out.size && [...out].every((k) => old.has(k)) ? old : out));
-    };
-    fit();
-    const ro = new ResizeObserver(fit);
+    const ro = new ResizeObserver(() => fitRef.current());
     ro.observe(bar);
+    ro.observe(m);
+    const lead = bar.querySelector('[data-tb-group="lead"]');
+    if (lead) ro.observe(lead);
     return () => ro.disconnect();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── roving tab stop ──
   const [focusKey, setFocusKey] = React.useState(0);
@@ -543,46 +737,41 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
     const at = list.indexOf(document.activeElement as HTMLButtonElement);
     if (at < 0) return;
     e.preventDefault();
-    const n = e.key === "Home" ? 0 : e.key === "End" ? list.length - 1 : (at + (e.key === "ArrowRight" ? 1 : -1) + list.length) % list.length;
-    setFocusKey(n);
-    list[n].focus();
+    const k = e.key === "Home" ? 0 : e.key === "End" ? list.length - 1 : (at + (e.key === "ArrowRight" ? 1 : -1) + list.length) % list.length;
+    setFocusKey(k);
+    list[k].focus();
   };
   const onFocusIn = (e: React.FocusEvent) => {
     const at = items().indexOf(e.target as HTMLButtonElement);
     if (at >= 0 && at !== focusKey) setFocusKey(at);
   };
 
-  const s = React.useMemo(() => bodyStats(body), [body]);
-  const n = (x: number) => x.toLocaleString(locale);
-  const stat = (
-    <span title={`${t("blk_words", { n: n(s.words) })} · ${t("blk_chars", { n: n(s.chars) })}`} className="shrink-0 whitespace-nowrap px-1 text-xs tabular-nums text-muted-foreground">
-      {t("blk_words", { n: n(s.words) })}
-      {s.words ? <span className="hidden sm:inline"> · {t("blk_read_min", { n: n(s.minutes) })}</span> : null}
+  const statShown = !inline && !hidden.has("stat");
+  const stat = statShown ? (
+    <span data-tb-stat="" title={[wordsText, minText, t("blk_chars", { n: n(s.chars) })].filter(Boolean).join(" · ")} className={STAT}>
+      {wordsText}
+      {minText && !hidden.has("stat-min") ? ` · ${minText}` : null}
     </span>
-  );
+  ) : null;
 
-  const lead = (
-    <>
-      {label}
-      {view && onView ? (
-        <div role="group" aria-label={t("blk_view")} className="flex shrink-0 gap-0.5 rounded-md bg-muted p-0.5">
-          {(["blocks", "markdown"] as const).map((v) => (
-            <button
-              key={v}
-              type="button"
-              data-tb-item=""
-              tabIndex={-1}
-              aria-pressed={view === v}
-              onClick={() => onView(v)}
-              className={cn("h-6 whitespace-nowrap rounded px-2 text-xs outline-none transition-colors duration-100 focus-visible:ring-2 focus-visible:ring-ring", view === v ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
-            >
-              {t(v === "blocks" ? "blk_view_blocks" : "blk_view_markdown")}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </>
-  );
+  const viewSwitch =
+    view && onView ? (
+      <div role="group" aria-label={t("blk_view")} className="flex shrink-0 gap-0.5 rounded-md bg-muted p-0.5">
+        {(["blocks", "markdown"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            data-tb-item=""
+            tabIndex={-1}
+            aria-pressed={view === v}
+            onClick={() => onView(v)}
+            className={cn("h-6 whitespace-nowrap rounded px-2 text-xs outline-none transition-colors duration-100 focus-visible:ring-2 focus-visible:ring-ring", view === v ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
+          >
+            {t(v === "blocks" ? "blk_view_blocks" : "blk_view_markdown")}
+          </button>
+        ))}
+      </div>
+    ) : null;
 
   // Closing a menu: after an action that moved focus on purpose (into the text, a dialog, the find bar) focus
   // stays where the action put it; closed with Esc or a click outside, Radix puts it back on the menu button.
@@ -614,6 +803,23 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
     if (from && from.isConnected && !from.closest("[role=menu]")) from.focus();
     else b.after?.();
   };
+  const toText = () => commands?.focus();
+
+  const styleItems = styles.map((x) => (
+    <DropdownMenuItem key={x.cmd} disabled={!st(x.cmd).enabled} onClick={act(() => run(x.cmd), toText)} className="gap-2">
+      <x.icon className="size-4" />
+      <span className="grow">{t(x.label)}</span>
+      {st(x.cmd).active ? <Check aria-hidden className="size-3.5 text-muted-foreground" /> : null}
+      {x.keys ? <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(x.keys)}</kbd> : null}
+    </DropdownMenuItem>
+  ));
+  const insertItems = inserts.map((x) => (
+    <DropdownMenuItem key={x.cmd} onClick={act(() => run(x.cmd))} className="gap-2">
+      <x.icon className="size-4" />
+      <span className="grow">{t(x.label)}</span>
+      <span className="font-mono text-[11px] text-muted-foreground">{x.hint}</span>
+    </DropdownMenuItem>
+  ));
 
   const styleMenu = (
     <DropdownMenu modal={false}>
@@ -623,14 +829,8 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
           <ChevronDown className="size-3 text-muted-foreground" />
         </MenuButton>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-52" {...closeFocus(() => commands?.focus())}>
-        {styles.map((x) => (
-          <DropdownMenuItem key={x.cmd} onClick={act(() => run(x.cmd), () => commands?.focus())} className="gap-2">
-            <x.icon className="size-4" />
-            <span className="grow">{t(x.label)}</span>
-            <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(x.keys)}</kbd>
-          </DropdownMenuItem>
-        ))}
+      <DropdownMenuContent align="start" className="w-52" {...closeFocus(toText)}>
+        {styleItems}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -644,41 +844,68 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
         </MenuButton>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-60" {...closeFocus()}>
-        {inserts.map((x) => (
-          <DropdownMenuItem key={x.cmd} onClick={act(() => run(x.cmd))} className="gap-2">
-            <x.icon className="size-4" />
-            <span className="grow">{t(x.label)}</span>
-            <span className="font-mono text-[11px] text-muted-foreground">{x.hint}</span>
-          </DropdownMenuItem>
-        ))}
+        {insertItems}
       </DropdownMenuContent>
     </DropdownMenu>
   );
 
-  const group = (k: GroupKey, node: React.ReactNode, sep = true) =>
-    hidden.has(k) ? null : (
-      <React.Fragment key={k}>
-        {sep ? <Sep /> : null}
-        <div data-tb-group={k} className="flex shrink-0 items-center gap-px">
-          {node}
-        </div>
-      </React.Fragment>
+  const runBtn = (x: Btn) => (x.cmd ? run(x.cmd) : x.run?.());
+  const draw = (x: Slot) => (x.key === "style" ? <React.Fragment key="style">{styleMenu}</React.Fragment> : x.key === "insert" ? <React.Fragment key="insert">{insertMenu}</React.Fragment> : <ToolButton key={x.key} ref={x.btn!.ref} b={x.btn!} t={t} onRun={() => runBtn(x.btn!)} />);
+
+  const left: React.ReactNode[] = [];
+  let lineBefore = !!view;
+  for (const g of LEFT_GROUPS) {
+    const shown = slots.filter((x) => x.group === g && !hidden.has(x.key));
+    if (!shown.length) continue;
+    if (lineBefore) left.push(<Sep key={`sep-${g}`} />);
+    left.push(
+      <div key={g} data-tb-group={g} className="flex shrink-0 items-center gap-px">
+        {shown.map(draw)}
+      </div>,
     );
-  const buttons = (list: Btn[]) => list.map((x) => <ToolButton key={x.key} ref={x.ref} b={x} t={t} onRun={() => (x.cmd ? run(x.cmd) : x.run?.())} />);
-  const media = onMedia ? [{ key: "media", label: "media_insert_button" as MessageKey, icon: ImagePlus, run: onMedia, disabled: !canWrite }] : [];
+    lineBefore = true;
+  }
 
-  const leftGroups = () => (
-    <>
-      {group("history", buttons(history), !!view)}
-      {group("style", styleMenu)}
-      {group("marks", buttons(marks))}
-      {group("blocks", buttons(blocks))}
-      {media.length ? group("media", buttons(media)) : null}
-      {group("insert", insertMenu)}
-    </>
-  );
-
-  const more = hidden.size ? (
+  // Hidden items in More: flat, in toolbar order, a line between groups; text style and insert stay submenus.
+  const moreSlots = slots.filter((x) => hidden.has(x.key));
+  const moreBody: React.ReactNode[] = [];
+  let lastGroup: string | null = null;
+  for (const x of moreSlots) {
+    if (lastGroup !== null && lastGroup !== x.group) moreBody.push(<DropdownMenuSeparator key={`sep-${x.key}`} />);
+    lastGroup = x.group;
+    if (x.key === "style")
+      moreBody.push(
+        <DropdownMenuSub key="style">
+          <DropdownMenuSubTrigger className="gap-2" disabled={!styleEnabled}>
+            <Heading2 className="size-4" />
+            {t("tb_style")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-52">{styleItems}</DropdownMenuSubContent>
+        </DropdownMenuSub>,
+      );
+    else if (x.key === "insert")
+      moreBody.push(
+        <DropdownMenuSub key="insert">
+          <DropdownMenuSubTrigger className="gap-2" disabled={!insertEnabled}>
+            <Plus className="size-4" />
+            {t("tb_insert")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-60">{insertItems}</DropdownMenuSubContent>
+        </DropdownMenuSub>,
+      );
+    else {
+      const btn = x.btn!;
+      moreBody.push(
+        <DropdownMenuItem key={x.key} data-tb-more={x.key} disabled={btn.disabled} onClick={act(() => runBtn(btn), btn.cmd ? toText : undefined)} className="gap-2">
+          <btn.icon className="size-4" />
+          <span className="grow">{t(btn.label)}</span>
+          {btn.pressed ? <Check aria-hidden className="size-3.5 text-muted-foreground" /> : null}
+          {btn.keys ? <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(btn.keys)}</kbd> : null}
+        </DropdownMenuItem>,
+      );
+    }
+  }
+  const more = moreSlots.length ? (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <MenuButton onFocus={onTriggerFocus} label={t("tb_more")}>
@@ -686,144 +913,55 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
         </MenuButton>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-60" {...closeFocus()}>
-        {hidden.has("style") ? (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="gap-2">
-              <Heading2 className="size-4" />
-              {t("tb_style")}
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              {styles.map((x) => (
-                <DropdownMenuItem key={x.cmd} disabled={!st(x.cmd).enabled} onClick={act(() => run(x.cmd))} className="gap-2">
-                  <x.icon className="size-4" />
-                  {t(x.label)}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        ) : null}
-        {hidden.has("marks") ? (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="gap-2">
-              <Bold className="size-4" />
-              {t("tb_marks")}
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              {marks.map((x) => (
-                <DropdownMenuItem key={x.key} disabled={x.disabled} onClick={act(() => run(x.cmd!))} className="gap-2">
-                  <x.icon className="size-4" />
-                  <span className="grow">{t(x.label)}</span>
-                  {x.keys ? <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(x.keys)}</kbd> : null}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        ) : null}
-        {hidden.has("blocks") ? (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="gap-2">
-              <List className="size-4" />
-              {t("tb_blocks")}
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              {blocks.map((x) => (
-                <DropdownMenuItem key={x.key} disabled={x.disabled} onClick={act(() => run(x.cmd!))} className="gap-2">
-                  <x.icon className="size-4" />
-                  {t(x.label)}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        ) : null}
-        {hidden.has("insert") ? (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="gap-2" disabled={!insertEnabled}>
-              <Plus className="size-4" />
-              {t("tb_insert")}
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              {inserts.map((x) => (
-                <DropdownMenuItem key={x.cmd} onClick={act(() => run(x.cmd))} className="gap-2">
-                  <x.icon className="size-4" />
-                  {t(x.label)}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        ) : null}
-        {hidden.has("media") && onMedia ? (
-          <DropdownMenuItem onClick={act(onMedia)} disabled={!canWrite} className="gap-2">
-            <ImagePlus className="size-4" />
-            {t("media_insert_button")}
-          </DropdownMenuItem>
-        ) : null}
-        {hidden.has("history") ? (
-          <>
-            <DropdownMenuSeparator />
-            {history.map((x) => (
-              <DropdownMenuItem key={x.key} disabled={x.disabled} onClick={act(() => run(x.cmd!))} className="gap-2">
-                <x.icon className="size-4" />
-                <span className="grow">{t(x.label)}</span>
-                {x.keys ? <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(x.keys)}</kbd> : null}
-              </DropdownMenuItem>
-            ))}
-          </>
-        ) : null}
-        {hidden.has("find") ? (
-          <>
-            <DropdownMenuSeparator />
-            {right
-              .filter((x) => x.key === "find" || x.key === "outline")
-              .map((x) => (
-                <DropdownMenuItem key={x.key} onClick={act(() => x.run?.())} className="gap-2">
-                  <x.icon className="size-4" />
-                  <span className="grow">{t(x.label)}</span>
-                  {x.keys ? <kbd className="font-mono text-[11px] text-muted-foreground">{shortcut(x.keys)}</kbd> : null}
-                </DropdownMenuItem>
-              ))}
-          </>
-        ) : null}
+        {moreBody}
       </DropdownMenuContent>
     </DropdownMenu>
   ) : null;
 
-  const rightShown = hidden.has("find") ? right.filter((x) => x.key !== "find" && x.key !== "outline") : right;
-
   return (
-    <div className="relative min-w-0 border-b">
-      <style>{`@keyframes cms-tip-in { from { opacity: 0; transform: translate(-50%, -2px) } to { opacity: 1; transform: translate(-50%, 0) } }`}</style>
-      <div ref={barRef} role="toolbar" aria-label={t("tb_label")} aria-orientation="horizontal" className="flex h-11 min-w-0 items-center gap-px overflow-visible px-2 sm:px-3" onKeyDown={onKeyDown} onFocus={onFocusIn}>
+    <div className={cn("relative min-w-0", !inline && "border-b", inline && "flex-1")}>
+      <div ref={barRef} role="toolbar" aria-label={t("tb_label")} aria-orientation="horizontal" className={cn("flex min-w-0 items-center gap-px overflow-visible", inline ? "h-12" : "h-11 px-2 sm:px-3")} onKeyDown={onKeyDown} onFocus={onFocusIn}>
         <div data-tb-group="lead" className="flex shrink-0 items-center gap-1.5">
-          {lead}
+          {label}
+          {viewSwitch}
         </div>
-        {leftGroups()}
+        {inline ? <span className="min-w-1 flex-1" /> : null}
+        {left}
         <span className="min-w-1 flex-1" />
         <div data-tb-group="right" className="flex shrink-0 items-center gap-px">
-          {buttons(rightShown)}
+          {slots.filter((x) => x.group === "right" && !hidden.has(x.key)).map(draw)}
           {more}
         </div>
-        <Sep />
+        {stat ? <Sep /> : null}
         {stat}
       </div>
-      {/* The same groups, never shown: their widths decide what fits. */}
-      <div ref={measureRef} aria-hidden className="pointer-events-none invisible absolute left-0 top-0 flex h-0 items-center gap-px overflow-hidden whitespace-nowrap">
-        <div data-tb-group="lead" className="flex items-center gap-1.5">
-          {view ? <span className="inline-block w-[130px]" /> : null}
-        </div>
-        {(["history", "style", "marks", "blocks", "media", "insert"] as GroupKey[]).map((k) => (
-          <div key={k} data-tb-group={k} className="flex items-center gap-px">
-            {k === "style" ? <span className="inline-block w-[84px]" /> : k === "insert" ? <span className="inline-block w-[74px]" /> : (k === "history" ? history : k === "marks" ? marks : k === "blocks" ? blocks : media).map((x) => <span key={x.key} className="inline-block size-7" />)}
-          </div>
-        ))}
-        <div data-tb-group="right" className="flex items-center gap-px">
-          {right.map((x) => (
-            <span key={x.key} className="inline-block size-7" />
-          ))}
-          <span className="inline-block size-7" />
-        </div>
-        <div data-tb-group="stat">
-          <span className="text-xs">{t("blk_words", { n: n(s.words) })} · {t("blk_read_min", { n: n(s.minutes) })}</span>
-        </div>
+      {/* Copies of the items, never shown: their widths decide what fits. */}
+      <div ref={measureRef} aria-hidden data-tb-measure="" className="pointer-events-none invisible absolute left-0 top-0 flex h-0 items-center gap-px overflow-hidden whitespace-nowrap">
+        {slots.map((x) =>
+          x.key === "style" ? (
+            <span key={x.key} data-tb-m="style" className={cn(BTN, WIDE, "min-w-[4.5rem] justify-between")}>
+              <span className="truncate">{t(styleNow.label)}</span>
+              <ChevronDown className="size-3" />
+            </span>
+          ) : x.key === "insert" ? (
+            <span key={x.key} data-tb-m="insert" className={cn(BTN, WIDE)}>
+              <Plus className="size-4" />
+              <span>{t("tb_insert_short")}</span>
+              <ChevronDown className="size-3" />
+            </span>
+          ) : (
+            <span key={x.key} data-tb-m={x.key} className={BTN} />
+          ),
+        )}
+        <span data-tb-m="more" className={BTN} />
+        <Sep data-tb-m="sep" />
+        <span data-tb-m="stat-full" className={STAT}>
+          {wordsText}
+          {minText ? ` · ${minText}` : null}
+        </span>
+        <span data-tb-m="stat-short" className={STAT}>
+          {wordsText}
+        </span>
       </div>
     </div>
   );
@@ -839,9 +977,10 @@ export interface FindBarProps {
   onClose: () => void;
   /** Text to start with (the selection when it was opened). */
   initial?: string;
+  className?: string;
 }
 
-export function FindBar({ commands, replace: withReplace, canWrite, onClose, initial }: FindBarProps) {
+export function FindBar({ commands, replace: withReplace, canWrite, onClose, initial, className }: FindBarProps) {
   const { t } = useCms();
   const [q, setQ] = React.useState(initial ?? "");
   const [rep, setRep] = React.useState("");
@@ -894,7 +1033,7 @@ export function FindBar({ commands, replace: withReplace, canWrite, onClose, ini
       role="search"
       aria-label={t("find_label")}
       data-cms-findbar=""
-      className="absolute right-3 top-12 z-40 flex w-[min(380px,calc(100%-1.5rem))] flex-col gap-1.5 rounded-xl border bg-background p-2 shadow-lg"
+      className={cn("absolute right-3 top-12 z-40 flex w-[min(380px,calc(100%-1.5rem))] flex-col gap-1.5 rounded-xl border bg-background p-2 shadow-lg", className)}
       style={{ animation: `cms-find-in 140ms ${EASE} both` }}
       onKeyDown={keys}
     >

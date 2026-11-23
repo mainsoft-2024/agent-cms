@@ -89,3 +89,10 @@ test("html: isolatedHtml keeps the HTML and adds the height report", () => {
   assert.ok(page.includes("agent-cms:height"));
   assert.ok(page.includes('src="/api/cms/files/abcdefabcdef/a.png"'));
 });
+
+test("html: a #### heading is an <h4> with its anchor", async () => {
+  const { markdownToHtml } = await import("./html");
+  const out = markdownToHtml("## Top\n\n#### Rotate a key {#rotate}\n\n#### Plain four");
+  assert.match(out, /<h4 id="rotate">Rotate a key<\/h4>/);
+  assert.match(out, /<h4 id="plain-four">Plain four<\/h4>/);
+});

@@ -88,7 +88,8 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   // 0.21.0: list or tree, the template picker, and deleting a document others point at.
   const [view, setView] = useLocalStorage<"list" | "tree">(`cms-list-view:${collection}`, "list");
   const [picking, setPicking] = React.useState(false);
-  const [referenced, setReferenced] = React.useState<{ slug: string; title: string }[]>([]);
+  // Documents other documents point at, asked one by one (delete or archive anyway).
+  const [referenced, setReferenced] = React.useState<{ slug: string; title: string; action: "delete" | "archive"; version?: number }[]>([]);
   /** "New document": with templates, choose one first; without, straight to the editor. */
   const startNew = async () => {
     if (!onNewDocument) return;
@@ -242,9 +243,9 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
         confirm.slugs.map((slug) => ({ slug, expectedVersion: bySlug.get(slug)?.version }))
       );
       const action = confirm.action;
-      const blocked = action === "delete" ? res.filter((r) => !r.ok && r.error?.code === "doc_referenced") : [];
+      const blocked = action === "delete" || action === "archive" ? res.filter((r) => !r.ok && r.error?.code === "doc_referenced") : [];
       if (blocked.length) {
-        setReferenced(blocked.map((r) => ({ slug: r.slug, title: bySlug.get(r.slug)?.title || r.slug })));
+        setReferenced(blocked.map((r) => ({ slug: r.slug, title: bySlug.get(r.slug)?.title || r.slug, action: action as "delete" | "archive", version: bySlug.get(r.slug)?.version })));
         res.splice(0, res.length, ...res.filter((r) => !blocked.includes(r)));
       }
       const done = res.filter((r) => r.ok);
@@ -742,15 +743,19 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       {referenced[0] ? (
         <ReferencedDialog
           collection={collection}
+          key={`${referenced[0].action}:${referenced[0].slug}`}
           slug={referenced[0].slug}
           title={referenced[0].title}
+          action={referenced[0].action}
+          expectedVersion={referenced[0].version}
           onClose={() => setReferenced((r) => r.slice(1))}
           onDone={() => {
-            toast(t("bulk_done_delete", { n: 1 }), { tone: "ok" });
+            const action = referenced[0].action;
+            toast(t(action === "archive" ? "bulk_done_archive" : "bulk_done_delete", { n: 1 }), { tone: "ok" });
             setReferenced((r) => r.slice(1));
             setReloadTick((n) => n + 1);
             counts.reload();
-            trashChanged();
+            if (action === "delete") trashChanged();
           }}
         />
       ) : null}

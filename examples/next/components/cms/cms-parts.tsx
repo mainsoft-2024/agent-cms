@@ -665,10 +665,14 @@ function Block1({ b, components }: { b: Block; components?: BlockComponents }) {
         <h2 id={b.id} className="mb-2 mt-6 text-lg font-semibold">
           <Inlines items={b.inline} />
         </h2>
-      ) : (
+      ) : b.level === 3 ? (
         <h3 id={b.id} className="mb-1.5 mt-4 font-semibold">
           <Inlines items={b.inline} />
         </h3>
+      ) : (
+        <h4 id={b.id} className="mb-1 mt-3 text-sm font-semibold">
+          <Inlines items={b.inline} />
+        </h4>
       );
     case "p":
       return (

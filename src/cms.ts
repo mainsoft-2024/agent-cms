@@ -14,7 +14,7 @@ import { createRoles, type UsersOptions } from "./roles";
 import { createStats } from "./stats";
 import { createTransfer } from "./transfer";
 import { createAssets, type MediaOptions } from "./assets";
-import { createModel, type RelatedDoc, type TreeNode } from "./model";
+import { createModel, type CmsModel, type RelatedDoc, type TreeNode } from "./model";
 import { DEFAULT_VIDEO_HOSTS } from "./video";
 import { createFlow, type ScheduledRun } from "./flow";
 import { createJobs, type JobsRun } from "./jobs";
@@ -56,6 +56,7 @@ import {
   type DocSummary,
   type KeyScope,
   type PublishCheckResult,
+  type RedirectListItem,
   type ReviewMark,
   type SearchMissEvent,
   type VersionChange,
@@ -763,6 +764,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
   /** Readers of this collection all see the same thing (no per-document read rule): it can be cached. */
   const cacheable = (col: string) => !!cacheStore && !collection(col).access?.read;
   function invalidate(col: string) {
+    // Redirects that follow a document read its address from a 30 s cache: a change here forgets it.
+    model.forgetTargets();
     if (!cacheStore) return;
     const gen = newGen();
     localGen.set(col, gen);
@@ -968,11 +971,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
     fail,
     diag: (path, code, params, severity) => ({ path, code, params, severity, message: formatMessage(messages, code, params) }),
     nowIso,
+    today: () => dayIn(timeZone, now()),
     report,
     urlOf: (col, slug) => urlOf(col, slug),
     redirects: opts.redirects ? { ttlMs: Math.max(1000, (typeof opts.redirects === "object" ? opts.redirects.ttlMs : undefined) ?? 30_000) } : false,
     videoHosts: opts.video?.hosts ?? DEFAULT_VIDEO_HOSTS,
     publicReadable: (col, slug) => readable({ kind: "anonymous" }, col, slug),
+    publicCopy: (doc) => {
+      if (!collections.has(doc.collection)) return null;
+      const pub = publicView(doc);
+      return pub && can({ kind: "anonymous" }, doc.collection, "read", pub) ? pub : null;
+    },
   });
   /** Files and documents a copy points at. */
   async function syncAllRefs(r: CmsRepo, doc: CmsDoc) {
@@ -1226,6 +1235,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (cur && content.slug !== cur.slug && cur.publishedVersion !== null && !model.redirectsOn()) diagnostics.push({ path: "slug", code: "slug_locked", params: {}, severity: "error", message: formatMessage(messages, "slug_locked") });
     const resolved = await model.resolveRelations(col, content.fields).catch(() => content.fields);
     diagnostics.push(...(await modelDiagnostics(col, content.slug, { ...content, fields: resolved ?? {} }, cur, repo, { publishing: true })));
+    // Warnings only (a save never waits on them): asked here, where editors see diagnostics.
+    diagnostics.push(...(await model.seoImageDiagnostics(col, normalized)));
     if (!cur && content.slug) {
       const rd = await model.redirectAt(col, content.slug);
       if (rd) diagnostics.push({ path: "slug", code: "redirect_taken", params: { from: rd.from, id: rd.id }, severity: "warning", message: formatMessage(messages, "redirect_taken", { from: rd.from }) });
@@ -2070,7 +2081,22 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return doc;
   }
 
-  async function archive(actor: Actor, col: string, slug: string, o: { expectedVersion?: number } = {}): Promise<CmsDoc> {
+  /** 409 `doc_referenced` with the documents that point at `cur` (unreadable ones counted without a name). */
+  async function assertNotReferenced(actor: Actor, cur: CmsDoc) {
+    const refs = await refsShown(actor, cur.id, { forDelete: true });
+    if (refs.length)
+      throw fail("doc_referenced", { count: refs.length }, { status: 409, diagnostics: refs.map((x) => ({ path: x.fields.join(","), code: "doc_referenced" as const, params: { collection: x.collection, slug: x.slug, title: x.title, count: refs.length }, severity: "error" as const, message: x.title })) });
+  }
+
+  /** Hide a published document. Documents that point at it are listed (409 `doc_referenced`) unless `force`. */
+  async function archive(actor: Actor, col: string, slug: string, o: { expectedVersion?: number; force?: boolean } = {}): Promise<CmsDoc> {
+    if (!o.force) {
+      // Asked before the transaction, like delete: the list reads other documents (and the reader's
+      // rules), which must not wait on this transaction's connection.
+      await ensureSchema();
+      const pre = await repo.findDoc(col, slug);
+      if (pre && can(actor, col, "publish", pre) && pre.publishedVersion !== null && pre.status !== "archived" && (o.expectedVersion === undefined || o.expectedVersion === pre.version)) await assertNotReferenced(actor, pre);
+    }
     const doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
       if (cur.publishedVersion === null) throw fail("not_published");
       if (cur.status === "archived") return cur;
@@ -2149,11 +2175,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const kids = (await repo.listDocs({ collection: col })).filter((d) => d.parentId === cur.id);
       if (kids.length) throw fail("doc_has_children", { count: kids.length }, { status: 409 });
     }
-    if (!o.force) {
-      const refs = await refsShown(actor, cur.id, { forDelete: true });
-      if (refs.length)
-        throw fail("doc_referenced", { count: refs.length }, { status: 409, diagnostics: refs.map((x) => ({ path: x.fields.join(","), code: "doc_referenced" as const, params: { collection: x.collection, slug: x.slug, title: x.title, count: refs.length }, severity: "error" as const, message: x.title })) });
-    }
+    if (!o.force) await assertNotReferenced(actor, cur);
     await gate("beforeDelete", actor, cur, contentOf(cur));
     // With a trash the row stays (and keeps its address) until it is restored or purged.
     await loggedTx(async (r, log) => {
@@ -2738,6 +2760,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     now,
     timeZone,
     dayIn,
+    redirects: !!opts.redirects,
     assertAdmin: (actor) => {
       if (!isAdmin(actor)) throw fail(actor.kind === "anonymous" ? "unauthorized" : "forbidden_admin");
     },
@@ -2943,7 +2966,26 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function move(actor: Actor, col: string, slug: string, to: { parentId: string | null; before?: string | null }): Promise<CmsDoc> {
     await ensureSchema();
     if (!model.treeOf(col)) throw fail("tree_off", { collection: col });
+    // Moves of one collection go one at a time: in this process by a queue, across processes by the
+    // database's lock (`lockTree`, held until the transaction ends). Two opposite moves at once would
+    // otherwise each pass the cycle check and together make a loop.
+    const prev = treeQueue.get(col) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((res) => (release = res));
+    const tail = prev.then(() => mine);
+    treeQueue.set(col, tail);
+    await prev;
+    try {
+      return await moveLocked(actor, col, slug, to);
+    } finally {
+      release();
+      if (treeQueue.get(col) === tail) treeQueue.delete(col);
+    }
+  }
+  const treeQueue = new Map<string, Promise<void>>();
+  async function moveLocked(actor: Actor, col: string, slug: string, to: { parentId: string | null; before?: string | null }): Promise<CmsDoc> {
     const out = await loggedTx(async (r, log) => {
+      await r.lockTree?.(col);
       const byId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slug) ? await r.findDocById(slug) : null;
       const cur = byId && byId.collection === col && !byId.deletedAt ? byId : await r.findDoc(col, slug);
       if (!cur) throw fail("not_found", { collection: col, slug });
@@ -3051,10 +3093,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const d = r.data as StoredTemplate;
     return { key: r.id, id: r.id, label: d.label, description: d.description, title: d.title, summary: d.summary, body: d.body, fields: d.fields, source: "admin", createdBy: d.createdBy ?? null, createdAt: r.createdAt };
   };
-  /** Templates for new documents: the collection's own, then the ones editors saved. */
+  /** Templates for new documents: the collection's own, then the ones editors saved. Read rights are enough (an agent with a read key may look); anonymous readers get none. */
   async function templates(actor: Actor, col: string): Promise<DocTemplate[]> {
     await ensureSchema();
-    assert(actor, col, "write");
+    if (actor.kind === "anonymous") throw fail("unauthorized");
+    assert(actor, col, "read");
     const code = (collection(col).templates ?? []).map((t) => ({ ...t, source: "code" as const }));
     const saved = (await repo.listRecords({ kind: "template", scope: col, order: "asc", limit: 200 })).map(templateOf);
     return [...code, ...saved];
@@ -3129,27 +3172,56 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
   const redirectsApi = {
     enabled: () => model.redirectsOn(),
-    async list(actor: Actor) {
+    /**
+     * Every redirect with its visits over the last 30 days (`hits30d`, `daily` oldest first) and, for one
+     * that follows a document, that document (`target`: null once it is gone).
+     */
+    async list(actor: Actor): Promise<RedirectListItem[]> {
       await ensureSchema();
       assertRedirectAdmin(actor);
-      return model.listRedirects();
+      const rows = await model.listRedirects();
+      const series = await model.redirectHitSeries(30);
+      const docs = await docsById(repo, [...new Set(rows.map((x) => x.toDocumentId).filter((x): x is string => !!x))]);
+      return rows.map((x) => {
+        const d = x.toDocumentId ? docs.get(x.toDocumentId) : undefined;
+        const s = series.get(x.id);
+        return {
+          ...x,
+          hits30d: s?.total ?? 0,
+          daily: s?.daily ?? new Array<number>(30).fill(0),
+          target: d && !d.deletedAt && collections.has(d.collection) ? { id: d.id, collection: d.collection, slug: d.published?.slug ?? d.slug, title: d.published?.title ?? d.title, published: d.publishedVersion !== null && d.status !== "archived" } : null,
+        };
+      });
     },
-    async create(actor: Actor, input: { from: string; to: string; status?: 301 | 302 }) {
+    /** Visits of one redirect per day over the last `days` days (at most 90), oldest first. */
+    async hits(actor: Actor, id: string, o: { days?: number } = {}): Promise<{ days: { day: string; n: number }[]; total: number }> {
       await ensureSchema();
       assertRedirectAdmin(actor);
-      const out = await repo.tx((r) => model.saveRedirect(r, { from: input.from, to: input.to, status: input.status === 302 ? 302 : 301, source: "manual", createdBy: actorRef(actor).label }));
+      if (!(await model.listRedirects()).some((x) => x.id === id)) throw fail("redirect_not_found");
+      const n = Math.min(90, Math.max(1, Math.floor(o.days ?? 30)));
+      const s = (await model.redirectHitSeries(n)).get(id);
+      const today = dayIn(timeZone, now());
+      return { days: Array.from({ length: n }, (_, i) => ({ day: addDays(today, i - (n - 1)), n: s?.daily[i] ?? 0 })), total: s?.total ?? 0 };
+    },
+    /** `toDocumentId`: follow that document's current public address (`to` is then ignored). */
+    async create(actor: Actor, input: { from: string; to?: string; toDocumentId?: string | null; status?: 301 | 302 }) {
+      await ensureSchema();
+      assertRedirectAdmin(actor);
+      const out = await repo.tx((r) => model.saveRedirect(r, { from: input.from, to: input.to ?? "", toDocumentId: input.toDocumentId || null, status: input.status === 302 ? 302 : 301, source: "manual", createdBy: actorRef(actor).label }));
       model.forgetRedirects();
-      audit(actor, "redirect.create", { detail: { id: out.id, from: out.from, to: out.to } });
+      audit(actor, "redirect.create", { detail: { id: out.id, from: out.from, to: out.to, ...(out.toDocumentId ? { toDocumentId: out.toDocumentId } : {}) } });
       return out;
     },
-    async update(actor: Actor, id: string, patch: { from?: string; to?: string; status?: 301 | 302 }) {
+    /** A new `to` stops following a document; a new `toDocumentId` starts (null: back to the address in `to`). */
+    async update(actor: Actor, id: string, patch: { from?: string; to?: string; toDocumentId?: string | null; status?: 301 | 302 }) {
       await ensureSchema();
       assertRedirectAdmin(actor);
       const cur = (await model.listRedirects()).find((x) => x.id === id);
       if (!cur) throw fail("redirect_not_found");
-      const out = await repo.tx((r) => model.saveRedirect(r, { id, from: patch.from ?? cur.from, to: patch.to ?? cur.to, status: patch.status ?? cur.status, toDocumentId: patch.to !== undefined ? null : cur.toDocumentId, source: "manual", createdBy: cur.createdBy }));
+      const toDocumentId = patch.toDocumentId !== undefined ? patch.toDocumentId || null : patch.to !== undefined ? null : cur.toDocumentId;
+      const out = await repo.tx((r) => model.saveRedirect(r, { id, from: patch.from ?? cur.from, to: patch.to ?? cur.to, status: patch.status ?? cur.status, toDocumentId, source: "manual", createdBy: cur.createdBy }));
       model.forgetRedirects();
-      audit(actor, "redirect.update", { detail: { id, from: out.from, to: out.to } });
+      audit(actor, "redirect.update", { detail: { id, from: out.from, to: out.to, ...(out.toDocumentId ? { toDocumentId: out.toDocumentId } : {}) } });
       return out;
     },
     async remove(actor: Actor, id: string) {
@@ -3165,10 +3237,16 @@ export function createCmsCore(opts: CreateCmsOptions) {
     resolve: (path: string) => model.resolveRedirect(path),
   };
 
-  /** Search engine details of a document as `actor` reads it. */
-  async function seoFor(actor: Actor, col: string, slug: string, o: { draft?: boolean } = {}) {
-    const doc = await get(actor, col, slug, o);
-    return model.seoFor(doc);
+  type SeoSource = Pick<CmsDoc, "collection" | "slug" | "title" | "summary" | "body"> & { seo?: DocSeo | null };
+  /**
+   * Search engine details: `seoFor(doc)` fills the gaps of a document you already read (no rules are
+   * asked: it is your copy); `seoFor(actor, col, slug)` reads it first as `actor` would.
+   */
+  function seoFor(doc: SeoSource): ReturnType<CmsModel["seoFor"]>;
+  function seoFor(actor: Actor, col: string, slug: string, o?: { draft?: boolean }): Promise<ReturnType<CmsModel["seoFor"]>>;
+  function seoFor(a: Actor | SeoSource, col?: string, slug?: string, o: { draft?: boolean } = {}): ReturnType<CmsModel["seoFor"]> | Promise<ReturnType<CmsModel["seoFor"]>> {
+    if (col === undefined && "collection" in a) return model.seoFor(a);
+    return get(a as Actor, col!, slug!, o).then((doc) => model.seoFor(doc));
   }
   /** An address for a title (`slugs.hangul`: romanized by default). Taken addresses get -2, -3… */
   async function suggestSlug(actor: Actor, col: string, title: string): Promise<string> {
@@ -3252,9 +3330,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
     deleteTemplate,
     snippetUses,
     redirects: redirectsApi,
+    /** Where an old address goes now (the plan's name for `redirects.resolve`; public, counts the visit). */
+    resolveRedirect: (path: string) => model.resolveRedirect(path),
     videoHosts: model.videoHosts as readonly string[],
     seoFor,
-    seoOf: (doc: Pick<CmsDoc, "collection" | "slug" | "title" | "summary" | "body"> & { seo?: DocSeo | null }) => model.seoFor(doc),
+    /** `seoFor(doc)` under its 0.21.0 first-pass name. */
+    seoOf: (doc: SeoSource) => model.seoFor(doc),
     sitemap: (origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string } = {}) => Promise.resolve(ensureSchema()).then(() => model.sitemap(origin, o)),
     suggestSlug,
     /** Old heading anchors by current anchor (public renders keep old links working). */
@@ -3556,7 +3637,8 @@ export type Cms<C extends readonly AnyCollection[] = readonly AnyCollection[]> =
   create<N extends CollectionName<C>>(actor: Actor, col: N, input: DocInput<FieldsOf<C, N>>, o?: WriteOptions): Promise<TypedDoc<FieldsOf<C, N>>>;
   update<N extends CollectionName<C>>(actor: Actor, col: N, slug: string, input: DocInput<FieldsOf<C, N>>, o?: WriteOptions): Promise<TypedDoc<FieldsOf<C, N>>>;
   publish<N extends CollectionName<C>>(actor: Actor, col: N, slug: string, o?: { version?: number; expectedVersion?: number; documentId?: string }): Promise<TypedDoc<FieldsOf<C, N>>>;
-  archive<N extends CollectionName<C>>(actor: Actor, col: N, slug: string, o?: { expectedVersion?: number }): Promise<TypedDoc<FieldsOf<C, N>>>;
+  /** Documents that point here make it answer 409 `doc_referenced` with their list, unless `force`. */
+  archive<N extends CollectionName<C>>(actor: Actor, col: N, slug: string, o?: { expectedVersion?: number; force?: boolean }): Promise<TypedDoc<FieldsOf<C, N>>>;
   unarchive<N extends CollectionName<C>>(actor: Actor, col: N, slug: string, o?: { expectedVersion?: number }): Promise<TypedDoc<FieldsOf<C, N>>>;
   unpublish<N extends CollectionName<C>>(actor: Actor, col: N, slug: string, o?: { expectedVersion?: number }): Promise<TypedDoc<FieldsOf<C, N>>>;
   restore<N extends CollectionName<C>>(actor: Actor, col: N, slug: string, n: number, o?: WriteOptions): Promise<TypedDoc<FieldsOf<C, N>>>;

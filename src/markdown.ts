@@ -3,7 +3,7 @@
  * Framework-free: the app renders the tree with its own components, so a doc
  * looks native wherever it shows (public page, admin preview, chat).
  *
- * Supported: `## / ###` headings, paragraphs, `-`/`*` and `1.` lists, task
+ * Supported: `## / ### / ####` headings, paragraphs, `-`/`*` and `1.` lists, task
  * lists `- [ ]` / `- [x]`, `>` quotes and `> [!note]` callouts, fenced code,
  * `---`, GFM tables, and inline **bold**, *italic* (or _italic_), ~~strike~~,
  * `code`, [text](url), a hard line break (a line ending in `\`) and the CMS
@@ -52,7 +52,7 @@ export type TableAlign = "left" | "center" | "right" | null;
 
 type BlockBody =
   /** `pinned`: the id was written after the heading (`## Title {#id}`, 0.21.0) and stays when the text changes. */
-  | { t: "heading"; level: 2 | 3; id: string; text: string; inline: Inline[]; pinned?: true }
+  | { t: "heading"; level: 2 | 3 | 4; id: string; text: string; inline: Inline[]; pinned?: true }
   | { t: "p"; inline: Inline[] }
   /**
    * `start`: the first number of an ordered list when it is not 1.
@@ -85,7 +85,7 @@ type BlockBody =
 export interface TocItem {
   id: string;
   text: string;
-  level: 2 | 3;
+  level: 2 | 3 | 4;
 }
 
 export const APP_LINK_RE = /\[\[link:([a-z0-9][a-z0-9._-]*)\|([^\]]+)\]\]/gi;
@@ -475,15 +475,15 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
       i = end;
       continue;
     }
-    const h = /^(#{2,3})\s+(.+?)\s*#*\s*$/.exec(line);
+    const h = /^(#{2,4})\s+(.+?)\s*#*\s*$/.exec(line);
     if (h) {
       flush();
       const parts = headingParts(h[2]);
       const inline = parseInline(parts.text);
       if (parts.pinned) {
         used.set(parts.pinned, (used.get(parts.pinned) ?? 0) + 1);
-        push({ t: "heading", level: h[1].length as 2 | 3, id: parts.pinned, text: inlineText(inline), inline, pinned: true }, i, i);
-      } else push({ t: "heading", level: h[1].length as 2 | 3, id: uniqueId(inlineText(inline)), text: inlineText(inline), inline }, i, i);
+        push({ t: "heading", level: h[1].length as 2 | 3 | 4, id: parts.pinned, text: inlineText(inline), inline, pinned: true }, i, i);
+      } else push({ t: "heading", level: h[1].length as 2 | 3 | 4, id: uniqueId(inlineText(inline)), text: inlineText(inline), inline }, i, i);
       continue;
     }
     if (/^#\s+/.test(line)) {
@@ -684,7 +684,7 @@ const cell = (items: Inline[]) => {
 function blockMd(b: Block): string {
   switch (b.t) {
     case "heading":
-      return `${b.level === 2 ? "##" : "###"} ${inlineToMarkdown(b.inline)}${b.pinned ? ` {#${b.id}}` : ""}`;
+      return `${"#".repeat(b.level)} ${inlineToMarkdown(b.inline)}${b.pinned ? ` {#${b.id}}` : ""}`;
     case "p":
       return inlineToMarkdown(b.inline);
     case "list":
@@ -892,7 +892,7 @@ export function plainText(body: string): string {
       " "
     )
     .replace(/^:::(?:toggle|columns|col|steps|card|video)?[ \t]*/gim, "")
-    .replace(/^(#{1,3}\s+.*?)\s+\{#[\p{L}\p{N}][\p{L}\p{N}_-]*\}\s*$/gmu, "$1")
+    .replace(/^(#{1,4}\s+.*?)\s+\{#[\p{L}\p{N}][\p{L}\p{N}_-]*\}\s*$/gmu, "$1")
     .replace(APP_LINK_RE, "$2")
     .replace(IMAGE_ANY, (_m, alt: string, _t: string, cap?: string) => ` ${alt} ${cap ?? ""} `)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
@@ -938,8 +938,8 @@ export function splitSections(body: string): Section[] {
       cur = { anchor: n && !parts.pinned ? `${base}-${n}` : base, heading: text, markdown: "" };
       continue;
     }
-    // ### headings also take an anchor slot so ids match parseMarkdown().
-    const h3 = !inFence ? /^###\s+(.+?)\s*#*\s*$/.exec(line) : null;
+    // ### and #### headings also take an anchor slot so ids match parseMarkdown().
+    const h3 = !inFence ? /^#{3,4}\s+(.+?)\s*#*\s*$/.exec(line) : null;
     if (h3) {
       const p3 = headingParts(h3[1]);
       const base = p3.pinned ?? anchorOf(inlineText(parseInline(p3.text)));

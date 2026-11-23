@@ -47,6 +47,11 @@ export interface AgentLookup {
   /** With a budget: tokens used and sections left out. */
   usedTokens?: number;
   dropped?: string[];
+  /**
+   * Citation ids under a heading's old anchor (renamed headings keep an alias) → the id under its
+   * current anchor, for the documents in `sections`. `verifyCitations` accepts the old ones.
+   */
+  aliases?: Record<string, string>;
 }
 
 export interface LookupOptions {
@@ -189,6 +194,15 @@ export async function lookupForAgent(cms: CmsLike, actor: Actor, collections: st
     sections = candidates.map((s) => (s.text.length > MAX_SECTION_CHARS ? { ...s, text: cutAtSentence(s.text, MAX_SECTION_CHARS), truncated: true } : s));
   }
 
+  // Old anchors of headings that were renamed: a citation remembered from before still checks out.
+  const aliases: Record<string, string> = Object.create(null);
+  const docOf = new Map(hits.map((h) => [`${h.collection}/${h.slug}`, h.docId]));
+  for (const [key, docId] of docOf) {
+    const [col, slug] = [key.slice(0, key.indexOf("/")), key.slice(key.indexOf("/") + 1)];
+    const map = await core.anchorAliases(docId).catch(() => ({}) as Record<string, string[]>);
+    for (const [current, olds] of Object.entries(map)) for (const old of olds) if (old !== current) aliases[citationId(col, slug, old)] = citationId(col, slug, current);
+  }
+
   return {
     found: sections.length > 0,
     sections,
@@ -196,6 +210,7 @@ export async function lookupForAgent(cms: CmsLike, actor: Actor, collections: st
     docIds: [...new Set(hits.map((h) => h.docId))],
     context: envelope(sections),
     ...(usedTokens !== undefined ? { usedTokens, dropped } : {}),
+    ...(Object.keys(aliases).length ? { aliases: { ...aliases } } : {}),
   };
 }
 
@@ -209,17 +224,24 @@ export interface Citation {
 /**
  * Check an answer's citations against the lookup it was written from: ids
  * that were not handed to the model, and quotes that are not in the section.
+ * A citation under a heading's old anchor (`lookup.aliases`, kept when a heading
+ * is renamed) is valid and comes back with the current id (`renamedFrom`: the one cited).
  */
-export function verifyCitations(citations: Citation[], lookup: Pick<AgentLookup, "sections">): { valid: Citation[]; invalid: (Citation & { reason: "unknown_id" | "quote_not_found" })[] } {
+export function verifyCitations(citations: Citation[], lookup: Pick<AgentLookup, "sections"> & { aliases?: Record<string, string> }): { valid: (Citation & { renamedFrom?: string })[]; invalid: (Citation & { reason: "unknown_id" | "quote_not_found" })[] } {
   const byId = new Map(lookup.sections.map((s) => [s.id, s]));
   const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-  const valid: Citation[] = [];
+  const valid: (Citation & { renamedFrom?: string })[] = [];
   const invalid: (Citation & { reason: "unknown_id" | "quote_not_found" })[] = [];
   for (const c of citations) {
-    const s = byId.get(c.id);
+    let s = byId.get(c.id);
+    let current: string | null = null;
+    if (!s && lookup.aliases && Object.prototype.hasOwnProperty.call(lookup.aliases, c.id)) {
+      current = lookup.aliases[c.id];
+      s = byId.get(current);
+    }
     if (!s) invalid.push({ ...c, reason: "unknown_id" });
     else if (c.quote && !norm(s.text).includes(norm(c.quote))) invalid.push({ ...c, reason: "quote_not_found" });
-    else valid.push(c);
+    else valid.push(current ? { ...c, id: current, renamedFrom: c.id } : c);
   }
   return { valid, invalid };
 }
