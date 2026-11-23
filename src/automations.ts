@@ -6,6 +6,7 @@
  */
 import type { CmsErrorCode, CmsErrorOptions, ErrorParams } from "./errors";
 import type { CmsJobs } from "./jobs";
+import { docAddress } from "./locale";
 import type { OutEvent } from "./outbox";
 import type { CmsRepo } from "./repo";
 import type { Actor, AuditAction, CmsDoc, CmsRecord, DocContent } from "./types";
@@ -92,6 +93,8 @@ export interface AutomationsContext {
   jobs: CmsJobs;
   collections: () => string[];
   findDoc: (collection: string, slug: string) => Promise<CmsDoc | null>;
+  /** 0.22.0 review: how the CMS names the document an event is about (`slug@locale` for a translation). Default: the slug. */
+  addressOf?: (collection: string, slug: string, locale: string | null | undefined) => string;
   /** The document as `actor` may see it (draft or published copy, hidden fields removed) and the field paths hidden from them; null when they may not see it. */
   viewDoc?: (actor: Actor, collection: string, slug: string) => Promise<{ doc: CmsDoc; hidden: string[] } | null>;
   update: (actor: Actor, collection: string, slug: string, input: Partial<DocContent>) => Promise<CmsDoc>;
@@ -174,7 +177,7 @@ export function createAutomations(ctx: AutomationsContext) {
     if (action.type === "add_keyword") {
       const d = need();
       if (d.keywords.includes(action.name!)) return "already there";
-      await ctx.update(actor, d.collection, d.slug, { keywords: [...d.keywords, action.name!] });
+      await ctx.update(actor, d.collection, docAddress(d), { keywords: [...d.keywords, action.name!] });
       return "added";
     }
     if (action.type === "set_field") {
@@ -186,13 +189,13 @@ export function createAutomations(ctx: AutomationsContext) {
         // plain text
       }
       const path = action.name!.replace(/^fields\./, "").split(".");
-      if (["summary", "category", "title"].includes(action.name!)) await ctx.update(actor, d.collection, d.slug, { [action.name!]: value } as Partial<DocContent>);
-      else await ctx.update(actor, d.collection, d.slug, { fields: path.reduceRight<unknown>((acc, k) => ({ [k]: acc }), value) as Record<string, unknown> });
+      if (["summary", "category", "title"].includes(action.name!)) await ctx.update(actor, d.collection, docAddress(d), { [action.name!]: value } as Partial<DocContent>);
+      else await ctx.update(actor, d.collection, docAddress(d), { fields: path.reduceRight<unknown>((acc, k) => ({ [k]: acc }), value) as Record<string, unknown> });
       return "set";
     }
     if (action.type === "add_to_release") {
       const d = need();
-      await ctx.addToRelease(actor, action.target!, { collection: d.collection, slug: d.slug });
+      await ctx.addToRelease(actor, action.target!, { collection: d.collection, slug: docAddress(d) });
       return "added";
     }
     const fn = action.type === "call" ? ctx.options.actions?.[action.target!] : extra.get(action.type)?.run;
@@ -209,7 +212,10 @@ export function createAutomations(ctx: AutomationsContext) {
   }
 
   async function execute(auto: CmsAutomation, e: AutomationActionContext["event"]) {
-    const doc = e.collection && e.slug ? await ctx.findDoc(e.collection, e.slug) : null;
+    // An event about a translation names its language: the automation acts on that document, not the source.
+    const locale = "locale" in e ? (e as { locale?: string }).locale : undefined;
+    const addr = e.collection && e.slug ? (ctx.addressOf ? ctx.addressOf(e.collection, e.slug, locale) : e.slug) : null;
+    const doc = e.collection && addr ? await ctx.findDoc(e.collection, addr) : null;
     const base = { event: e.event, collection: e.collection, slug: e.slug, title: doc?.title ?? null };
     const checks = evaluate(auto, doc, "actor" in e ? e : {});
     if (checks.some((c) => !c.ok)) return record(auto, { ...base, state: "skipped", steps: [], error: null });
@@ -220,7 +226,7 @@ export function createAutomations(ctx: AutomationsContext) {
     for (const action of auto.actions) {
       try {
         steps.push({ type: action.type, ok: true, note: await act(auto, action, cur, e, actor) });
-        if (cur) cur = (await ctx.findDoc(cur.collection, cur.slug)) ?? cur;
+        if (cur) cur = (await ctx.findDoc(cur.collection, docAddress(cur))) ?? cur;
       } catch (err) {
         error = (err instanceof Error ? err.message : String(err)).slice(0, 500);
         steps.push({ type: action.type, ok: false, note: error });

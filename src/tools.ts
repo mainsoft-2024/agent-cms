@@ -339,9 +339,15 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "bulk_documents",
     needs: "publish",
-    description: "Publish, unpublish, archive, unarchive or delete several documents. Each one succeeds or fails on its own; the result lists both.",
-    input: z.object({ collection: col, action: z.enum(BULK_ACTIONS), slugs: z.array(z.string()).min(1).max(100) }),
-    run: async (cms, actor, a) => ({ results: await cms.bulk(actor, a.collection as string, a.action as never, (a.slugs as string[]).map((s) => ({ slug: s }))) }),
+    description: "Publish, unpublish, archive, unarchive or delete several documents. Each one succeeds or fails on its own; the result lists both. With locale, the translations in that language (the sources stay as they are).",
+    input: z.object({ collection: col, action: z.enum(BULK_ACTIONS), slugs: z.array(z.string()).min(1).max(100), locale: localeArg }),
+    run: async (cms, actor, a) => {
+      const c = a.collection as string;
+      const at = (s: string) => (a.locale ? cms.address(c, s, a.locale as string, { write: true }) : s);
+      const results = await cms.bulk(actor, c, a.action as never, (a.slugs as string[]).map((s) => ({ slug: at(s) })));
+      // Answered with the slug that was asked for (and the language), not the internal address.
+      return { results: results.map((r, i) => ({ ...r, slug: (a.slugs as string[])[i] ?? r.slug, ...(a.locale ? { locale: a.locale as string } : {}) })) };
+    },
   },
   {
     name: "list_versions",
@@ -500,10 +506,12 @@ export const CMS_TOOLS: CmsToolDef[] = [
     name: "add_to_release",
     needs: "write",
     description: "Put documents in a release. Each is pinned at its latest version now; add it again after more edits to move the pin. action unpublish takes the document down when the release goes out. A document can be in one open release only.",
-    input: z.object({ id: z.string().describe("Release id (list_releases)"), items: z.array(z.object({ collection: col, slug, action: z.enum(["publish", "unpublish"]).optional() })).min(1).max(50) }),
+    input: z.object({ id: z.string().describe("Release id (list_releases)"), items: z.array(z.object({ collection: col, slug, action: z.enum(["publish", "unpublish"]).optional(), locale: localeArg })).min(1).max(50) }),
     run: async (cms, actor, a) => {
-      const r = await cms.releases.add(actor, a.id as string, a.items as { collection: string; slug: string; action?: "publish" | "unpublish" }[]);
-      return { id: r.id, name: r.name, items: r.items.map((i) => ({ collection: i.collection, slug: i.slug, action: i.action, version: i.version })) };
+      // Each item may name its language: that translation goes in the release, not its source.
+      const items = (a.items as { collection: string; slug: string; action?: "publish" | "unpublish"; locale?: string }[]).map(({ locale, ...it }) => ({ ...it, slug: locale ? cms.address(it.collection, it.slug, locale, { write: true }) : it.slug }));
+      const r = await cms.releases.add(actor, a.id as string, items);
+      return { id: r.id, name: r.name, items: r.items.map((i) => ({ collection: i.collection, slug: i.slug, ...(i.locale ? { locale: i.locale } : {}), action: i.action, version: i.version })) };
     },
   },
   {
@@ -520,7 +528,7 @@ export const CMS_TOOLS: CmsToolDef[] = [
     name: "list_translations",
     locales: true,
     description:
-      "Every language of a document with its translation status: source (the default language), missing (start one with create_document locale=…), outdated (the source was published again since the translation was last aligned: compare and update it), current. Needs write access.",
+      "Every language of a document with its translation status: source (the default language), missing (start one with create_document locale=…), outdated (the source was published again since the translation was last aligned: compare and update it), current. Editors of the source get every language with its working state; anyone else only the languages whose published copy they may read (published version numbers, no draft details).",
     input: z.object({ collection: col, slug }),
     run: async (cms, actor, a) => cms.translations(actor, a.collection as string, a.slug as string),
   },

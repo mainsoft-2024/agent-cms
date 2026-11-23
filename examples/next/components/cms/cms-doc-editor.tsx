@@ -429,22 +429,37 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
   /** Switching language with unsaved edits: the language asked for while the person decides. */
   const [leaveTo, setLeaveTo] = React.useState<string | null>(null);
   const [leaving, setLeaving] = React.useState(false);
-  const openAddress = (addr: string) => {
+  /** Set while a move the person confirmed here runs (the router's own question is skipped once). */
+  const leaveConfirmed = React.useRef(false);
+  const openAddress = (addr: string, confirmed = false) => {
     setLeaveTo(null);
-    if (onOpenDocument) onOpenDocument(collection, addr);
-    else setSlugOverride({ from: slugProp, to: addr });
+    leaveConfirmed.current = confirmed;
+    try {
+      if (onOpenDocument) onOpenDocument(collection, addr);
+      else setSlugOverride({ from: slugProp, to: addr });
+    } finally {
+      leaveConfirmed.current = false;
+    }
   };
   const addressOf = (l: string) => (!baseSlug ? "" : l === defaultLocale ? baseSlug : `${baseSlug}@${l}`);
   const markAligned = async () => {
     if (!baseSlug || !viewLocale) return;
     setAligning(true);
+    // The version on screen is the one the person checked: say exactly that one.
+    const shown = refVersion ?? undefined;
     try {
-      const d = await client.markAligned(collection, baseSlug, viewLocale);
+      const d = await client.markAligned(collection, baseSlug, viewLocale, shown);
       setDoc((prev) => (prev ? { ...prev, sourceVersion: d.sourceVersion } : prev));
       setChangesOpen(false);
       // The buttons are gone: focus stays in the bar, on what it says now.
       requestAnimationFrame(() => document.getElementById("cms-locale-status")?.focus());
       toast(t("locale_marked", { version: d.sourceVersion ?? refVersion ?? "" }), { tone: "ok" });
+      // The source moved on meanwhile (published again): the bar shows it as changed; say so.
+      const latest = (await client.translations(collection, baseSlug).catch(() => null))?.sourceVersion ?? null;
+      if (shown && latest && latest > shown) {
+        setChangesOpen(true);
+        toast(t("locale_source_newer", { version: latest }));
+      }
     } catch (e) {
       toast(errorMessage(e, t), { tone: "error" });
     } finally {
@@ -623,6 +638,10 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
   // Field problems while the fields are folded away in full screen: a dot on the button, and the fields open
   // by themselves when a new error appears (the save that failed points at them).
   const fieldErrors = shownProblems.filter((p) => p.severity === "error" && problemKey(p.path) !== "body").length;
+  // Folded document info opens when one of its fields has an error (so the error is not hidden).
+  React.useEffect(() => {
+    if (fieldErrors) setInfoOpen(true);
+  }, [fieldErrors > 0]); // eslint-disable-line react-hooks/exhaustive-deps
   const lastFieldErrors = React.useRef(0);
   React.useEffect(() => {
     if (focus && fieldErrors > lastFieldErrors.current) setFocusFields(true);
@@ -1076,6 +1095,8 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
   React.useEffect(() => {
     if (!unsaved) return;
     const on = (e: BeforeUnloadEvent) => {
+      // The person already chose to leave in this screen's own dialog: the router does not ask again.
+      if (leaveConfirmed.current) return;
       e.preventDefault();
       e.returnValue = "";
     };
@@ -1160,7 +1181,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
       locale={leaveTo}
       busy={leaving}
       onCancel={() => setLeaveTo(null)}
-      onDiscard={() => leaveTo && openAddress(addressOf(leaveTo))}
+      onDiscard={() => leaveTo && openAddress(addressOf(leaveTo), true)}
       onSave={() => {
         const to = leaveTo;
         if (!to) return;
@@ -1168,7 +1189,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
         void save(false).then(
           (d) => {
             setLeaving(false);
-            if (d) openAddress(addressOf(to));
+            if (d) openAddress(addressOf(to), true);
             else setLeaveTo(null);
           },
           () => (setLeaving(false), setLeaveTo(null))
@@ -1932,23 +1953,24 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
         {strips}
         {trBar}
         <Tabs value={mobileTab} onValueChange={(v) => setMobileTab(String(v))} className="flex min-h-0 flex-1 flex-col">
-          <div className="flex items-center gap-1.5 border-b px-4 py-2">
+          {/* Four tabs (a translation has Source too) and the state wrap instead of running off a 360px screen. */}
+          <div className="flex flex-wrap items-center gap-1.5 border-b px-4 py-2">
             {stateBits}
             <span className="flex-1" />
-            <TabsList className="h-8">
-              <TabsTrigger value="edit" className="h-6 text-xs">
+            <TabsList className="h-8 max-w-full">
+              <TabsTrigger value="edit" className={cn("h-6 text-xs", sourcePane && "px-2")}>
                 {t("edit")}
               </TabsTrigger>
               {sourcePane ? (
-                <TabsTrigger value="source" className="h-6 text-xs">
+                <TabsTrigger value="source" className="h-6 px-2 text-xs">
                   {t("locale_source_tab")}
                 </TabsTrigger>
               ) : null}
-              <TabsTrigger value="preview" className="h-6 text-xs">
+              <TabsTrigger value="preview" className={cn("h-6 text-xs", sourcePane && "px-2")}>
                 {t("preview")}
               </TabsTrigger>
               {doc && canWrite ? (
-                <TabsTrigger value="comments" className="h-6 text-xs">
+                <TabsTrigger value="comments" className={cn("h-6 text-xs", sourcePane && "px-2")}>
                   {openThreads.length ? t("comments_n", { n: openThreads.length }) : t("comments")}
                 </TabsTrigger>
               ) : null}
@@ -2088,8 +2110,24 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
         </div>
       ) : null}
       {/* In full screen the fields fold away under the bar; they stay mounted so nothing typed is lost. */}
-      <div id="cms-focus-fields" className={cn("border-b px-6 py-3.5", focus && "mx-auto w-full max-w-[780px] border-x-0", focus && !focusFields && "hidden")}>
-        {form}
+      <div id="cms-focus-fields" className={cn("border-b px-6 py-3.5", focus && "mx-auto w-full max-w-[780px] border-x-0", focus && !focusFields && "hidden", sourcePane && !focus && "py-2")}>
+        {sourcePane && !focus ? (
+          // Comparing with the source: the document info folds into one line so the two texts get the screen.
+          <>
+            <button type="button" className="flex min-h-8 w-full items-center gap-2 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-expanded={infoOpen} aria-controls="cms-editor-info-wide" onClick={() => setInfoOpen((v) => !v)}>
+              <span className="text-xs font-medium">{t("doc_info")}</span>
+              <span className="truncate text-xs text-muted-foreground">{t("doc_info_summary", { n: fieldCount })}</span>
+              {fieldErrors ? <span className="shrink-0 text-xs font-medium text-destructive">{t("problems_n", { n: fieldErrors })}</span> : null}
+              <span className="flex-1" />
+              <ChevronDown aria-hidden className={cn("h-4 w-4 transition-transform duration-150 ease-out", infoOpen && "rotate-180")} />
+            </button>
+            <div id="cms-editor-info-wide" hidden={!infoOpen} className="pt-3">
+              {form}
+            </div>
+          </>
+        ) : (
+          form
+        )}
       </div>
       {sideBySide ? (
         <div ref={rowRef} className={cn("flex min-h-[360px] divide-x", rowHeight === null ? "flex-1" : "shrink-0")} style={rowHeight === null ? undefined : { height: rowHeight }}>

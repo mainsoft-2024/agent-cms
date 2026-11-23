@@ -23,6 +23,23 @@ export interface NodeHandlerOptions {
    * are replaced. Set true only behind a proxy you run that sets them.
    */
   trustProxy?: boolean;
+  /**
+   * Where the CMS handler is mounted, as in `createCmsHandler({ basePath })`. Default "/api/cms".
+   * Used to refuse a form submission (`POST {basePath}/forms/:slug`) past 64 KB while it is still
+   * arriving, instead of reading up to `maxBodyBytes` first.
+   */
+  basePath?: string;
+}
+
+/** A form submission's body limit (the same as the handler's `FORM_MAX_BODY`). */
+const FORM_BODY_BYTES = 64 * 1024;
+
+/** The body limit for this request: 64 KB for a form submission, else `maxBodyBytes`. */
+export function bodyLimit(method: string, pathname: string, o: NodeHandlerOptions = {}): number {
+  const max = o.maxBodyBytes ?? 8 * 1024 * 1024;
+  const base = (o.basePath ?? "/api/cms").replace(/\/$/, "");
+  if (method !== "POST" || !pathname.startsWith(base + "/")) return max;
+  return /^\/forms\/[^/]+\/?$/.test(pathname.slice(base.length)) ? Math.min(max, FORM_BODY_BYTES) : max;
 }
 
 type Req = IncomingMessage & { originalUrl?: string; body?: unknown };
@@ -46,7 +63,7 @@ export async function toWebRequest(req: Req, o: NodeHandlerOptions = {}): Promis
   }
   const method = (req.method ?? "GET").toUpperCase();
   if (method === "GET" || method === "HEAD") return new Request(url, { method, headers });
-  const max = o.maxBodyBytes ?? 8 * 1024 * 1024;
+  const max = bodyLimit(method, url.pathname, o);
   let body: Uint8Array | string;
   if (req.body !== undefined && req.readableEnded) {
     // A body parser ran before us (express.json()): send what it read on.
@@ -56,6 +73,8 @@ export async function toWebRequest(req: Req, o: NodeHandlerOptions = {}): Promis
   } else {
     const chunks: Uint8Array[] = [];
     let size = 0;
+    const declared = Number(req.headers["content-length"] ?? NaN);
+    if (Number.isFinite(declared) && declared > max) throw Object.assign(new Error("request body too large"), { status: 413 });
     for await (const c of req) {
       const chunk = typeof c === "string" ? new TextEncoder().encode(c) : (c as Uint8Array);
       size += chunk.length;

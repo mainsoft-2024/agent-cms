@@ -572,7 +572,9 @@ export function createModel(ctx: ModelContext) {
       rows.set(id, d);
     }
     const pub = d && !d.deletedAt ? (ctx.publicCopy ? ctx.publicCopy(d) : d.published && d.publishedVersion !== null && d.status !== "archived" ? d : null) : null;
-    const slug = pub ? (pub.published?.slug ?? pub.slug) : null;
+    const bare = pub ? (pub.published?.slug ?? pub.slug) : null;
+    // 0.22.0 review: a translation's address names its language (`slug@en`).
+    const slug = bare && d && d.groupId && d.groupId !== d.id && d.locale ? `${bare}@${d.locale}` : bare;
     const c = d && slug && ctx.collections.has(d.collection) ? ctx.collection(d.collection) : null;
     const url = c && slug && c.visibility === "public" ? ctx.urlOf(d!.collection, slug) : null;
     return url && slug ? { col: d!.collection, slug, url } : null;

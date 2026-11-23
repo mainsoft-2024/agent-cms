@@ -212,6 +212,7 @@ export const ERROR_CODES = {
   locale_source_missing: "invalid",
   locale_is_source: "invalid",
   translation_source_trashed: "conflict",
+  locale_etag_mismatch: "conflict",
   // 0.22.0 forms
   forms_off: "not_found",
   form_not_found: "not_found",
@@ -224,6 +225,7 @@ export const ERROR_CODES = {
   form_rejected: "invalid",
   form_upload_invalid: "invalid",
   form_uploads_off: "invalid",
+  form_uploads_unavailable: "invalid",
   form_file_too_large: "invalid",
   form_file_type: "invalid",
   form_required: "invalid",

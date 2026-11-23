@@ -48,20 +48,42 @@ const S: Settings = (() => {
   return { basePath: "/api/cms", adminPath: "/admin", appName: "agent-cms", ...given };
 })();
 
-function usePath(): [string, (to: string, replace?: boolean) => void] {
+/**
+ * May the page change? A screen with unsaved edits says no to a `beforeunload` event (as for a full
+ * page load); then the person is asked. A screen that already asked (its own dialog) lets it through.
+ */
+function mayLeave(): boolean {
+  const guard = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(guard);
+  return !guard.defaultPrevented || window.confirm(document.documentElement.lang === "ko" ? "저장하지 않은 변경이 있음. 나갈지 확인" : "You have unsaved changes. Leave anyway?");
+}
+
+type Go = (to: string, replace?: boolean, o?: { guard?: boolean }) => void;
+
+function usePath(): [string, Go] {
   const [path, setPath] = React.useState(() => window.location.pathname + window.location.search);
+  const here = React.useRef(path);
   React.useEffect(() => {
-    const on = () => setPath(window.location.pathname + window.location.search);
+    // Back and forward ask too: on "stay" the address goes back to the page still on screen.
+    const on = () => {
+      const to = window.location.pathname + window.location.search;
+      if (to !== here.current && !mayLeave()) {
+        window.history.pushState(null, "", here.current);
+        return;
+      }
+      here.current = to;
+      setPath(to);
+    };
     window.addEventListener("popstate", on);
     return () => window.removeEventListener("popstate", on);
   }, []);
-  const go = React.useCallback((to: string, replace = false) => {
+  const go = React.useCallback<Go>((to, replace = false, o = {}) => {
     if (/^https?:/.test(to)) return window.location.assign(to);
-    // Leaving a page with unsaved edits asks first, as a full page load would.
-    const guard = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(guard);
-    if (guard.defaultPrevented && !window.confirm(document.documentElement.lang === "ko" ? "저장하지 않은 변경이 있음. 나갈지 확인" : "You have unsaved changes. Leave anyway?")) return;
+    // Leaving a page with unsaved edits asks first. Moving inside one editing session (a tab of the
+    // same form) does not: its draft stays on screen.
+    if (o.guard !== false && !mayLeave()) return;
     window.history[replace ? "replaceState" : "pushState"](null, "", to);
+    here.current = to.split("#")[0];
     setPath(to.split("#")[0]);
     if (!to.includes("#")) window.scrollTo(0, 0);
   }, []);
@@ -96,7 +118,7 @@ function Home({ go }: { go: (to: string, replace?: boolean) => void }) {
   return null;
 }
 
-function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boolean) => void }) {
+function Screen({ rest, go }: { rest: string[]; go: Go }) {
   const { me } = useCms();
   const a = S.adminPath;
   const [p0, p1, p2] = rest.map(decodeURIComponent);
@@ -132,7 +154,7 @@ function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boole
       return <CmsRedirects />;
     case "forms":
       return p1 ? (
-        <CmsFormEditor key={p1} slug={p1} tab={(p2 as CmsFormTab) || "fields"} onTab={(x) => go(`${a}/forms/${encodeURIComponent(p1)}${x === "fields" ? "" : `/${x}`}`, true)} onBack={() => go(`${a}/forms`)} onSlugChange={(s) => go(`${a}/forms/${encodeURIComponent(s)}/settings`, true)} />
+        <CmsFormEditor key={p1} slug={p1} tab={(p2 as CmsFormTab) || "fields"} onTab={(x) => go(`${a}/forms/${encodeURIComponent(p1)}${x === "fields" ? "" : `/${x}`}`, true, { guard: false })} onBack={() => go(`${a}/forms`)} onSlugChange={(s) => go(`${a}/forms/${encodeURIComponent(s)}/settings`, true, { guard: false })} />
       ) : (
         <CmsForms hrefFor={(s) => `${a}/forms/${encodeURIComponent(s)}`} onOpenForm={(s) => go(`${a}/forms/${encodeURIComponent(s)}`)} />
       );

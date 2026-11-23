@@ -936,3 +936,393 @@ test("forms: retention deletes old submissions (365 days by default, or the form
   await cms.cron();
   assert.equal(repo.formSubmissions.length, 0);
 });
+
+// ── 0.22.0 review fixes ──
+
+/** Holds every caller until `n` have arrived, so two writers really read the same state. */
+function barrier(n: number) {
+  let waiting: (() => void)[] = [];
+  return () =>
+    new Promise<void>((ok) => {
+      waiting.push(ok);
+      if (waiting.length >= n) {
+        for (const w of waiting) w();
+        waiting = [];
+      }
+    });
+}
+
+test("forms review: two saves that read the same form: exactly one wins, the other is form_conflict; the version goes up once", async () => {
+  const { cms, repo } = setup();
+  await contact(cms);
+  const meet = barrier(2);
+  const orig = repo.updateRecord.bind(repo);
+  repo.updateRecord = async (kind, id, patch) => {
+    if (kind === "form") await meet();
+    return orig(kind, id, patch);
+  };
+  const a = STEPS.map((s) => ({ ...s, fields: [...s.fields] }));
+  a[0].fields.push({ key: "phone", label: "Phone", kind: "text" });
+  const b = STEPS.map((s) => ({ ...s, fields: [...s.fields] }));
+  b[0].fields.push({ key: "city", label: "City", kind: "text" });
+  const results = await Promise.all([
+    code(cms.forms.update(admin, "contact", { steps: a })),
+    code(cms.forms.update(admin, "contact", { steps: b })),
+  ]);
+  assert.deepEqual([...results].sort(), ["form_conflict", "ok"]);
+  repo.updateRecord = orig;
+  const f = await cms.forms.get(admin, "contact");
+  assert.equal(f.version, 2, "one version for one save");
+  const keys = f.steps[0].fields.map((x) => x.key);
+  assert.equal(
+    Number(keys.includes("phone")) + Number(keys.includes("city")),
+    1,
+  );
+});
+
+test("forms review: one upload token sent by two submissions at once: exactly one is accepted", async () => {
+  const { cms, api, priv, repo } = setup();
+  await contact(cms);
+  const g = await api.formUploadGrant("contact", {
+    field: "shot",
+    name: "screen.png",
+    size: 200,
+    mime: "image/png",
+  });
+  await api.formUpload("contact", g, new Blob([png()]));
+  // Both pass the checks before either claims (a slow storage head).
+  const meet = barrier(2);
+  const head = priv.head.bind(priv);
+  priv.head = async (k: string) => {
+    const r = await head(k);
+    await meet();
+    return r;
+  };
+  const bug = { ...good, topic: "bug", version: "2.1", seats: undefined };
+  const results = await Promise.all([
+    code(cms.forms.submit("contact", { ...bug, shot: [g.token] }, { ip: "1.0.0.1" })),
+    code(cms.forms.submit("contact", { ...bug, shot: [g.token] }, { ip: "1.0.0.2" })),
+  ]);
+  priv.head = head;
+  assert.deepEqual([...results].sort(), ["form_upload_invalid", "ok"]);
+  assert.equal(repo.formSubmissions.length, 1);
+  assert.equal(
+    [...priv.objects.keys()].filter((k) => k.startsWith("_cms/forms/") && !k.includes("_tmp")).length,
+    1,
+    "one permanent copy",
+  );
+  // A grant uploads once even when two PUTs race.
+  const g2 = await api.formUploadGrant("contact", {
+    field: "shot",
+    name: "b.png",
+    size: 200,
+    mime: "image/png",
+  });
+  const puts = await Promise.all([
+    code(cms.forms.upload("contact", g2.token, png())),
+    code(cms.forms.upload("contact", g2.token, png())),
+  ]);
+  assert.deepEqual([...puts].sort(), ["form_upload_invalid", "ok"]);
+  // The temporary key holds no file name (it is in storage logs and the PUT address).
+  assert.ok(![...priv.objects.keys()].some((k) => k.includes("b.png")));
+});
+
+test("forms review: a submission whose insert fails leaves no permanent file, and the same token works on retry", async () => {
+  const { cms, api, priv, repo, clock } = setup();
+  await contact(cms);
+  const g = await api.formUploadGrant("contact", {
+    field: "shot",
+    name: "screen.png",
+    size: 200,
+    mime: "image/png",
+  });
+  await api.formUpload("contact", g, new Blob([png()]));
+  const insert = repo.insertFormSubmission.bind(repo);
+  repo.insertFormSubmission = async () => {
+    throw new Error("database went away");
+  };
+  const bug = { ...good, topic: "bug", version: "2.1", seats: undefined };
+  await assert.rejects(
+    cms.forms.submit("contact", { ...bug, shot: [g.token] }, { ip: "1.0.0.1" }),
+    /database went away/,
+  );
+  assert.deepEqual(
+    [...priv.objects.keys()].filter((k) => k.startsWith("_cms/forms/") && !k.startsWith("_cms/forms/_tmp")),
+    [],
+    "no orphan permanent object",
+  );
+  assert.ok(
+    [...priv.objects.keys()].some((k) => k.startsWith("_cms/forms/_tmp")),
+    "the upload is still there",
+  );
+  repo.insertFormSubmission = insert;
+  await cms.forms.submit("contact", { ...bug, shot: [g.token] }, { ip: "1.0.0.1" });
+  assert.equal(repo.formSubmissions.length, 1);
+  assert.equal(repo.formSubmissions[0].files.length, 1);
+  assert.ok(priv.objects.has(repo.formSubmissions[0].files[0].key));
+  assert.ok(
+    ![...priv.objects.keys()].some((k) => k.startsWith("_cms/forms/_tmp")),
+  );
+  // A copy that could not be undone is recorded on the grant and swept later.
+  const g2 = await api.formUploadGrant("contact", {
+    field: "shot",
+    name: "two.png",
+    size: 200,
+    mime: "image/png",
+  });
+  await api.formUpload("contact", g2, new Blob([png()]));
+  repo.insertFormSubmission = async () => {
+    throw new Error("again");
+  };
+  const del = priv.delete.bind(priv);
+  priv.delete = async (k: string) => {
+    if (k.startsWith("_cms/forms/") && !k.includes("_tmp")) throw new Error("storage down");
+    return del(k);
+  };
+  await assert.rejects(
+    cms.forms.submit("contact", { ...bug, shot: [g2.token] }, { ip: "1.0.0.3" }),
+  );
+  priv.delete = del;
+  repo.insertFormSubmission = insert;
+  const left = () =>
+    [...priv.objects.keys()].filter(
+      (k) => k.startsWith("_cms/forms/") && !k.includes("_tmp") && !repo.formSubmissions.some((s) => s.files.some((f) => f.key === k)),
+    );
+  assert.equal(left().length, 1, "the copy stayed");
+  // A day later the sweep deletes it (and the upload never sent).
+  clock.t += 2 * 86_400_000;
+  await cms.cron();
+  assert.equal(left().length, 0);
+  assert.ok(![...priv.objects.keys()].some((k) => k.includes("_tmp")));
+  assert.equal(repo.formSubmissions.length, 1, "the saved submission keeps its file");
+  assert.ok(priv.objects.has(repo.formSubmissions[0].files[0].key));
+});
+
+test("forms review: browser-style multipart with a mixed-case boundary is taken", async () => {
+  const { cms, call, repo } = setup();
+  await contact(cms);
+  const boundary = "----WebKitFormBoundaryAbCdEfGh12345678";
+  const parts = Object.entries({ ...good, agree: "on" })
+    .map(
+      ([k, v]) =>
+        `--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`,
+    )
+    .join("");
+  const res = await call("/forms/contact", {
+    method: "POST",
+    body: `${parts}--${boundary}--\r\n`,
+    headers: {
+      "content-type": `multipart/form-data; boundary=${boundary}`,
+      accept: "application/json",
+    },
+  });
+  assert.equal(res.status, 201, await res.clone().text());
+  assert.equal(repo.formSubmissions[0].data.name, "Ann");
+  // Real FormData through fetch's own encoder, upper-case media type too.
+  const fd = new FormData();
+  for (const [k, v] of Object.entries({ ...good, agree: "on" })) fd.append(k, String(v));
+  const encoded = new Request("http://x.test/", { method: "POST", body: fd });
+  const ct = encoded.headers.get("content-type")!.replace("multipart/form-data", "Multipart/Form-Data");
+  const res2 = await call("/forms/contact", {
+    method: "POST",
+    body: await encoded.arrayBuffer(),
+    headers: { "content-type": ct, accept: "application/json" },
+    ip: "198.51.100.2",
+  });
+  assert.equal(res2.status, 201);
+});
+
+test("forms review: verify gets the parsed fields (a captcha token the form does not declare) and a readable request", async () => {
+  const seen: { raw: unknown; body: string }[] = [];
+  const { cms, call } = setup({
+    forms: {
+      verify: async (req, c) => {
+        seen.push({ raw: c.raw["cf-turnstile-response"], body: req ? await req.text() : "" });
+        return c.raw["cf-turnstile-response"] === "tok-1";
+      },
+    },
+  });
+  await contact(cms);
+  const form = new URLSearchParams({ ...good, agree: "on", "cf-turnstile-response": "tok-1" } as Record<string, string>);
+  const res = await call("/forms/contact", {
+    method: "POST",
+    body: form.toString(),
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+  });
+  assert.equal(res.status, 201);
+  assert.equal(seen[0].raw, "tok-1");
+  assert.ok(seen[0].body.includes("cf-turnstile-response=tok-1"), "the request's body can still be read");
+  const bad = await call("/forms/contact", {
+    method: "POST",
+    body: JSON.stringify({ ...good, "cf-turnstile-response": "nope" }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(bad.status, 403);
+});
+
+test("forms review: forms.clientIp decides the sender's address (an appending proxy; a forged first entry does not dodge the limit)", async () => {
+  const { clientIpBehind } = await import("./limits");
+  const { cms, call } = setup({ forms: { clientIp: clientIpBehind(1) } });
+  await contact(cms);
+  const send = (xff: string) =>
+    call("/forms/contact", {
+      method: "POST",
+      body: JSON.stringify(good),
+      headers: { "content-type": "application/json", "x-forwarded-for": xff, "x-real-ip": "10.9.9.9" },
+    });
+  for (let i = 0; i < 5; i++) assert.equal((await send(`6.6.6.${i}, 203.0.113.50`)).status, 201);
+  assert.equal((await send("7.7.7.7, 203.0.113.50")).status, 429, "the proxy's entry is the address");
+  assert.equal((await send("6.6.6.1, 203.0.113.51")).status, 201, "another real address is not held up");
+  const req = new Request("http://x.test/", { headers: { "x-forwarded-for": "1.1.1.1, 2.2.2.2, 3.3.3.3" } });
+  assert.equal(clientIpBehind(1)(req), "3.3.3.3");
+  assert.equal(clientIpBehind(2)(req), "2.2.2.2");
+  assert.equal(clientIpBehind(4)(req), null);
+});
+
+test("forms review: the Node adapter refuses a form submission past 64 KB while it arrives, not after 8 MB", async () => {
+  const { Readable } = await import("node:stream");
+  const { toWebRequest, bodyLimit } = await import("./adapters/node");
+  let pulled = 0;
+  const chunk = new Uint8Array(16 * 1024).fill(120);
+  const make = (url: string, headers: Record<string, string> = {}) => {
+    pulled = 0;
+    const r = Readable.from(
+      (function* () {
+        for (let i = 0; i < 512; i++) {
+          pulled += chunk.length;
+          yield chunk;
+        }
+      })(),
+    ) as unknown as import("node:http").IncomingMessage;
+    Object.assign(r, { method: "POST", url, headers: { host: "app.test", "content-type": "application/json", ...headers } });
+    return r;
+  };
+  await assert.rejects(toWebRequest(make("/api/cms/forms/contact")), (e: { status?: number }) => e.status === 413);
+  assert.ok(pulled <= 64 * 1024 + 2 * chunk.length, `read ${pulled} bytes before 413`);
+  await assert.rejects(
+    toWebRequest(make("/api/cms/forms/contact", { "content-length": String(8 * 1024 * 1024) })),
+    (e: { status?: number }) => e.status === 413,
+  );
+  assert.equal(pulled, 0, "a declared length past the limit is refused before reading");
+  assert.equal(bodyLimit("POST", "/api/cms/forms/contact/uploads"), 8 * 1024 * 1024, "uploads keep their own bound");
+  assert.equal(bodyLimit("POST", "/cms/forms/contact", { basePath: "/cms" }), 64 * 1024);
+  assert.equal(bodyLimit("POST", "/api/cms/collections/guide"), 8 * 1024 * 1024);
+});
+
+test("forms review: upload tokens are not in request logs; file names are not in events or the audit log by default", async () => {
+  const { cms, api, call } = setup();
+  await contact(cms);
+  const paths: string[] = [];
+  cms.onTelemetry((e) => {
+    if (e.type === "request") paths.push(e.path);
+  });
+  const seen: { event: string; detail: unknown }[] = [];
+  cms.subscribe((e) => void seen.push(e as { event: string; detail: unknown }));
+  const g = await api.formUploadGrant("contact", { field: "shot", name: "passport-kim.png", size: 200, mime: "image/png" });
+  await api.formUpload("contact", g, new Blob([png()]));
+  assert.ok(paths.includes("/forms/contact/uploads/:token"), paths.join(" "));
+  assert.ok(!paths.some((p) => p.includes(g.token.slice(0, 20))));
+  await api.submitForm("contact", { ...good, topic: "bug", version: "1", seats: undefined, shot: [g.token] });
+  await tick();
+  const ev = seen.find((e) => e.event === "form.submitted");
+  assert.ok(ev);
+  assert.ok(!JSON.stringify(ev.detail).includes("passport-kim"), "no file name in the event");
+  const sub = (await api.formSubmissions("contact")).items[0];
+  await api.submissionFileLink("contact", sub.id, sub.files[0].id);
+  const audit = JSON.stringify((await cms.audit(admin, { limit: 50 })).entries);
+  assert.ok(!audit.includes("passport-kim"), "no file name in the audit log");
+  assert.ok(audit.includes(sub.files[0].id));
+  void call;
+});
+
+test("forms review: retention deletes files first; a row whose file cannot be deleted stays and goes on the next run", async () => {
+  const { cms, api, priv, repo, clock } = setup({ retention: {} });
+  await contact(cms);
+  const g = await api.formUploadGrant("contact", { field: "shot", name: "s.png", size: 200, mime: "image/png" });
+  await api.formUpload("contact", g, new Blob([png()]));
+  await cms.forms.submit("contact", { ...good, topic: "bug", version: "1", seats: undefined, shot: [g.token] }, { ip: "1.1.1.1" });
+  await cms.forms.submit("contact", good, { ip: "1.1.1.2" });
+  const fileKey = repo.formSubmissions[0].files[0].key;
+  const del = priv.delete.bind(priv);
+  priv.delete = async (k: string) => {
+    if (k === fileKey) throw new Error("storage down");
+    return del(k);
+  };
+  clock.t += 400 * 86_400_000;
+  await cms.cron();
+  assert.equal(repo.formSubmissions.length, 1, "the row without files went; the one whose file failed stayed");
+  assert.equal(repo.formSubmissions[0].files[0].key, fileKey);
+  priv.delete = del;
+  clock.t += 86_400_000; // retention runs once a day
+  await cms.cron();
+  assert.equal(repo.formSubmissions.length, 0);
+  assert.ok(!priv.objects.has(fileKey));
+});
+
+test("forms review: CSV export takes the list's filters (status and search)", async () => {
+  const { cms, api } = setup();
+  await contact(cms);
+  for (const [i, name] of ["Ann", "Bob", "Acme Corp"].entries())
+    await cms.forms.submit("contact", { ...good, name }, { ip: `10.1.0.${i}` });
+  const page = await api.formSubmissions("contact");
+  const bob = page.items.find((x) => x.data.name === "Bob")!;
+  await api.markSubmission("contact", bob.id, "spam");
+  const rows = (csv: string) => csv.replace(/^\ufeff/, "").split("\r\n").filter(Boolean).length - 1;
+  assert.equal(rows((await api.exportSubmissions("contact")).csv), 2, "default: not spam");
+  assert.equal(rows((await api.exportSubmissions("contact", { status: ["spam"] })).csv), 1);
+  assert.equal(rows((await api.exportSubmissions("contact", ["spam"])).csv), 1, "a bare status list still works");
+  const acme = (await api.exportSubmissions("contact", { q: "acme" })).csv;
+  assert.equal(rows(acme), 1);
+  assert.ok(acme.includes("Acme Corp"));
+  assert.equal(rows((await api.exportSubmissions("contact", { status: ["new", "read"], q: "bob" })).csv), 0);
+});
+
+test("forms review: the admin sees whether files can be taken; a required file field cannot be turned on without them", async () => {
+  const none = setup({ storage: false });
+  const fileReq: FormStep[] = [
+    { title: "", fields: [{ key: "name", label: "Name", kind: "text" }, { key: "cv", label: "CV", kind: "file", required: true }] },
+  ];
+  assert.equal(
+    await code(none.cms.forms.create(admin, { slug: "jobs", title: "Jobs", enabled: true, steps: fileReq })),
+    "form_uploads_unavailable",
+  );
+  const off = await none.cms.forms.create(admin, { slug: "jobs", title: "Jobs", enabled: false, steps: fileReq });
+  assert.equal(off.uploads, false);
+  assert.equal((await none.api.form("jobs")).uploads, false);
+  assert.equal((await none.api.forms())[0].uploads, false);
+  const e = await none.cms.forms.update(admin, "jobs", { enabled: true }).catch((x) => x);
+  assert.equal(e.code, "form_uploads_unavailable");
+  assert.equal(e.params.field, "cv");
+  // Optional file fields are fine (they just take no files).
+  const optional = fileReq.map((s) => ({ ...s, fields: s.fields.map((f) => ({ ...f, required: false })) }));
+  assert.equal((await none.cms.forms.update(admin, "jobs", { enabled: true, steps: optional })).enabled, true);
+  const me = (await (await none.call("/_me")).json()) as { forms: { uploads: boolean } };
+  assert.equal(me.forms.uploads, false);
+  const yes = setup();
+  assert.equal((await yes.cms.forms.create(admin, { slug: "jobs", title: "Jobs", enabled: true, steps: fileReq })).uploads, true);
+});
+
+test("forms review: definition problems are codes, so Korean messages are wholly Korean", async () => {
+  const { ko } = await import("./messages/ko");
+  const { formatMessage } = await import("./errors");
+  const { cms } = setup();
+  const bad: FormStep[] = [
+    { title: "", fields: [{ key: "Bad Key", label: "", kind: "text" }, { key: "t", label: "T", kind: "select", options: [] }] },
+  ];
+  const e = await cms.forms.create(admin, { slug: "x", title: "X", steps: bad }).catch((x) => x);
+  assert.equal(e.code, "form_invalid");
+  assert.equal(e.params.issue, "key");
+  assert.equal(e.params.field, "Bad Key");
+  assert.ok(Number(e.params.more) >= 2);
+  assert.ok(e.diagnostics.length >= 3);
+  assert.match(String(e.params.reason), /lowercase letters/, "English reason kept");
+  const text = formatMessage(ko, "form_invalid", e.params);
+  assert.ok(!/[a-z]{3,}/i.test(text.replace(/"Bad Key"/, "")), text);
+  for (const d of e.diagnostics as { params: Record<string, string> }[]) {
+    const t = formatMessage(ko, "form_invalid", d.params).replace(/"[^"]*"/g, "");
+    assert.ok(!/[a-z]{3,}/i.test(t), t);
+  }
+  const notify = await cms.forms.create(admin, { slug: "y", title: "Y", steps: STEPS, settings: { notify: ["not-mail"] } }).catch((x) => x);
+  assert.equal(formatMessage(ko, "form_invalid", notify.params), "폼을 저장할 수 없음: 이메일 주소가 아님: not-mail");
+  assert.equal(formatMessage(ko, "form_upload_invalid", { reason: "used" }), "파일을 받지 못함 (이미 쓴 토큰). 다시 골라야 함");
+});

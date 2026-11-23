@@ -66,6 +66,8 @@ test("locale: a translation shows the shared fields read only and does not send 
   const s = await seeded();
   renderWith(s, <CmsDocEditor collection="guide" slug="start@ko" />);
   await screen.findByDisplayValue("시작하기");
+  // Beside the source the document info is folded: open it.
+  fireEvent.click(await screen.findByRole("button", { name: /Document info/ }));
   // The address and the number field follow the source.
   assert.ok((screen.getByLabelText(/Slug/) as HTMLInputElement).disabled);
   assert.ok(screen.getByText("The address follows the source"));
@@ -176,4 +178,53 @@ test("locale: the list shows each row's translations and filters by language", a
   assert.ok(within(ko).getByText("Up to date"));
   fireEvent.click(within(ko).getByRole("button", { name: "시작하기" }));
   assert.deepEqual(opened, ["start@ko"]);
+});
+
+test("locale: 'Switch without saving' moves at once; the host's router is not asked a second time", async () => {
+  const s = await seeded();
+  const asked: boolean[] = [];
+  const onOpen = () => {
+    // What a router does before moving: ask the page (a `beforeunload` the editor may refuse).
+    const ev = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(ev);
+    asked.push(ev.defaultPrevented);
+  };
+  renderWith(s, <CmsDocEditor collection="guide" slug="start" autosaveDelay={60_000} onOpenDocument={onOpen} />);
+  const title = await screen.findByDisplayValue("Getting started");
+  await userEvent.type(title, " now");
+  // Without the editor's own question, the router would ask.
+  const ev = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(ev);
+  assert.equal(ev.defaultPrevented, true);
+  fireEvent.click(await waitFor(() => tabs().getByRole("button", { name: "한국어, Up to date" })));
+  const dialog = await screen.findByRole("dialog", { name: "Unsaved changes" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Switch without saving" }));
+  assert.deepEqual(asked, [false]);
+});
+
+test("locale: mark as matching sends the version on screen; a newer source asks to check again", async () => {
+  const s = await seeded();
+  await s.cms.update(admin, "guide", "start", { body: "## Install\n\nInstall it.\n\n## Connect media\n\nConnect S3." }, { publish: true });
+  renderWith(s, <CmsDocEditor collection="guide" slug="start@ko" />);
+  await screen.findByDisplayValue("시작하기");
+  const mark = await screen.findByRole("button", { name: "Mark as matching v2" });
+  // Someone publishes the source again before the click.
+  await s.cms.update(admin, "guide", "start", { body: "## Install\n\nInstall it now." }, { publish: true });
+  fireEvent.click(mark);
+  await waitFor(() => assert.ok(s.requests.some((r) => r.method === "POST" && r.path.endsWith("/guide/start/_align"))));
+  const req = s.requests.find((r) => r.method === "POST" && r.path.endsWith("/guide/start/_align"))!;
+  assert.deepEqual(req.body, { locale: "ko", version: 2 });
+  await screen.findByText("The source is at v3 now: check what changed again");
+});
+
+test("locale: comparing with the source folds the document info into one line (opened on demand)", async () => {
+  const s = await seeded();
+  renderWith(s, <CmsDocEditor collection="guide" slug="start@ko" />);
+  await screen.findByRole("region", { name: "English source" });
+  const toggle = screen.getByRole("button", { name: /Document info/ });
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.ok((screen.getByLabelText(/Slug/) as HTMLElement).closest("[hidden]"));
+  fireEvent.click(toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.ok(!(screen.getByLabelText(/Slug/) as HTMLElement).closest("[hidden]"));
 });

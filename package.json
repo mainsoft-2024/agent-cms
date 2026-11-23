@@ -31,6 +31,7 @@
     "UPGRADE-0.19.md",
     "UPGRADE-0.20.md",
     "UPGRADE-0.21.md",
+    "UPGRADE-0.22.md",
     "CHANGELOG.md",
     "TODO.md",
     "LICENSE"
@@ -335,7 +336,7 @@
     "s3:dev": "bash scripts/s3-dev.sh",
     "test:ui": "tsx --tsconfig registry/tsconfig.json --test registry/__tests__/*.test.tsx registry/__tests__/*.test.ts",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
-    "check:pack": "publint --strict && attw --pack . --profile node16",
+    "check:pack": "node scripts/check-pack-files.mjs && publint --strict && attw --pack . --profile node16",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "build:registry": "tsx scripts/build-registry.ts",
     "test:shadcn": "bash scripts/shadcn-smoke.sh",

@@ -13,7 +13,9 @@
  *
  * Spam: a hidden field (the honeypot) that people never see; a submission that fills it is kept
  * as spam and answered like any other. One address may send `perMinute` (5) a minute; the next
- * one gets 429. `verify(req)` is where an app checks a captcha. The body is at most 64 KB.
+ * one gets 429. `verify(req, { values, raw })` is where an app checks a captcha: `raw` holds every
+ * field sent (a captcha token too), `req` is a fresh copy of the request. The body is at most 64 KB.
+ * Which address is "one address" comes from `clientIp` (see `FormsOptions.clientIp`).
  *
  * Submissions are personal data: agents get no tools for them, events carry no values unless
  * `eventValues: true`, and `retention.submissionsDays` (default 365) deletes old ones.
@@ -39,8 +41,10 @@ import {
 } from "./crypto";
 import {
   checkSubmission,
-  definitionProblems,
+  definitionIssues,
   displayValue,
+  formIssueText,
+  type FormDefinitionIssue,
   FORM_DEFAULT_ACCEPT,
   FORM_DEFAULT_MAX_SIZE,
   formAccepts,
@@ -72,6 +76,8 @@ const KIND = "form";
 const SECRET_META = "forms_secret";
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const GRANT_SECONDS = 600;
+/** One record per upload grant (`cms_records`, kind `form_upload`, key = the grant id, scope = the form id). */
+const UPLOAD_KIND = "form_upload";
 const TMP = "_cms/forms/_tmp/";
 const LINK_SECONDS = 300;
 const DAY = 86_400_000;
@@ -84,12 +90,30 @@ export interface FormsOptions {
   perMinute?: number;
   /**
    * Called for every submission before it is kept (a captcha, a blocklist). Return false to refuse
-   * it (403 `form_verify_failed`). `req` is null when the CMS is called directly, not over HTTP.
+   * it (403 `form_verify_failed`).
+   *
+   * - `ctx.raw`: everything that was sent, parsed (JSON, urlencoded or multipart), fields the form
+   *   does not declare included: read a captcha token here (`ctx.raw["cf-turnstile-response"]`).
+   * - `ctx.values`: the declared fields, checked.
+   * - `req`: a copy of the request whose body can still be read (at most 64 KB); null when the CMS
+   *   is called directly, not over HTTP.
    */
   verify?: (
     req: Request | null,
-    ctx: { form: FormView; values: Record<string, unknown> },
+    ctx: {
+      form: FormView;
+      values: Record<string, unknown>;
+      raw: Record<string, unknown>;
+    },
   ) => boolean | Promise<boolean>;
+  /**
+   * The sender's address for the per-minute limit and the repeat-sender hash. Default: the
+   * handler's `clientIp`, else the first `X-Forwarded-For` entry. Behind a proxy that APPENDS to
+   * `X-Forwarded-For` (most load balancers) the first entry is whatever the sender wrote: use
+   * `clientIpBehind(1)` (one proxy) or your own function. The Node adapter without `trustProxy`
+   * already puts the socket's address there.
+   */
+  clientIp?: (req: Request) => string | null;
   /** Called after a submission is kept (not for spam): send an e-mail, post to a chat. Errors are reported, never shown to the sender. */
   notify?: (e: FormNotice) => void | Promise<void>;
   /** Put the submitted values into the `form.submitted` event (webhooks, automations, the change log). Default false: ids only. */
@@ -119,6 +143,12 @@ export interface FormView {
   version: number;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Admin answers only (list, definition, create, update): can file fields take files on this
+   * server (a private media store is set)? When false, a form with a required file field cannot be
+   * turned on (`form_uploads_unavailable`).
+   */
+  uploads?: boolean;
 }
 
 export interface FormCounts {
@@ -182,6 +212,7 @@ export interface UploadGrant {
 export interface SubmitMeta {
   ip?: string | null;
   userAgent?: string | null;
+  /** A copy of the request with its body still unread (what `verify` gets). */
   request?: Request | null;
 }
 
@@ -239,6 +270,51 @@ export function createForms(ctx: FormsContext) {
 
   function need() {
     if (!on()) throw fail("forms_off");
+  }
+  /**
+   * `form_invalid` with the first problem as a code (`issue`, `field`, `step`, `value`) so each
+   * language words it; `reason` is the English text (kept for older clients), `more` how many
+   * other problems there are. Every problem is also a diagnostic.
+   */
+  function invalid(list: FormDefinitionIssue | FormDefinitionIssue[]): Error {
+    const all = Array.isArray(list) ? list : [list];
+    const [first] = all;
+    const params: ErrorParams = {
+      reason: formIssueText(first),
+      issue: first.issue,
+      ...(first.field !== undefined ? { field: first.field } : {}),
+      ...(first.step !== undefined ? { step: first.step } : {}),
+      ...(first.value !== undefined ? { value: first.value } : {}),
+      ...(all.length > 1 ? { more: all.length - 1 } : {}),
+    };
+    const diagnostics: Diagnostic[] = all.map((i) => {
+      const p: ErrorParams = {
+        reason: formIssueText(i),
+        issue: i.issue,
+        ...(i.field !== undefined ? { field: i.field } : {}),
+        ...(i.step !== undefined ? { step: i.step } : {}),
+        ...(i.value !== undefined ? { value: i.value } : {}),
+      };
+      return {
+        path: i.field ?? (i.step !== undefined ? `step ${i.step}` : ""),
+        code: "form_invalid",
+        params: p,
+        message: ctx.message("form_invalid", p),
+        severity: "error",
+      };
+    });
+    return fail("form_invalid", params, { diagnostics });
+  }
+  /** A form that is on cannot have a required file field when this server takes no files. */
+  function needUploads(enabled: boolean, steps: readonly FormStep[]) {
+    if (!enabled || storage()) return;
+    const f = formFields(steps).find((x) => x.kind === "file" && x.required);
+    if (f) throw fail("form_uploads_unavailable", { field: f.key });
+  }
+  /** An instant later than `prev`, so a compare-and-swap on `updatedAt` always sees a change. */
+  function after(prev: string): string {
+    const t = Math.max(ctx.now().getTime(), Date.parse(prev) + 1);
+    return new Date(t).toISOString();
   }
   async function ready() {
     need();
@@ -307,8 +383,7 @@ export function createForms(ctx: FormsContext) {
 
   /** Keep only what a definition may hold (unknown keys go), then check it. */
   function cleanSteps(steps: unknown): FormStep[] {
-    if (!Array.isArray(steps))
-      throw fail("form_invalid", { reason: "steps must be a list" });
+    if (!Array.isArray(steps)) throw invalid({ issue: "steps_list" });
     const str = (v: unknown, max: number) =>
       typeof v === "string" ? v.slice(0, max) : undefined;
     const out: FormStep[] = steps.map((s0) => {
@@ -385,9 +460,8 @@ export function createForms(ctx: FormsContext) {
         }),
       };
     });
-    const problems = definitionProblems(out);
-    if (problems.length)
-      throw fail("form_invalid", { reason: problems.slice(0, 3).join("; ") });
+    const problems = definitionIssues(out);
+    if (problems.length) throw invalid(problems);
     return out;
   }
   function cleanSettings(
@@ -401,9 +475,7 @@ export function createForms(ctx: FormsContext) {
         typeof s.successMessage !== "string" ||
         s.successMessage.length > 1000
       )
-        throw fail("form_invalid", {
-          reason: "the message after sending is at most 1000 characters",
-        });
+        throw invalid({ issue: "success_message" });
       next.successMessage = s.successMessage.trim();
     }
     if (s.notify !== undefined) {
@@ -412,11 +484,11 @@ export function createForms(ctx: FormsContext) {
         .filter(Boolean);
       const bad = list.find((x) => !EMAIL_RE.test(x) || x.length > 254);
       if (bad || list.length > 20)
-        throw fail("form_invalid", {
-          reason: bad
-            ? `not an e-mail address: ${bad}`
-            : "at most 20 addresses",
-        });
+        throw invalid(
+          bad
+            ? { issue: "notify_email", value: bad }
+            : { issue: "notify_count" },
+        );
       next.notify = [...new Set(list)];
     }
     if (s.keepDays !== undefined) {
@@ -424,15 +496,13 @@ export function createForms(ctx: FormsContext) {
         s.keepDays !== null &&
         (!Number.isInteger(s.keepDays) || s.keepDays < 1 || s.keepDays > 3650)
       )
-        throw fail("form_invalid", { reason: "keep 1 to 3650 days" });
+        throw invalid({ issue: "keep_days" });
       next.keepDays = s.keepDays;
     }
     if (s.redirectUrl !== undefined) {
       const u = s.redirectUrl === null ? "" : String(s.redirectUrl).trim();
       if (u && !/^(https?:\/\/[^\s]+|\/[^\s/][^\s]*|\/)$/.test(u))
-        throw fail("form_invalid", {
-          reason: "the address after sending starts with https:// or /",
-        });
+        throw invalid({ issue: "redirect" });
       next.redirectUrl = u || null;
     }
     return next;
@@ -461,6 +531,11 @@ export function createForms(ctx: FormsContext) {
   function storage() {
     return on() ? ctx.storage() : null;
   }
+  /** What people who manage forms see: the form and whether it can take files here. */
+  const adminView = (r: CmsRecord): FormView => ({
+    ...view(r),
+    uploads: !!storage(),
+  });
   const subView = (s: FormSubmission, slug: string): FormSubmissionView => {
     const { ipHash: _ip, files, ...rest } = s;
     return {
@@ -471,21 +546,43 @@ export function createForms(ctx: FormsContext) {
   };
 
   // ── upload grants ───────────────────────────────────────────────────────────
+  //
+  // Each grant is a record (kind `form_upload`): issued → (uploaded through the CMS) → claimed by a
+  // submission (one compare-and-swap, so of two submissions with one token exactly one gets it) →
+  // done. A direct (presigned) PUT goes to the record's own temporary key; only that key is ever
+  // read back, and only while the record is not claimed. A failed submission gives its claims back
+  // (the token works again until it expires); anything left over goes with the daily sweep.
 
   interface Grant {
     f: string; // form id
-    k: string; // field key
-    key: string; // storage key
-    s: number;
-    m: string;
-    n: string;
+    g: string; // grant record key
     e: number; // expires (ms)
+  }
+  type GrantStatus = "issued" | "uploaded" | "claimed" | "done";
+  interface GrantData {
+    status: GrantStatus;
+    field: string;
+    tmp: string;
+    size: number;
+    mime: string;
+    name: string;
+    expires: number;
+    /** While claimed or done: where the file went, and its id in the submission. */
+    to?: string;
+    fileId?: string;
+    /** Status before the claim (given back when the submission fails). */
+    prev?: GrantStatus;
+    /** Permanent copies a failed submission could not delete: the sweep deletes them. */
+    orphans?: string[];
   }
   async function sign(g: Grant): Promise<string> {
     const body = base64url(JSON.stringify(g));
     return `${body}.${base64url(hmacSha256(await key(), body))}`;
   }
-  async function opened(token: unknown, form: FormView): Promise<Grant> {
+  async function opened(
+    token: unknown,
+    form: FormView,
+  ): Promise<{ rec: CmsRecord; d: GrantData }> {
     const bad = (reason: string) => fail("form_upload_invalid", { reason });
     if (typeof token !== "string" || token.length > 2000) throw bad("token");
     const [body, mac] = token.split(".");
@@ -501,26 +598,78 @@ export function createForms(ctx: FormsContext) {
     } catch {
       throw bad("token");
     }
-    if (g.f !== form.id) throw bad("token");
+    if (g.f !== form.id || typeof g.g !== "string") throw bad("token");
     if (g.e < ctx.now().getTime()) throw bad("expired");
-    return g;
+    const rec = await repo.findRecordByKey(UPLOAD_KIND, g.g);
+    if (!rec || rec.scope !== form.id) throw bad("token");
+    const d = rec.data as unknown as GrantData;
+    if (d.status === "claimed" || d.status === "done") throw bad("used");
+    return { rec, d };
+  }
+  /** Compare and swap a grant record; null when someone else changed it first. */
+  async function swapGrant(
+    rec: CmsRecord,
+    d: GrantData,
+  ): Promise<CmsRecord | null> {
+    return repo.updateRecord(UPLOAD_KIND, rec.id, {
+      data: d as unknown as Record<string, unknown>,
+      at: after(rec.updatedAt),
+      ifUpdatedAt: rec.updatedAt,
+    });
   }
 
-  /** Uploads made for a form but never sent with it go after a day. */
+  /**
+   * The daily sweep: uploads never sent, permanent copies a failed submission left, and grant
+   * records older than a day. A claimed grant whose submission never got saved (the server
+   * stopped in between) has its copy deleted unless a submission holds that file.
+   */
   async function sweepUploads(): Promise<number> {
     const st = storage();
     if (!st) return 0;
     let n = 0;
-    let cursor: string | null = null;
     const cut = ctx.now().getTime() - DAY;
+    const del = (k: string) =>
+      st.adapter.delete(k).then(
+        () => true,
+        (e) => (ctx.report(e, "forms: old upload"), false),
+      );
+    for (let page = 0; page < 20; page++) {
+      const recs = await repo.listRecords({
+        kind: UPLOAD_KIND,
+        before: new Date(cut).toISOString(),
+        order: "asc",
+        limit: 200,
+      });
+      let kept = 0;
+      for (const r of recs) {
+        const d = r.data as unknown as GrantData;
+        let ok = true;
+        if (d.tmp) ok = (await del(d.tmp)) && ok;
+        for (const k of d.orphans ?? []) ok = (await del(k)) && ok;
+        if (d.status === "claimed" && d.to && d.fileId && repo.listFormSubmissions) {
+          const held = await repo.listFormSubmissions({
+            formId: r.scope,
+            statuses: FORM_STATUSES,
+            q: d.fileId,
+            limit: 1,
+          });
+          if (!held.total) ok = (await del(d.to)) && ok;
+        }
+        if (ok) {
+          await repo.deleteRecords({ kind: UPLOAD_KIND, id: r.id });
+          n++;
+        } else kept++;
+      }
+      if (recs.length < 200 || kept === recs.length) break;
+    }
+    // Objects under the temporary prefix with no record (older versions, lost records).
+    let cursor: string | null = null;
     for (let page = 0; page < 20; page++) {
       const list = await st.adapter.list({ prefix: TMP, cursor, limit: 500 });
       for (const o of list.objects) {
         const at = o.lastModified ? Date.parse(o.lastModified) : 0;
         if (at && at < cut) {
-          await st.adapter
-            .delete(o.key)
-            .catch((e) => ctx.report(e, "forms: old upload"));
+          await del(o.key);
           n++;
         }
       }
@@ -529,14 +678,72 @@ export function createForms(ctx: FormsContext) {
     }
     return n;
   }
-  async function dropFiles(rows: readonly FormSubmission[]) {
+  /**
+   * Delete the files of these submissions. Returns the ids whose files are all gone: only those
+   * rows may go, the others are tried again on the next run.
+   */
+  async function dropFiles(rows: readonly FormSubmission[]): Promise<string[]> {
     const st = storage() ?? ctx.storage();
-    if (!st) return;
-    for (const r of rows)
+    const ok: string[] = [];
+    for (const r of rows) {
+      if (!r.files.length) {
+        ok.push(r.id);
+        continue;
+      }
+      // No store any more: nothing can be deleted there; the row (personal data) still goes.
+      if (!st) {
+        ctx.report(
+          new Error("forms: submission files with no private store to delete them from"),
+          "forms: delete file",
+        );
+        ok.push(r.id);
+        continue;
+      }
+      let all = true;
       for (const f of r.files)
-        await st.adapter
-          .delete(f.key)
-          .catch((e) => ctx.report(e, "forms: delete file"));
+        await st.adapter.delete(f.key).catch((e) => {
+          all = false;
+          ctx.report(e, "forms: delete file");
+        });
+      if (all) ok.push(r.id);
+    }
+    return ok;
+  }
+  /**
+   * Delete submissions and their files: files first, then the rows whose files are gone. A row
+   * whose file could not be deleted stays (and is tried again by the next retention run).
+   */
+  async function purge(q: {
+    ids?: readonly string[];
+    formId?: string;
+    before?: string;
+  }): Promise<FormSubmission[]> {
+    if (!repo.deleteFormSubmissions) return [];
+    const out: FormSubmission[] = [];
+    if (!repo.selectFormSubmissions) {
+      // A repo written before 0.22.0's select: rows first, as before.
+      for (let i = 0; i < 100; i++) {
+        const gone = await repo.deleteFormSubmissions({ ...q, limit: 500 });
+        await dropFiles(gone);
+        out.push(...gone);
+        if (gone.length < 500) break;
+      }
+      return out;
+    }
+    let stuck = 0;
+    for (let i = 0; i < 100; i++) {
+      const rows = await repo.selectFormSubmissions({
+        ...q,
+        limit: 500,
+        offset: stuck,
+      });
+      const ok = await dropFiles(rows);
+      stuck += rows.length - ok.length;
+      if (ok.length)
+        out.push(...(await repo.deleteFormSubmissions({ ids: ok })));
+      if (rows.length < 500) break;
+    }
+    return out;
   }
 
   const api = {
@@ -544,9 +751,18 @@ export function createForms(ctx: FormsContext) {
     honeypot: FORM_HONEYPOT,
     can: (actor: Actor) =>
       on() && can.read(actor)
-        ? { read: true, write: can.write(actor), delete: can.delete(actor) }
+        ? {
+            read: true,
+            write: can.write(actor),
+            delete: can.delete(actor),
+            /** File fields can take files on this server (a private media store is set). */
+            uploads: !!storage(),
+          }
         : null,
     uploadsReady: () => !!storage(),
+    /** `FormsOptions.clientIp`, when the app gave one. */
+    clientIp: (req: Request): string | null | undefined =>
+      ctx.options?.clientIp ? ctx.options.clientIp(req) : undefined,
 
     // ── admin ──
     async list(actor: Actor): Promise<FormListItem[]> {
@@ -557,7 +773,7 @@ export function createForms(ctx: FormsContext) {
         counts(),
       ]);
       return rows.map((r) => {
-        const v = view(r);
+        const v = adminView(r);
         const x = c.get(v.id);
         return {
           ...v,
@@ -569,7 +785,7 @@ export function createForms(ctx: FormsContext) {
     async get(actor: Actor, slug: string): Promise<FormView> {
       must(actor, "read");
       await ready();
-      return found(slug);
+      return { ...(await found(slug)), uploads: !!storage() };
     },
     async create(actor: Actor, input: FormInput): Promise<FormView> {
       must(actor, "write");
@@ -577,13 +793,9 @@ export function createForms(ctx: FormsContext) {
       const slug = String(input.slug ?? "")
         .trim()
         .toLowerCase();
-      if (!SLUG_RE.test(slug))
-        throw fail("form_invalid", {
-          reason: "the address is lowercase letters, digits and -",
-        });
+      if (!SLUG_RE.test(slug)) throw invalid({ issue: "slug" });
       const title = String(input.title ?? "").trim();
-      if (!title || title.length > 120)
-        throw fail("form_invalid", { reason: "a name of 1 to 120 characters" });
+      if (!title || title.length > 120) throw invalid({ issue: "title" });
       if (await find(slug)) throw fail("form_slug_taken", { slug });
       const steps = cleanSteps(
         input.steps ?? [
@@ -615,6 +827,7 @@ export function createForms(ctx: FormsContext) {
         }),
         version: 1,
       };
+      needUploads(data.enabled, steps);
       let r: CmsRecord;
       try {
         r = await repo.insertRecord({
@@ -627,7 +840,7 @@ export function createForms(ctx: FormsContext) {
         throw fail("form_slug_taken", { slug });
       }
       ctx.audit(actor, "form.create", { form: slug });
-      return view(r);
+      return adminView(r);
     },
     async update(
       actor: Actor,
@@ -643,7 +856,10 @@ export function createForms(ctx: FormsContext) {
       if (!rec) throw fail("form_not_found", { slug });
       const cur = view(rec);
       // Two people editing one form: the second save is refused instead of silently undoing the first.
-      if (input.expectedUpdatedAt && input.expectedUpdatedAt !== cur.updatedAt)
+      if (
+        input.expectedUpdatedAt &&
+        Date.parse(input.expectedUpdatedAt) !== Date.parse(cur.updatedAt)
+      )
         throw fail("form_conflict", { slug });
       const next: FormData0 = {
         slug: cur.slug,
@@ -655,19 +871,13 @@ export function createForms(ctx: FormsContext) {
       };
       if (input.slug !== undefined && input.slug !== cur.slug) {
         const s = String(input.slug).trim().toLowerCase();
-        if (!SLUG_RE.test(s))
-          throw fail("form_invalid", {
-            reason: "the address is lowercase letters, digits and -",
-          });
+        if (!SLUG_RE.test(s)) throw invalid({ issue: "slug" });
         if (await find(s)) throw fail("form_slug_taken", { slug: s });
         next.slug = s;
       }
       if (input.title !== undefined) {
         const t = String(input.title).trim();
-        if (!t || t.length > 120)
-          throw fail("form_invalid", {
-            reason: "a name of 1 to 120 characters",
-          });
+        if (!t || t.length > 120) throw invalid({ issue: "title" });
         next.title = t;
       }
       if (input.enabled !== undefined) next.enabled = input.enabled === true;
@@ -677,19 +887,35 @@ export function createForms(ctx: FormsContext) {
           next.version = cur.version + 1;
       }
       next.settings = cleanSettings(input.settings, cur.settings);
-      const r = await repo.updateRecord(KIND, rec.id, {
-        data: next as unknown as Record<string, unknown>,
-        key: next.slug,
-        at: iso(),
-      });
-      if (!r) throw fail("form_not_found", { slug });
+      needUploads(next.enabled, next.steps);
+      // Compare and swap on the row's updatedAt: of two saves that read the same form, one wins
+      // and the other gets form_conflict (no lost edit, no version number used twice).
+      let r: CmsRecord | null;
+      try {
+        r = await repo.updateRecord(KIND, rec.id, {
+          data: next as unknown as Record<string, unknown>,
+          key: next.slug,
+          at: after(rec.updatedAt),
+          ifUpdatedAt: rec.updatedAt,
+        });
+      } catch (e) {
+        // The unique (kind, key) index: another form took the new address meanwhile.
+        if (next.slug !== cur.slug && (await find(next.slug)))
+          throw fail("form_slug_taken", { slug: next.slug });
+        throw e;
+      }
+      if (!r) {
+        if (!(await repo.findRecord(KIND, rec.id)))
+          throw fail("form_not_found", { slug });
+        throw fail("form_conflict", { slug });
+      }
       ctx.audit(actor, "form.update", {
         form: next.slug,
         ...(next.slug !== cur.slug ? { from: cur.slug } : {}),
         ...(next.enabled !== cur.enabled ? { enabled: next.enabled } : {}),
         ...(next.version !== cur.version ? { version: next.version } : {}),
       });
-      return view(r);
+      return adminView(r);
     },
     /** Deletes the form with its submissions and their files. */
     async remove(actor: Actor, slug: string): Promise<{ submissions: number }> {
@@ -697,8 +923,12 @@ export function createForms(ctx: FormsContext) {
       if (!can.delete(actor)) throw fail("forbidden_forms");
       await ready();
       const f = await found(slug);
-      const gone = (await repo.deleteFormSubmissions?.({ formId: f.id })) ?? [];
-      await dropFiles(gone);
+      const gone = await purge({ formId: f.id });
+      const left = repo.selectFormSubmissions
+        ? (await repo.selectFormSubmissions({ formId: f.id, limit: 1 })).length
+        : 0;
+      // A file that could not be deleted keeps its submission, and the form with it: try again.
+      if (left) throw fail("internal", {}, { status: 503 });
       await repo.deleteRecords({ kind: KIND, id: f.id });
       ctx.audit(actor, "form.delete", { form: slug, submissions: gone.length });
       return { submissions: gone.length };
@@ -773,17 +1003,27 @@ export function createForms(ctx: FormsContext) {
         throw fail("form_file_type", {
           types: (field.accept ?? FORM_DEFAULT_ACCEPT).join(", "),
         });
-      const storeKey = `${TMP}${f.id}/${hex(randomBytes(12))}/${name}`;
+      const gid = hex(randomBytes(16));
+      // The temporary key holds no file name: it shows up in storage logs and the PUT address.
+      const storeKey = `${TMP}${f.id}/${gid}`;
       const e = ctx.now().getTime() + GRANT_SECONDS * 1000;
-      const token = await sign({
-        f: f.id,
-        k: field.key,
-        key: storeKey,
-        s: size,
-        m: mime,
-        n: name,
-        e,
+      const grantData: GrantData = {
+        status: "issued",
+        field: field.key,
+        tmp: storeKey,
+        size,
+        mime,
+        name,
+        expires: e,
+      };
+      await repo.insertRecord({
+        kind: UPLOAD_KIND,
+        scope: f.id,
+        key: gid,
+        data: grantData as unknown as Record<string, unknown>,
+        at: iso(),
       });
+      const token = await sign({ f: f.id, g: gid, e });
       const signed = await st.adapter.presignPut(storeKey, {
         mime,
         expires: GRANT_SECONDS,
@@ -807,19 +1047,27 @@ export function createForms(ctx: FormsContext) {
       await ready();
       const f = await find(slug);
       if (!f || !f.enabled) throw fail("form_not_found", { slug });
-      const g = await opened(token, f);
+      const { rec, d } = await opened(token, f);
       const st = storage();
       if (!st) throw fail("form_uploads_off");
-      if (await st.adapter.head(g.key))
+      if (d.status !== "issued")
         throw fail("form_upload_invalid", { reason: "used" });
       // Read no more than the grant allows.
-      const bytes = typeof body === "function" ? await body(g.s) : body;
-      if (bytes.byteLength !== g.s)
+      const bytes = typeof body === "function" ? await body(d.size) : body;
+      if (bytes.byteLength !== d.size)
         throw fail("form_upload_invalid", { reason: "size" });
-      await st.adapter.put(g.key, bytes, {
-        mime: g.m,
-        disposition: "attachment",
-      });
+      // One upload per grant: whoever moves it from issued to uploaded first writes the bytes.
+      const mine = await swapGrant(rec, { ...d, status: "uploaded" });
+      if (!mine) throw fail("form_upload_invalid", { reason: "used" });
+      try {
+        await st.adapter.put(d.tmp, bytes, {
+          mime: d.mime,
+          disposition: "attachment",
+        });
+      } catch (e) {
+        await swapGrant(mine, d).catch(() => null);
+        throw e;
+      }
       return { ok: true };
     },
     /** Keep a submission. Answers the same for spam (the sender is not told). */
@@ -898,6 +1146,8 @@ export function createForms(ctx: FormsContext) {
           ok = await ctx.options.verify(meta.request ?? null, {
             form: f,
             values,
+            // Everything sent (a captcha token the form does not declare too), as parsed.
+            raw: structuredClone(input),
           });
         } catch (e) {
           ctx.report(e, "forms.verify");
@@ -907,71 +1157,127 @@ export function createForms(ctx: FormsContext) {
       }
       // Files: every token must be this form's and this field's, uploaded, the size granted, and what it says it is.
       const files: FormSubmission["files"] = [];
-      const moves: { from: string; to: string }[] = [];
+      const picked: { rec: CmsRecord; d: GrantData; to: string; id: string }[] =
+        [];
       for (const fl of formFields(f.steps)) {
         if (fl.kind !== "file" || values[fl.key] === undefined) continue;
         const st = storage();
         if (!st) throw fail("form_uploads_off");
         const out: FormFileValue[] = [];
         for (const t of values[fl.key] as unknown[]) {
-          const g = await opened(t, f);
-          if (g.k !== fl.key)
+          const { rec, d } = await opened(t, f);
+          if (picked.some((x) => x.rec.id === rec.id))
+            throw fail("form_upload_invalid", { reason: "used" });
+          if (d.field !== fl.key)
             throw fail("form_upload_invalid", { reason: "field" });
-          const head = await st.adapter.head(g.key);
+          const head = await st.adapter.head(d.tmp);
           if (!head) throw fail("form_upload_invalid", { reason: "missing" });
           if (
-            head.size !== g.s ||
+            head.size !== d.size ||
             head.size > (fl.maxSize ?? FORM_DEFAULT_MAX_SIZE)
           )
             throw fail("form_upload_invalid", { reason: "size" });
           const start =
-            (await st.adapter.readStart(g.key, 64)) ?? new Uint8Array();
-          if (!contentMatches(g.m, start))
+            (await st.adapter.readStart(d.tmp, 64)) ?? new Uint8Array();
+          if (!contentMatches(d.mime, start))
             throw fail("form_file_type", {
               types: (fl.accept ?? FORM_DEFAULT_ACCEPT).join(", "),
             });
           const id = hex(randomBytes(8));
-          const to = `_cms/forms/${f.id}/${id}/${g.n}`;
-          moves.push({ from: g.key, to });
+          const to = `_cms/forms/${f.id}/${id}/${d.name}`;
+          picked.push({ rec, d, to, id });
           files.push({
             field: fl.key,
             id,
             key: to,
-            name: g.n,
+            name: d.name,
             size: head.size,
-            mime: g.m,
+            mime: d.mime,
           });
-          out.push({ id, name: g.n, size: head.size, mime: g.m });
+          out.push({ id, name: d.name, size: head.size, mime: d.mime });
         }
         values[fl.key] = out;
       }
       const st = storage();
-      for (const m of moves) {
-        await st!.adapter.copy(m.from, m.to);
-        // One time only: the upload's own key goes, so the token cannot be sent again.
-        await st!.adapter
-          .delete(m.from)
-          .catch((e) => ctx.report(e, "forms: upload"));
+      // Claim every grant (issued/uploaded → claimed, one compare-and-swap each): of two
+      // submissions sending one token, exactly one gets it. On any failure below, the claims are
+      // given back (the token works again until it expires) and the copies made so far go.
+      const claimed: { rec: CmsRecord; prev: GrantData }[] = [];
+      const copied: string[] = [];
+      const undo = async () => {
+        const orphans: string[] = [];
+        for (const k of copied)
+          await st!.adapter.delete(k).catch((e) => {
+            orphans.push(k);
+            ctx.report(e, "forms: undo upload");
+          });
+        for (const c of claimed) {
+          const back: GrantData = {
+            ...c.prev,
+            ...(orphans.length ? { orphans: [...(c.prev.orphans ?? []), ...orphans] } : {}),
+          };
+          orphans.length = 0;
+          await swapGrant(c.rec, back).catch((e) =>
+            ctx.report(e, "forms: release upload"),
+          );
+        }
+      };
+      let row: FormSubmission;
+      try {
+        for (const p of picked) {
+          const next = await swapGrant(p.rec, {
+            ...p.d,
+            status: "claimed",
+            prev: p.d.status,
+            to: p.to,
+            fileId: p.id,
+          });
+          if (!next) throw fail("form_upload_invalid", { reason: "used" });
+          claimed.push({ rec: next, prev: p.d });
+        }
+        for (const p of picked) {
+          await st!.adapter.copy(p.d.tmp, p.to);
+          copied.push(p.to);
+        }
+        row = await repo.insertFormSubmission!({
+          formId: f.id,
+          formVersion: f.version,
+          data: values,
+          files,
+          status: "new",
+          ipHash,
+          userAgent,
+          createdAt: at,
+        });
+      } catch (e) {
+        await undo();
+        throw e;
       }
-      const row = await repo.insertFormSubmission!({
-        formId: f.id,
-        formVersion: f.version,
-        data: values,
-        files,
-        status: "new",
-        ipHash,
-        userAgent,
-        createdAt: at,
-      });
+      // Saved: the uploads' own keys go, and the grants are done (a retry of the same delete
+      // is harmless; the sweep finishes what fails here).
+      for (const c of claimed) {
+        const d = c.rec.data as unknown as GrantData;
+        const gone = await st!.adapter.delete(d.tmp).then(
+          () => true,
+          (e) => (ctx.report(e, "forms: upload"), false),
+        );
+        await swapGrant(c.rec, {
+          ...d,
+          status: "done",
+          tmp: gone ? "" : d.tmp,
+        }).catch((e) => ctx.report(e, "forms: upload"));
+      }
       const sub = subView(row, f.slug);
       ctx.emit({
         form: f.slug,
         formId: f.id,
         submissionId: row.id,
         fields: Object.keys(values),
+        // File names are personal data too: an opaque id unless eventValues is on.
         files: files.map((x) => ({
           field: x.field,
-          name: x.name,
+          id: x.id,
+          ...(ctx.options?.eventValues ? { name: x.name } : {}),
           size: x.size,
           mime: x.mime,
         })),
@@ -1065,7 +1371,7 @@ export function createForms(ctx: FormsContext) {
     ): Promise<{ changed: number }> {
       must(actor, "read");
       if (!FORM_STATUSES.includes(status))
-        throw fail("form_invalid", { reason: "status" });
+        throw invalid({ issue: "status" });
       await ready();
       const f = await found(slug);
       const mine: string[] = [];
@@ -1098,10 +1404,7 @@ export function createForms(ctx: FormsContext) {
         const s = await repo.findFormSubmission!(id);
         if (s && s.formId === f.id) mine.push(id);
       }
-      const gone = mine.length
-        ? await repo.deleteFormSubmissions!({ ids: mine })
-        : [];
-      await dropFiles(gone);
+      const gone = mine.length ? await purge({ ids: mine }) : [];
       if (gone.length)
         ctx.audit(actor, "form.submission_delete", {
           form: f.slug,
@@ -1109,11 +1412,14 @@ export function createForms(ctx: FormsContext) {
         });
       return { deleted: gone.length };
     },
-    /** Every submission with these statuses (default: not spam) as CSV, newest first. */
+    /**
+     * Every submission with these statuses (default: everything but spam) as CSV, newest first.
+     * `q` searches the values like the list does, so the admin can export the view it shows.
+     */
     async exportCsv(
       actor: Actor,
       slug: string,
-      o: { status?: readonly FormSubmissionStatus[] | null } = {},
+      o: { status?: readonly FormSubmissionStatus[] | null; q?: string } = {},
     ): Promise<{ filename: string; csv: string; rows: number }> {
       must(actor, "read");
       await ready();
@@ -1127,6 +1433,7 @@ export function createForms(ctx: FormsContext) {
         const page = await repo.listFormSubmissions!({
           formId: f.id,
           statuses: statuses.length ? statuses : ["new", "read", "archived"],
+          q: o.q?.trim() ? o.q.slice(0, 200) : undefined,
           limit: 1000,
           offset,
         });
@@ -1151,7 +1458,12 @@ export function createForms(ctx: FormsContext) {
         ),
         ...extra.map((k) => displayValue(undefined, s.data[k])),
       ]);
-      ctx.audit(actor, "form.export", { form: f.slug, rows: rows.length });
+      ctx.audit(actor, "form.export", {
+        form: f.slug,
+        rows: rows.length,
+        ...(statuses.length ? { status: statuses.join(",") } : {}),
+        ...(o.q?.trim() ? { filtered: true } : {}),
+      });
       return {
         filename: `${f.slug}-${iso().slice(0, 10)}.csv`,
         csv: `\ufeff${toCsv([head, ...rows])}`,
@@ -1180,7 +1492,8 @@ export function createForms(ctx: FormsContext) {
       ctx.audit(actor, "form.file_open", {
         form: f.slug,
         submission: id,
-        file: file.name,
+        // The file's id, not its name (names can be personal data), unless eventValues is on.
+        file: ctx.options?.eventValues ? file.name : file.id,
       });
       return {
         url,
@@ -1194,15 +1507,8 @@ export function createForms(ctx: FormsContext) {
     // ── housekeeping ──
     /** Retention: delete submissions (and their files) sent before `before`. */
     async purgeBefore(before: string): Promise<number> {
-      if (!repo.deleteFormSubmissions) return 0;
-      let n = 0;
-      for (let i = 0; i < 100; i++) {
-        const gone = await repo.deleteFormSubmissions({ before, limit: 500 });
-        await dropFiles(gone);
-        n += gone.length;
-        if (gone.length < 500) break;
-      }
-      return n;
+      // Files first; a row whose file could not be deleted stays for the next run.
+      return (await purge({ before })).length;
     },
     /** The cron call: a form's own shorter `keepDays`, and uploads never sent. */
     async tick(): Promise<void> {
@@ -1214,13 +1520,7 @@ export function createForms(ctx: FormsContext) {
         const before = new Date(
           ctx.now().getTime() - f.settings.keepDays * DAY,
         ).toISOString();
-        await dropFiles(
-          await repo.deleteFormSubmissions({
-            formId: f.id,
-            before,
-            limit: 2000,
-          }),
-        );
+        await purge({ formId: f.id, before });
       }
       await sweepUploads();
     },

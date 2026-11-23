@@ -147,7 +147,9 @@ test("locales: status per language (source, missing, outdated, current), the sou
   assert.deepEqual((await cms.sourceDiff(admin, "guide", "s", "en")).hunks, []);
   assert.equal(await code(cms.markAligned(admin, "guide", "s", "en", { version: 9 })), "version_not_found");
   assert.equal(await code(cms.translations(admin, "blog", "s")), "locale_not_localized");
-  assert.equal(await code(cms.translations(anon, "guide", "s")), "unauthorized");
+  // Review 0.22: readers get a read projection (published languages only, no draft details).
+  const pub = await cms.translations(anon, "guide", "s");
+  assert.deepEqual(pub.translations.map((t) => [t.locale, t.docStatus, t.sourceVersion]), [["ko", "published", null], ["en", "published", null]]);
 });
 
 test("locales: fallback reads serve the default language and say which was asked for", async () => {
@@ -267,11 +269,19 @@ test("locales: REST routes (?locale=, _translations, _align, _source-diff); the 
   const en = await call("GET", "/collections/guide/r?locale=en");
   assert.deepEqual([(ko.json!.doc as { title: string }).title, (en.json!.doc as { title: string }).title], ["레스트", "Rest"]);
   assert.equal(ko.etag, '"v1-ko"');
-  assert.equal(en.etag, '"v1-en"');
+  // Review 0.22: a translation's tag also follows what it shows of its source.
+  assert.match(en.etag!, /^W\/"v1-en-[a-z0-9]+"$/);
   assert.equal((await call("GET", "/collections/guide/r?locale=en", undefined, { "if-none-match": en.etag! })).status, 304);
   assert.equal((await call("GET", "/collections/guide/r?locale=en", undefined, { "if-none-match": ko.etag! })).status, 200);
   const patched = await call("PATCH", "/collections/guide/r?locale=en", { doc: { summary: "S" } }, { "if-match": en.etag! });
   assert.deepEqual([patched.status, patched.etag], [200, '"v2-en"'], JSON.stringify(patched.json));
+  // Review 0.22: the source's tag at the same version is not the translation's.
+  const wrong = await call("PATCH", "/collections/guide/r?locale=en", { doc: { summary: "T" } }, { "if-match": '"v2-ko"' });
+  assert.deepEqual([wrong.status, wrong.json!.error], [409, "locale_etag_mismatch"]);
+  assert.equal((await call("PATCH", "/collections/guide/r?locale=en", { doc: { summary: "T" } }, { "if-match": '"v2"' })).status, 409);
+  const bare = await call("PATCH", "/collections/guide/r?locale=en", { doc: { summary: "T" } }, { "if-match": "2" });
+  assert.deepEqual([bare.status, bare.etag], [200, '"v3-en"'], JSON.stringify(bare.json));
+  assert.equal((await call("PATCH", "/collections/guide/r", { doc: { summary: "K" } }, { "if-match": '"v1-en"' })).json!.error, "locale_etag_mismatch");
   const fb = await call("GET", "/collections/guide/r?locale=ja&fallback=1");
   assert.deepEqual([(fb.json!.doc as { locale: string }).locale, (fb.json!.doc as { requestedLocale: string }).requestedLocale], ["ko", "ja"]);
   await cms.update(admin, "guide", "r", { body: "y\n" }, { publish: true });

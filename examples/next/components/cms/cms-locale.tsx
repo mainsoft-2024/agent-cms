@@ -67,7 +67,7 @@ export function LocaleTabs({ languages, current, onPick, error, onRetry, classNa
     refs.current[to]?.focus();
   };
   return (
-    <nav aria-label={t("locale_tabs")} className={cn("flex min-h-10 shrink-0 items-stretch gap-1 overflow-x-auto overscroll-x-contain border-b px-4 [scrollbar-width:none] md:px-6 [&::-webkit-scrollbar]:hidden", className)}>
+    <nav aria-label={t("locale_tabs")} className={cn("flex min-h-10 shrink-0 items-stretch gap-1 overflow-x-auto overscroll-x-contain border-b px-4 [scrollbar-width:none] after:w-4 after:shrink-0 after:content-[''] md:px-6 [&::-webkit-scrollbar]:hidden", className)}>
       {languages ? (
         languages.map((l, i) => {
           const on = l.locale === current;
@@ -95,7 +95,11 @@ export function LocaleTabs({ languages, current, onPick, error, onRetry, classNa
               <span aria-hidden lang={l.locale}>
                 {name}
               </span>
-              <LocaleStatus status={l.status} />
+              {/* On a phone only the tab on screen spells its status; the others keep a dot (the name says it all). */}
+              <LocaleStatus status={l.status} className={cn(!on && "max-sm:hidden")} />
+              {!on && l.status !== "source" ? (
+                <span aria-hidden className={cn("h-1.5 w-1.5 shrink-0 rounded-full sm:hidden", l.status === "outdated" ? "bg-amber-500" : l.status === "current" ? "bg-green-600" : "bg-neutral-400")} />
+              ) : null}
             </button>
           );
         })

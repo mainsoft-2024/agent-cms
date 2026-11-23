@@ -890,6 +890,62 @@ test("db: schema 10 → 11 swaps the unique index for one slug per language; tra
   }
 });
 
+test("db: 0.22 forms review on Postgres: two saves of one form, one wins; one upload token, one submission; retention keeps a row whose file failed", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const repo = new DrizzleRepo(db);
+    const store = new MemoryStorage({ name: "private" });
+    let t = Date.parse("2026-11-23T00:00:00Z");
+    const cms = createCms({ repo, collections: [guide], forms: true, now: () => new Date(t), retention: {}, media: { stores: { private: { visibility: "private", adapter: store } } } });
+    const steps = [{ title: "", fields: [{ key: "name", label: "Name", kind: "text" as const }, { key: "shot", label: "Shot", kind: "file" as const, accept: ["image/*"] }] }];
+    await cms.forms.create(admin, { slug: "contact", title: "Contact", enabled: true, steps });
+    // Compare and swap: both read the same row, then both write.
+    let waiting: (() => void)[] = [];
+    const meet = () => new Promise<void>((ok) => { waiting.push(ok); if (waiting.length === 2) { for (const w of waiting) w(); waiting = []; } });
+    const orig = repo.updateRecord.bind(repo);
+    repo.updateRecord = async (kind, id, patch) => { if (kind === "form") await meet(); return orig(kind, id, patch); };
+    const r = await Promise.allSettled([cms.forms.update(admin, "contact", { title: "A" }), cms.forms.update(admin, "contact", { title: "B" })]);
+    repo.updateRecord = orig;
+    assert.equal(r.filter((x) => x.status === "fulfilled").length, 1);
+    const lost = r.find((x) => x.status === "rejected") as PromiseRejectedResult;
+    assert.equal(isCmsError(lost.reason) && lost.reason.code, "form_conflict");
+    // A stale expectedUpdatedAt is refused; the fresh one goes through.
+    const cur = await cms.forms.get(admin, "contact");
+    t += 1000;
+    await cms.forms.update(admin, "contact", { title: "C", expectedUpdatedAt: cur.updatedAt });
+    await assert.rejects(cms.forms.update(admin, "contact", { title: "D", expectedUpdatedAt: cur.updatedAt }), (e) => isCmsError(e) && e.code === "form_conflict");
+
+    // One token, two submissions at once.
+    const png = new Uint8Array(200);
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const g = await cms.forms.grant("contact", { field: "shot", name: "s.png", size: 200, mime: "image/png" }, { ip: "1.1.1.1" });
+    await cms.forms.upload("contact", g.token, png);
+    const head = store.head.bind(store);
+    store.head = async (k: string) => { const x = await head(k); await meet(); return x; };
+    const subs = await Promise.allSettled([cms.forms.submit("contact", { name: "A", shot: [g.token] }, { ip: "1.0.0.1" }), cms.forms.submit("contact", { name: "B", shot: [g.token] }, { ip: "1.0.0.2" })]);
+    store.head = head;
+    assert.equal(subs.filter((x) => x.status === "fulfilled").length, 1);
+    const page = await cms.forms.submissions(admin, "contact");
+    assert.equal(page.total, 1);
+
+    // Retention: the file cannot be deleted, so the row stays until it can.
+    const key = (await repo.findFormSubmission(page.items[0].id))!.files[0].key;
+    const del = store.delete.bind(store);
+    store.delete = async (k: string) => { if (k === key) throw new Error("down"); return del(k); };
+    t += 400 * 86_400_000;
+    await cms.cron();
+    assert.equal((await cms.forms.submissions(admin, "contact")).total, 1);
+    store.delete = del;
+    t += 86_400_000;
+    await cms.cron();
+    assert.equal((await cms.forms.submissions(admin, "contact")).total, 0);
+    assert.ok(!store.objects.has(key));
+  } finally {
+    await close();
+  }
+});
+
 test("db: 0.22 forms on Postgres (the v11 step adds cms_form_submissions; list, search, counts, status, delete, retention)", async () => {
   const { db, close } = await freshDb();
   try {
@@ -928,6 +984,60 @@ test("db: 0.22 forms on Postgres (the v11 step adds cms_form_submissions; list, 
     t += 400 * 86_400_000;
     await cms.cron();
     assert.equal((await cms.forms.submissions(admin, "contact", { status: ["new", "read", "spam", "archived"] })).total, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("db: review 0.22 (다국어): a language's page filtered by category follows the source; restore is all or nothing; an INVALID new index stops the upgrade", async () => {
+  const { z } = await import("zod");
+  const { invalidIndexGuard, upgradeSteps } = await import("../tables");
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const repo = new DrizzleRepo(db);
+    const localized = defineCollection({ slug: "guide", label: "Guide", visibility: "public", localized: true, categories: ["A", "B"], url: (d) => `/${d.locale}/guide/${d.slug}`, fields: z.object({ order: z.number().optional() }) });
+    const cms = createCms({ repo, collections: [localized], locales: ["ko", "en"], defaultLocale: "ko", searchRefreshMs: 0, trash: { days: 30 }, warn: () => {} });
+    await cms.create(admin, "guide", { slug: "c", title: "원문", category: "A", body: "x\n" }, { publish: true });
+    await cms.create(admin, "guide", { slug: "c", title: "English" }, { locale: "en", publish: true });
+    // The source moves to B; the translation's stored copy still says A.
+    await cms.update(admin, "guide", "c", { category: "B" }, { publish: true });
+    for (const cat of ["A", "B"]) {
+      const listed: string[] = (await cms.list(anon, "guide", { locale: "en", category: cat })).map((d) => d.slug);
+      const paged: string[] = (await cms.page(anon, "guide", { locale: "en", category: cat })).docs.map((d) => d.slug);
+      assert.deepEqual(paged, listed, `category ${cat}`);
+    }
+    assert.deepEqual((await cms.page(anon, "guide", { locale: "en", category: "B" })).docs.map((d) => [d.slug, d.category]), [["c", "B"]]);
+
+    // Restore in one transaction: the second write fails, nothing comes back.
+    await cms.remove(admin, "guide", "c");
+    const src = (await cms.trash.list(admin)).items.find((i) => !i.locale)!;
+    const orig = DrizzleRepo.prototype.updateDoc;
+    let n = 0;
+    DrizzleRepo.prototype.updateDoc = async function (this: DrizzleRepo, id, patch) {
+      if ("deletedAt" in patch && patch.deletedAt === null && ++n === 2) throw new Error("disk full");
+      return orig.call(this, id, patch);
+    };
+    try {
+      await assert.rejects(cms.trash.restore(admin, [{ kind: "document", id: src.id }]), /disk full/);
+    } finally {
+      DrizzleRepo.prototype.updateDoc = orig;
+    }
+    assert.equal((await cms.trash.list(admin)).items.length, 2, "neither came back");
+    await cms.trash.restore(admin, [{ kind: "document", id: src.id }]);
+    assert.equal((await cms.get(anon, "guide", "c", { locale: "en" })).title, "English");
+
+    // A new unique index left INVALID (a CREATE INDEX CONCURRENTLY that failed): the step stops
+    // before the old index goes; inspect reports it.
+    await run(db, `CREATE UNIQUE INDEX cms_documents_collection_slug_idx ON cms_documents ("collection", "slug", "locale", "id");`);
+    await run(db, `UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'cms_documents_collection_slug_locale_idx'::regclass;`);
+    assert.deepEqual((await repo.inspect()).invalidIndexes, ["cms_documents_collection_slug_locale_idx"]);
+    const step = upgradeSteps().find((s) => s.version === 11)!;
+    await assert.rejects(run(db, step.sql), /INVALID/);
+    assert.equal((await rows<{ n: number }>(db, `select count(*)::int as n from pg_indexes where indexname = 'cms_documents_collection_slug_idx'`))[0].n, 1, "the old index was kept");
+    await run(db, `UPDATE pg_index SET indisvalid = true WHERE indexrelid = 'cms_documents_collection_slug_locale_idx'::regclass;`);
+    await run(db, invalidIndexGuard("cms_documents_collection_slug_locale_idx", null));
+    assert.deepEqual((await repo.inspect()).invalidIndexes, []);
   } finally {
     await close();
   }

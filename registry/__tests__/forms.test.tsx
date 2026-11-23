@@ -25,6 +25,7 @@ afterEach(() => {
   cleanup();
   setMobile(false);
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 import { BASE } from "./server";
@@ -238,9 +239,10 @@ test("admin: make a form, add a field shown only for one choice, save; a submiss
     within(p2).getByLabelText("Field it depends on"),
     "topic",
   );
+  // The condition keeps the choice's stored value (made once; renaming the label never changes it).
   assert.equal(
     (within(p2).getByLabelText("Value") as HTMLSelectElement).value,
-    "Bug",
+    "option_1",
   );
   // The list row says when it shows.
   assert.ok(
@@ -281,7 +283,7 @@ test("admin: make a form, add a field shown only for one choice, save; a submiss
   assert.deepEqual(saved.steps[0].fields[4].showIf, {
     field: "topic",
     op: "eq",
-    value: "Bug",
+    value: "option_1",
   });
 
   // Turn it on and receive one.
@@ -293,7 +295,7 @@ test("admin: make a form, add a field shown only for one choice, save; a submiss
       name: "Kim",
       email: "kim@example.com",
       message: "Saving twice",
-      topic: "Bug",
+      topic: "option_1",
       screenshot_note: "see",
     },
     { ip: "1.2.3.4" },
@@ -373,7 +375,14 @@ test("admin: forms off on the server, or no permission: the list says so; the sh
 });
 
 test("admin: the embed dialog gives React, HTML and REST code to copy", async () => {
-  const s = await contactServer();
+  const s = makeServer({ forms: true });
+  // Plain HTML only works for a form without files and conditions (see forms-review.test.tsx).
+  await s.cms.forms.create(admin, {
+    slug: "contact",
+    title: "Contact us",
+    enabled: true,
+    steps: [{ title: "", fields: STEPS.flatMap((x) => x.fields).filter((f) => !f.showIf) }],
+  });
   const user = userEvent.setup();
   renderWith(s, <CmsFormEditor slug="contact" onBack={() => {}} />);
   await user.click(await screen.findByRole("button", { name: "Embed" }));
@@ -389,6 +398,7 @@ test("admin: the embed dialog gives React, HTML and REST code to copy", async ()
     /<form method="post" action="http:\/\/localhost\/api\/cms\/forms\/contact">/,
   );
   assert.match(html, /name="_website" tabindex="-1" autocomplete="off"/);
+  assert.match(html, /<button type="submit">Send<\/button>/);
   await user.click(within(dialog).getByRole("radio", { name: "REST" }));
   assert.match(
     within(dialog).getByLabelText("Code").textContent ?? "",

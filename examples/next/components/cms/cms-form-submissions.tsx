@@ -68,11 +68,13 @@ export interface CmsFormSubmissionsProps {
   form: FormView;
   /** The number of submissions that are not spam (for a tab label). */
   onTotal?: (n: number) => void;
+  /** What is shown now (box, search, how many): the CSV of <CmsFormEditor> takes the same. */
+  onView?: (v: { box: Box; status: FormSubmissionStatus[]; q: string; total: number }) => void;
   className?: string;
 }
 
 type Box = "inbox" | "spam" | "archived";
-const BOX_STATUS: Record<Box, FormSubmissionStatus[]> = {
+export const BOX_STATUS: Record<Box, FormSubmissionStatus[]> = {
   inbox: ["new", "read"],
   spam: ["spam"],
   archived: ["archived"],
@@ -95,6 +97,7 @@ function cell(f: FormField, v: unknown, t: T): string {
 export function CmsFormSubmissions({
   form,
   onTotal,
+  onView,
   className,
 }: CmsFormSubmissionsProps) {
   const { client, t, me, locale, toast } = useCms();
@@ -133,6 +136,7 @@ export function CmsFormSubmissions({
         setItems(r.items);
         setTotalN(r.total);
         setCounts(r.counts);
+        onView?.({ box, status: BOX_STATUS[box], q, total: r.total });
         onTotal?.(r.counts.new + r.counts.read + r.counts.archived);
         // What was picked but is not on this page any more is let go.
         setPicked(
@@ -145,7 +149,7 @@ export function CmsFormSubmissions({
     return () => {
       live = false;
     };
-  }, [client, form.slug, box, q, offset, tick, onTotal]);
+  }, [client, form.slug, box, q, offset, tick, onTotal, onView]);
 
   const fields = formFields(form.steps);
   // The table shows the first fields that read well in a column.
@@ -321,7 +325,7 @@ export function CmsFormSubmissions({
               setOpenId(null),
               setPicked(new Set())
             )}
-            itemClassName="h-7 px-2.5 text-xs"
+            itemClassName="h-10 px-3 text-sm md:h-7 md:px-2.5 md:text-xs"
             options={[
               {
                 value: "inbox",
@@ -353,14 +357,14 @@ export function CmsFormSubmissions({
                 setQuery(e.target.value),
                 typed(e.target.value)
               )}
-              className="h-8 pl-8 pr-8 text-sm"
+              className="h-10 pl-8 pr-10 text-sm md:h-8 md:pr-8"
             />
             {query ? (
               <button
                 type="button"
                 aria-label={t("clear_search")}
                 onClick={() => (setQuery(""), setQ(""), setOffset(0))}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent"
+                className="absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent md:h-6 md:w-6"
               >
                 <X aria-hidden className="h-3.5 w-3.5" />
               </button>
@@ -703,8 +707,10 @@ function Detail({
   const { client, toast } = useCms();
   const [opening, setOpening] = React.useState<string | null>(null);
   const known = new Set(fields.map((f) => f.key));
-  // Keys of fields removed since: still shown, by their key.
-  const extra = Object.keys(s.data).filter((k) => !known.has(k));
+  // Keys of fields removed since: still shown, by their key (files too: the submission keeps its own).
+  const extra = [
+    ...new Set([...Object.keys(s.data), ...s.files.map((x) => x.field)]),
+  ].filter((k) => !known.has(k));
   const title = fields.find(
     (f) => f.kind === "text" && typeof s.data[f.key] === "string",
   )?.key;
@@ -721,8 +727,9 @@ function Detail({
   };
   const value = (f: FormField | undefined, key: string) => {
     const v = s.data[key];
-    if (f?.kind === "file") {
-      const files = s.files.filter((x) => x.field === key);
+    // Files come from the submission itself (names and sizes as sent), whatever the field is now.
+    const files = s.files.filter((x) => x.field === key);
+    if (f?.kind === "file" || files.length) {
       if (!files.length)
         return <span className="text-muted-foreground">—</span>;
       return (
@@ -733,7 +740,7 @@ function Detail({
               type="button"
               onClick={() => void openFile(x.id)}
               disabled={opening === x.id}
-              className="inline-flex max-w-full items-center gap-1 rounded-md border bg-muted/50 px-2 py-1 text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+              className="inline-flex min-h-10 max-w-full items-center gap-1 rounded-md border bg-muted/50 px-2 py-1 text-xs md:min-h-0 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
               aria-label={t("fs_file_open", { name: x.name })}
             >
               <Paperclip aria-hidden className="h-3 w-3 shrink-0" />

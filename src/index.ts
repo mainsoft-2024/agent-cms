@@ -120,7 +120,7 @@ export { API_ROUTES, openApiDocument, type ApiRoute, type OpenApiOptions } from 
 export { docsFromCsv, docsFromJson, docsFromWordpress, filesFromDocs, filesFromSource, htmlToMarkdown, IMPORT_SOURCES, parseCsv, slugify, type ImportSource, type SourceDoc } from "./import-sources";
 
 // 0.14.0: request limits, retention, the events stream
-export { clientIp, createLimiter, ipAllowed, MemoryRateLimitStore, type RateLimitOptions, type RateLimitStore, type RateVerdict } from "./limits";
+export { clientIp, clientIpBehind, createLimiter, ipAllowed, MemoryRateLimitStore, type RateLimitOptions, type RateLimitStore, type RateVerdict } from "./limits";
 export { type RetentionOptions, type RetentionReport } from "./retention";
 // 0.22.0: forms
 export { FORM_HONEYPOT, FORM_MAX_BODY, toCsv, type CmsForms, type FormCounts, type FormInput, type FormListItem, type FormNotice, type FormSettings, type FormsOptions, type FormSubmissionView, type FormView, type PublicForm, type UploadGrant } from "./forms";

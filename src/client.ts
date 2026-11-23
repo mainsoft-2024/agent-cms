@@ -216,7 +216,7 @@ export interface Me {
   /** 0.21.0: redirects are on and this caller manages them. */
   redirects?: boolean;
   /** 0.22.0: forms are on and this caller may see them (`write`: build forms, `delete`: delete submissions). */
-  forms?: { read: boolean; write: boolean; delete: boolean } | null;
+  forms?: { read: boolean; write: boolean; delete: boolean; /** File fields can take files on this server (0.22.0). */ uploads?: boolean } | null;
   /** 0.21.0: hosts `:::video` blocks may embed. */
   videoHosts?: string[];
   /** The CMS's own sign-in, when the app uses it (`createAuth`). */
@@ -503,6 +503,16 @@ export interface TranslationsView {
  */
 export const localeSlug = (slug: string, locale?: string | null, defaultLocale?: string | null): string => (locale && locale !== defaultLocale ? `${slug}@${locale}` : slug);
 
+/**
+ * The `If-Match` tag for a version. A translation (`slug@locale`, 0.22.0) names its language,
+ * as its ETag does, so the server can tell it from the source's tag at the same version.
+ */
+function versionTag(path: string, version: number): string {
+  const m = /^\/collections\/[^/]+\/[^/]*?%40([^/]+)/.exec(path);
+  const locale = m ? decodeURIComponent(m[1]).toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+  return `"v${version}${locale ? `-${locale}` : ""}"`;
+}
+
 export function createRestClient(opts: RestClientOptions) {
   const base = opts.url.replace(/\/+$/, "");
   const doFetch = opts.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -523,7 +533,7 @@ export function createRestClient(opts: RestClientOptions) {
         headers: {
           accept: "application/json",
           ...(o.body !== undefined ? { "content-type": "application/json" } : {}),
-          ...(o.ifMatch !== undefined ? { "if-match": `"v${o.ifMatch}"` } : {}),
+          ...(o.ifMatch !== undefined ? { "if-match": versionTag(path, o.ifMatch) } : {}),
           ...opts.headers,
         },
         body: o.body !== undefined ? JSON.stringify(o.body) : undefined,
@@ -644,11 +654,18 @@ export function createRestClient(opts: RestClientOptions) {
     removeSubmission: (slug: string, id: string) => req<{ ok: true }>("DELETE", `/forms/${enc(slug)}/submissions/${enc(id)}`),
     /** A five-minute download link for a file of a submission. */
     submissionFileLink: (slug: string, id: string, fileId: string) => req<{ url: string; name: string; expiresAt: string }>("GET", `/forms/${enc(slug)}/submissions/${enc(id)}/files/${enc(fileId)}`),
-    /** Submissions as CSV text (default: all but spam). */
-    async exportSubmissions(slug: string, status?: readonly FormSubmissionStatus[]): Promise<{ csv: string; filename: string }> {
+    /**
+     * Submissions as CSV text (default: all but spam). Give the list's filters to export the view
+     * shown: `{ status: ["spam"], q: "acme" }` (a bare status list still works).
+     */
+    async exportSubmissions(slug: string, filter?: readonly FormSubmissionStatus[] | { status?: readonly FormSubmissionStatus[]; q?: string }): Promise<{ csv: string; filename: string }> {
+      const f = Array.isArray(filter) ? { status: filter as readonly FormSubmissionStatus[] } : ((filter ?? {}) as { status?: readonly FormSubmissionStatus[]; q?: string });
+      const qs = new URLSearchParams();
+      if (f.status?.length) qs.set("status", f.status.join(","));
+      if (f.q?.trim()) qs.set("q", f.q.trim());
       let res: Response;
       try {
-        res = await doFetch(`${base}/forms/${enc(slug)}/export.csv${status?.length ? `?status=${enc(status.join(","))}` : ""}`, { method: "GET", credentials: "same-origin", headers: { accept: "text/csv", ...opts.headers } });
+        res = await doFetch(`${base}/forms/${enc(slug)}/export.csv${qs.toString() ? `?${qs}` : ""}`, { method: "GET", credentials: "same-origin", headers: { accept: "text/csv", ...opts.headers } });
       } catch (e) {
         throw new CmsRemoteError(e instanceof Error ? e.message : String(e), "network");
       }

@@ -649,6 +649,9 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
     }
     if (sub === "check") {
       const r = await repo.inspect();
+      // Review 0.22 preflight: what the 0.22 upgrade would trip over.
+      if (r.invalidIndexes?.length) io.err(`[agent-cms] index ${r.invalidIndexes.join(", ")} is INVALID (a CREATE INDEX CONCURRENTLY that failed): drop it and build it again before migrating (UPGRADE-0.22.md).`);
+      if (r.atSlugs?.length) io.err(`[agent-cms] slug(s) ending in @<language>: ${r.atSlugs.join(", ")}. With locales on these read as a translation's address: rename them before turning locales on.`);
       let pending = migrationSql(r, tables);
       let changed = false;
       // Plugin tables: a plugin whose `CREATE TABLE` names a table the database lacks needs its SQL.
@@ -757,6 +760,8 @@ function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, i
   if (r.missingIndexes?.length) warn(`missing indexes: ${r.missingIndexes.join(", ")}. Lists and pruning get slow on big tables (npx @mainsoft/agent-cms migrate check prints the SQL)`);
   else if (r.missingIndexes && !r.missingTables.length) ok("all indexes exist");
   if (r.staleIndexes?.length) fail(`old index ${r.staleIndexes.join(", ")} still there: a translation cannot have its source's slug (npx @mainsoft/agent-cms migrate check prints the SQL; UPGRADE-0.22.md)`);
+  if (r.invalidIndexes?.length) fail(`index ${r.invalidIndexes.join(", ")} is INVALID (a CREATE INDEX CONCURRENTLY that failed): drop it and build it again (UPGRADE-0.22.md)`);
+  if (r.atSlugs?.length) warn(`slug(s) ending in @<language>: ${r.atSlugs.join(", ")}. With locales on these read as a translation's address: rename them first (UPGRADE-0.22.md)`);
   if (r.changeRows != null && r.changeRows > 1_000_000) warn(`the change log has ${r.changeRows} rows: is the cron call running? It prunes rows older than changes.keepDays`);
   if (staleUploads) warn(`${staleUploads === 500 ? "500+" : staleUploads} upload(s) started more than a day ago and never finished (npx @mainsoft/agent-cms storage cleanup)`);
   if (failedJobs) warn(`${failedJobs} background job(s) failed for good (GET /api/cms/jobs?state=failed shows why; POST /api/cms/jobs/<id>/retry tries again)`);

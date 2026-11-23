@@ -517,6 +517,20 @@ function names(t?: CmsTables | CmsTablesOptions) {
 }
 
 /** Columns added after the first release, by schema version: `ALTER … ADD COLUMN IF NOT EXISTS`. */
+/**
+ * Review 0.22: stop before the old unique index goes when the new one is INVALID (a
+ * `CREATE UNIQUE INDEX CONCURRENTLY` that failed leaves it in place but unused): `IF NOT EXISTS`
+ * would skip it and slugs would be left unguarded.
+ */
+export function invalidIndexGuard(name: string, schema: string | null): string {
+  const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
+  return `DO $agent_cms$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = ${lit(name)} AND n.nspname = ${schema ? lit(schema) : "current_schema()"} AND NOT i.indisvalid) THEN
+    RAISE EXCEPTION 'agent-cms: index % is INVALID (a CREATE UNIQUE INDEX CONCURRENTLY that failed). Drop it, build it again (UPGRADE-0.22.md), then run the migration again. The old index was kept.', ${lit(name)};
+  END IF;
+END $agent_cms$;`;
+}
+
 export function upgradeSteps(t?: CmsTables | CmsTablesOptions): { version: number; name: string; sql: string }[] {
   const { tbl, idx, schema, q } = names(t);
   return [
@@ -833,6 +847,7 @@ ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "locale" text NOT NULL 
 ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "group_id" uuid;
 ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "source_version" integer;
 CREATE UNIQUE INDEX IF NOT EXISTS ${idx("documents_collection_slug_locale_idx")} ON ${tbl("documents")} ("collection", "slug", "locale");
+${invalidIndexGuard(names(t).prefix + "documents_collection_slug_locale_idx", schema)}
 DROP INDEX IF EXISTS ${schema ? `${q(schema)}.` : ""}${idx("documents_collection_slug_idx")};
 CREATE INDEX IF NOT EXISTS ${idx("documents_group_idx")} ON ${tbl("documents")} ("group_id");
 CREATE TABLE IF NOT EXISTS ${tbl("form_submissions")} (

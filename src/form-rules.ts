@@ -353,40 +353,160 @@ export function checkSubmission(
   return { values, problems };
 }
 
-/** Problems with a definition (in English, for the admin), or an empty list. */
-export function definitionProblems(steps: readonly FormStep[]): string[] {
-  const out: string[] = [];
-  if (!Array.isArray(steps) || !steps.length)
-    return ["a form needs at least one step"];
-  if (steps.length > 20) out.push("at most 20 steps");
+/**
+ * Why a form cannot be saved, as a code (0.22.0): the server's `form_invalid` error carries it as
+ * `params.issue` (with `field`, `step`, `value`), so each language words it itself.
+ */
+export type FormInvalidReason =
+  | "steps_list"
+  | "no_steps"
+  | "too_many_steps"
+  | "no_fields"
+  | "too_many_fields"
+  | "step_title"
+  | "key"
+  | "key_twice"
+  | "kind"
+  | "label"
+  | "help"
+  | "options_count"
+  | "option_incomplete"
+  | "option_twice"
+  | "pattern_kind"
+  | "pattern_long"
+  | "pattern_bad"
+  | "max_size"
+  | "max_files"
+  | "accept"
+  | "condition_field"
+  | "condition_op"
+  | "condition_file"
+  | "slug"
+  | "title"
+  | "success_message"
+  | "notify_email"
+  | "notify_count"
+  | "keep_days"
+  | "redirect"
+  | "status";
+
+export interface FormDefinitionIssue {
+  issue: FormInvalidReason;
+  /** The field's key. */
+  field?: string;
+  /** 1-based step number. */
+  step?: number;
+  /** The offending value (an unknown kind, a repeated option, an address). */
+  value?: string;
+}
+
+/** English wording of an issue (the `reason` of `form_invalid`). */
+export function formIssueText(i: FormDefinitionIssue): string {
+  const at = `field "${i.field ?? ""}"`;
+  switch (i.issue) {
+    case "steps_list":
+      return "steps must be a list";
+    case "no_steps":
+      return "a form needs at least one step";
+    case "too_many_steps":
+      return "at most 20 steps";
+    case "no_fields":
+      return "a form needs at least one field";
+    case "too_many_fields":
+      return "at most 100 fields";
+    case "step_title":
+      return `step ${i.step}: a title of at most 120 characters`;
+    case "key":
+      return `${at}: a key is lowercase letters, digits and _, starting with a letter (at most 40)`;
+    case "key_twice":
+      return `${at}: used twice`;
+    case "kind":
+      return `${at}: unknown kind "${i.value}"`;
+    case "label":
+      return `${at}: a label of 1 to 200 characters`;
+    case "help":
+      return `${at}: help of at most 500 characters`;
+    case "options_count":
+      return `${at}: 1 to 100 options`;
+    case "option_incomplete":
+      return `${at}: every option needs a value and a label`;
+    case "option_twice":
+      return `${at}: option "${i.value}" twice`;
+    case "pattern_kind":
+      return `${at}: only text takes a pattern`;
+    case "pattern_long":
+      return `${at}: a pattern of at most 300 characters`;
+    case "pattern_bad":
+      return `${at}: the pattern is not a regular expression`;
+    case "max_size":
+      return `${at}: largest file from 1 byte to 100 MB`;
+    case "max_files":
+      return `${at}: 1 to 10 files`;
+    case "accept":
+      return `${at}: name the file types it takes`;
+    case "condition_field":
+      return `${at}: a condition looks at an earlier field (not "${i.value}")`;
+    case "condition_op":
+      return `${at}: unknown condition "${i.value}"`;
+    case "condition_file":
+      return `${at}: a file field can only be tested for empty or filled`;
+    case "slug":
+      return "the address is lowercase letters, digits and -";
+    case "title":
+      return "a name of 1 to 120 characters";
+    case "success_message":
+      return "the message after sending is at most 1000 characters";
+    case "notify_email":
+      return `not an e-mail address: ${i.value}`;
+    case "notify_count":
+      return "at most 20 addresses";
+    case "keep_days":
+      return "keep 1 to 3650 days";
+    case "redirect":
+      return "the address after sending starts with https:// or /";
+    case "status":
+      return "status";
+  }
+  return String(i.issue);
+}
+
+/** Problems with a definition as codes, or an empty list. */
+export function definitionIssues(
+  steps: readonly FormStep[],
+): FormDefinitionIssue[] {
+  const out: FormDefinitionIssue[] = [];
+  if (!Array.isArray(steps) || !steps.length) return [{ issue: "no_steps" }];
+  if (steps.length > 20) out.push({ issue: "too_many_steps" });
   const keys = new Set<string>();
   const all = formFields(steps);
-  if (!all.length) out.push("a form needs at least one field");
-  if (all.length > 100) out.push("at most 100 fields");
+  if (!all.length) out.push({ issue: "no_fields" });
+  if (all.length > 100) out.push({ issue: "too_many_fields" });
   for (const [si, s] of steps.entries()) {
     if (typeof s.title !== "string" || s.title.length > 120)
-      out.push(`step ${si + 1}: a title of at most 120 characters`);
+      out.push({ issue: "step_title", step: si + 1 });
     for (const f of s.fields) {
-      const at = `field "${f.key}"`;
-      if (typeof f.key !== "string" || !FORM_KEY_RE.test(f.key))
-        out.push(
-          `${at}: a key is lowercase letters, digits and _, starting with a letter (at most 40)`,
-        );
-      if (keys.has(f.key)) out.push(`${at}: used twice`);
+      const field = String(f.key);
+      const add = (issue: FormInvalidReason, value?: string) =>
+        void out.push({
+          issue,
+          field,
+          ...(value === undefined ? {} : { value }),
+        });
+      if (typeof f.key !== "string" || !FORM_KEY_RE.test(f.key)) add("key");
+      if (keys.has(f.key)) add("key_twice");
       if (!(FORM_FIELD_KINDS as readonly string[]).includes(f.kind))
-        out.push(`${at}: unknown kind "${String(f.kind)}"`);
+        add("kind", String(f.kind));
       if (
         typeof f.label !== "string" ||
         !f.label.trim() ||
         f.label.length > 200
       )
-        out.push(`${at}: a label of 1 to 200 characters`);
+        add("label");
       if (f.help != null && (typeof f.help !== "string" || f.help.length > 500))
-        out.push(`${at}: help of at most 500 characters`);
+        add("help");
       if (f.kind === "select" || f.kind === "multiselect") {
         const opts = f.options ?? [];
-        if (!opts.length || opts.length > 100)
-          out.push(`${at}: 1 to 100 options`);
+        if (!opts.length || opts.length > 100) add("options_count");
         const vals = new Set<string>();
         for (const o of opts) {
           if (
@@ -396,22 +516,19 @@ export function definitionProblems(steps: readonly FormStep[]): string[] {
             typeof o.label !== "string" ||
             !o.label.trim()
           )
-            out.push(`${at}: every option needs a value and a label`);
-          else if (vals.has(o.value))
-            out.push(`${at}: option "${o.value}" twice`);
+            add("option_incomplete");
+          else if (vals.has(o.value)) add("option_twice", o.value);
           else vals.add(o.value);
         }
       }
       if (f.pattern != null && f.pattern !== "") {
-        if (f.kind !== "text" && f.kind !== "textarea")
-          out.push(`${at}: only text takes a pattern`);
-        else if (f.pattern.length > 300)
-          out.push(`${at}: a pattern of at most 300 characters`);
+        if (f.kind !== "text" && f.kind !== "textarea") add("pattern_kind");
+        else if (f.pattern.length > 300) add("pattern_long");
         else {
           try {
             new RegExp(f.pattern, "u");
           } catch {
-            out.push(`${at}: the pattern is not a regular expression`);
+            add("pattern_bad");
           }
         }
       }
@@ -422,12 +539,12 @@ export function definitionProblems(steps: readonly FormStep[]): string[] {
             f.maxSize < 1 ||
             f.maxSize > FORM_MAX_FILE_SIZE)
         )
-          out.push(`${at}: largest file from 1 byte to 100 MB`);
+          add("max_size");
         if (
           f.maxFiles != null &&
           (!Number.isInteger(f.maxFiles) || f.maxFiles < 1 || f.maxFiles > 10)
         )
-          out.push(`${at}: 1 to 10 files`);
+          add("max_files");
         if (
           f.accept != null &&
           (!Array.isArray(f.accept) ||
@@ -440,26 +557,26 @@ export function definitionProblems(steps: readonly FormStep[]): string[] {
                 (a as string).trim() === "*/*",
             ))
         )
-          out.push(`${at}: name the file types it takes`);
+          add("accept");
       }
       if (f.showIf) {
         const c = f.showIf;
-        if (!keys.has(c.field))
-          out.push(
-            `${at}: a condition looks at an earlier field (not "${c.field}")`,
-          );
+        if (!keys.has(c.field)) add("condition_field", String(c.field));
         if (!(FORM_CONDITION_OPS as readonly string[]).includes(c.op))
-          out.push(`${at}: unknown condition "${String(c.op)}"`);
+          add("condition_op", String(c.op));
         const target = all.find((x) => x.key === c.field);
         if (target?.kind === "file" && c.op !== "empty" && c.op !== "filled")
-          out.push(
-            `${at}: a file field can only be tested for empty or filled`,
-          );
+          add("condition_file");
       }
       keys.add(f.key);
     }
   }
   return out;
+}
+
+/** Problems with a definition (in English, for the admin), or an empty list. */
+export function definitionProblems(steps: readonly FormStep[]): string[] {
+  return definitionIssues(steps).map(formIssueText);
 }
 
 /** "Bug" for a select's value, "yes" for a ticked box: a value as people read it. */

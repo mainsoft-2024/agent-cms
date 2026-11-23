@@ -92,6 +92,8 @@ export interface ReleaseView extends CmsRelease {
     stale: boolean;
     state: string | null;
     canPublish: boolean;
+    /** 0.22.0 review: the language of a translation in the release. */
+    locale?: string;
   })[];
   canPublish: boolean;
 }
@@ -343,9 +345,20 @@ export function createFlow(ctx: FlowContext) {
           if (src?.deletedAt) throw fail("translation_source_trashed", { slug: splitAddress(src.slug).slug, source: src.locale ?? "" });
         }
         const kids = isTranslationDoc(d) ? [] : (await repo.listDocs({ trashed: true, groupId: d.id })).filter((x) => x.id !== d.id && x.deletedAt === d.deletedAt);
-        for (const x of [d, ...kids]) {
-          const doc = (await repo.updateDoc(x.id, { deletedAt: null, deletedBy: null, updatedAt: nowIso() }))!;
-          audit(actor, "doc.undelete", { collection: x.collection, slug: docAddress(x), version: x.version });
+        // Review 0.22: every translation that would come back is checked first (the same right as
+        // restoring it on its own), and all of them come back in one transaction or none does.
+        for (const x of kids) assert(actor, x.collection, "publish", x);
+        const back = await repo.tx(async (r) => {
+          const out: CmsDoc[] = [];
+          for (const x of [d, ...kids]) {
+            const doc = await r.updateDoc(x.id, { deletedAt: null, deletedBy: null, updatedAt: nowIso() });
+            if (!doc) throw fail("trash_not_found", { id: x.id });
+            out.push(doc);
+          }
+          return out;
+        });
+        for (const doc of back) {
+          audit(actor, "doc.undelete", { collection: doc.collection, slug: docAddress(doc), version: doc.version });
           ctx.changed(null, doc, { quiet: true }); // told as doc.restored, not as a new document
         }
         return [d.id, ...kids.map((x) => x.id)];
@@ -604,7 +617,7 @@ export function createFlow(ctx: FlowContext) {
         hidden++;
         continue;
       }
-      items.push({ ...it, slug: doc?.slug ?? it.slug, title: doc?.title ?? it.title, currentVersion: doc?.version ?? null, stale: !!doc && doc.version !== it.version, state: doc ? docState(doc).state : null, canPublish: !!doc && can(actor, it.collection, "publish", doc) });
+      items.push({ ...it, slug: doc?.slug ?? it.slug, ...(doc && isTranslationDoc(doc) && doc.locale ? { locale: doc.locale } : {}), title: doc?.title ?? it.title, currentVersion: doc?.version ?? null, stale: !!doc && doc.version !== it.version, state: doc ? docState(doc).state : null, canPublish: !!doc && can(actor, it.collection, "publish", doc) });
     }
     return { ...rel, lastError: safeLastError(actor, rel), items, hiddenItems: hidden, canPublish: rel.state !== "published" && items.length > 0 && !hidden && items.every((i) => i.canPublish) };
   }

@@ -239,6 +239,20 @@ export class DrizzleRepo implements CmsRepo {
     const F = this.t.formSubmissions;
     return (await this.db.update(F).set({ status, updatedAt: new Date(at) }).where(inArray(F.id, ok)).returning({ id: F.id })).length;
   }
+  async selectFormSubmissions(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number; offset?: number }) {
+    const F = this.t.formSubmissions;
+    const conds: SQL[] = [];
+    if (q.before) conds.push(lt(F.createdAt, new Date(q.before)));
+    if (q.ids) {
+      const ok = q.ids.filter((id) => UUID_RE.test(id));
+      if (!ok.length) return [];
+      conds.push(inArray(F.id, ok));
+    }
+    if (q.formId) conds.push(eq(F.formId, q.formId));
+    if (!conds.length) return [];
+    const rows = await this.db.select().from(F).where(and(...conds)).orderBy(asc(F.createdAt), asc(F.id)).limit(q.limit ?? 100_000).offset(q.offset ?? 0);
+    return rows.map((r) => this.toSubmission(r));
+  }
   async deleteFormSubmissions(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number }) {
     const F = this.t.formSubmissions;
     const conds: SQL[] = [];
@@ -972,7 +986,9 @@ export class DrizzleRepo implements CmsRepo {
   async updateRecord(kind: string, id: string, patch: RecordPatch) {
     const R = this.t.records;
     if (!this.uuidLike(id)) return null;
-    const [r] = await this.db.update(R).set({ ...(patch.data !== undefined ? { data: patch.data } : {}), ...(patch.key !== undefined ? { key: patch.key } : {}), updatedAt: new Date(patch.at) }).where(and(eq(R.kind, kind), eq(R.id, id))).returning();
+    // Compare and swap in the same statement (0.22.0): to the millisecond, as the CMS writes and reads it.
+    const swap = patch.ifUpdatedAt !== undefined ? [sql`date_trunc('milliseconds', ${R.updatedAt}) = ${new Date(patch.ifUpdatedAt).toISOString()}::timestamptz`] : [];
+    const [r] = await this.db.update(R).set({ ...(patch.data !== undefined ? { data: patch.data } : {}), ...(patch.key !== undefined ? { key: patch.key } : {}), updatedAt: new Date(patch.at) }).where(and(eq(R.kind, kind), eq(R.id, id), ...swap)).returning();
     return r ? this.toRecord(r) : null;
   }
   async deleteRecords(q: { kind: string; id?: string; scope?: string; before?: string }) {
@@ -1097,6 +1113,8 @@ export class DrizzleRepo implements CmsRepo {
     // 0.17.0: indexes, published pointers without their version, rows left behind.
     let missingIndexes: string[] = [];
     let staleIndexes: string[] = [];
+    let invalidIndexes: string[] = [];
+    let atSlugs: string[] = [];
     let publishedWithoutVersion = 0;
     let orphanAssetRefs = 0;
     let orphanComments = 0;
@@ -1106,6 +1124,14 @@ export class DrizzleRepo implements CmsRepo {
       const haveIdx = new Set(idx.map((r) => r.indexname));
       missingIndexes = EXPECTED_INDEXES.map((n) => prefix + n).filter((n) => !haveIdx.has(n));
       staleIndexes = STALE_INDEXES.map((n) => prefix + n).filter((n) => haveIdx.has(n));
+      // Review 0.22: an index left INVALID by a failed CREATE INDEX CONCURRENTLY exists but guards nothing.
+      const bad = await this.rows<{ relname: string }>(
+        sql`select c.relname from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname = coalesce(${sch}, current_schema()) and c.relname like ${prefix.replace(/_/g, "\\_") + "%"} and not i.indisvalid`
+      );
+      invalidIndexes = bad.map((r) => r.relname).sort();
+      // Review 0.22: with locales on, `slug@en` names a translation: stored slugs that look like one.
+      const at = await this.rows<{ collection: string; slug: string }>(sql`select collection, slug from ${this.t.documents} where slug ~ '@[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$' order by collection, slug limit 50`);
+      atSlugs = at.map((r) => `${r.collection}/${r.slug}`);
       const D = this.t.documents;
       const V = this.t.versions;
       const [pv] = await this.db
@@ -1141,6 +1167,8 @@ export class DrizzleRepo implements CmsRepo {
       orphanVersions,
       missingIndexes,
       staleIndexes,
+      invalidIndexes,
+      atSlugs,
       publishedWithoutVersion,
       orphanAssetRefs,
       orphanComments,
@@ -1179,6 +1207,10 @@ export interface DoctorReport {
   missingIndexes?: string[];
   /** 0.22.0: indexes an upgrade should have dropped (the old one-slug-per-collection unique index). */
   staleIndexes?: string[];
+  /** Review 0.22: indexes Postgres marks INVALID (a failed CREATE INDEX CONCURRENTLY). */
+  invalidIndexes?: string[];
+  /** Review 0.22: stored slugs ending in `@<locale>` (read as a translation's address once locales are on); at most 50. */
+  atSlugs?: string[];
   /** Documents whose published version has no row in the version table. */
   publishedWithoutVersion?: number;
   /** File uses whose document or file is gone. */

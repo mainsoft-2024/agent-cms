@@ -580,10 +580,14 @@ export function CmsForm({
     if (!keys.length || !s.form) return;
     const first = formFields(s.form.steps).find((x) => keys.includes(x.key));
     if (!first) return;
-    // The step may change first: wait for it to draw.
-    requestAnimationFrame(() =>
-      document.getElementById(fid(first.key))?.focus(),
-    );
+    // The step may change first: wait for it to draw. A control that cannot take focus (a file
+    // picker that is full, or files off) hands it to its group, which carries the error.
+    requestAnimationFrame(() => {
+      const el = document.getElementById(fid(first.key)) as HTMLInputElement | null;
+      const group = document.getElementById(`${fid(first.key)}-group`);
+      if (el && !el.disabled && el.tagName !== "P") el.focus();
+      else group?.focus();
+    });
   };
 
   if (s.loading) {
@@ -773,7 +777,7 @@ export function CmsForm({
               onFiles={(l) => s.addFiles(field, l)}
               onRemoveFile={(fileId) => s.removeFile(field.key, fileId)}
               disabled={s.sending}
-              uploads={form.uploads || !!preview}
+              uploads={form.uploads}
             />
           </Reveal>
         );
@@ -797,6 +801,7 @@ export function CmsForm({
             type="button"
             variant="outline"
             disabled={s.sending}
+            className="h-11 sm:h-9"
             onClick={() => {
               moved.current = true;
               s.back();
@@ -809,7 +814,7 @@ export function CmsForm({
           type="submit"
           disabled={s.sending}
           aria-busy={s.sending || undefined}
-          className="min-w-24 gap-1.5"
+          className="h-11 min-w-24 gap-1.5 sm:h-9"
         >
           {s.sending ? (
             <Loader2
@@ -959,9 +964,29 @@ function FieldInput({
     const room =
       (field.maxFiles ?? 1) - files.filter((x) => x.state !== "error").length;
     const accept = field.accept ?? FORM_DEFAULT_ACCEPT;
+    const failed = files.filter((x) => x.state === "error");
     return (
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor={id}>{label}</Label>
+      // The group takes focus when the picker cannot (full, or files off): its error is read with it.
+      <div
+        id={`${id}-group`}
+        role="group"
+        aria-labelledby={`${id}-label`}
+        aria-describedby={described}
+        aria-invalid={error ? true : undefined}
+        tabIndex={-1}
+        className="flex flex-col gap-1.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      >
+        <Label id={`${id}-label`} htmlFor={id}>
+          {label}
+        </Label>
+        {/* Uploads that fail are said aloud, not only drawn in red. */}
+        <p role="status" aria-live="polite" className="sr-only">
+          {failed
+            .map((x) =>
+              t("cf_file_failed_live", { name: x.name, reason: x.error ?? "" }),
+            )
+            .join(". ")}
+        </p>
         {uploads ? (
           <>
             <label
@@ -1027,7 +1052,7 @@ function FieldInput({
                         onClick={() => onRemoveFile(x.id)}
                         disabled={disabled}
                         aria-label={t("cf_file_remove", { name: x.name })}
-                        className="-mr-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="-mr-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:w-8"
                       >
                         <X aria-hidden className="h-4 w-4" />
                       </button>

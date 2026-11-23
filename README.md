@@ -764,20 +764,29 @@ Every change goes to a numbered change log (`cms_changes`); each server follows 
 ## Languages (0.22)
 
 ```ts
+import { createCms, defineCollection, MemoryRepo, type Actor } from "@mainsoft/agent-cms";
+import { z } from "zod";
+
+const user: Actor = { kind: "user", id: "u1", label: "Kim", isAdmin: true };
+const anon: Actor = { kind: "anonymous" };
 const cms = createCms({
+  repo: new MemoryRepo(),               // your DrizzleRepo in production
   locales: ["ko", "en", "ja"],          // off when left out
   defaultLocale: "ko",                  // translations are made from this one (default: the first)
   collections: [
     defineCollection({
       slug: "guide",
+      label: "Guide",
+      visibility: "public",
       localized: true,
       url: (d) => `/${d.locale}/guide/${d.slug}`,
-      fields: z.object({ subtitle: z.string(), sku: z.string(), order: z.number() }),  // text is translated, order is shared
-      admin: { fields: { sku: { localized: false } } },                               // override either way
+      fields: z.object({ subtitle: z.string().optional(), sku: z.string().optional(), order: z.number().optional() }),  // text is translated, order is shared
+      admin: { fields: { sku: { localized: false } } },                                                                // override either way
     }),
   ],
 });
 
+await cms.create(user, "guide", { slug: "start", title: "시작하기", body: "## 설치\n" }, { publish: true });  // the Korean source
 await cms.create(user, "guide", { slug: "start", title: "Getting started" }, { locale: "en" });  // starts from the Korean text
 await cms.get(anon, "guide", "start", { locale: "en", fallback: true });  // Korean, with requestedLocale "en", until English is published
 await cms.translations(user, "guide", "start");   // ko: source, en: current | outdated, ja: missing
@@ -808,9 +817,10 @@ import { CmsForm } from "@/components/cms/cms-form";
 ```
 
 - **Fields**: short and long text, e-mail, number, choice, several choices, checkbox, date and file; required, help, limits, a pattern; steps with a progress bar; `showIf` on an earlier field (is, is not, one of, has, empty, filled). The browser and the server run the same checks (`checkSubmission` from `@mainsoft/agent-cms/client`), and the server drops the values of fields a condition hides.
-- **Files** go through a one-time upload grant into a private store; admins open them with a five-minute link.
-- **Spam**: a hidden field sends bots to Spam without telling them; 5 submissions a minute per address, then 429; `forms.verify(req)` for a captcha.
-- **Submissions**: received, spam and archived, search, bulk actions and CSV export (formulas made harmless) on the admin screen and over REST (`/forms/:slug/submissions`, `/forms/:slug/export.csv`).
+- **Files** go through a one-time upload grant (claimed once, in the database) into a private store; admins open them with a five-minute link. Without a private store the admin answers say `uploads: false`, and a form with a required file field cannot be turned on (`form_uploads_unavailable`).
+- **Spam**: a hidden field sends bots to Spam without telling them; 5 submissions a minute per address, then 429; `forms.verify(req, { values, raw })` for a captcha (`raw` has every field sent, the captcha token too).
+- **The sender's address** (for the limit): `forms.clientIp`, else the handler's `clientIp`, else the first `X-Forwarded-For` entry. Behind a load balancer that appends to `X-Forwarded-For` the first entry is whatever the sender wrote, so set `clientIp: clientIpBehind(1)` (one proxy). The Node adapter without `trustProxy` uses the socket's address.
+- **Submissions**: received, spam and archived, search, bulk actions and CSV export (formulas made harmless; `?status=&q=` exports the view shown) on the admin screen and over REST (`/forms/:slug/submissions`, `/forms/:slug/export.csv`).
 - **After a submission**: the `form.submitted` event (webhooks, automations) carries ids and field names, not values; `forms.notify` is where your app sends an e-mail.
 - **Privacy**: addresses are kept as a hash, `retention.submissionsDays` (365 by default) deletes old submissions with their files, and agents get no tools for submissions. See [UPGRADE-0.22.md](UPGRADE-0.22.md).
 

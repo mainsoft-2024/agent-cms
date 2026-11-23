@@ -32,6 +32,7 @@ import {
   Trash2,
   Type,
   AlertCircle,
+  X,
 } from "lucide-react";
 import {
   FORM_FIELD_KINDS,
@@ -44,6 +45,7 @@ import {
   type FormListItem,
   type FormSettings,
   type FormStep,
+  type FormSubmissionStatus,
   type FormView,
   type PublicForm,
 } from "@mainsoft/agent-cms/client";
@@ -87,7 +89,7 @@ import {
   StatusText,
 } from "./cms-parts";
 import { CmsForm } from "./cms-form";
-import { CmsFormSubmissions } from "./cms-form-submissions";
+import { BOX_STATUS, CmsFormSubmissions } from "./cms-form-submissions";
 import { relativeTime, useAsync, useCms, useIsMobile } from "./use-cms";
 
 const SELECT =
@@ -469,6 +471,44 @@ const draftOf = (f: FormView): Draft => ({
 });
 type Sel = { s: number; i: number } | null;
 
+/**
+ * Edits not saved yet stay in this tab's sessionStorage (per form, with the time of the read they are
+ * based on), so going back by mistake or a reload can bring them back. `carry`: the form got a new
+ * address while saving and the screen opens again; the edits made meanwhile come along without asking.
+ */
+interface StoredDraft {
+  rev: string;
+  draft: Draft;
+  carry?: boolean;
+}
+const draftKey = (id: string) => `cms-form-draft:${id}`;
+function readDraft(id: string): StoredDraft | null {
+  try {
+    const raw = window.sessionStorage.getItem(draftKey(id));
+    const v = raw ? (JSON.parse(raw) as StoredDraft) : null;
+    return v && typeof v.rev === "string" && v.draft ? v : null;
+  } catch {
+    return null;
+  }
+}
+function writeDraft(id: string, v: StoredDraft | null) {
+  try {
+    if (v) window.sessionStorage.setItem(draftKey(id), JSON.stringify(v));
+    else window.sessionStorage.removeItem(draftKey(id));
+  } catch {
+    /* private mode or full: nothing kept */
+  }
+}
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** What the Submissions tab shows (the CSV takes the same). */
+export interface CmsSubmissionsView {
+  box: "inbox" | "spam" | "archived";
+  status: FormSubmissionStatus[];
+  q: string;
+  total: number;
+}
+
 export function CmsFormEditor({
   slug,
   tab: tabProp,
@@ -500,27 +540,64 @@ export function CmsFormEditor({
   const [toggling, setToggling] = React.useState(false);
   const [subsTotal, setSubsTotal] = React.useState<number | null>(null);
   const [exportBusy, setExportBusy] = React.useState(false);
+  const [toggleError, setToggleError] = React.useState<string | null>(null);
+  /** Unsaved edits found from an earlier visit: offered, not applied. */
+  const [restore, setRestore] = React.useState<Draft | null>(null);
+  const [view, setView] = React.useState<CmsSubmissionsView | null>(null);
+  /** The draft as it is now (a save that returns reads it to keep edits made meanwhile). */
+  const liveDraft = React.useRef<Draft | null>(null);
+  liveDraft.current = draft;
+  /** Set while a move the person confirmed in this screen runs: the router does not ask again. */
+  const leaveConfirmed = React.useRef(false);
+  const leaveNow = (go: () => void) => {
+    leaveConfirmed.current = true;
+    try {
+      go();
+    } finally {
+      leaveConfirmed.current = false;
+    }
+  };
 
   React.useEffect(() => {
-    if (q.data) {
-      setBase(q.data);
-      setDraft(draftOf(q.data));
+    if (!q.data) return;
+    setBase(q.data);
+    const kept = readDraft(q.data.id);
+    if (
+      kept &&
+      kept.rev === q.data.updatedAt &&
+      !same(kept.draft, draftOf(q.data))
+    ) {
+      if (kept.carry) {
+        setDraft(kept.draft);
+        writeDraft(q.data.id, { rev: kept.rev, draft: kept.draft });
+      } else {
+        setDraft(draftOf(q.data));
+        setRestore(kept.draft);
+      }
+      return;
     }
+    // Kept edits based on an older read (someone saved since) would only conflict: they go.
+    if (kept) writeDraft(q.data.id, null);
+    setRestore(null);
+    setDraft(draftOf(q.data));
   }, [q.data]);
 
-  const dirty =
-    !!base &&
-    !!draft &&
-    JSON.stringify(draftOf(base)) !== JSON.stringify(draft);
+  const dirty = !!base && !!draft && !same(draftOf(base), draft);
   React.useEffect(() => {
     if (!dirty) return;
     const warn = (e: BeforeUnloadEvent) => {
+      if (leaveConfirmed.current) return;
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
+  // Keep what is not saved (while an offer is open, the kept one stays as it is).
+  React.useEffect(() => {
+    if (!base || !draft || restore) return;
+    writeDraft(base.id, dirty ? { rev: base.updatedAt, draft } : null);
+  }, [base, draft, dirty, restore]);
 
   const problems = React.useMemo(
     () => (draft ? draftProblems(draft.steps, t) : new Map<string, string>()),
@@ -541,6 +618,7 @@ export function CmsFormEditor({
     }
     setSaving(true);
     setSaveError(null);
+    const sent = draft;
     try {
       const next = await client.updateForm(base.slug, {
         title: draft.title.trim(),
@@ -549,10 +627,22 @@ export function CmsFormEditor({
         settings: draft.settings,
         expectedUpdatedAt: base.updatedAt,
       });
+      // Edits made while the save was on its way stay (and stay unsaved); the rest is the server's.
+      const later =
+        liveDraft.current && !same(liveDraft.current, sent)
+          ? liveDraft.current
+          : null;
       setBase(next);
-      setDraft(draftOf(next));
-      toast(t("fm_saved"), { tone: "ok" });
-      if (next.slug !== slug) onSlugChange?.(next.slug);
+      setDraft(later ?? draftOf(next));
+      toast(later ? t("fm_saved_more") : t("fm_saved"), { tone: "ok" });
+      if (next.slug !== slug) {
+        // The screen opens again at the new address: what was typed meanwhile comes along.
+        writeDraft(
+          next.id,
+          later ? { rev: next.updatedAt, draft: later, carry: true } : null,
+        );
+        leaveNow(() => onSlugChange?.(next.slug));
+      }
     } catch (e) {
       setSaveError(
         isCmsRemoteError(e) && e.code === "form_conflict"
@@ -567,6 +657,7 @@ export function CmsFormEditor({
   const toggle = async (on: boolean) => {
     if (!base || toggling) return;
     setToggling(true);
+    setToggleError(null);
     try {
       const next = await client.updateForm(base.slug, { enabled: on });
       // Only the switch moved: keep the draft, and the time of the read it is based on unless nothing else changed.
@@ -586,7 +677,8 @@ export function CmsFormEditor({
       );
       toast(on ? t("fm_now_open") : t("fm_now_closed"), { tone: "ok" });
     } catch (e) {
-      toast(errorMessage(e, t), { tone: "error" });
+      // Said beside the switch (a toast is gone before the reason is read).
+      setToggleError(errorMessage(e, t));
     } finally {
       setToggling(false);
     }
@@ -610,7 +702,11 @@ export function CmsFormEditor({
     if (!base) return;
     setExportBusy(true);
     try {
-      const r = await client.exportSubmissions(base.slug);
+      // The CSV has what the Submissions tab shows: the same box and search.
+      const r = await client.exportSubmissions(base.slug, {
+        status: view?.status ?? BOX_STATUS.inbox,
+        q: view?.q || undefined,
+      });
       const url = URL.createObjectURL(
         new Blob([r.csv], { type: "text/csv;charset=utf-8" }),
       );
@@ -628,7 +724,7 @@ export function CmsFormEditor({
     }
   };
 
-  const back = () => (dirty ? setLeaving(true) : onBack());
+  const back = () => (dirty ? setLeaving(true) : leaveNow(onBack));
   const notFound =
     isCmsRemoteError(q.error) && q.error.code === "form_not_found";
 
@@ -715,8 +811,16 @@ export function CmsFormEditor({
     successMessage: draft.settings.successMessage,
     version: base.version,
     honeypot: "_website",
-    uploads: true,
+    // As the public page will show it: file fields say they cannot take files on this server.
+    uploads: base.uploads !== false,
   };
+  const exportScope = view
+    ? t(view.q ? "fm_export_scope_q" : "fm_export_scope", {
+        box: t(`fs_box_${view.box}` as MessageKey),
+        q: view.q,
+        n: view.total,
+      })
+    : null;
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
@@ -772,7 +876,9 @@ export function CmsFormEditor({
             size="sm"
             className="gap-1.5"
             onClick={() => void exportCsv()}
-            disabled={exportBusy}
+            disabled={exportBusy || view?.total === 0}
+            aria-describedby={exportScope ? "cms-form-export-scope" : undefined}
+            title={exportScope ?? undefined}
           >
             <Download aria-hidden className="h-4 w-4" />
             {exportBusy ? t("fm_exporting") : t("fm_export")}
@@ -810,7 +916,67 @@ export function CmsFormEditor({
           </DropdownMenu>
         ) : null}
       </PageHeader>
+      {toggleError ? (
+        <div
+          role="alert"
+          className="mx-4 mt-3 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive md:mx-6"
+        >
+          <AlertCircle aria-hidden className="h-4 w-4 shrink-0" />
+          <span className="min-w-[12rem] flex-1">
+            <span className="font-medium">{t("fm_toggle_failed")}</span>{" "}
+            {toggleError}
+          </span>
+          {tab !== "fields" ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setTab("fields")}
+            >
+              {t("fm_show_fields")}
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8"
+            aria-label={t("close")}
+            onClick={() => setToggleError(null)}
+          >
+            <X aria-hidden className="h-4 w-4" />
+          </Button>
+        </div>
+      ) : null}
       <Tabs tabs={tabs} value={tab} onChange={setTab} label={base.title} />
+      {restore ? (
+        <div
+          role="status"
+          className="mx-4 mt-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200 md:mx-6"
+        >
+          <AlertCircle aria-hidden className="h-4 w-4 shrink-0" />
+          <span className="min-w-[12rem] flex-1">{t("fm_restore_text")}</span>
+          <span className="ml-auto flex gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => (writeDraft(base.id, null), setRestore(null))}
+            >
+              {t("fm_discard")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="bg-background"
+              onClick={() => (setDraft(restore), setRestore(null))}
+            >
+              {t("fm_restore")}
+            </Button>
+          </span>
+        </div>
+      ) : null}
       {saveError && tab !== "submissions" ? (
         <div
           role="alert"
@@ -839,13 +1005,28 @@ export function CmsFormEditor({
         {tab === "fields" ? (
           <FieldsTab
             steps={draft.steps}
-            onSteps={(steps) => setDraft({ ...draft, steps })}
+            onSteps={(steps) => setDraft((d) => (d ? { ...d, steps } : d))}
             problems={problems}
             readOnly={!can.write}
             onPreview={() => setPreview(true)}
+            uploads={base.uploads !== false}
           />
         ) : tab === "submissions" ? (
-          <CmsFormSubmissions form={base} onTotal={setSubsTotal} />
+          <>
+            {exportScope ? (
+              <p
+                id="cms-form-export-scope"
+                className="px-4 pt-3 text-xs text-muted-foreground md:px-6"
+              >
+                {exportScope}
+              </p>
+            ) : null}
+            <CmsFormSubmissions
+              form={base}
+              onTotal={setSubsTotal}
+              onView={setView}
+            />
+          </>
         ) : (
           <SettingsTab
             draft={draft}
@@ -880,7 +1061,11 @@ export function CmsFormEditor({
         description={t("fm_leave_text")}
         confirmLabel={t("fm_leave")}
         destructive
-        onConfirm={() => (setLeaving(false), onBack())}
+        onConfirm={() => {
+          setLeaving(false);
+          writeDraft(base.id, null);
+          leaveNow(onBack);
+        }}
       />
       <ConfirmDialog
         open={removing}
@@ -1015,6 +1200,8 @@ export function draftProblems(
         out.set(at, t("fm_err_options_twice"));
       else if (f.showIf && !before.has(f.showIf.field))
         out.set(at, t("fm_err_cond"));
+      else if (f.showIf && condProblem(f.showIf, before.get(f.showIf.field)!, t))
+        out.set(at, condProblem(f.showIf, before.get(f.showIf.field)!, t)!);
       else if (f.pattern) {
         try {
           new RegExp(f.pattern, "u");
@@ -1028,6 +1215,40 @@ export function draftProblems(
   );
   if (!formFields(steps).length) out.set("form", t("fm_err_no_fields"));
   return out;
+}
+
+/** The tests a condition may make on a field of this kind. */
+export function condOps(f: FormField): FormCondition["op"][] {
+  return f.kind === "file"
+    ? ["filled", "empty"]
+    : f.kind === "checkbox"
+      ? ["eq"]
+      : f.kind === "multiselect"
+        ? ["contains", "empty", "filled"]
+        : f.kind === "select"
+          ? ["eq", "neq", "in", "empty", "filled"]
+          : ["eq", "neq", "contains", "empty", "filled"];
+}
+
+/**
+ * A condition that no longer fits the field it looks at (its kind changed, or a choice it looks for
+ * was removed), worded for the person; null when it is fine.
+ */
+function condProblem(c: FormCondition, target: FormField, t: T): string | null {
+  const name = target.label || target.key;
+  if (!condOps(target).includes(c.op))
+    return t("fm_err_cond_op", { field: name });
+  if (
+    (target.kind === "select" || target.kind === "multiselect") &&
+    c.op !== "empty" &&
+    c.op !== "filled"
+  ) {
+    const have = new Set((target.options ?? []).map((o) => o.value));
+    const wanted = Array.isArray(c.value) ? c.value : [c.value];
+    if (!wanted.length || wanted.some((v) => !have.has(String(v ?? ""))))
+      return t("fm_err_cond_value", { field: name });
+  }
+  return null;
 }
 
 function settingsProblems(d: Draft, t: T): string | null {
@@ -1071,15 +1292,24 @@ function FieldsTab({
   problems,
   readOnly,
   onPreview,
+  uploads,
 }: {
   steps: FormStep[];
   onSteps: (s: FormStep[]) => void;
   problems: Map<string, string>;
   readOnly: boolean;
   onPreview: () => void;
+  /** False: this server takes no files (file fields cannot be filled in). */
+  uploads: boolean;
 }) {
   const { t } = useCms();
   const [sel, setSel] = React.useState<Sel>(null);
+  /** Removing a field others' conditions look at: asked first, with the list. */
+  const [removing, setRemoving] = React.useState<{
+    s: number;
+    i: number;
+    deps: FormField[];
+  } | null>(null);
   const [drag, setDrag] = React.useState<{ s: number; i: number } | null>(null);
   const [over, setOver] = React.useState<string | null>(null);
   const [announce, setAnnounce] = React.useState("");
@@ -1212,9 +1442,15 @@ function FieldsTab({
     onSteps(out);
     setSel(null);
   };
+  const askRemove = (s: number, i: number) => {
+    const f = steps[s].fields[i];
+    const deps = formFields(steps).filter((x) => x.showIf?.field === f.key);
+    if (deps.length) setRemoving({ s, i, deps });
+    else removeField(s, i);
+  };
   const removeField = (s: number, i: number) => {
     const f = steps[s].fields[i];
-    // Conditions that looked at it go with it (otherwise the form cannot be saved).
+    // Conditions that looked at it go with it (the person agreed; otherwise the form cannot be saved).
     const out = steps.map((st, si) => ({
       ...st,
       fields: st.fields
@@ -1428,6 +1664,11 @@ function FieldsTab({
                           aria-hidden
                           className="h-4 w-4 shrink-0 text-destructive"
                         />
+                      ) : f.kind === "file" && !uploads ? (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-800 dark:text-amber-300">
+                          <AlertCircle aria-hidden className="h-3 w-3" />
+                          {t("fm_file_unavailable_short")}
+                        </span>
                       ) : null}
                       {cond ? (
                         <span className="hidden max-w-[12rem] items-center gap-1 truncate rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground sm:inline-flex">
@@ -1529,9 +1770,10 @@ function FieldsTab({
             at={sel}
             steps={steps}
             readOnly={readOnly}
+            uploads={uploads}
             problem={problems.get(pathKey(sel.s, sel.i)) ?? null}
             onChange={(p) => setField(sel.s, sel.i, p)}
-            onRemove={() => removeField(sel.s, sel.i)}
+            onRemove={() => askRemove(sel.s, sel.i)}
             onUp={isFirst(sel.s, sel.i) ? null : () => up(sel.s, sel.i)}
             onDown={isLast(sel.s, sel.i) ? null : () => down(sel.s, sel.i)}
             onStep={(to) => moveTo(sel, { s: to, i: steps[to].fields.length })}
@@ -1544,6 +1786,26 @@ function FieldsTab({
           </p>
         )}
       </aside>
+      <ConfirmDialog
+        open={!!removing}
+        onOpenChange={(o) => !o && setRemoving(null)}
+        title={t("fm_remove_used_title", {
+          label: removing ? steps[removing.s]?.fields[removing.i]?.label ?? "" : "",
+        })}
+        description={t("fm_remove_used_text", { n: removing?.deps.length ?? 0 })}
+        confirmLabel={t("fm_remove_used_confirm")}
+        destructive
+        onConfirm={() => {
+          if (removing) removeField(removing.s, removing.i);
+          setRemoving(null);
+        }}
+      >
+        <ul className="list-disc pl-5 text-sm">
+          {removing?.deps.map((d) => (
+            <li key={d.key}>{d.label || d.key}</li>
+          ))}
+        </ul>
+      </ConfirmDialog>
     </div>
   );
 }
@@ -1590,6 +1852,7 @@ function FieldPanel({
   at,
   steps,
   readOnly,
+  uploads,
   problem,
   onChange,
   onRemove,
@@ -1601,6 +1864,7 @@ function FieldPanel({
   at: { s: number; i: number };
   steps: FormStep[];
   readOnly: boolean;
+  uploads: boolean;
   problem: string | null;
   onChange: (p: Partial<FormField>) => void;
   onRemove: () => void;
@@ -1683,10 +1947,23 @@ function FieldPanel({
         >
           {FORM_FIELD_KINDS.map((k) => (
             <option key={k} value={k}>
-              {t(`fm_kind_${k}` as MessageKey)}
+              {k === "file" && !uploads
+                ? t("fm_kind_file_unavailable")
+                : t(`fm_kind_${k}` as MessageKey)}
             </option>
           ))}
         </NativeSelect>
+        {field.kind === "file" && !uploads ? (
+          <p
+            role="note"
+            className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+          >
+            <AlertCircle aria-hidden className="mt-px h-3.5 w-3.5 shrink-0" />
+            {field.required
+              ? t("fm_file_unavailable_required")
+              : t("fm_file_unavailable")}
+          </p>
+        ) : null}
       </div>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={`${id}-key`}>{t("fm_f_key")}</Label>
@@ -1944,7 +2221,7 @@ function FieldPanel({
             type="button"
             variant="ghost"
             size="icon"
-            className="h-8 w-8"
+            className="h-10 w-10 md:h-8 md:w-8"
             aria-label={t("fm_move_up")}
             disabled={!onUp}
             onClick={() => onUp?.()}
@@ -1955,7 +2232,7 @@ function FieldPanel({
             type="button"
             variant="ghost"
             size="icon"
-            className="h-8 w-8"
+            className="h-10 w-10 md:h-8 md:w-8"
             aria-label={t("fm_move_down")}
             disabled={!onDown}
             onClick={() => onDown?.()}
@@ -1967,7 +2244,7 @@ function FieldPanel({
               aria-label={t("fm_f_step")}
               value={String(at.s)}
               onChange={(e) => onStep(Number(e.target.value))}
-              className="h-8 w-32 rounded-md border border-input bg-background px-2 text-xs"
+              className="h-10 w-32 rounded-md border border-input bg-background px-2 text-sm md:h-8 md:text-xs"
             >
               {steps.map((st, s) => (
                 <option key={s} value={s}>
@@ -1983,7 +2260,7 @@ function FieldPanel({
             type="button"
             variant="outline"
             size="sm"
-            className="gap-1.5 text-destructive hover:text-destructive"
+            className="h-10 gap-1.5 text-destructive hover:text-destructive md:h-8"
             onClick={onRemove}
           >
             <Trash2 aria-hidden className="h-4 w-4" />
@@ -1993,6 +2270,14 @@ function FieldPanel({
       )}
     </div>
   );
+}
+
+/** A value for a new choice no other choice has: option_1, option_2, … (made once, never renamed). */
+export function newOptionValue(opts: readonly { value: string }[]): string {
+  const taken = new Set(opts.map((o) => o.value));
+  let n = opts.length + 1;
+  while (taken.has(`option_${n}`)) n++;
+  return `option_${n}`;
 }
 
 function OptionsEditor({
@@ -2008,13 +2293,10 @@ function OptionsEditor({
   const opts = field.options ?? [];
   const refs = React.useRef<(HTMLInputElement | null)[]>([]);
   const set = (i: number, label: string) => {
-    // The stored value follows the label while the two were the same.
-    const o = opts[i];
-    const follow = o.value === o.label || /^option_\d+$/.test(o.value);
+    // Only the label changes: the stored value (what submissions and conditions keep) never moves,
+    // so renaming a choice breaks nothing.
     onChange({
-      options: opts.map((x, j) =>
-        j === i ? { label, value: follow ? label.trim() : x.value } : x,
-      ),
+      options: opts.map((x, j) => (j === i ? { ...x, label } : x)),
     });
   };
   const add = () => {
@@ -2022,7 +2304,7 @@ function OptionsEditor({
       options: [
         ...opts,
         {
-          value: `option_${opts.length + 1}`,
+          value: newOptionValue(opts),
           label: t("fm_option_n", { n: opts.length + 1 }),
         },
       ],
@@ -2056,7 +2338,7 @@ function OptionsEditor({
               type="button"
               variant="ghost"
               size="icon"
-              className="h-8 w-8 shrink-0"
+              className="h-10 w-10 shrink-0 md:h-8 md:w-8"
               aria-label={t("fm_option_remove", {
                 label: o.label || String(i + 1),
               })}
@@ -2103,17 +2385,7 @@ function ConditionEditor({
   const c = field.showIf ?? null;
   const target = c ? earlier.find((f) => f.key === c.field) : undefined;
   const opsFor = (f: FormField | undefined): FormCondition["op"][] =>
-    !f
-      ? []
-      : f.kind === "file"
-        ? ["filled", "empty"]
-        : f.kind === "checkbox"
-          ? ["eq"]
-          : f.kind === "multiselect"
-            ? ["contains", "empty", "filled"]
-            : f.kind === "select"
-              ? ["eq", "neq", "in", "empty", "filled"]
-              : ["eq", "neq", "contains", "empty", "filled"];
+    f ? condOps(f) : [];
   const first = (f: FormField): FormCondition => {
     const op = opsFor(f)[0];
     return {
@@ -2181,6 +2453,11 @@ function ConditionEditor({
                   })
                 }
               >
+                {opsFor(target).includes(c.op) ? null : (
+                  <option value={c.op} disabled>
+                    {t("fm_cond_pick")}
+                  </option>
+                )}
                 {opsFor(target).map((op) => (
                   <option key={op} value={op}>
                     {t(`fm_op_${op}` as MessageKey)}
@@ -2239,10 +2516,21 @@ function ConditionEditor({
               <NativeSelect
                 aria-label={t("fm_cond_value")}
                 className={SELECT}
-                value={String(c.value ?? "")}
+                value={
+                  target.options.some((o) => o.value === String(c.value ?? ""))
+                    ? String(c.value ?? "")
+                    : ""
+                }
                 disabled={disabled}
                 onChange={(e) => onChange({ ...c, value: e.target.value })}
               >
+                {target.options.some(
+                  (o) => o.value === String(c.value ?? ""),
+                ) ? null : (
+                  <option value="" disabled>
+                    {t("fm_cond_pick")}
+                  </option>
+                )}
                 {target.options.map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
@@ -2433,11 +2721,15 @@ function SettingsTab({
 
 type EmbedKind = "react" | "html" | "rest";
 
-/** A plain HTML form for the fields that work without script (file fields need `<CmsForm>`). */
+/**
+ * A plain HTML form (no script). Only for forms without file fields and conditions: those need
+ * `<CmsForm>` (see `htmlEmbedLimits`).
+ */
 export function htmlSnippet(
   form: FormView,
   action: string,
   honeypot = "_website",
+  sendLabel = "Send",
 ): string {
   const esc = (s: string) =>
     s
@@ -2474,8 +2766,20 @@ export function htmlSnippet(
   lines.push(
     `  <div aria-hidden="true" style="position:absolute;left:-10000px"><input name="${honeypot}" tabindex="-1" autocomplete="off"></div>`,
   );
-  lines.push(`  <button type="submit">Send</button>`, `</form>`);
+  lines.push(`  <button type="submit">${esc(sendLabel)}</button>`, `</form>`);
   return lines.join("\n");
+}
+
+/** What a plain HTML form cannot do for this form: file fields, fields shown on a condition. */
+export function htmlEmbedLimits(form: Pick<FormView, "steps">): {
+  files: boolean;
+  conditions: boolean;
+} {
+  const all = formFields(form.steps);
+  return {
+    files: all.some((f) => f.kind === "file"),
+    conditions: all.some((f) => !!f.showIf),
+  };
 }
 
 function EmbedDialog({
@@ -2511,13 +2815,17 @@ function EmbedDialog({
                     : "…",
       ]),
   );
+  const limits = htmlEmbedLimits(form);
+  // Plain HTML cannot upload files or show fields on a condition: no code to copy that would not work.
+  const htmlBlocked = kind === "html" && (limits.files || limits.conditions);
   const code =
     kind === "react"
       ? `npx @mainsoft/agent-cms add cms-form\n\nimport { CmsForm } from "@/components/cms/cms-form";\n\n<CmsForm slug="${form.slug}"${baseUrl !== "/api/cms" ? ` baseUrl="${baseUrl}"` : ""} />`
       : kind === "html"
-        ? htmlSnippet(form, url)
+        ? htmlBlocked
+          ? ""
+          : htmlSnippet(form, url, "_website", t("cf_send"))
         : `curl -X POST ${url} \\\n  -H 'content-type: application/json' \\\n  -d '${JSON.stringify(sample).replace(/'/g, "'\\''")}'`;
-  const hasFiles = formFields(form.steps).some((f) => f.kind === "file");
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className={DIALOG.lg}>
@@ -2536,18 +2844,35 @@ function EmbedDialog({
             { value: "rest", label: "REST" },
           ]}
         />
-        <pre
-          className="max-h-72 overflow-auto whitespace-pre rounded-md border bg-muted/40 p-3 font-mono text-[12.5px] leading-relaxed"
-          tabIndex={0}
-          aria-label={t("fm_embed_code")}
-        >
-          {code}
-        </pre>
-        {kind === "html" && hasFiles ? (
-          <p className="text-xs text-muted-foreground">
-            {t("fm_embed_html_files")}
-          </p>
-        ) : null}
+        {htmlBlocked ? (
+          <div
+            role="note"
+            className="flex flex-col items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+          >
+            <p className="font-medium">{t("fm_embed_html_no")}</p>
+            <ul className="list-disc pl-5 text-xs">
+              {limits.files ? <li>{t("fm_embed_html_files")}</li> : null}
+              {limits.conditions ? <li>{t("fm_embed_html_conditions")}</li> : null}
+            </ul>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="bg-background"
+              onClick={() => setKind("react")}
+            >
+              {t("fm_embed_use_react")}
+            </Button>
+          </div>
+        ) : (
+          <pre
+            className="max-h-72 overflow-auto whitespace-pre rounded-md border bg-muted/40 p-3 font-mono text-[12.5px] leading-relaxed"
+            tabIndex={0}
+            aria-label={t("fm_embed_code")}
+          >
+            {code}
+          </pre>
+        )}
         {!form.enabled ? (
           <p className="text-xs text-amber-700 dark:text-amber-400">
             {t("fm_embed_closed")}
@@ -2557,11 +2882,13 @@ function EmbedDialog({
           <Button type="button" variant="outline" onClick={onClose}>
             {t("close")}
           </Button>
-          <CopyButton
-            value={code}
-            label={t("fm_embed_code")}
-            className="h-9 gap-1.5 px-4 text-sm"
-          />
+          {htmlBlocked ? null : (
+            <CopyButton
+              value={code}
+              label={t("fm_embed_code")}
+              className="h-9 gap-1.5 px-4 text-sm"
+            />
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

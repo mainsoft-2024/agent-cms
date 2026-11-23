@@ -116,7 +116,7 @@ import { keyFromHeader } from "./keys";
 import { clientIp, ipAllowed } from "./limits";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
 import { eventStream, hearAs } from "./events";
-import { localeTag } from "./locale";
+import { isTranslationDoc, localeTag, splitAddress } from "./locale";
 import { openApiDocument } from "./openapi";
 import { FORM_MAX_BODY, FORM_STATUSES } from "./forms";
 import type { FormSubmissionStatus } from "./types";
@@ -297,7 +297,10 @@ function safeProto(u: string): string | null {
 
 /** The path for logs: secrets in it (raw file links) become placeholders. */
 export function redactPath(path: string): string {
-  return path.replace(/^\/raw\/[^/]+/, "/raw/:token").replace(/\/(preview|share)\/[A-Za-z0-9_-]{16,}/g, "/$1/:token");
+  return path
+    .replace(/^\/raw\/[^/]+/, "/raw/:token")
+    .replace(/\/(preview|share)\/[A-Za-z0-9_-]{16,}/g, "/$1/:token")
+    .replace(/^\/forms\/([^/]+)\/uploads\/[^/]+/, "/forms/$1/uploads/:token");
 }
 
 /** A caller's own request id if it looks like one, else a new one. */
@@ -336,24 +339,39 @@ export async function readLimitedBytes(req: Request, max: number): Promise<Uint8
   return all;
 }
 
-/** A form's fields from JSON, a plain HTML form (urlencoded) or multipart without files (0.22.0). */
-async function formInput(req: Request, contentType: string): Promise<Record<string, unknown>> {
-  if (contentType.includes("application/json")) {
-    const v = await readJson(req, false, FORM_MAX_BODY);
-    if (!v || typeof v !== "object" || Array.isArray(v)) throw new CmsError("invalid_json");
-    return v as Record<string, unknown>;
-  }
+/** The media type of a Content-Type header, lowercased, without parameters (`multipart/form-data`). */
+export function mediaType(contentType: string | null): string {
+  return (contentType ?? "").split(";")[0].trim().toLowerCase();
+}
+
+/**
+ * A form's fields from JSON, a plain HTML form (urlencoded) or multipart without files (0.22.0),
+ * and the bytes read (at most 64 KB). `contentType` is the header as sent: a multipart boundary
+ * is case-sensitive, so only the media type is lowercased (for choosing the parser).
+ */
+async function formInput(req: Request, contentType: string): Promise<{ input: Record<string, unknown>; bytes: Uint8Array }> {
+  const type = mediaType(contentType);
   const bytes = await readLimitedBytes(req, FORM_MAX_BODY);
+  if (type === "application/json") {
+    let v: unknown;
+    try {
+      v = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      throw new CmsError("invalid_json");
+    }
+    if (!v || typeof v !== "object" || Array.isArray(v)) throw new CmsError("invalid_json");
+    return { input: v as Record<string, unknown>, bytes };
+  }
   const out: Record<string, unknown> = {};
   const add = (k: string, v: unknown) => {
     const cur = out[k];
     out[k] = cur === undefined ? v : Array.isArray(cur) ? [...cur, v] : [cur, v];
   };
-  if (contentType.includes("application/x-www-form-urlencoded")) {
+  if (type === "application/x-www-form-urlencoded") {
     for (const [k, v] of new URLSearchParams(new TextDecoder().decode(bytes))) add(k, v);
-    return out;
+    return { input: out, bytes };
   }
-  if (contentType.includes("multipart/form-data")) {
+  if (type === "multipart/form-data") {
     let fd: FormData;
     try {
       fd = await new Request("http://form.invalid/", { method: "POST", headers: { "content-type": contentType }, body: bytes as BodyInit }).formData();
@@ -367,7 +385,7 @@ async function formInput(req: Request, contentType: string): Promise<Record<stri
       // Files come with an upload grant first (POST /forms/:slug/uploads), never inside the form.
       else if (v.size > 0 || (v as Blob & { name?: string }).name) throw new CmsError("form_upload_invalid", { reason: "multipart" });
     }
-    return out;
+    return { input: out, bytes };
   }
   throw new CmsError("invalid_request", { issues: "content-type: JSON, urlencoded or multipart" }, { status: 415 });
 }
@@ -426,11 +444,30 @@ export function versionFromIfMatch(h: string | null): number | undefined {
 const etag = (d: { version: number; locale?: string }) => `"v${d.version}${d.locale ? `-${localeTag(d.locale)}` : ""}"`;
 /** 0.21.0: when snippets or `?expand` change what is sent, the tag also follows the content (FNV-1a). */
 function contentTag(raw: CmsDoc, sent: CmsDoc, dynamic: boolean): string {
-  if (!dynamic) return etag(raw);
-  const text = JSON.stringify([sent.body, sent.fields]);
+  // Review 0.22: a translation shows values its source holds (category, shared fields): its tag
+  // follows what is sent, so a change in the source alone is not answered with 304.
+  const tr = isTranslationDoc(raw);
+  if (!dynamic && !tr) return etag(raw);
+  const text = JSON.stringify(tr ? [sent.body, sent.fields, sent.category ?? null, sent.format ?? null] : [sent.body, sent.fields]);
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
   return `W/"v${raw.version}${raw.locale ? `-${localeTag(raw.locale)}` : ""}-${(h >>> 0).toString(36)}"`;
+}
+
+/**
+ * Review 0.22: in a localized collection an `If-Match` tag names a language (`"v3-en"`). A tag of
+ * another language of the same document is refused, even at the same version. `want` is the tag of
+ * the language written to, `all` the tags of every language, `translation` whether the document is
+ * a translation (a tag without a language, from before 0.22, fits only a source). A bare number
+ * (`3`, documented) names only the version and is accepted.
+ */
+export function localeTagMatches(h: string | null, want: string, all: readonly string[], translation: boolean): boolean {
+  const v = h?.trim();
+  if (!v || /^\d+$/.test(v)) return true;
+  const m = /^(?:W\/)?"?v?\d+((?:-[a-z0-9]+){0,2})"?$/.exec(v);
+  if (!m) return true; // a malformed tag is refused by versionFromIfMatch
+  const first = m[1].split("-").filter(Boolean)[0] ?? "";
+  return all.includes(first) ? first === want : !translation;
 }
 
 /** A doc on the wire: editors see the autosave, nobody else does. */
@@ -507,17 +544,22 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       // signed-in person sending it from another site is not refused as a cross-site write.
       if (seg[0] === "forms" && seg.length >= 2 && ((m === "POST" && (seg.length === 2 || (seg.length === 3 && seg[2] === "uploads"))) || (m === "PUT" && seg.length === 4 && seg[2] === "uploads"))) {
         note({ kind: "anonymous", via: "form" });
-        const meta = { ip: (opts.clientIp ?? clientIp)(req), userAgent: req.headers.get("user-agent"), request: req };
+        // The sender's address: forms' own clientIp, else the handler's, else X-Forwarded-For's first entry.
+        const ip = core.forms.clientIp(req) ?? (opts.clientIp ?? clientIp)(req);
+        const meta = { ip, userAgent: req.headers.get("user-agent"), request: null as Request | null };
         if (m === "PUT") return json(await core.forms.upload(seg[1], seg[3], (max) => readLimitedBytes(req, max)));
         if (seg.length === 3) {
           const b = z.object({ field: z.string().max(60), name: z.string().max(400), size: z.number().int(), mime: z.string().max(200).optional() }).parse(await readJson(req, false, 4096));
           return json(await core.forms.grant(seg[1], b, meta), 201);
         }
-        const ct = (req.headers.get("content-type") ?? "").toLowerCase();
+        const ct = req.headers.get("content-type") ?? "";
         // A plain HTML form (no script) gets a page back, or goes to the form's address after sending.
-        const page = !ct.includes("application/json") && !(req.headers.get("accept") ?? "").includes("application/json");
+        const page = mediaType(ct) !== "application/json" && !(req.headers.get("accept") ?? "").includes("application/json");
         try {
-          const r = await core.forms.submit(seg[1], await formInput(req, ct), meta);
+          const { input, bytes } = await formInput(req, ct);
+          // verify gets a request whose body can still be read: the same bytes, at most 64 KB.
+          meta.request = new Request(req.url, { method: "POST", headers: req.headers, body: bytes as BodyInit });
+          const r = await core.forms.submit(seg[1], input, meta);
           if (!page) return json(r, 201);
           if (r.redirectUrl) return new Response(null, { status: 303, headers: { location: r.redirectUrl, "cache-control": "no-store" } });
           return formPage(200, r.message || "✓", []);
@@ -959,6 +1001,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const locale = q.get("locale");
         const reading = m === "GET" || m === "HEAD";
         const slug = seg[2] && locale ? core.address(col, seg[2], locale, { write: !reading }) : seg[2];
+        if (slug && !reading && core.locales.length && core.localized(col)) {
+          const own = splitAddress(slug).locale;
+          const h = req.headers.get("if-match");
+          if (!localeTagMatches(h, localeTag(own ?? core.defaultLocale), core.locales.map(localeTag), !!own)) throw new CmsError("locale_etag_mismatch", { tag: h, slug: splitAddress(slug).slug, locale: own ?? core.defaultLocale }, { messages: core.messages });
+        }
         if (slug && seg.length === 4 && seg[3] === "_translations") {
           if (m === "GET") return json(await core.translations(actor, col, seg[2]));
           if (m === "POST") {
@@ -1185,7 +1232,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (seg.length === 2 && m === "DELETE") return json(await fm.remove(actor, seg[1]));
         if (seg.length === 3 && seg[2] === "definition" && m === "GET") return json({ form: await fm.get(actor, seg[1]) });
         if (seg.length === 3 && seg[2] === "export.csv" && m === "GET") {
-          const r = await fm.exportCsv(actor, seg[1], { status: statusList(q.get("status")) });
+          const r = await fm.exportCsv(actor, seg[1], { status: statusList(q.get("status")), q: q.get("q") ?? undefined });
           return new Response(r.csv, { status: 200, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${r.filename}"`, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
         }
         if (seg.length === 3 && seg[2] === "submissions" && m === "GET") return json(await fm.submissions(actor, seg[1], { status: statusList(q.get("status")), q: q.get("q") ?? undefined, limit: Number(q.get("limit")) || undefined, offset: Number(q.get("offset")) || undefined }));

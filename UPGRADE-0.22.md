@@ -3,9 +3,11 @@
 **Schema 11**: one new table for form submissions (`cms_form_submissions`, below), and three columns on the documents table (`locale`, `group_id`, `source_version`), one new index on `group_id`, and the unique index on addresses changes from `(collection, slug)` to `(collection, slug, locale)`, so a translation can have the same address as its source.
 
 ```sh
-npx @mainsoft/agent-cms migrate check   # prints the SQL
-npx @mainsoft/agent-cms migrate apply   # or run it yourself
+npx @mainsoft/agent-cms migrate check   # reports what is missing and prints the SQL; changes nothing
+npx @mainsoft/agent-cms migrate apply   # runs that SQL (or run the printed SQL yourself)
 ```
+
+`migrate check` also warns before you start: an index Postgres marks `INVALID` (a failed `CREATE INDEX CONCURRENTLY`) and stored slugs that end in `@<language>` (such as `team@en`), which read as a translation's address once locales are on. Rename those first; with locales on, a new slug containing `@` is refused (`invalid_slug`). `npx @mainsoft/agent-cms doctor` reports both too.
 
 The step is safe to run again (`IF NOT EXISTS`). Nothing is copied: every existing document gets `locale = ''`, no group and no source version. Apps that do not turn locales on keep working exactly as before (`''` everywhere, one document per address).
 
@@ -33,7 +35,7 @@ CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "cms_documents_collection_slug_lo
 CREATE INDEX CONCURRENTLY IF NOT EXISTS "cms_documents_group_idx" ON "cms_documents" ("group_id");
 ```
 
-(`localeDuplicatesSql()` from the package prints the duplicate check with your prefix and schema.) If a concurrent build fails it leaves an `INVALID` index: `DROP INDEX` it and build it again. Then run `npx @mainsoft/agent-cms migrate apply`: the columns and indexes are found and skipped, only the old index is dropped and the schema version is set to 11. `npx @mainsoft/agent-cms doctor` fails while the old index is still there (a translation could not be saved), and `migrate check` offers the step again.
+(`localeDuplicatesSql()` from the package prints the duplicate check with your prefix and schema.) If a concurrent build fails it leaves an `INVALID` index: `DROP INDEX` it and build it again. `IF NOT EXISTS` would skip an invalid index, so the step checks `pg_index.indisvalid` before dropping the old index and stops with a message (the old index stays) while the new one is invalid. Then run `npx @mainsoft/agent-cms migrate apply`: the columns and indexes are found and skipped, only the old index is dropped and the schema version is set to 11. `npx @mainsoft/agent-cms doctor` fails while the old index is still there (a translation could not be saved), and `migrate check` offers the step again.
 
 Use the prefix and schema of your `cmsTables()` options (`cms_` is the default prefix).
 
@@ -112,7 +114,9 @@ The forms themselves are rows of `cms_records` (kind `form`), which exists since
 createCms({
   forms: {
     perMinute: 5,                                   // per address, all forms together (default 5)
-    verify: async (req) => checkCaptcha(req),       // optional: false answers 403
+    // optional: false answers 403. raw = every field sent (a captcha token too), req = a readable copy
+    verify: async (req, { raw }) => checkCaptcha(String(raw["cf-turnstile-response"] ?? "")),
+    clientIp: clientIpBehind(1),                    // behind one proxy that appends to X-Forwarded-For
     notify: async ({ form, to, lines }) => sendMail(to, form.title, lines), // optional: your mailer
   },
   media: { stores: { private: { visibility: "private", adapter: s3Storage({ … }) } } }, // for file fields
@@ -128,6 +132,14 @@ npx @mainsoft/agent-cms add cms-forms cms-form
 
 Put `<CmsForms>` / `<CmsFormEditor>` on `/admin/forms` and `/admin/forms/[slug]/[tab]` (the example app shows how), and `<CmsForm slug="contact" />` on your page. A new route segment `forms` is reserved: a collection may not be called `forms`.
 
+**The sender's address.** The per-minute limit counts per address: `forms.clientIp(req)` if you give it, else the handler's `clientIp`, else the first `X-Forwarded-For` entry. If your app gets web `Request`s directly (Next.js, Hono, Bun) behind a proxy that *appends* to `X-Forwarded-For`, the first entry is whatever the sender wrote: set `forms: { clientIp: clientIpBehind(1) }` (`import { clientIpBehind } from "@mainsoft/agent-cms"`), or as many proxies as you run. The Node adapter (`toNodeHandler`) without `trustProxy` already uses the socket's address. Mounted elsewhere than `/api/cms`? Give the Node adapter `basePath` too, so it refuses a form body past 64 KB before reading it.
+
+**Files.** Admin answers for a form carry `uploads: boolean` (also `_me.forms.uploads`). Without a private media store, a form with a *required* file field cannot be turned on: `form_uploads_unavailable` (with `field`). Make the field optional or add a private store. Upload grants are rows of `cms_records` (kind `form_upload`), deleted by the daily sweep a day after they were made.
+
+**Your own repo.** `updateRecord` gets `ifUpdatedAt` (0.22.0): change the row only while its `updatedAt` is that instant (to the millisecond), in one statement, else return null. Forms and upload grants rely on it to let exactly one of two writers win; a repo that ignores it loses that. `selectFormSubmissions` (optional) lets retention delete files before rows.
+
+**CSV.** `GET /forms/:slug/export.csv` takes the list's `status` and `q`; `client.exportSubmissions(slug, { status, q })` (a bare status list still works).
+
 People other than admins see forms through a role: the `forms` row in Roles (`read` to see submissions, `write` to build forms, `delete` to delete submissions).
 
 ### Privacy
@@ -135,6 +147,6 @@ People other than admins see forms through a role: the `forms` row in Roles (`re
 - Submissions are personal data. The CMS keeps what the form asks for and nothing more: the sender's address only as a keyed hash (to count and to tell repeat senders apart; the key lives in `cms_meta`), and the user agent.
 - Values of fields hidden by a condition are dropped by the server, whatever the browser sends.
 - Files go to a **private** store; they are opened only through five-minute signed links, each noted in the audit log (`form.file_open`). Without a private store file fields refuse files (`form_uploads_off`).
-- Events and webhooks carry ids, field names and file names, not the values, unless you set `forms.eventValues: true`.
+- Events and webhooks carry ids, field names and file ids, types and sizes, not the values or file names, unless you set `forms.eventValues: true`. The audit entry for opening a file names its id. Request logs show upload addresses as `/forms/:slug/uploads/:token`.
 - There are no agent tools for submissions. Exports (`form.export`) and deletions are audited.
-- Retention deletes submissions and their files after `retention.submissionsDays` (365 by default) or a form's own `keepDays`; `0` keeps them, which you should only do with a reason.
+- Retention deletes submissions and their files after `retention.submissionsDays` (365 by default) or a form's own `keepDays`; `0` keeps them, which you should only do with a reason. Files go first; a submission whose file could not be deleted stays until the next run deletes it.

@@ -326,6 +326,8 @@ export interface CmsRepo {
   setFormSubmissionStatus?(ids: readonly string[], status: FormSubmissionStatus, at: string): Promise<number>;
   /** Deletes and returns the rows (their files go next). */
   deleteFormSubmissions?(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number }): Promise<FormSubmission[]>;
+  /** The rows `deleteFormSubmissions` would take, oldest first, without deleting them: files go first, then the rows (0.22.0). */
+  selectFormSubmissions?(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number; offset?: number }): Promise<FormSubmission[]>;
 }
 
 export type NewFormSubmission = Omit<FormSubmission, "id" | "updatedAt">;
@@ -401,6 +403,12 @@ export interface RecordPatch {
   data?: Record<string, unknown>;
   key?: string | null;
   at: string;
+  /**
+   * Compare and swap (0.22.0): change the row only while its `updatedAt` is still this instant
+   * (to the millisecond), in one statement. Null comes back when it is not, so of two writers that
+   * read the same row exactly one wins. Give an `at` later than the old `updatedAt`.
+   */
+  ifUpdatedAt?: string;
 }
 export interface RecordQuery {
   kind: string;
@@ -631,6 +639,15 @@ export class MemoryRepo implements CmsRepo {
     let n = 0;
     for (const r of this.formSubmissions) if (ids.includes(r.id)) (r.status = status), (r.updatedAt = at), n++;
     return n;
+  }
+  async selectFormSubmissions(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number; offset?: number }) {
+    if (!q.ids && !q.formId && !q.before) return [];
+    const from = q.offset ?? 0;
+    return this.formSubmissions
+      .filter((r) => (q.ids ? q.ids.includes(r.id) : true) && (q.formId ? r.formId === q.formId : true) && (q.before ? r.createdAt < q.before : true))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+      .slice(from, from + (q.limit ?? Infinity))
+      .map((r) => structuredClone(r));
   }
   async deleteFormSubmissions(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number }) {
     if (!q.ids && !q.formId && !q.before) return [];
@@ -1049,6 +1066,9 @@ export class MemoryRepo implements CmsRepo {
   async updateRecord(kind: string, id: string, patch: RecordPatch) {
     const r = this.records.find((x) => x.kind === kind && x.id === id);
     if (!r) return null;
+    // Compare and swap: checked and written with no await in between, so it is atomic here.
+    if (patch.ifUpdatedAt !== undefined && Date.parse(r.updatedAt) !== Date.parse(patch.ifUpdatedAt)) return null;
+    if (patch.key !== undefined && patch.key !== null && patch.key !== r.key && this.records.some((x) => x !== r && x.kind === kind && x.key === patch.key)) throw new Error(`duplicate record key: ${kind}/${patch.key}`);
     if (patch.data !== undefined) r.data = structuredClone(patch.data);
     if (patch.key !== undefined) r.key = patch.key;
     r.updatedAt = patch.at;
