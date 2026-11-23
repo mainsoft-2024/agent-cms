@@ -174,6 +174,7 @@ export const ERROR_CODES = {
   precondition_required: "precondition",
   // anything else
   // 0.21.0 content model
+  slug_needs_publish: "invalid",
   relation_missing: "invalid",
   relation_wrong_collection: "invalid",
   relation_unpublished: "invalid",

@@ -57,7 +57,7 @@ const Heading = Node.create({
   group: "block",
   content: "inline*",
   defining: true,
-  addAttributes: () => ({ ...bid, level: { default: 2, rendered: false } }),
+  addAttributes: () => ({ ...bid, level: { default: 2, rendered: false }, anchor: { default: null as string | null, keepOnSplit: false, rendered: false } }),
   parseHTML: () => [
     { tag: "h1", attrs: { level: 2 } },
     { tag: "h2", attrs: { level: 2 } },
@@ -215,6 +215,80 @@ const Source = Node.create({
   renderHTML: ({ node, HTMLAttributes }) => ["div", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "source", "data-source": node.attrs.md, "data-kind": node.attrs.kind, class: "cms-b cms-source" })],
 });
 
+/** Numbered steps (`:::steps`): blocks inside, numbered by the screen. */
+const Steps = Node.create({
+  name: "steps",
+  group: "block",
+  content: "block+",
+  defining: true,
+  addAttributes: () => ({ ...bid }),
+  parseHTML: () => [{ tag: "div[data-steps]" }],
+  renderHTML: ({ node, HTMLAttributes }) => ["div", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "steps", "data-steps": "", class: "cms-b cms-steps" }), 0],
+});
+
+/** A link shown as a card (`:::card`). */
+const Card = Node.create({
+  name: "card",
+  group: "block",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes: () => ({
+    ...bid,
+    href: { default: "", rendered: false },
+    label: { default: "", rendered: false },
+    description: { default: "", rendered: false },
+    image: { default: "", rendered: false },
+    alt: { default: "", rendered: false },
+  }),
+  parseHTML: () => [
+    {
+      tag: "div[data-card]",
+      getAttrs: (el) => {
+        const d = (el as HTMLElement).dataset;
+        return { href: d.href ?? "", label: d.label ?? "", description: d.description ?? "", image: d.image ?? "", alt: d.alt ?? "" };
+      },
+    },
+  ],
+  renderHTML: ({ node, HTMLAttributes }) => [
+    "div",
+    mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), {
+      "data-block-type": "card",
+      "data-card": "",
+      "data-href": node.attrs.href,
+      "data-label": node.attrs.label,
+      "data-description": node.attrs.description,
+      "data-image": node.attrs.image,
+      "data-alt": node.attrs.alt,
+      class: "cms-b cms-card",
+    }),
+  ],
+});
+
+/** A video (`:::video`): an address on an allowed site or a media library file. */
+const Video = Node.create({
+  name: "video",
+  group: "block",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes: () => ({ ...bid, src: { default: "", rendered: false }, caption: { default: "", rendered: false } }),
+  parseHTML: () => [{ tag: "div[data-video]", getAttrs: (el) => ({ src: (el as HTMLElement).dataset.src ?? "", caption: (el as HTMLElement).dataset.caption ?? "" }) }],
+  renderHTML: ({ node, HTMLAttributes }) => ["div", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "video", "data-video": "", "data-src": node.attrs.src, "data-caption": node.attrs.caption, class: "cms-b cms-video" })],
+});
+
+/** A snippet on a line of its own (`[[snippet:key]]`). */
+const Snippet = Node.create({
+  name: "snippet",
+  group: "block",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes: () => ({ ...bid, key: { default: "", rendered: false } }),
+  parseHTML: () => [{ tag: "div[data-snippet]", getAttrs: (el) => ({ key: (el as HTMLElement).dataset.snippet ?? "" }) }],
+  renderHTML: ({ node, HTMLAttributes }) => ["div", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "snippet", "data-snippet": node.attrs.key, class: "cms-b cms-snippet" })],
+});
+
 const Columns = Node.create({
   name: "columns",
   group: "block",
@@ -349,6 +423,10 @@ export const schemaExtensions: Extensions = [
   Rule,
   Media,
   Source,
+  Steps,
+  Card,
+  Video,
+  Snippet,
   Columns,
   Column,
   CmsTable,
@@ -426,7 +504,7 @@ export function blocksToDoc(blocks: readonly EBlock[], o: { open?: ReadonlySet<s
         return { type: "paragraph", attrs: id, content: spansToContent(b.spans) };
       case "h2":
       case "h3":
-        return { type: "heading", attrs: { ...id, level: b.type === "h3" ? 3 : 2 }, content: spansToContent(b.spans) };
+        return { type: "heading", attrs: { ...id, level: b.type === "h3" ? 3 : 2, anchor: b.anchor ?? null }, content: spansToContent(b.spans) };
       case "quote":
         return { type: "quote", attrs: id, content: spansToContent(b.spans) };
       case "callout":
@@ -449,6 +527,14 @@ export function blocksToDoc(blocks: readonly EBlock[], o: { open?: ReadonlySet<s
         return { type: "media", attrs: { ...id, target: b.target, alt: b.alt, caption: b.caption ?? "" } };
       case "source":
         return { type: "source", attrs: { ...id, md: b.md, kind: b.kind } };
+      case "steps":
+        return { type: "steps", attrs: id, content: inside.length ? inside : [{ type: "paragraph", attrs: { bid: newId() } }] };
+      case "card":
+        return { type: "card", attrs: { ...id, href: b.href, label: b.label, description: b.description, image: b.image, alt: b.alt } };
+      case "video":
+        return { type: "video", attrs: { ...id, src: b.src, caption: b.caption } };
+      case "snippet":
+        return { type: "snippet", attrs: { ...id, key: b.key } };
       case "table": {
         const width = Math.max(1, b.head.length, ...b.rows.map((r) => r.length));
         const fill = (r: Span[][]) => [...r, ...emptyCells(width - r.length)].slice(0, width);
@@ -484,8 +570,32 @@ export function docToBlocks(doc: PMNode): EBlock[] {
       case "paragraph":
         out.push({ ...base, type: "p", spans: nodeSpans(n) } as TextBlock);
         return;
-      case "heading":
-        out.push({ ...base, type: n.attrs.level === 3 ? "h3" : "h2", spans: nodeSpans(n) } as TextBlock);
+      case "heading": {
+        const h = { ...base, type: n.attrs.level === 3 ? "h3" : "h2", spans: nodeSpans(n) } as TextBlock;
+        if (n.attrs.anchor) h.anchor = n.attrs.anchor as string;
+        out.push(h);
+        return;
+      }
+      case "steps":
+        out.push({ ...base, type: "steps" });
+        n.forEach((c) => walk(c, id));
+        return;
+      case "card":
+        out.push({
+          ...base,
+          type: "card",
+          href: (n.attrs.href as string) ?? "",
+          label: (n.attrs.label as string) ?? "",
+          description: (n.attrs.description as string) ?? "",
+          image: (n.attrs.image as string) ?? "",
+          alt: (n.attrs.alt as string) ?? "",
+        });
+        return;
+      case "video":
+        out.push({ ...base, type: "video", src: (n.attrs.src as string) ?? "", caption: (n.attrs.caption as string) ?? "" });
+        return;
+      case "snippet":
+        out.push({ ...base, type: "snippet", key: (n.attrs.key as string) ?? "" });
         return;
       case "quote":
         out.push({ ...base, type: "quote", spans: nodeSpans(n) } as TextBlock);

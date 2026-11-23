@@ -23,6 +23,8 @@ export interface ModelContext {
   urlOf: (col: string, slug: string) => string | null;
   redirects: false | { ttlMs: number };
   videoHosts: readonly string[];
+  /** An anonymous reader may read this document (`beforeRead` hooks). */
+  publicReadable: (col: string, slug: string) => Promise<boolean>;
 }
 
 /** What `?expand=` puts in place of an id. Null: gone, or not for this reader. */
@@ -85,7 +87,7 @@ export function keyBetween(a: string | null, b: string | null): string {
 /** Path rules for redirects: starts with one `/`, no spaces or `..`, no trailing `/` (root aside). */
 export function normalizePath(p: string): string | null {
   let s = String(p ?? "").trim();
-  if (!s.startsWith("/") || s.startsWith("//") || /\s/.test(s) || s.length > 500 || /(^|\/)\.\.(\/|$)/.test(s)) return null;
+  if (!s.startsWith("/") || s.startsWith("//") || /[\s\\\x00-\x1f]/.test(s) || /%2e|%2f|%5c/i.test(s) || s.length > 500 || /(^|\/)\.\.?(\/|$)/.test(s)) return null;
   s = s.split("#")[0];
   if (s.length > 1) s = s.replace(/\/+$/, "");
   return s || "/";
@@ -193,32 +195,33 @@ export function createModel(ctx: ModelContext) {
   }
 
   /** Documents that point at `id` (live ones only). */
-  async function referencedBy(id: string, r: CmsRepo = repo): Promise<{ doc: CmsDoc; fields: string[]; inPublished: boolean }[]> {
+  async function referencedBy(id: string, r: CmsRepo = repo): Promise<{ doc: CmsDoc; draftFields: string[]; publishedFields: string[] }[]> {
     if (!r.listDocRefsTo) return [];
     const refs = await r.listDocRefsTo(id);
     const docs = await docsByIds(refs.map((x) => x.fromId), r);
-    const by = new Map<string, { doc: CmsDoc; fields: string[]; inPublished: boolean }>();
+    const by = new Map<string, { doc: CmsDoc; draftFields: string[]; publishedFields: string[] }>();
     for (const x of refs) {
       const d = docs.get(x.fromId);
       if (!d || d.id === id) continue;
-      const cur = by.get(d.id) ?? { doc: d, fields: [], inPublished: false };
-      cur.fields.push(x.field);
-      cur.inPublished ||= x.inPublished;
+      const cur = by.get(d.id) ?? { doc: d, draftFields: [], publishedFields: [] };
+      if (x.inDraft) cur.draftFields.push(x.field);
+      if (x.inPublished) cur.publishedFields.push(x.field);
       by.set(d.id, cur);
     }
     return [...by.values()];
   }
 
   /** Put related documents in place of ids for `paths` (one level). `view` says what this reader may see of a target. */
-  async function expand(col: string, fields: Record<string, unknown>, paths: readonly string[], view: (d: CmsDoc) => CmsDoc | null): Promise<Record<string, unknown>> {
+  async function expand(col: string, fields: Record<string, unknown>, paths: readonly string[], view: (d: CmsDoc) => Promise<CmsDoc | null>): Promise<Record<string, unknown>> {
     const rels = new Map(relationFields(col));
     const want = paths.filter((p) => rels.has(p));
     if (!want.length) return fields;
     const docs = await docsByIds(want.flatMap((p) => idsAt(fields, p)));
     const out = structuredClone(fields);
+    const seen = new Map<string, CmsDoc | null>();
+    for (const [id, d] of docs) seen.set(id, await view(d));
     const show = (id: string): RelatedDoc | null => {
-      const d = docs.get(id);
-      const v = d ? view(d) : null;
+      const v = seen.get(id) ?? null;
       return v ? { id: v.id, collection: v.collection, slug: v.slug, title: v.title, summary: v.summary, status: v.status, url: ctx.urlOf(v.collection, v.slug) } : null;
     };
     for (const p of want) {
@@ -244,7 +247,7 @@ export function createModel(ctx: ModelContext) {
     let body: string | null = null;
     for (const c of snippetCols()) {
       const d = await repo.findDoc(c, key);
-      if (d && d.published && d.publishedVersion !== null && d.status !== "archived" && ctx.collection(c).visibility === "public" && !ctx.collection(c).access?.read) {
+      if (d && d.published && d.publishedVersion !== null && d.status !== "archived" && ctx.collection(c).visibility === "public" && !ctx.collection(c).access?.read && (await ctx.publicReadable(c, d.published.slug ?? d.slug))) {
         body = d.published.body ?? "";
         break;
       }
@@ -373,7 +376,7 @@ export function createModel(ctx: ModelContext) {
   }
   async function aliasMap(documentId: string): Promise<Record<string, string[]>> {
     if (!repo.listAnchorAliases) return {};
-    const out: Record<string, string[]> = {};
+    const out: Record<string, string[]> = Object.create(null);
     for (const a of await repo.listAnchorAliases(documentId)) (out[a.current] ??= []).push(a.old);
     return out;
   }
@@ -396,14 +399,18 @@ export function createModel(ctx: ModelContext) {
       const p = byId.get(parentId);
       if (!p) throw fail("not_found", { collection: col, slug: parentId });
       // Not under itself or one of its descendants.
-      for (let cur: CmsDoc | undefined = p; cur; cur = cur.parentId ? byId.get(cur.parentId) : undefined) if (cur.id === doc.id) throw fail("tree_cycle");
+      const walked = new Set<string>();
+      for (let cur: CmsDoc | undefined = p; cur && !walked.has(cur.id); cur = cur.parentId ? byId.get(cur.parentId) : undefined) {
+        if (cur.id === doc.id) throw fail("tree_cycle");
+        walked.add(cur.id);
+      }
     }
     const depthOf = (id: string | null): number => {
       let n = 0;
-      for (let cur = id ? byId.get(id) : undefined; cur; cur = cur.parentId ? byId.get(cur.parentId) : undefined) n++;
+      for (let cur = id ? byId.get(id) : undefined; cur && n < 100; cur = cur.parentId ? byId.get(cur.parentId) : undefined) n++;
       return n;
     };
-    const height = (id: string): number => 1 + Math.max(0, ...all.filter((d) => d.parentId === id).map((d) => height(d.id)));
+    const height = (id: string, depth = 0): number => (depth > 100 ? 1 : 1 + Math.max(0, ...all.filter((d) => d.parentId === id).map((d) => height(d.id, depth + 1))));
     if (depthOf(parentId) + height(doc.id) > tree.maxDepth) throw fail("tree_too_deep", { max: tree.maxDepth });
     const siblings = all.filter((d) => (d.parentId ?? null) === parentId && d.id !== doc.id).sort(byPosition);
     // Siblings without a position (made before the tree was on) get one first, in their order.

@@ -93,7 +93,13 @@ export function normalize(spans: Span[]): Span[] {
 }
 
 const ESCAPE = /[\\`*_~[\]]/g;
-export const escapeMd = (s: string) => s.replace(ESCAPE, (c) => `\\${c}`);
+/** A snippet token (`[[snippet:key]]`) stays as written: the server puts the snippet there. */
+const SNIPPET_TOKEN = /(\[\[snippet:[a-z0-9][a-z0-9._-]*\]\])/i;
+export const escapeMd = (s: string) =>
+  s
+    .split(SNIPPET_TOKEN)
+    .map((part, k) => (k % 2 ? part : part.replace(ESCAPE, (c) => `\\${c}`)))
+    .join("");
 
 const MD_MARK: Record<"b" | "i" | "s", string> = { b: "**", i: "*", s: "~~" };
 type Piece = { md: string; lead: string; trail: string; marks: ("b" | "i" | "s")[]; br?: true };

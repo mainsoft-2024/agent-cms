@@ -199,7 +199,7 @@ function blockHtml(b: Block, o: ToHtmlOptions): string {
   const url = (id: string, name: string) => (o.assetUrl ?? defaultAssetUrl)(id, name);
   switch (b.t) {
     case "heading":
-      return `${(o.anchorAliases?.[b.id] ?? []).map((a) => `<span id="${esc(a)}"></span>`).join("")}<h${b.level} id="${esc(b.id)}">${inlineHtml(b.inline, o)}</h${b.level}>`;
+      return `${(o.anchorAliases && Object.prototype.hasOwnProperty.call(o.anchorAliases, b.id) && Array.isArray(o.anchorAliases[b.id]) ? o.anchorAliases[b.id] : []).map((a) => `<span id="${esc(a)}"></span>`).join("")}<h${b.level} id="${esc(b.id)}">${inlineHtml(b.inline, o)}</h${b.level}>`;
     case "p":
       return `<p>${inlineHtml(b.inline, o)}</p>`;
     case "list": {

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.21.0
+
+The content model, first half: documents point at each other, nest, hold one document only, start from templates and share snippets; the body editor gets three new blocks and a new top bar; addresses can change after publishing and redirect. **Schema 10** (three columns, three tables). See `UPGRADE-0.21.md`.
+
+### Added
+- **Relation fields** (`relation("people")`, `relation([...], { many: true, max })`): stored as document ids, so a link survives a new address. Agents may send `{ collection, slug }`. Saving checks the target exists and is in the right collection (a target deleted later is a warning); publishing warns about unpublished targets. `?expand=author` (REST, `get_document`'s `expand`, `cms.expand()`) fills in title, address, summary and status, one level, as the reader may see them. The admin picks documents in a search dialog (keyboard: ↑ ↓ Enter), reorders them by dragging or Alt+↑ ↓.
+- **Who points here**: `GET …/_refs`, `cms.referencedBy()`. Deleting a document others point at answers `409 doc_referenced` with the list; `force` deletes anyway. The admin shows the list before deleting.
+- **Galleries** (`assetIds({ max, accept })`), **rows** (arrays of objects) and **groups** (objects) get their own widgets instead of JSON.
+- **Document trees** (`tree: { maxDepth }`): parent and position per document (fractional keys, moving never renumbers siblings or makes a version), `cms.move()`, `cms.tree()`, `cms.ancestors()`, `POST /collections/<c>/_move`, `GET …/_tree`, tools `get_tree` and `move_document`. Readers' trees leave out unpublished documents and move their children up. The list has a tree view: drag above, inside or below a row, or Alt+↑ ↓ → ← on the keyboard. A document with children cannot be deleted (`doc_has_children`).
+- **Single documents** (`defineSingle`): site settings and the like, with versions, drafts and publishing. `cms.single()` returns the defaults until the first save. `/singles/<c>`, tools `get_single` and `update_single`; the admin opens the editor directly.
+- **Templates**: in the collection config (`templates`) and saved by editors ("Save as template": the body or only its headings, field values, summary). "New document" offers them; `create(…, { template })` and `create_document`'s `template` give agents the same start. Only the maker or an admin changes a saved template.
+- **Snippets** (`snippets: true`): `[[snippet:key]]` shows the published snippet; filled in on public reads and in the search index, kept as a token for editors and agents. A missing snippet is a warning, a loop an error. The snippet's editor lists the documents that use it.
+- **Blocks**: `:::steps` (numbered steps), `:::card` (a link card with picture and description) and `:::video` (YouTube, Vimeo, more with `video.hosts`, or a file from the media library). Text not in their exact form stays as it was.
+- **Pinned anchors** (`## Title {#id}`) and **anchor aliases**: renaming a heading remembers its old anchor, so old links still land (`cms.anchorAliases()`, `markdownToHtml(…, { anchorAliases })`).
+- **Redirects** (`createCms({ redirects: true })`): a published document's address may change (the admin asks first); the old address redirects with 301. Chains are shortened, loops refused. Admins manage redirects on a new screen (`cms-redirects`) and `/redirects`; `cms.redirects.resolve(path)` answers your 404 page, from memory (30 s, refreshed at once on the server that changed it).
+- **Address suggestions**: a new document's address follows its title; Korean titles are romanized (`es-hangul`), or kept (`slugs: { hangul: "keep" }`), or not suggested (`"off"`). `GET …/_suggest-slug`, `cms.suggestSlug()`.
+- **SEO** (`seo: true`): search title, description, share image, canonical and noindex per document with search-result and share-card previews and length warnings; `cms.seoFor()`, `GET …/_seo`; `GET /sitemap.xml` (`handler({ publicOrigin })`, `cms.sitemap()`), noindex left out, split above 50 000 addresses.
+- **Body editor top bar**: icons with tooltips and shortcuts (undo, redo, heading level, bold, italic, code, link, lists, to-do, quote, callout, table, code block, divider, steps, link card, video, snippet), grouped, folding into "More" when narrow; find and replace (⌘F, ⌘H) in both modes; word count and reading time. The `+` menu starts with Upload, Library and Video link.
+
+### Changed
+- `list_collections` says which collections are trees, singles, snippets, have SEO, templates and relation fields; `get_document` keeps snippet tokens.
+- The address of a published document is no longer locked when redirects are on.
+
 ## 0.20.0
 
 The block editor runs on Tiptap 3 / ProseMirror (MIT) and was redesigned. The body is still markdown, written by our own converter; opening a document still never changes it. No schema change, no API change. See `UPGRADE-0.20.md`.

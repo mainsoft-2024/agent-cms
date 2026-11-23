@@ -17,10 +17,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { AssetThumb, assetMeta, CmsMediaPicker } from "./cms-media-picker";
+import { GalleryField, GroupField, RelationField, RowsField, type SubField } from "./cms-fields-more";
 import type { DocContent } from "./use-cms";
 import { useAsset, useCms } from "./use-cms";
 
-export type Widget = "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json" | "image" | "file";
+export type Widget = "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json" | "image" | "file" | "relation" | "gallery" | "rows" | "group";
 
 type JsonSchema = {
   type?: string | string[];
@@ -32,6 +33,8 @@ type JsonSchema = {
   maxLength?: number;
   properties?: Record<string, JsonSchema>;
   required?: string[];
+  "x-cms-relation"?: { collections: string[]; many: boolean; max: number | null };
+  "x-cms-gallery"?: { max: number | null; accept: string[] | null };
 };
 
 export interface FieldSpec {
@@ -48,6 +51,25 @@ export interface FieldSpec {
   store?: string;
   /** This person cannot change it (`fieldAccess` on the server). */
   readOnly?: boolean;
+  /** 0.21.0: relation targets, gallery limits, and the small fields of rows and groups. */
+  relation?: { collections: string[]; many: boolean; max: number | null };
+  max?: number | null;
+  sub?: SubField[];
+}
+
+/** The small fields inside a row or group (plain values only; anything else stays JSON). */
+function subFields(s: JsonSchema): SubField[] | null {
+  const props = unwrap(s).properties;
+  if (!props || !Object.keys(props).length) return null;
+  const req = new Set(unwrap(s).required ?? []);
+  const out: SubField[] = [];
+  for (const [key, raw] of Object.entries(props)) {
+    const w = widgetFor(raw);
+    const kind = w === "text" || w === "number" || w === "switch" || w === "select" || w === "textarea" ? w : null;
+    if (!kind) return null;
+    out.push({ key, label: unwrap(raw).description ?? key, kind, options: kind === "select" ? (unwrap(raw).enum as string[]) : undefined, required: req.has(key) });
+  }
+  return out;
 }
 
 /** Drop `null` from `anyOf: [X, null]` (nullable fields). */
@@ -63,6 +85,8 @@ function unwrap(s: JsonSchema): JsonSchema {
 export function widgetFor(schema: JsonSchema, hint?: string): Widget {
   if (hint) return hint as Widget;
   const s = unwrap(schema);
+  if (s["x-cms-relation"]) return "relation";
+  if (s["x-cms-gallery"]) return "gallery";
   const type = Array.isArray(s.type) ? s.type.find((x) => x !== "null") : s.type;
   if (s.enum && s.enum.every((x) => typeof x === "string")) return "select";
   if (type === "string") return s.format === "date" || s.format === "date-time" ? "date" : (s.maxLength ?? 0) > 200 ? "textarea" : "text";
@@ -72,7 +96,9 @@ export function widgetFor(schema: JsonSchema, hint?: string): Widget {
     const it = s.items ? unwrap(s.items) : {};
     if (it.enum && it.enum.every((x) => typeof x === "string")) return "multiselect";
     if (it.type === "string") return "tags";
+    if (it.type === "object" && subFields(it)) return "rows";
   }
+  if (type === "object" && subFields(s)) return "group";
   return "json";
 }
 
@@ -88,7 +114,24 @@ export function fieldSpecs(schema: CollectionSchema): FieldSpec[] {
     const hint = schema.admin?.[key];
     const widget = widgetFor(raw, hint?.widget);
     const options = (widget === "select" ? s.enum : widget === "multiselect" ? (s.items ? unwrap(s.items).enum : undefined) : undefined) as string[] | undefined;
-    return { key, label: hint?.label ?? key, help: hint?.help ?? s.description, widget, required: req.has(key), options, integer: s.type === "integer", collection: schema.slug, accept: hint?.accept ?? (widget === "image" ? ["image/*"] : undefined), store: hint?.store, readOnly: readOnly.has(key) || undefined };
+    const gallery = s["x-cms-gallery"];
+    const sub = widget === "rows" ? subFields(s.items ?? {}) : widget === "group" ? subFields(s) : null;
+    return {
+      key,
+      label: hint?.label ?? key,
+      help: hint?.help ?? s.description,
+      widget,
+      required: req.has(key),
+      options,
+      integer: s.type === "integer",
+      collection: schema.slug,
+      accept: hint?.accept ?? gallery?.accept ?? (widget === "image" || widget === "gallery" ? ["image/*"] : undefined),
+      store: hint?.store,
+      readOnly: readOnly.has(key) || undefined,
+      ...(s["x-cms-relation"] ? { relation: s["x-cms-relation"] } : {}),
+      ...(gallery ? { max: gallery.max } : {}),
+      ...(sub ? { sub } : {}),
+    };
   });
 }
 
@@ -384,6 +427,16 @@ function FieldControl({ spec, idPrefix, value, onChange, problems }: { spec: Fie
     case "image":
     case "file":
       return shell(<AssetField spec={spec} id={id} value={typeof value === "string" ? value : null} onChange={onChange} invalid={invalid} describedBy={by} />, { className: "md:col-span-2", asGroup: true });
+    case "relation":
+      return spec.relation
+        ? shell(<RelationField spec={{ key: spec.key, label: spec.label, ...spec.relation }} id={id} value={value} onChange={onChange} invalid={invalid} describedBy={by} />, { className: "md:col-span-2", asGroup: true })
+        : null;
+    case "gallery":
+      return shell(<GalleryField id={id} label={spec.label} value={value} onChange={onChange} max={spec.max ?? null} accept={spec.accept} store={spec.store} field={spec.collection ? { collection: spec.collection, path: spec.key } : undefined} invalid={invalid} describedBy={by} />, { className: "md:col-span-2 xl:col-span-3", asGroup: true });
+    case "rows":
+      return spec.sub ? shell(<RowsField id={id} label={spec.label} fields={spec.sub} value={value} onChange={onChange} invalid={invalid} describedBy={by} />, { className: "md:col-span-2 xl:col-span-3", asGroup: true }) : null;
+    case "group":
+      return spec.sub ? shell(<GroupField id={id} fields={spec.sub} value={value} onChange={onChange} />, { className: "md:col-span-2", asGroup: true }) : null;
     case "date":
       return shell(<Input {...common} type="date" value={typeof value === "string" ? value.slice(0, 10) : ""} onChange={(e) => onChange(e.target.value || undefined)} />);
     case "tags":
@@ -445,9 +498,13 @@ export interface CmsFieldFormProps {
   className?: string;
   /** For `slots.fieldAddon` (0.17.0): the editor's slot context. */
   slotContext?: import("./use-cms").EditorSlotContext;
+  /** 0.21.0: no address or category (the one document of a single). */
+  hideSlug?: boolean;
+  /** 0.21.0: a note under the slug (e.g. an old address that redirects there now). */
+  slugNote?: React.ReactNode;
 }
 
-export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocked, slugPrefix, idPrefix = "cms", className, slotContext, disabled }: CmsFieldFormProps) {
+export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocked, slugPrefix, idPrefix = "cms", className, slotContext, disabled, hideSlug, slugNote }: CmsFieldFormProps) {
   const { t, slots } = useCms();
   const specs = React.useMemo(() => fieldSpecs(schema), [schema]);
   const set = <K extends keyof DocContent>(k: K, v: DocContent[K]) => onChange({ ...value, [k]: v });
@@ -492,8 +549,13 @@ export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocke
     // A disabled fieldset turns off every control inside it, slots included.
     <fieldset disabled={disabled} className={cn("m-0 grid min-w-0 grid-cols-1 gap-x-3 gap-y-3 border-0 p-0 md:grid-cols-2 xl:grid-cols-3", className)}>
       {text("title", t("field_title"))}
-      {text("slug", t("field_slug"), { mono: true, disabled: slugLocked, help: slugLocked ? t("field_slug_locked") : undefined })}
-      {schema.categories?.length ? (
+      {hideSlug ? null : (
+        <div className="min-w-0">
+          {text("slug", t("field_slug"), { mono: true, disabled: slugLocked, help: slugLocked ? t("field_slug_locked") : undefined })}
+          {slugNote ? <div className="mt-1 text-xs">{slugNote}</div> : null}
+        </div>
+      )}
+      {!hideSlug && schema.categories?.length ? (
         <FieldShell id={catId} label={t("field_category")} errors={catErr}>
           <Select value={value.category ?? "__none"} onValueChange={(v: string | null) => set("category", !v || v === "__none" ? null : v)}>
             <SelectTrigger id={catId} className="h-9" aria-invalid={catErr?.some((e) => e.severity === "error") || undefined} aria-describedby={describedBy({ id: catId, errors: catErr })}>

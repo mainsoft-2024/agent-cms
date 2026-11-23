@@ -7,7 +7,7 @@
 
 import { DIALOG, PersonMark } from "./cms-parts";
 import * as React from "react";
-import { ArrowLeftRight, BookOpen, ChevronsUpDown, Keyboard, LogIn, LogOut, Monitor, Moon, Sun, UserCog, Users, FileText, LayoutGrid, Shield, Workflow, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
+import { ArrowLeftRight, BookOpen, ChevronsUpDown, CornerDownRight, Settings2, Keyboard, LogIn, LogOut, Monitor, Moon, Sun, UserCog, Users, FileText, LayoutGrid, Shield, Workflow, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -35,7 +35,7 @@ export interface CmsLinkProps {
   onClick?: () => void;
 }
 
-export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" } | { kind: "dashboard" } | { kind: "automations" } | { kind: "roles" } | { kind: "transfer" } | { kind: "people" } | { kind: "account" } | { kind: "login" };
+export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" } | { kind: "redirects" } | { kind: "dashboard" } | { kind: "automations" } | { kind: "roles" } | { kind: "transfer" } | { kind: "people" } | { kind: "account" } | { kind: "login" };
 
 export interface CmsShellProps {
   children?: React.ReactNode;
@@ -101,7 +101,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
     let live = true;
     void Promise.all(
       me.collections
-        .filter((c) => c.canWrite)
+        .filter((c) => c.canWrite && !c.single)
         .map((c) =>
           client.counts(c.slug).then(
             (n) => [c.slug, n.all] as const,
@@ -213,9 +213,10 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
                 onClick: close,
                 children: (
                   <>
-                    <BookOpen aria-hidden className="h-4 w-4 shrink-0" />
+                    {/* A single (one document) opens its editor straight away: a different mark, no count. */}
+                    {c.single ? <Settings2 aria-hidden className="h-4 w-4 shrink-0" /> : <BookOpen aria-hidden className="h-4 w-4 shrink-0" />}
                     <bdi className="flex-1 truncate">{c.label}</bdi>
-                    {shown[c.slug] !== undefined ? <span className="text-xs tabular-nums text-muted-foreground">{shown[c.slug]}</span> : null}
+                    {c.single ? <span className="sr-only">{` (${t("single_badge")})`}</span> : shown[c.slug] !== undefined ? <span className="text-xs tabular-nums text-muted-foreground">{shown[c.slug]}</span> : null}
                   </>
                 ),
               })}
@@ -301,6 +302,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
                 ...(me.automations ? [{ kind: "automations", label: t("nav_automations"), Icon: Workflow } as const] : []),
                 ...(me.auth?.people ? [{ kind: "people", label: t("nav_people"), Icon: Users } as const] : []),
                 ...(me.roles ? [{ kind: "roles", label: t("nav_roles"), Icon: Shield } as const] : []),
+                ...(me.redirects ? [{ kind: "redirects", label: t("nav_redirects"), Icon: CornerDownRight } as const] : []),
                 ...(me.automations ? [{ kind: "transfer", label: t("nav_transfer"), Icon: ArrowLeftRight } as const] : []),
               ] as const
             ).map(({ kind, label, Icon }) => {

@@ -4,7 +4,8 @@ import * as React from "react";
 import { z } from "zod";
 import { render, type RenderResult } from "@testing-library/react";
 import axe from "axe-core";
-import { createCms, defineCollection } from "../../src/cms";
+import { createCms, defineCollection, defineSingle } from "../../src/cms";
+import { relation } from "../../src/fields";
 import { createCmsHandler } from "../../src/http";
 import { MemoryRepo } from "../../src/repo";
 import type { Actor } from "../../src/types";
@@ -24,7 +25,7 @@ function tinyPng(): Uint8Array {
 
 export const editor2: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u2", label: "Park", isAdmin: true };
 
-export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean; webhooks?: boolean; plugins?: Parameters<typeof createCms>[0]["plugins"]; users?: boolean; codedWrite?: boolean } = {}) {
+export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean; webhooks?: boolean; plugins?: Parameters<typeof createCms>[0]["plugins"]; users?: boolean; codedWrite?: boolean; model?: boolean } = {}) {
   /** Who the browser is signed in as (tests switch it). */
   const session = { user: admin };
   /** What the outside address answers to a webhook (tests change it), and what it was sent. */
@@ -48,12 +49,27 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     admin: { fields: { plans: { label: "Plans", help: "Who sees this" }, order: { label: "Order", help: "0 to 100" }, ...(o.media ? { cover: { label: "Cover", widget: "image" as const } } : {}) } },
   });
   const notices = defineCollection({ slug: "notices", label: "Notices", visibility: "internal", access: { read: ({ actor }) => actor.kind !== "anonymous", ...(o.codedWrite ? { write: ({ actor }: { actor: Actor }) => actor.kind === "user" && !!actor.isAdmin } : {}) } });
+  // 0.21.0 content model (only with `model: true`, so other screens see the two collections they expect):
+  // a tree with templates and relations, the people it points at, a single, and redirects on.
+  const team = defineCollection({ slug: "team", label: "Team", visibility: "public", url: (d) => `/team/${d.slug}` });
+  const docs = defineCollection({
+    slug: "docs",
+    label: "Docs",
+    visibility: "public",
+    tree: { maxDepth: 3 },
+    url: (d) => `/docs/${d.slug}`,
+    fields: z.object({ author: relation("team").optional() }),
+    admin: { fields: { author: { label: "Author" } } },
+    templates: [{ key: "howto", label: "How-to", title: "How to …", body: "## Before you start\n\n## Steps" }],
+  });
+  const site = defineSingle({ slug: "site", label: "Site settings", visibility: "public", fields: z.object({ name: z.string().default("My site"), footer: z.string().default("") }) });
   /** The people the app knows (for the roles screen's search). */
   const people = [{ id: "u7", label: "Park Jiwoo" }, { id: "u8", label: "Lee Minho" }];
   const notified: string[] = [];
   const cms = createCms({
     repo: new MemoryRepo(),
-    collections: [guide, notices] as const,
+    collections: o.model ? ([guide, notices, team, docs, site] as const) : ([guide, notices] as const),
+    redirects: o.model ? true : undefined,
     previewSecret: o.previewSecret === null ? undefined : (o.previewSecret ?? "x".repeat(40)),
     warn: () => {},
     schemaCheck: false,

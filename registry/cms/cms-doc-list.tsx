@@ -281,6 +281,12 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   const sch = schema.data;
   const canWrite = sch?.canWrite ?? false;
   const canPublish = sch?.canPublish ?? false;
+  // A single (one document) has no list: hosts that route every collection here go to its editor.
+  const single = !!sch?.single;
+  React.useEffect(() => {
+    if (single) onOpenDocument?.(collection, "_single");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [single, collection]);
   const filtered = tab !== "all" || !!q || category !== "__all" || by !== "__all";
   const isEmpty = !loading && !loadError && c?.all === 0 && !filtered;
 
@@ -518,7 +524,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       {sch?.tree && view === "tree" && !isEmpty ? (
         <CmsTreeView collection={collection} canWrite={canWrite} maxDepth={sch.tree.maxDepth} onOpen={open} hrefFor={hrefFor ? (s) => hrefFor(collection, s) : undefined} />
       ) : isEmpty ? (
-        <CmsEmpty collection={collection} onNewDocument={onNewDocument} keysHref={keysHref} />
+        <CmsEmpty collection={collection} onNewDocument={onNewDocument ? () => void startNew() : undefined} keysHref={keysHref} />
       ) : mobile ? (
         <>
           {!selectMode ? (

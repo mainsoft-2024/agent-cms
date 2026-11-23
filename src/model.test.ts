@@ -171,7 +171,7 @@ test("anchors: a renamed heading keeps its old anchor as an alias; pinned anchor
   const { cms } = setup();
   const d = await cms.create(admin, "guides", { slug: "an", title: "An", body: "## Install the app\n\nx\n\n## Use {#use}\n\ny" });
   await cms.update(admin, "guides", "an", { body: "## Installing\n\nx\n\n## Using it {#use}\n\ny" });
-  assert.deepEqual(await cms.core.anchorAliases(d.id), { installing: ["install-the-app"] });
+  assert.deepEqual({ ...(await cms.core.anchorAliases(d.id)) }, { installing: ["install-the-app"] });
   await cms.update(admin, "guides", "an", { body: "## Setup\n\nx\n\n## Using it {#use}\n\ny" });
   assert.deepEqual((await cms.core.anchorAliases(d.id)).setup?.sort(), ["install-the-app", "installing"]);
   assert.equal(await cms.core.resolveAnchor(d.id, "install-the-app", "## Setup\n\nx"), "setup");
@@ -228,4 +228,32 @@ test("content model: collections without the new options behave as before", asyn
   assert.equal(d.body, "[[snippet:x]]");
   await rejects(cms.core.tree(admin, "plain"), "tree_off");
   assert.equal(repo.docRefs.length, 0);
+});
+
+test("review fixes: draft links stay private, snippets obey beforeRead, draft renames wait for publish, odd anchors and paths", async () => {
+  const { cms } = setup({ redirects: true });
+  await cms.create(admin, "people", { slug: "b", title: "B" }, { publish: true });
+  const b = await cms.get(admin, "people", "b", { draft: true });
+  await cms.create(admin, "guides", { slug: "a", title: "A" }, { publish: true });
+  await cms.update(admin, "guides", "a", { fields: { author: b.id } }); // draft only
+  assert.deepEqual(await cms.referencedBy(anon, "people", "b"), [], "a link only in a draft is not public");
+  assert.equal((await cms.referencedBy(admin, "people", "b")).length, 1);
+  await rejects(cms.update(admin, "guides", "a", { slug: "a-new" }), "slug_needs_publish");
+
+  const repo = new MemoryRepo();
+  const snips = defineCollection({ slug: "snips", label: "S", visibility: "public", snippets: true, hooks: { beforeRead: [({ actor, slug }: { actor: Actor; slug: string | null }) => { if (slug === "secret" && actor.kind === "anonymous") throw new Error("no"); }] } } as never);
+  const pages = defineCollection({ slug: "pages", label: "P", visibility: "public" });
+  const c2 = createCms({ repo, collections: [snips, pages], searchRefreshMs: 0 });
+  await c2.create(admin, "snips", { slug: "secret", title: "S", body: "TOP SECRET" }, { publish: true });
+  await c2.create(admin, "pages", { slug: "p", title: "P", body: "[[snippet:secret]]" }, { publish: true });
+  assert.doesNotMatch((await c2.get(anon, "pages", "p")).body, /TOP SECRET/);
+
+  const { markdownToHtml } = await import("./html");
+  assert.match(markdownToHtml("## Example {#constructor}", { anchorAliases: {} }), /id="constructor"/);
+  assert.equal(normalizePath("/\\evil.com"), null);
+  assert.equal(normalizePath("/a/%2e%2e/b"), null);
+  const { sectionRanges } = await import("./patch");
+  assert.deepEqual(sectionRanges("## Install {#setup}\n\nx").map((r) => r.anchor).filter(Boolean), ["setup"]);
+  const k = setup();
+  void k;
 });

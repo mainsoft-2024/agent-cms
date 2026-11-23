@@ -82,3 +82,38 @@ test("editor document: marks, links and line breaks map both ways", () => {
   p.forEach((c) => (breaks += c.type.name === "hardBreak" ? 1 : 0));
   assert.equal(breaks, 1);
 });
+
+test("editor document: steps, cards, videos, snippets and pinned anchors map both ways", () => {
+  const md = [
+    ":::steps\n**One** first.\n\n**Two** next.\n:::",
+    ":::card\n[Docs](https://example.com)\n![](https://example.com/a.png)\nRead them\n:::",
+    ":::video\nhttps://youtu.be/xyz\nCaption\n:::",
+    "## Pinned {#pin-me}",
+    "[[snippet:footer]]",
+  ].join("\n\n");
+  const { doc, save } = load(md);
+  assert.deepEqual(
+    (() => {
+      const names: string[] = [];
+      doc.forEach((n) => names.push(n.type.name));
+      return names;
+    })(),
+    ["steps", "card", "video", "heading", "snippet"]
+  );
+  assert.equal(doc.child(0).childCount, 2);
+  assert.equal(doc.child(3).attrs.anchor, "pin-me");
+  assert.equal(save(), md);
+  const fresh = blocksToMarkdown(docToBlocks(doc));
+  assert.equal(fresh, md);
+  // Unpinning the heading and changing the card's description rewrite only those blocks.
+  const tr = new Transform(doc);
+  let headingPos = -1;
+  let cardPos = -1;
+  doc.forEach((n, pos) => {
+    if (n.type.name === "heading") headingPos = pos;
+    if (n.type.name === "card") cardPos = pos;
+  });
+  tr.setNodeAttribute(headingPos, "anchor", null);
+  tr.setNodeAttribute(cardPos, "description", "Changed");
+  assert.equal(save(tr.doc), md.replace(" {#pin-me}", "").replace("Read them", "Changed"));
+});

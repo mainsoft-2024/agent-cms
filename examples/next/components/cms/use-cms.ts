@@ -73,8 +73,55 @@ export interface BlockEditorProps {
   onPickMedia?: () => Promise<string | null>;
   /** The screen puts markdown at the cursor through this. */
   insertRef?: React.MutableRefObject<((markdown: string) => void) | null>;
+  /** The screen's toolbar runs editing commands through this (0.21.0). */
+  commandsRef?: React.MutableRefObject<BlockEditorCommands | null>;
+  /** Called when what the toolbar shows may have changed (selection, marks, history). */
+  onStateChange?: () => void;
+  /** Collections whose documents can be put in as snippets (`[[snippet:key]]`). */
+  snippetCollections?: string[];
   id?: string;
   describedBy?: string;
+}
+
+/** Commands of the body editor's toolbar, in either mode. `kind` names a block or a mark. */
+export type EditorCommand =
+  | "undo"
+  | "redo"
+  | "p"
+  | "h2"
+  | "h3"
+  | "bold"
+  | "italic"
+  | "strike"
+  | "code"
+  | "link"
+  | "bullet"
+  | "number"
+  | "todo"
+  | "quote"
+  | "callout"
+  | "table"
+  | "codeblock"
+  | "hr"
+  | "steps"
+  | "card"
+  | "video"
+  | "snippet";
+
+/** What the block editor offers the toolbar (find and replace included). */
+export interface BlockEditorCommands {
+  run: (cmd: EditorCommand) => boolean;
+  /** Is the command possible here, and is it on (a mark, the current block type)? */
+  state: (cmd: EditorCommand) => { enabled: boolean; active: boolean };
+  /** Find: highlights matches, returns how many and which one is current (0-based, -1 none). */
+  find: (query: string, o: { caseSensitive: boolean; wholeWord: boolean }) => { count: number; current: number };
+  /** Move to the next or previous match. */
+  findStep: (dir: 1 | -1) => { count: number; current: number };
+  /** Replace the current match (and go to the next), or all. Returns how many were replaced. */
+  replace: (text: string, all: boolean) => number;
+  /** Drop the find highlights. */
+  findClear: () => void;
+  focus: () => void;
 }
 
 export interface CmsContextValue {
@@ -499,10 +546,11 @@ export function formatUntil(iso: string, locale: string): string {
 
 // ── documents ─────────────────────────────────────────────────────────────────
 
-export type DocContent = DocLike;
+/** 0.21.0: `seo` in collections with search engine details. */
+export type DocContent = DocLike & { seo?: { title?: string | null; description?: string | null; image?: string | null; canonical?: string | null; noindex?: boolean } | null };
 
-export function contentOf(d: DocLike): DocContent {
-  return { slug: d.slug, title: d.title, summary: d.summary, body: d.body, category: d.category, keywords: [...(d.keywords ?? [])], fields: structuredClone(d.fields ?? {}) };
+export function contentOf(d: DocContent): DocContent {
+  return { slug: d.slug, title: d.title, summary: d.summary, body: d.body, category: d.category, keywords: [...(d.keywords ?? [])], fields: structuredClone(d.fields ?? {}), ...(d.seo ? { seo: { ...d.seo } } : {}) };
 }
 
 /**
@@ -513,7 +561,7 @@ export function contentOf(d: DocLike): DocContent {
 export function toInput(next: DocContent, prevFields?: Record<string, unknown>): DocInputWire {
   const fields: Record<string, unknown> = { ...next.fields };
   for (const k of Object.keys(prevFields ?? {})) if (!(k in fields) || fields[k] === undefined) fields[k] = null;
-  return { slug: next.slug, title: next.title, summary: next.summary, body: next.body, category: next.category, keywords: next.keywords, fields };
+  return { slug: next.slug, title: next.title, summary: next.summary, body: next.body, category: next.category, keywords: next.keywords, fields, ...(next.seo !== undefined ? { seo: next.seo ?? null } : {}) } as DocInputWire;
 }
 
 export const sameContent = (a: DocContent, b: DocContent) => JSON.stringify(contentOf(a)) === JSON.stringify(contentOf(b));

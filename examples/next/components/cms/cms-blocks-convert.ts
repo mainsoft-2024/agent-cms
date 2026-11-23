@@ -41,6 +41,8 @@ export type TextBlock = Base & {
   start?: number;
   /** A list item that starts a new list right after another list of the same kind. */
   newList?: true;
+  /** A heading's pinned anchor (`## Title {#id}`): it stays when the text changes. */
+  anchor?: string;
 };
 export type CodeBlock = Base & { type: "code"; text: string; lang: string };
 export type RuleBlock = Base & { type: "hr" };
@@ -53,12 +55,69 @@ export type ColumnsBlock = Base & { type: "columns" };
 export type ColBlock = Base & { type: "col" };
 /** Markdown the editor keeps as text (drawn when not being edited). */
 export type SourceBlock = Base & { type: "source"; md: string; kind: string };
-export type EBlock = TextBlock | CodeBlock | RuleBlock | MediaBlock | TableBlock | ColumnsBlock | ColBlock | SourceBlock;
+/** Numbered steps (`:::steps` … `:::`): its children are the blocks inside. */
+export type StepsBlock = Base & { type: "steps" };
+/** A link shown as a card (`:::card`): `image` is a picture target (`asset:ID/name` or https), "" for none. */
+export type CardBlock = Base & { type: "card"; href: string; label: string; description: string; image: string; alt: string };
+/** A video (`:::video`): `src` is an https address or a media library file (`asset:ID/name`). */
+export type VideoBlock = Base & { type: "video"; src: string; caption: string };
+/** A snippet on a line of its own (`[[snippet:key]]`). */
+export type SnippetBlock = Base & { type: "snippet"; key: string };
+export type EBlock = TextBlock | CodeBlock | RuleBlock | MediaBlock | TableBlock | ColumnsBlock | ColBlock | SourceBlock | StepsBlock | CardBlock | VideoBlock | SnippetBlock;
+
+/** `[[snippet:key]]`: a key as the server reads it. */
+export const SNIPPET_KEY = /^[a-z0-9][a-z0-9._-]*$/i;
+const SNIPPET_LINE = /^\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]$/i;
+/** A heading anchor that can be pinned (`{#id}`). */
+export const ANCHOR_ID = /^[\p{L}\p{N}][\p{L}\p{N}_-]*$/u;
+/** Addresses a video block can hold. */
+export const VIDEO_TARGET = /^(?:https:\/\/\S+|asset:[a-z0-9]{12}(?:\/\S*)?)$/;
+const LINK_HREF = /^(?:[^()\s]|\([^()\s]*\))+$/;
+
+const encodeName = (name: string) => encodeURIComponent(name).replace(/%2F/gi, "/").replace(/[()]/g, (c) => encodeURIComponent(c));
+const safeDecode = (s: string) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+/** A media target as the markdown writer spells it (`asset:ID/name` with the name encoded one way), or "" when it cannot be one. */
+export function cleanTarget(target: string): string {
+  const t = target.trim();
+  const a = /^asset:([a-z0-9]{12})(?:\/(.*))?$/.exec(t);
+  // The file name is only a hint (the id finds the file); brackets in it would not read back.
+  const name = a ? safeDecode(a[2] ?? "").replace(/[()]/g, "") : "";
+  if (a) return `asset:${a[1]}${name ? `/${encodeName(name)}` : ""}`;
+  return /^https:\/\/\S+$/i.test(t) && LINK_HREF.test(t) ? t : "";
+}
+const oneLine = (s: string) => s.replace(/\s*\n\s*/g, " ").trim();
+
+/** The markdown of a card, in the exact form the parser reads back (fields are tidied so it always does). */
+export function cardMarkdown(b: Pick<CardBlock, "href" | "label" | "description" | "image" | "alt">): string {
+  const href = b.href.trim().replace(/\s+/g, "");
+  const safeHref = href && LINK_HREF.test(href) ? href : "#";
+  const label = oneLine(b.label).replace(/\]/g, "") || safeHref;
+  const target = b.image ? cleanTarget(b.image) : "";
+  const img = target ? `\n![${oneLine(b.alt).replace(/\]/g, "")}](${target})` : "";
+  // A description that reads as a picture line, or opens or ends a block, would change what the block is.
+  const desc = oneLine(b.description).replace(/^!(?=\[)/, "").replace(/^:{3,}\s*/, "");
+  return `:::card\n[${label}](${safeHref})${img}${desc ? `\n${desc}` : ""}\n:::`;
+}
+
+/** The markdown of a video, or "" while it has no address it can be written with. */
+export function videoMarkdown(b: Pick<VideoBlock, "src" | "caption">): string {
+  const src = b.src.trim();
+  const target = src.startsWith("asset:") ? cleanTarget(src) : src;
+  if (!target || !VIDEO_TARGET.test(target)) return "";
+  const cap = oneLine(b.caption).replace(/^:{3,}\s*/, "");
+  return `:::video\n${target}${cap ? `\n${cap}` : ""}\n:::`;
+}
 
 export const isText = (b: EBlock): b is TextBlock => (TEXT_TYPES as readonly string[]).includes(b.type);
 export const isList = (b: EBlock): b is TextBlock => (LIST_TYPES as readonly string[]).includes(b.type);
 /** Blocks that hold other blocks. */
-export const holdsBlocks = (b: EBlock) => ["bullet", "number", "todo", "toggle", "col", "columns"].includes(b.type);
+export const holdsBlocks = (b: EBlock) => ["bullet", "number", "todo", "toggle", "col", "columns", "steps"].includes(b.type);
 
 let seq = 0;
 export const newId = () => `k${Date.now().toString(36)}${(++seq).toString(36)}`;
@@ -181,10 +240,27 @@ function astToBlocks(b: Block, src: string, parent: string | undefined): EBlock[
   const source = (): EBlock[] => [{ id: newId(), parent, type: "source", md: src, kind: sourceKind(b) }];
   const text = (type: TextType, spans: Span[], extra: Partial<TextBlock> = {}): TextBlock => ({ id: newId(), parent, type, spans, ...extra });
   switch (b.t) {
-    case "p":
+    case "p": {
+      const s = SNIPPET_LINE.exec(src);
+      if (s) return [{ id: newId(), parent, type: "snippet", key: s[1] }];
       return hasImage(b.inline) ? source() : [text("p", spansOf(b.inline))];
+    }
     case "heading":
-      return hasImage(b.inline) ? source() : [text(b.level === 3 ? "h3" : "h2", spansOf(b.inline))];
+      return hasImage(b.inline) ? source() : [text(b.level === 3 ? "h3" : "h2", spansOf(b.inline), b.pinned ? { anchor: b.id } : {})];
+    case "steps": {
+      const box: EBlock = { id: newId(), parent, type: "steps" };
+      return [box, ...markdownToBlocks(innerOf(src), box.id)];
+    }
+    case "card": {
+      const image = b.image ? (b.image.asset ? `asset:${b.image.asset}${b.image.name ? `/${encodeName(b.image.name)}` : ""}` : (b.image.src ?? "")) : "";
+      const c: CardBlock = { id: newId(), parent, type: "card", href: b.href, label: b.label, description: b.description, image, alt: b.image?.alt ?? "" };
+      // Only a card that writes back the same text is edited as a card.
+      return cardMarkdown(c) === src ? [c] : source();
+    }
+    case "video": {
+      const v: VideoBlock = { id: newId(), parent, type: "video", src: b.asset ? `asset:${b.asset}${b.name ? `/${encodeName(b.name)}` : ""}` : (b.src ?? ""), caption: b.caption };
+      return videoMarkdown(v) === src ? [v] : source();
+    }
     case "list":
     case "todo": {
       const inlines = b.t === "list" ? b.items : b.items.map((x) => x.inline);
@@ -370,9 +446,10 @@ function ownMd(b: EBlock, num: number): string {
     case "p":
       return spansToMd(b.spans);
     case "h2":
-      return `## ${spansToMd(b.spans).replace(/\\\n/g, " ")}`;
-    case "h3":
-      return `### ${spansToMd(b.spans).replace(/\\\n/g, " ")}`;
+    case "h3": {
+      const pin = b.anchor && ANCHOR_ID.test(b.anchor) ? ` {#${b.anchor}}` : "";
+      return `${b.type === "h3" ? "###" : "##"} ${spansToMd(b.spans).replace(/\\\n/g, " ")}${pin}`;
+    }
     case "quote":
       return spansToMd(b.spans)
         .split("\n")
@@ -407,8 +484,15 @@ function ownMd(b: EBlock, num: number): string {
     }
     case "source":
       return b.md;
+    case "card":
+      return cardMarkdown(b);
+    case "video":
+      return videoMarkdown(b);
+    case "snippet":
+      return SNIPPET_KEY.test(b.key) ? `[[snippet:${b.key}]]` : "";
     case "columns":
     case "col":
+    case "steps":
       return "";
   }
 }
@@ -465,6 +549,10 @@ export function blocksToMarkdown(blocks: readonly EBlock[]): string {
       return `:::columns\n${cols.map((c) => `:::col\n${c}${c ? "\n" : ""}`).join("")}:::`;
     }
     if (b.type === "col") return inside(b);
+    if (b.type === "steps") {
+      const body = inside(b);
+      return `:::steps\n${body}${body ? "\n" : ""}:::`;
+    }
     const own = ownMd(b, num);
     if (b.type === "toggle") {
       const body = inside(b);
@@ -499,6 +587,9 @@ export function blockPlain(b: EBlock): string {
   if (b.type === "code") return b.text;
   if (b.type === "media") return b.caption || b.alt;
   if (b.type === "source") return b.md;
+  if (b.type === "card") return `${b.label} ${b.description}`;
+  if (b.type === "video") return b.caption;
+  if (b.type === "snippet") return b.key;
   if (b.type === "table") return [...b.head, ...b.rows.flat()].map((c) => c.map((s) => s.text).join("")).join(" ");
   return "";
 }

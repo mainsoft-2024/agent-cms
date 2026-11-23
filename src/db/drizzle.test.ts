@@ -719,3 +719,34 @@ test("splitSql keeps DO $$ bodies and quoted semicolons together", () => {
   const parts = splitSql("SELECT 'a;b'; -- c;d\nDO $$ BEGIN PERFORM 1; END $$;\nSELECT 2");
   assert.deepEqual(parts, ["SELECT 'a;b'", "DO $$ BEGIN PERFORM 1; END $$", "SELECT 2"]);
 });
+
+test("drizzle: 0.21 content model on Postgres (relations, trees, anchors, redirects)", async () => {
+  const { relation } = await import("../fields");
+  const { z } = await import("zod");
+  const c = await connectPostgres("memory:");
+  try {
+    await run(c.db, cmsDdl());
+    const people = defineCollection({ slug: "people", label: "People", visibility: "public", url: (d) => `/p/${d.slug}` });
+    const pages = defineCollection({ slug: "pages", label: "Pages", visibility: "public", tree: true, url: (d) => `/${d.slug}`, fields: z.object({ author: relation("people").optional() }) });
+    const cms = createCms({ repo: c.repo, collections: [people, pages], redirects: true });
+    const kim = await cms.create(admin, "people", { slug: "kim", title: "Kim" }, { publish: true });
+    await cms.create(admin, "pages", { slug: "a", title: "A", body: "## Install\n\nx", fields: { author: kim.id } }, { publish: true });
+    await cms.create(admin, "pages", { slug: "b", title: "B" });
+    const a = await cms.get(admin, "pages", "a", { draft: true });
+    assert.deepEqual((await cms.referencedBy(admin, "people", "kim")).map((r) => r.slug), ["a"]);
+    await assert.rejects(cms.remove(admin, "people", "kim"), (e: unknown) => isCmsError(e) && e.code === "doc_referenced");
+    await cms.move(admin, "pages", "b", { parentId: a.id });
+    assert.deepEqual((await cms.tree(admin, "pages", { draft: true })).map((n) => [n.slug, n.children.map((k) => k.slug)]), [["a", ["b"]]]);
+    await cms.update(admin, "pages", "a", { body: "## Installing\n\nx" });
+    assert.deepEqual({ ...(await cms.anchorAliases(a.id)) }, { installing: ["install"] });
+    await cms.update(admin, "pages", "a", { slug: "a2" }, { publish: true });
+    assert.deepEqual(await cms.redirects.resolve("/a"), { to: "/a2", status: 301 });
+    const r = await cms.redirects.create(admin, { from: "/old", to: "/a2", status: 302 });
+    await cms.redirects.update(admin, r.id, { to: "/b" });
+    assert.equal((await cms.redirects.list(admin)).find((x) => x.id === r.id)?.to, "/b");
+    await cms.redirects.remove(admin, r.id);
+    assert.equal(await cms.redirects.resolve("/old"), null);
+  } finally {
+    await c.close();
+  }
+});

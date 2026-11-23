@@ -93,11 +93,16 @@
         "select",
         "table",
         "cms-lib",
-        "cms-empty"
+        "cms-empty",
+        "textarea"
       ],
       "files": [
         {
           "path": "registry/cms/cms-doc-list.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-structure.tsx",
           "type": "registry:component"
         }
       ]
@@ -195,6 +200,18 @@
         {
           "path": "registry/cms/cms-paste.ts",
           "type": "registry:lib"
+        },
+        {
+          "path": "registry/cms/cms-fields-more.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-structure.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-editor-toolbar.tsx",
+          "type": "registry:component"
         }
       ]
     },
@@ -434,6 +451,32 @@
       "files": [
         {
           "path": "registry/cms/cms-webhooks.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-redirects",
+      "type": "registry:component",
+      "title": "Redirects",
+      "description": "Old addresses and where they send people: made automatically when a published document gets a new address, or by hand. Search, automatic or manual, visits, create, edit and delete.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "badge",
+        "button",
+        "dialog",
+        "dropdown-menu",
+        "input",
+        "label",
+        "table",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-redirects.tsx",
           "type": "registry:component"
         }
       ]

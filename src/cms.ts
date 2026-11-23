@@ -972,6 +972,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     urlOf: (col, slug) => urlOf(col, slug),
     redirects: opts.redirects ? { ttlMs: Math.max(1000, (typeof opts.redirects === "object" ? opts.redirects.ttlMs : undefined) ?? 30_000) } : false,
     videoHosts: opts.video?.hosts ?? DEFAULT_VIDEO_HOSTS,
+    publicReadable: (col, slug) => readable({ kind: "anonymous" }, col, slug),
   });
   /** Files and documents a copy points at. */
   async function syncAllRefs(r: CmsRepo, doc: CmsDoc) {
@@ -1767,7 +1768,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const cfg = collection(col);
     input = await prepared(actor, col, null, input);
     if (o.template) input = await withTemplate(actor, col, input, o.template);
-    if (cfg.single) input = { ...input, slug: SINGLE_SLUG };
+    if (cfg.single) {
+      if (await repo.findDoc(col, SINGLE_SLUG, { trashed: true })) throw fail("single_only", { collection: col });
+      input = { ...input, slug: SINGLE_SLUG };
+    }
     input = { ...input, fields: await model.resolveRelations(col, input.fields as Record<string, unknown> | undefined) };
     const content = await hooked(actor, col, null, validate(col, {
       slug: input.slug ?? "",
@@ -1830,6 +1834,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
     const inPlace = cfg.versions?.drafts === false && doc.publishedVersion !== null && doc.status !== "archived";
     const publish = !!o.publish || inPlace;
+    // 0.21.0: a published address changes only together with publishing (readers and the redirect switch at once).
+    if (moved && !publish) throw fail("slug_needs_publish");
     // A new version is one nobody approved yet.
     if (publish && needsReview(actor, doc.collection)) throw reviewRequired(actor, doc.collection, doc.slug);
     if (publish) await gate("beforePublish", actor, { collection: doc.collection, slug: next.slug, version: v }, next, doc);
@@ -2144,7 +2150,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (kids.length) throw fail("doc_has_children", { count: kids.length }, { status: 409 });
     }
     if (!o.force) {
-      const refs = await refsShown(actor, cur.id);
+      const refs = await refsShown(actor, cur.id, { forDelete: true });
       if (refs.length)
         throw fail("doc_referenced", { count: refs.length }, { status: 409, diagnostics: refs.map((x) => ({ path: x.fields.join(","), code: "doc_referenced" as const, params: { collection: x.collection, slug: x.slug, title: x.title, count: refs.length }, severity: "error" as const, message: x.title })) });
     }
@@ -2310,6 +2316,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const index = { built: null as SearchIndex | null, dirty: true, stamp: "", checkedAt: 0, building: null as Promise<SearchIndex> | null };
 
   async function buildIndex(): Promise<SearchIndex> {
+    model.forgetSnippets();
     const started = Date.now();
     const searchable = [...collections.values()].filter((c) => c.search?.enabled !== false).map((c) => c.slug);
     const docs = (await repo.listDocs({ published: true })).filter((d) => searchable.includes(d.collection));
@@ -2866,16 +2873,39 @@ export function createCmsCore(opts: CreateCmsOptions) {
   // ── content model API (0.21.0) ─────────────────────────────────────────────
 
   /** Documents pointing at `id`, as `actor` may see them (one they may not read counts, without its name). */
-  async function refsShown(actor: Actor, id: string): Promise<{ id: string | null; collection: string; slug: string; title: string; status: DocStatus | null; fields: string[] }[]> {
+  /**
+   * Documents pointing at `id`. Writers of a source see its working-copy links; others only links in
+   * what is published and readable. `forDelete`: every source counts (unreadable ones without a name).
+   */
+  async function refsShown(actor: Actor, id: string, o: { forDelete?: boolean } = {}): Promise<{ id: string | null; collection: string; slug: string; title: string; status: DocStatus | null; fields: string[] }[]> {
     const out: { id: string | null; collection: string; slug: string; title: string; status: DocStatus | null; fields: string[] }[] = [];
     for (const x of await model.referencedBy(id)) {
       const d = x.doc;
       if (!collections.has(d.collection)) continue;
-      const seen = can(actor, d.collection, "write", d) ? d : publicView(d);
-      if (seen && (seen === d || can(actor, d.collection, "read", seen))) out.push({ id: d.id, collection: d.collection, slug: seen.slug, title: seen.title, status: seen.status, fields: x.fields });
-      else out.push({ id: null, collection: d.collection, slug: "", title: "", status: null, fields: [] });
+      const hidden = new Set(fieldRulesFor(actor, d.collection, d).hidden);
+      const fieldsOk = (fs: string[]) => fs.filter((f) => !hidden.has(f) && !hidden.has(f.split(".")[0]));
+      let entry: (typeof out)[number] | null = null;
+      if (can(actor, d.collection, "write", d)) {
+        const fs = fieldsOk(x.draftFields);
+        if (fs.length) entry = { id: d.id, collection: d.collection, slug: d.slug, title: d.title, status: d.status, fields: fs };
+      } else {
+        const pub = publicView(d);
+        const fs = fieldsOk(x.publishedFields);
+        if (pub && fs.length && can(actor, d.collection, "read", pub) && (await readable(actor, d.collection, pub.slug))) entry = { id: d.id, collection: d.collection, slug: pub.slug, title: pub.title, status: pub.status, fields: fs };
+      }
+      if (entry) out.push(entry);
+      else if (o.forDelete) out.push({ id: null, collection: d.collection, slug: "", title: "", status: null, fields: [] });
     }
     return out;
+  }
+  /** `beforeRead` hooks let this actor read the document. */
+  async function readable(actor: Actor, col: string, slug: string): Promise<boolean> {
+    try {
+      await beforeRead(actor, col, slug, false);
+      return true;
+    } catch {
+      return false;
+    }
   }
   async function referencedBy(actor: Actor, col: string, slug: string) {
     await ensureSchema();
@@ -2888,11 +2918,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return refsShown(actor, cur.id);
   }
   /** What `actor` may see of a document a relation points at. */
-  const relatedView = (actor: Actor, draft: boolean) => (d: CmsDoc): CmsDoc | null => {
+  const relatedView = (actor: Actor, draft: boolean) => async (d: CmsDoc): Promise<CmsDoc | null> => {
     if (!collections.has(d.collection)) return null;
     if (draft && can(actor, d.collection, "write", d)) return d;
     const pub = publicView(d);
-    return pub && can(actor, d.collection, "read", pub) ? pub : null;
+    return pub && can(actor, d.collection, "read", pub) && (await readable(actor, d.collection, pub.slug)) ? pub : null;
   };
   /** Related documents in place of ids for `paths` (`?expand=author,related`). */
   async function expandFields<T extends CmsDoc>(actor: Actor, doc: T, paths: readonly string[], draft = false): Promise<T> {
@@ -2948,7 +2978,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const seen = new Set<string>();
     for (let p = doc.parentId ? all.get(doc.parentId) : undefined; p && !seen.has(p.id); p = p.parentId ? all.get(p.parentId) : undefined) {
       seen.add(p.id);
-      const v = relatedView(actor, !!o.draft)(p);
+      const v = await relatedView(actor, !!o.draft)(p);
       if (v) out.unshift({ id: v.id, slug: v.slug, title: v.title });
     }
     return out;
@@ -2967,9 +2997,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const doc = await repo.findDoc(slug, SINGLE_SLUG);
     if (doc && (doc.publishedVersion !== null || (o.draft && can(actor, slug, "write", doc)))) return get(actor, slug, SINGLE_SLUG, o);
     assert(actor, slug, o.draft ? "write" : "read");
+    await beforeRead(actor, slug, SINGLE_SLUG, !!o.draft);
     const parsed = cfg.fields?.safeParse({});
     const at = nowIso();
-    return {
+    const synthetic: CmsDoc = {
       id: "",
       collection: slug,
       slug: SINGLE_SLUG,
@@ -2997,6 +3028,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       dueAt: null,
       review: null,
     };
+    return o.draft ? synthetic : read(actor, synthetic, false);
   }
   /** Save the one document (made on the first save). */
   async function updateSingle(actor: Actor, slug: string, input: DocInput, o: WriteOptions = {}): Promise<CmsDoc> {
@@ -3004,7 +3036,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await ensureSchema();
     const cur = await repo.findDoc(slug, SINGLE_SLUG);
     const { slug: _drop, ...rest } = input;
-    if (!cur) return create(actor, slug, { title: cfg.label, ...rest, slug: SINGLE_SLUG }, o);
+    // expectedVersion 0 (what single() says before the first save) means "create it".
+    if (!cur) return create(actor, slug, { title: cfg.label, ...rest, slug: SINGLE_SLUG }, { ...o, expectedVersion: undefined });
+    if (o.expectedVersion === 0) throw conflict(cur, 0, actor, slug);
     return update(actor, slug, SINGLE_SLUG, rest, o);
   }
 
@@ -3139,6 +3173,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     assert(actor, col, "write");
     const mode = opts.slugs?.hangul ?? "romanize";
     let text = String(title ?? "").trim().slice(0, 200);
+    // "off": no suggestion for Korean titles (people type the address).
+    if (mode === "off" && /[\uac00-\ud7a3]/.test(text)) return "";
     if (/[\uac00-\ud7a3]/.test(text) && mode === "romanize") {
       const { romanize } = await import("es-hangul");
       text = text.replace(/[\uac00-\ud7a3]+/g, (w) => ` ${romanize(w)} `);
@@ -3147,6 +3183,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     let base = text
       .normalize("NFKD")
       .replace(/[\u0300-\u036f]/g, "")
+      .normalize("NFC")
       .toLowerCase()
       .replace(new RegExp(`[^a-z0-9${keep}]+`, "g"), "-")
       .replace(/^-+|-+$/g, "")
@@ -3201,7 +3238,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     referencedBy,
     related,
     expand: expandFields,
-    move,
+    move: shown(move),
     tree,
     ancestors,
     single,

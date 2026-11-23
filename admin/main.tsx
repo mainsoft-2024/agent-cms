@@ -17,6 +17,7 @@ import { CmsInvite, CmsLogin, CmsReset, CmsSetup } from "@/components/cms/cms-lo
 import { CmsMedia } from "@/components/cms/cms-media";
 import { en, ko } from "@/components/cms/cms-messages";
 import { CmsPeople } from "@/components/cms/cms-people";
+import { CmsRedirects } from "@/components/cms/cms-redirects";
 import { CmsRelease, CmsReleases } from "@/components/cms/cms-releases";
 import { CmsRoles } from "@/components/cms/cms-roles";
 import { CmsShell } from "@/components/cms/cms-shell";
@@ -95,6 +96,7 @@ function Home({ go }: { go: (to: string, replace?: boolean) => void }) {
 }
 
 function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boolean) => void }) {
+  const { me } = useCms();
   const a = S.adminPath;
   const [p0, p1, p2] = rest.map(decodeURIComponent);
   switch (p0) {
@@ -125,10 +127,18 @@ function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boole
       return <CmsTransfer />;
     case "people":
       return <CmsPeople />;
+    case "redirects":
+      return <CmsRedirects />;
     case "account":
       return <CmsAccount onLocale={() => window.location.reload()} />;
   }
   const c = p0;
+  const open = (col: string, s: string) => go(`${a}/${col}/${encodeURIComponent(s)}`);
+  // A single (one document): its address opens the editor, there is no list.
+  const single = !!me?.collections.find((x) => x.slug === c)?.single;
+  if (!p1 && !me) return null;
+  if (!p1 && single)
+    return <CmsDocEditor key={`${c}/_single`} collection={c} slug="_single" onOpenVersions={(col, s) => go(`${a}/${col}/${encodeURIComponent(s)}/versions`)} onOpenRelease={(id) => go(`${a}/releases/${id}`)} onOpenDocument={open} />;
   if (p1 === "new") return <CmsDocEditor key={`${c}/new`} collection={c} onBack={() => go(`${a}/${c}`)} onCreated={(col, s) => go(`${a}/${col}/${s}`, true)} />;
   if (p1 && p2 === "versions") return <CmsVersions collection={c} slug={p1} onBack={() => go(`${a}/${c}/${encodeURIComponent(p1)}`)} />;
   if (p1)
@@ -137,9 +147,10 @@ function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boole
         key={`${c}/${p1}`}
         collection={c}
         slug={p1}
-        onBack={() => go(`${a}/${c}`)}
+        onBack={single ? undefined : () => go(`${a}/${c}`)}
         onOpenVersions={(col, s) => go(`${a}/${col}/${encodeURIComponent(s)}/versions`)}
         onOpenRelease={(id) => go(`${a}/releases/${id}`)}
+        onOpenDocument={open}
         publicUrlFor={S.publicUrl ? (col, s) => `${S.publicUrl}/${col}/${s}` : undefined}
       />
     );
@@ -190,7 +201,7 @@ function App() {
       </CmsProvider>
     );
 
-  const active = rest[0] && !["dashboard", "media", "files", "releases", "trash", "keys", "audit", "webhooks", "automations", "roles", "transfer", "people", "account"].includes(rest[0]) ? rest[0] : undefined;
+  const active = rest[0] && !["dashboard", "media", "files", "releases", "trash", "keys", "audit", "webhooks", "automations", "roles", "transfer", "people", "redirects", "account"].includes(rest[0]) ? rest[0] : undefined;
   return (
     // A provider of its own: what the person may do is read again after signing in.
     <CmsProvider key="admin" baseUrl={S.basePath} messages={messages} slots={slots}>

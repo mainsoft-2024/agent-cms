@@ -10,7 +10,7 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { AppWindow, ArrowUpDown, Bot, Columns2, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Monitor, SlidersHorizontal } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, History, Eye, Layers, Link as LinkIcon, MessageSquare, Minimize2, MoreHorizontal, Monitor, SlidersHorizontal } from "lucide-react";
 import { isCmsRemoteError, type CollectionSchema, type CommentThread, type DocRelease } from "@mainsoft/agent-cms/client";
 import { mergeDocs, resolveDocMerge, splitLines } from "@mainsoft/agent-cms/diff";
 import { docState, type CmsDoc, type AutosaveState, type Presence } from "@mainsoft/agent-cms/types";
@@ -30,9 +30,10 @@ import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
 import { createUploader } from "./cms-upload";
 import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-tools";
 import { pasteAsMarkdown } from "./cms-paste";
+import { EditorToolbar, FindBar, markdownCommands } from "./cms-editor-toolbar";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, DIALOG } from "./cms-parts";
-import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type DocContent, type EditorSlotContext } from "./use-cms";
+import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type BlockEditorCommands, type DocContent, type EditorSlotContext } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
 type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
@@ -154,6 +155,47 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const [barQuiet, setBarQuiet] = React.useState(false);
   const focusButton = React.useRef<HTMLButtonElement | null>(null);
   const insertRef = React.useRef<((md: string) => void) | null>(null);
+  // The toolbar asks the block editor for its commands through this; `tbTick` redraws its buttons.
+  const blockCommandsRef = React.useRef<BlockEditorCommands | null>(null);
+  const [tbTick, setTbTick] = React.useState(0);
+  const tbFrame = React.useRef(0);
+  const bumpToolbar = React.useCallback(() => {
+    if (tbFrame.current) return;
+    tbFrame.current = requestAnimationFrame(() => {
+      tbFrame.current = 0;
+      setTbTick((x) => x + 1);
+    });
+  }, []);
+  React.useEffect(() => () => cancelAnimationFrame(tbFrame.current), []);
+  /** Stands for the block editor's commands while it loads (and stays the same object). */
+  const blockCommands = React.useMemo<BlockEditorCommands>(
+    () => ({
+      run: (c) => blockCommandsRef.current?.run(c) ?? false,
+      state: (c) => blockCommandsRef.current?.state(c) ?? { enabled: false, active: false },
+      find: (q, o) => blockCommandsRef.current?.find(q, o) ?? { count: 0, current: -1 },
+      findStep: (d) => blockCommandsRef.current?.findStep(d) ?? { count: 0, current: -1 },
+      replace: (x, all) => blockCommandsRef.current?.replace(x, all) ?? 0,
+      findClear: () => blockCommandsRef.current?.findClear(),
+      focus: () => blockCommandsRef.current?.focus(),
+    }),
+    []
+  );
+  const [finding, setFinding] = React.useState<{ n: number; replace: boolean; initial: string } | null>(null);
+  const [findMarks, setFindMarks] = React.useState<{ start: number; end: number }[]>([]);
+  const mdReadOnly = React.useRef(false);
+  // `live` and `setContent` are declared further down; they are only read when a button is pressed.
+  const mdCommands = React.useMemo(
+    () =>
+      markdownCommands({
+        box: () => bodyRef.current,
+        body: () => liveRef.current?.().content.body ?? "",
+        setBody: (body) => liveRef.current?.().setBody(body),
+        onMarks: setFindMarks,
+        readOnly: () => mdReadOnly.current,
+      }),
+    []
+  );
+  const liveRef = React.useRef<(() => { content: DocContent; setBody: (b: string) => void }) | null>(null);
   const pickWaiter = React.useRef<((md: string | null) => void) | null>(null);
   const mobile = useIsMobile();
   // With the slug: field rules (`fieldAccess`) may depend on the document.
@@ -1126,6 +1168,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     id: bodyId,
     describedBy: byField.body?.length ? `${bodyId}-err` : undefined,
     insertRef,
+    commandsRef: blockCommandsRef,
+    onStateChange: bumpToolbar,
+    snippetCollections: schema.snippetCollections,
     resolveFileUrl: (target: string) => {
       const m = /^asset:([a-z0-9]{12})(?:\/(.*))?$/.exec(target);
       return m ? client.fileUrl({ id: m[1], name: m[2] ? decodeURIComponent(m[2]) : "file" }) : target;
@@ -1189,76 +1234,52 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   };
   const bodyErr = byField.body;
   const bodyInvalid = bodyErr?.some((e) => e.severity === "error");
-  // Beside the preview the bar is half as wide: buttons keep their icon and name it in a tooltip.
-  const compact = !mobile && !blocksOn && sidePreview;
-  const label = (text: string, wide: string) => <span className={compact ? "sr-only" : wide}>{text}</span>;
+  // ── the toolbar: commands of the block editor, or of the text box ──
+  mdReadOnly.current = !canWrite;
+  liveRef.current = () => ({ content: live.current.content, setBody: (body) => setContent({ ...live.current.content, body }) });
+  const toolbarCommands = blocksOn ? blockCommands : mdCommands;
+  const openFind = (replace: boolean) => {
+    const el = bodyRef.current;
+    const picked = !blocksOn && el ? el.value.slice(el.selectionStart, el.selectionEnd) : typeof window !== "undefined" ? (window.getSelection()?.toString() ?? "") : "";
+    setFinding((f) => ({ n: (f?.n ?? 0) + (f ? 0 : 1), replace: replace || !!f?.replace, initial: picked && !picked.includes("\n") ? picked : (f?.initial ?? "") }));
+  };
+  /** Ctrl/Cmd+F finds and Ctrl+H (Cmd+Shift+H) replaces, inside the body. */
+  const onBodyKeys = (e: React.KeyboardEvent) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    if ((e.target as HTMLElement).closest("[data-cms-findbar]")) return;
+    const k = e.key.toLowerCase();
+    if (k === "f" && !e.shiftKey) {
+      e.preventDefault();
+      openFind(false);
+    } else if (k === "h" && (e.ctrlKey ? !e.metaKey : e.shiftKey)) {
+      e.preventDefault();
+      openFind(true);
+    }
+  };
   const bodyPane = schema.hideBody ? null : (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <section className="relative flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onBodyKeys}>
       {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={doc.slug} canWrite={canWrite} onApplied={() => void client.get(collection, doc.slug, { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
-      <div className="flex min-w-0 items-center gap-1.5 border-b px-3 py-2 text-xs text-muted-foreground">
-        <FileText aria-hidden className={cn("h-3.5 w-3.5 shrink-0", BlockEditor && "hidden")} />
-        {/* With the Blocks / Markdown switch, the switch says what the box is. */}
-        <Label htmlFor={bodyId} className={cn("text-xs font-medium text-muted-foreground", BlockEditor && "sr-only")}>
-          {blocksOn ? t("blk_body") : t("field_body")}
-        </Label>
-        <span className="flex-1" />
-        {BlockEditor ? (
-          <div role="group" aria-label={t("blk_view")} className="-my-1 flex rounded-md border p-0.5">
-            {(["blocks", "markdown"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                aria-pressed={view === v}
-                onClick={() => setView(v)}
-                className={cn("rounded px-2 py-0.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring", view === v ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
-              >
-                {t(v === "blocks" ? "blk_view_blocks" : "blk_view_markdown")}
-              </button>
-            ))}
-          </div>
-        ) : null}
-        {canWrite && sectionCount > 1 && !blocksOn ? (
-          <Button type="button" variant="ghost" size="sm" aria-pressed={outline} aria-label={t("sections_order")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", outline && "bg-muted")} onClick={() => setOutline((v) => !v)}>
-            <ArrowUpDown aria-hidden className="h-3.5 w-3.5" />
-            {label(t("sections_order"), "hidden sm:inline")}
-          </Button>
-        ) : null}
-        {me?.media && canWrite ? (
-          <Button type="button" variant="ghost" size="sm" title={t("media_insert_button")} className="-my-1 h-7 gap-1.5 px-2 text-xs text-foreground" onClick={() => setPicking(true)}>
-            <ImagePlus aria-hidden className="h-3.5 w-3.5" />
-            {label(t("media_insert_button"), "")}
-          </Button>
-        ) : null}
-        {!mobile && !blocksOn ? (
-          <Button type="button" variant="ghost" size="sm" aria-pressed={sidePreview} title={t("blk_preview_side")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", sidePreview && "bg-muted")} onClick={() => setSidePreview(!sidePreview)}>
-            <Columns2 aria-hidden className="h-3.5 w-3.5" />
-            {label(t("blk_preview_side"), "hidden lg:inline")}
-          </Button>
-        ) : null}
-        {!mobile ? (
-          <Button type="button" variant="ghost" size="sm" aria-pressed={previewWindow} title={t("blk_preview_window")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", previewWindow && "bg-muted")} onClick={() => setPreviewWindow((v) => !v)}>
-            <AppWindow aria-hidden className="h-3.5 w-3.5" />
-            {label(t("blk_preview_window"), "hidden md:inline")}
-          </Button>
-        ) : null}
-        <BodyCount body={content.body} />
-        {!mobile && !focus ? (
-          <Button
-            ref={focusButton}
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-pressed={false}
-            title={`${t("focus_enter")} (${modLabel()}+Shift+F)`}
-            aria-keyshortcuts="Control+Shift+F Meta+Shift+F"
-            className="-my-1 h-7 gap-1.5 px-2 text-xs text-foreground"
-            onClick={() => setFocus(true)}
-          >
-            <Maximize2 aria-hidden className="h-3.5 w-3.5" />
-            {label(t("focus_enter"), "sr-only xl:not-sr-only")}
-          </Button>
-        ) : null}
-      </div>
+      <EditorToolbar
+        commands={toolbarCommands}
+        tick={tbTick}
+        view={BlockEditor ? view : undefined}
+        onView={BlockEditor ? setView : undefined}
+        canWrite={canWrite}
+        body={content.body}
+        label={
+          <Label htmlFor={bodyId} className={cn("shrink-0 text-xs font-medium text-muted-foreground", BlockEditor && "sr-only")}>
+            {blocksOn ? t("blk_body") : t("field_body")}
+          </Label>
+        }
+        outline={canWrite && sectionCount > 1 && !blocksOn ? { on: outline, toggle: () => setOutline((v) => !v) } : null}
+        onMedia={me?.media && canWrite ? () => setPicking(true) : null}
+        sidePreview={!mobile && !blocksOn ? { on: sidePreview, toggle: () => setSidePreview(!sidePreview) } : null}
+        previewWindow={!mobile ? { on: previewWindow, toggle: () => setPreviewWindow((v) => !v) } : null}
+        fullscreen={!mobile && !focus ? { onEnter: () => setFocus(true), buttonRef: focusButton } : null}
+        onFind={(replace) => openFind(replace)}
+        findOpen={!!finding}
+      />
+      {finding ? <FindBar key={finding.n} commands={toolbarCommands} replace={finding.replace} canWrite={canWrite} initial={finding.initial} onClose={() => setFinding(null)} /> : null}
       <ConfirmDialog
         open={!!checks}
         onOpenChange={(o) => !o && setChecks(null)}
@@ -1313,7 +1334,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         </div>
       ) : null}
       <div className={cn("relative flex min-h-[360px] flex-1 flex-col", ((outline && sectionCount > 1) || blocksOn) && "hidden")}>
-        {marks.length || cursors.length ? <BodyBackdrop box={bodyRef} text={content.body} marks={marks} cursors={cursors} /> : null}
+        {marks.length || cursors.length || (finding && findMarks.length) ? <BodyBackdrop box={bodyRef} text={content.body} marks={finding ? [...marks, ...findMarks] : marks} cursors={cursors} /> : null}
         <Textarea
           ref={bodyRef}
           id={bodyId}
@@ -1497,9 +1518,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           to={publicUrlFor ? publicUrlFor(collection, content.slug) : `${slugPrefix ?? ""}${content.slug}`}
           onClose={() => setSlugAsk(null)}
           onConfirm={() => {
-            const pub = slugAsk.publish;
             setSlugAsk(null);
-            void save(pub, true);
+            // The address changes together with publishing (the server refuses it in a draft).
+            void save(true, true);
           }}
         />
       ) : null}
@@ -1899,36 +1920,8 @@ function SuggestionCards({ collection, slug, canWrite, onApplied }: { collection
 
 // ── body length ───────────────────────────────────────────────────────────────
 
-/** Words, characters and reading time of the body (markup left out). */
-export function bodyStats(body: string): { words: number; chars: number; minutes: number } {
-  const text = body
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/:::html[\s\S]*?\n:::/g, " ")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[\[link:[^|\]]+\|([^\]]+)\]\]/g, "$1")
-    .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+[.)]|\|)\s?/gm, "")
-    .replace(/[*_~`|]/g, "");
-  const words = text.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)?.length ?? 0;
-  const chars = text.replace(/\s/g, "").length;
-  // Hangul and other scripts without spaces read by characters, the rest by words.
-  const cjk = text.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g)?.length ?? 0;
-  const minutes = Math.max(1, Math.round(cjk > chars / 2 ? chars / 500 : words / 230));
-  return { words, chars, minutes };
-}
-
-function BodyCount({ body }: { body: string }) {
-  const { t, locale } = useCms();
-  const s = React.useMemo(() => bodyStats(body), [body]);
-  const n = (x: number) => x.toLocaleString(locale);
-  // An empty body has no reading time; the count never wraps word by word in a narrow bar.
-  return (
-    <span title={`${t("blk_words", { n: n(s.words) })} · ${t("blk_chars", { n: n(s.chars) })}`} className="shrink-0 whitespace-nowrap tabular-nums">
-      {t("blk_words", { n: n(s.words) })}
-      {s.words ? <span className="hidden sm:inline"> · {t("blk_read_min", { n: n(s.minutes) })}</span> : null}
-    </span>
-  );
-}
+/** Words, characters and reading time of the body (markup left out). Lives with the toolbar that shows it. */
+export { bodyStats } from "./cms-editor-toolbar";
 
 // ── live preview in a window of its own ───────────────────────────────────────
 

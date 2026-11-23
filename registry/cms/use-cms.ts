@@ -73,8 +73,55 @@ export interface BlockEditorProps {
   onPickMedia?: () => Promise<string | null>;
   /** The screen puts markdown at the cursor through this. */
   insertRef?: React.MutableRefObject<((markdown: string) => void) | null>;
+  /** The screen's toolbar runs editing commands through this (0.21.0). */
+  commandsRef?: React.MutableRefObject<BlockEditorCommands | null>;
+  /** Called when what the toolbar shows may have changed (selection, marks, history). */
+  onStateChange?: () => void;
+  /** Collections whose documents can be put in as snippets (`[[snippet:key]]`). */
+  snippetCollections?: string[];
   id?: string;
   describedBy?: string;
+}
+
+/** Commands of the body editor's toolbar, in either mode. `kind` names a block or a mark. */
+export type EditorCommand =
+  | "undo"
+  | "redo"
+  | "p"
+  | "h2"
+  | "h3"
+  | "bold"
+  | "italic"
+  | "strike"
+  | "code"
+  | "link"
+  | "bullet"
+  | "number"
+  | "todo"
+  | "quote"
+  | "callout"
+  | "table"
+  | "codeblock"
+  | "hr"
+  | "steps"
+  | "card"
+  | "video"
+  | "snippet";
+
+/** What the block editor offers the toolbar (find and replace included). */
+export interface BlockEditorCommands {
+  run: (cmd: EditorCommand) => boolean;
+  /** Is the command possible here, and is it on (a mark, the current block type)? */
+  state: (cmd: EditorCommand) => { enabled: boolean; active: boolean };
+  /** Find: highlights matches, returns how many and which one is current (0-based, -1 none). */
+  find: (query: string, o: { caseSensitive: boolean; wholeWord: boolean }) => { count: number; current: number };
+  /** Move to the next or previous match. */
+  findStep: (dir: 1 | -1) => { count: number; current: number };
+  /** Replace the current match (and go to the next), or all. Returns how many were replaced. */
+  replace: (text: string, all: boolean) => number;
+  /** Drop the find highlights. */
+  findClear: () => void;
+  focus: () => void;
 }
 
 export interface CmsContextValue {

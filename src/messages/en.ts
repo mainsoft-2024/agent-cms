@@ -157,6 +157,7 @@ export const en: Messages = {
   too_many_files: "Too many files at once. The limit is {max}",
   precondition_required: "Send If-Match (or expectedVersion) to change this document",
   // 0.21.0 content model
+  slug_needs_publish: "A published document's address changes only when you publish",
   relation_missing: "The linked document {id} does not exist",
   relation_wrong_collection: "The linked document {id} is not in {collections}",
   relation_unpublished: "The linked document “{title}” is not published",

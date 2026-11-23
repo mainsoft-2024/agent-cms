@@ -235,8 +235,18 @@ export function chooseTemplate(collection: string, t: TemplateView | null) {
 }
 export function takeTemplate(collection: string): TemplateView | null {
   try {
-    const raw = window.sessionStorage.getItem(TEMPLATE_KEY(collection));
-    window.sessionStorage.removeItem(TEMPLATE_KEY(collection));
+    const key = TEMPLATE_KEY(collection);
+    const raw = window.sessionStorage.getItem(key);
+    // Forgotten a moment later, not now: React's StrictMode runs the editor's effect twice in a row,
+    // and the second run (after the first one's content was reset) must still find the template.
+    if (raw)
+      setTimeout(() => {
+        try {
+          if (window.sessionStorage.getItem(key) === raw) window.sessionStorage.removeItem(key);
+        } catch {
+          /* private mode */
+        }
+      }, 0);
     return raw ? (JSON.parse(raw) as TemplateView) : null;
   } catch {
     return null;
