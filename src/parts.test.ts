@@ -307,7 +307,8 @@ test("korean screen text is written in 음슴체: no value ends a sentence with 
     const body = marker ? src.slice(src.indexOf(marker)) : src;
     for (const m of body.matchAll(/^\s+([a-zA-Z_]\w*):\s*"((?:[^"\\]|\\.)*)"/gm)) {
       // 필요 is a noun, not the polite ending.
-      if (/(?<!필)요[.!?]?(\s|$)|까요\?/.test(m[2])) bad.push(`${f} ${m[1]}: ${m[2]}`);
+      // Also before ":" or "(" ("없는 파일이에요: {id}", "꺼져 있어요(… 필요)").
+      if (/(?<!필)요[.!?]?(\s|$|:|\()|까요\?/.test(m[2])) bad.push(`${f} ${m[1]}: ${m[2]}`);
     }
   }
   assert.deepEqual(bad, []);

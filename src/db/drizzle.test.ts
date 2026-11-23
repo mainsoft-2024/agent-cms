@@ -640,6 +640,13 @@ test("db: a driver without transactions (neon-http) still saves, once, with a wa
     await cms.releases.add(admin, rel.id, [{ collection: "guide", slug: "a" }]);
     await assert.rejects(cms.releases.publish(admin, rel.id), (e: unknown) => isCmsError(e) && e.code === "transactions_required");
     assert.equal((await cms.get(admin, "guide", "a", { draft: true })).publishedVersion, 1, "nothing went out");
+    // Tree moves need the transaction's lock: refused rather than moved without it (0.21.0 review).
+    const pages = defineCollection({ slug: "pages", label: "Pages", visibility: "public", tree: true });
+    const treeCms = createCms({ repo: new DrizzleRepo(noTx, { transactions: false }), collections: [pages] });
+    const p = await treeCms.create(admin, "pages", { slug: "p", title: "P" });
+    await treeCms.create(admin, "pages", { slug: "q", title: "Q" });
+    await assert.rejects(treeCms.core.move(admin, "pages", "q", { parentId: p.id }), (e: unknown) => isCmsError(e) && e.code === "transactions_required");
+    assert.equal((await treeCms.get(admin, "pages", "q", { draft: true })).parentId ?? null, null, "not moved");
   } finally {
     await close();
   }

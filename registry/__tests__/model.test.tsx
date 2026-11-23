@@ -64,7 +64,11 @@ test("templates: New asks for a template when the collection has some; the edito
   await user.click(screen.getByRole("button", { name: "New document" }));
   const dlg = await screen.findByRole("dialog", { name: "New document" });
   assert.ok(within(dlg).getByRole("button", { name: /Blank document/ }));
+  // A card only selects; Create (or Enter in the title box) starts the document.
   await user.click(within(dlg).getByRole("button", { name: /How-to/ }));
+  assert.equal(opened, "");
+  assert.equal(within(dlg).getByRole("button", { name: /How-to/ }).getAttribute("aria-pressed"), "true");
+  await user.click(within(dlg).getByRole("button", { name: "Create" }));
   assert.equal(opened, "docs");
   cleanup();
 
@@ -478,4 +482,124 @@ test("seo panel: a library share image smaller than 1200×630 shows its size wit
   renderWith(s, <Panel image={`asset:${big.id}/big.png`} />);
   await screen.findByText("1600×900");
   assert.ok(!screen.queryByText(/smaller than 1200×630/));
+});
+
+test("templates: a title typed in the New dialog wins over the template's; double click creates at once", async () => {
+  const s = makeServer({ model: true });
+  await s.cms.create(admin, "docs", { slug: "a", title: "Overview", body: "x" });
+  let opened = 0;
+  renderWith(s, <CmsDocList collection="docs" onOpenDocument={() => {}} onNewDocument={() => opened++} />);
+  await screen.findByText("Overview");
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "New document" }));
+  let dlg = await screen.findByRole("dialog", { name: "New document" });
+  await user.click(within(dlg).getByRole("button", { name: /How-to/ }));
+  await user.type(within(dlg).getByLabelText("Title"), "How to export data{Enter}");
+  assert.equal(opened, 1);
+  await user.click(screen.getByRole("button", { name: "New document" }));
+  dlg = await screen.findByRole("dialog", { name: "New document" });
+  await user.dblClick(within(dlg).getByRole("button", { name: /Blank document/ }));
+  assert.equal(opened, 2);
+  cleanup();
+
+  renderWith(s, <CmsDocEditor collection="docs" />);
+  // The last pick was blank without a title: the editor starts empty, nothing says "started from".
+  await screen.findByLabelText(/^Title/);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal((screen.getByLabelText(/^Title/) as HTMLInputElement).value, "");
+  assert.ok(!screen.queryByText(/Started from/));
+});
+
+test("relation picker: after picking one of several, Enter picks the next row still listed", async () => {
+  const s = makeServer({ model: true });
+  await s.cms.create(admin, "team", { slug: "paul", title: "Paul Park", body: "x" }, { publish: true });
+  await s.cms.create(admin, "team", { slug: "lee", title: "Lee Minho", body: "x" }, { publish: true });
+  await s.cms.create(admin, "team", { slug: "kim", title: "Kim Sora", body: "x" }, { publish: true });
+  function Many() {
+    const [taken, setTaken] = React.useState<string[]>([]);
+    return <RelationPicker title="People" collections={["team"]} exclude={taken} onPick={(d) => setTaken((t) => [...t, d.id])} onClose={() => {}} />;
+  }
+  renderWith(s, <Many />);
+  const box = await screen.findByRole("combobox", { name: "Search by title or address" });
+  await waitFor(() => assert.equal(screen.getAllByRole("option").length, 3));
+  const user = userEvent.setup();
+  box.focus();
+  await user.keyboard("{ArrowDown}{ArrowDown}{Enter}");
+  await waitFor(() => assert.equal(screen.getAllByRole("option").length, 2));
+  // The highlight was on the last row, which left: it moves to the row now last, and Enter picks it.
+  assert.equal(screen.getAllByRole("option").filter((o) => o.getAttribute("aria-selected") === "true").length, 1);
+  await user.keyboard("{Enter}");
+  await waitFor(() => assert.equal(screen.getAllByRole("option").length, 1));
+});
+
+test("relation: the document being edited is not offered as its own relation", async () => {
+  const s = makeServer({ model: true });
+  await s.cms.create(admin, "docs", { slug: "intro", title: "Intro", body: "x" });
+  await s.cms.create(admin, "docs", { slug: "other", title: "Other", body: "x" });
+  const { RelationField, RelatedLabels } = await import("../cms/cms-fields-more");
+  const intro = await s.cms.get(admin, "docs", "intro", { draft: true });
+  renderWith(
+    s,
+    <RelatedLabels.Provider value={{ labels: {}, remember: () => {}, self: intro.id }}>
+      <RelationField spec={{ key: "related", label: "Related", collections: ["docs"], many: true, max: 3 }} id="r" value={[]} onChange={() => {}} />
+    </RelatedLabels.Provider>
+  );
+  await userEvent.setup().click(screen.getByRole("button", { name: "Add a document" }));
+  await screen.findByText("Other");
+  assert.ok(!screen.queryByRole("option", { name: /Intro/ }));
+});
+
+test("dialogs: closing a dialog opened from code puts focus back on the button that opened it", async () => {
+  const s = makeServer({ model: true });
+  await s.cms.create(admin, "team", { slug: "paul", title: "Paul Park", body: "x" }, { publish: true });
+  await s.cms.create(admin, "docs", { slug: "intro", title: "Intro", body: "x" });
+  renderWith(s, <CmsDocEditor collection="docs" slug="intro" />);
+  const user = userEvent.setup();
+  const open = await screen.findByRole("button", { name: "Choose a document" });
+  await user.click(open);
+  await screen.findByRole("dialog", { name: "Choose: Author" });
+  await user.keyboard("{Escape}");
+  await waitFor(() => assert.ok(!screen.queryByRole("dialog", { name: "Choose: Author" })));
+  await waitFor(() => assert.equal(document.activeElement, screen.getByRole("button", { name: "Choose a document" })));
+});
+
+test("relation picker: with several collections typing goes to the search box, arrows move between collections", async () => {
+  const s = makeServer({ model: true });
+  await s.cms.create(admin, "team", { slug: "paul", title: "Paul Park", body: "x" }, { publish: true });
+  await s.cms.create(admin, "docs", { slug: "intro", title: "Intro", body: "x" }, { publish: true });
+  renderWith(s, <RelationPicker title="Target" collections={["docs", "team"]} onPick={() => {}} onClose={() => {}} />);
+  const box = await screen.findByRole("combobox", { name: "Search by title or address" });
+  await waitFor(() => assert.equal(document.activeElement, box));
+  const user = userEvent.setup();
+  const docsTab = screen.getByRole("tab", { name: "Docs" });
+  await user.click(docsTab);
+  await user.keyboard("{ArrowRight}");
+  const teamTab = screen.getByRole("tab", { name: "Team" });
+  assert.equal(teamTab.getAttribute("aria-selected"), "true");
+  assert.equal(document.activeElement, teamTab);
+  assert.equal(docsTab.tabIndex, -1);
+  assert.ok(await screen.findByRole("option", { name: /Paul Park/ }));
+});
+
+test("SEO: the share image is picked from the media library (name, Replace, Remove); an address can still be typed", async () => {
+  const s = makeServer({ model: true });
+  let seen: unknown = null;
+  function Panel() {
+    const [v, setV] = React.useState<{ image?: string | null } | null>(null);
+    seen = v;
+    return <SeoPanel value={v} onChange={setV} fallback={{ title: "T", description: "D", image: null }} limits={{ titleMax: 60, descriptionMax: 160 }} url={null} onPickImage={(done) => done("asset:abcdefghij12/hero%20shot.png")} />;
+  }
+  renderWith(s, <Panel />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Share image" }));
+  assert.deepEqual(seen, { image: "asset:abcdefghij12/hero%20shot.png" });
+  assert.ok(screen.getByText("hero shot.png"));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  assert.equal(seen, null);
+  await user.click(screen.getByRole("button", { name: "or type an address" }));
+  const box = screen.getByLabelText("Share image");
+  assert.equal(box.tagName, "INPUT");
+  assert.equal(document.activeElement, box);
+  await user.type(box, "https://example.com/a.png");
+  assert.deepEqual(seen, { image: "https://example.com/a.png" });
 });

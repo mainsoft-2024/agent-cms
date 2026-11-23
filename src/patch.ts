@@ -52,8 +52,9 @@ export function sectionRanges(body: string): SectionRange[] {
       cur = { anchor: n && !parts.pinned ? `${base}-${n}` : base, heading: text, start: i, end: i + 1, hasHeading: true };
       continue;
     }
-    // ### and #### headings take an anchor slot too, so ids match parseMarkdown().
-    const h3 = !inFence ? /^#{3,4}\s+(.+?)\s*#*\s*$/.exec(line) : null;
+    // ### headings take an anchor slot too, so ids match parseMarkdown(); #### ones take theirs after
+    // every ## and ###, so they never change a section's anchor.
+    const h3 = !inFence ? /^#{3}\s+(.+?)\s*#*\s*$/.exec(line) : null;
     if (h3) {
       const p3 = headingParts(h3[1]);
       const base = p3.pinned ?? anchorOf(inlineText(parseInline(p3.text)));

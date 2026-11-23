@@ -1344,6 +1344,16 @@ export function createAssets(ctx: AssetsContext) {
   return {
     enabled: !!media && names.length > 0,
     stores: () => names.map((n) => ({ name: n, ...media!.stores[n], ...rulesOf(media!.stores[n]) })),
+    /** Where browsers upload to (origins of every store), or null when a store does not say. For a Content-Security-Policy. */
+    browserOrigins: (): string[] | null => {
+      const out = new Set<string>();
+      for (const n of names) {
+        const o = media!.stores[n].adapter.browserOrigins;
+        if (!o) return null;
+        for (const x of o) out.add(x);
+      }
+      return [...out];
+    },
     describe,
     can: canAsset,
     requestUpload,

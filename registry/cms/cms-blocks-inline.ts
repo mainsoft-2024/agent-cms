@@ -18,6 +18,8 @@ export interface Span {
   code?: true;
   /** A link target: "https://…", "/path", "asset:ID/name", or "cms-link:key" for an app link. */
   href?: string;
+  /** The text is a snippet token (`[[snippet:key]]`) the server fills in. Without it the same text is just text (written escaped). */
+  ref?: true;
 }
 
 export const APP_LINK = "cms-link:";
@@ -53,6 +55,10 @@ function fromInline(items: Inline[], marks: Omit<Span, "text"> = {}): Span[] {
       case "applink":
         out.push({ ...marks, href: APP_LINK + i.key, text: i.v });
         break;
+      case "snippet":
+        // A token the server fills in (the parser leaves escaped ones and code as text).
+        out.push({ ...marks, text: i.v, ref: true });
+        break;
       case "image":
         // Blocks with inline images are kept as source blocks; this is only a fallback.
         out.push({ ...marks, text: i.alt });
@@ -68,7 +74,7 @@ export function mdToSpans(md: string): Span[] {
 
 // ── spans → markdown ──────────────────────────────────────────────────────────
 
-const same = (a: Span, b: Span) => !!a.b === !!b.b && !!a.i === !!b.i && !!a.s === !!b.s && !!a.code === !!b.code && a.href === b.href;
+const same = (a: Span, b: Span) => !!a.b === !!b.b && !!a.i === !!b.i && !!a.s === !!b.s && !!a.code === !!b.code && a.href === b.href && !!a.ref === !!b.ref;
 
 /** Adjacent spans with the same marks become one; empty spans go. */
 export function normalize(spans: Span[]): Span[] {
@@ -85,6 +91,7 @@ export function normalize(spans: Span[]): Span[] {
     const clean: Span = { text: s.text };
     for (const m of MARKS) if (s[m]) clean[m] = true;
     if (s.href) clean.href = s.href;
+    if (s.ref && !s.code && !s.href) clean.ref = true;
     const last = out[out.length - 1];
     if (last && same(last, clean) && clean.text !== "\n" && last.text !== "\n") last.text += clean.text;
     else out.push(clean);
@@ -93,13 +100,8 @@ export function normalize(spans: Span[]): Span[] {
 }
 
 const ESCAPE = /[\\`*_~[\]]/g;
-/** A snippet token (`[[snippet:key]]`) stays as written: the server puts the snippet there. */
-const SNIPPET_TOKEN = /(\[\[snippet:[a-z0-9][a-z0-9._-]*\]\])/i;
-export const escapeMd = (s: string) =>
-  s
-    .split(SNIPPET_TOKEN)
-    .map((part, k) => (k % 2 ? part : part.replace(ESCAPE, (c) => `\\${c}`)))
-    .join("");
+/** Plain text as inline markdown. A snippet token in plain text is escaped too: only `ref` spans are written as tokens. */
+export const escapeMd = (s: string) => s.replace(ESCAPE, (c) => `\\${c}`);
 
 const MD_MARK: Record<"b" | "i" | "s", string> = { b: "**", i: "*", s: "~~" };
 type Piece = { md: string; lead: string; trail: string; marks: ("b" | "i" | "s")[]; br?: true };
@@ -131,7 +133,9 @@ function pieces(spans: Span[]): Piece[] {
     const rest = s.text.slice(lead.length);
     const trail = /\s*$/.exec(rest)![0];
     const core = rest.slice(0, rest.length - trail.length);
-    out.push({ md: escapeMd(core), lead, trail, marks: core ? marks : [] });
+    // A `ref` span writes its tokens as they are (the server fills them in); anything else in it is text.
+    const md = s.ref ? core.split(/(\[\[snippet:[a-z0-9][a-z0-9._-]*\]\])/i).map((part, j) => (j % 2 ? part : escapeMd(part))).join("") : escapeMd(core);
+    out.push({ md, lead, trail, marks: core ? marks : [] });
   }
   return out;
 }

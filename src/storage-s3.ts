@@ -90,6 +90,7 @@ export function s3Storage(o: S3StorageOptions): StorageAdapter & { readonly opti
 
   return {
     options: o,
+    browserOrigins: [new URL(root).origin],
     async presignPut(key, p): Promise<SignedRequest> {
       const headers = putHeaders(p);
       return { url: await presign("PUT", urlOf(key), p.expires, headers), headers };

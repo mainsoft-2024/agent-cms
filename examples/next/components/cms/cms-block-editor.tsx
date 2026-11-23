@@ -219,6 +219,17 @@ const TURN_INTO: { type: TurnType; label: Key; icon: Icon; digit: string }[] = [
 ];
 const DIGIT_TYPE: Record<string, TurnType> = Object.fromEntries(TURN_INTO.filter((x) => x.digit).map((x) => [x.digit, x.type]));
 
+/**
+ * The / menu's query in the text before the caret: `[whole match, space or "", query]`, or null when no menu.
+ * Labels have spaces ("링크 카드", "할 일 목록"), so the query may too, one at a time between words, as long as
+ * something still matches: a slash that was only a slash closes the menu at the first space with no match.
+ */
+export function slashQuery(before: string, t: T): RegExpExecArray | null {
+  const found = /(^|\s)\/([^\s/](?:[^\s/]| (?! ))*|)$/.exec(before);
+  if (!found || found[2].length > 24) return null;
+  return !found[2].includes(" ") || matchItems(ITEMS, found[2], t).length ? found : null;
+}
+
 function matchItems<I extends { label: Key; key: string; words: string }>(items: I[], q: string, t: T): I[] {
   const query = q.trim().toLowerCase();
   if (!query) return items;
@@ -359,7 +370,7 @@ function marker(kind: "number" | "bullet" | "step", label: string): HTMLElement 
   el.className = "cms-marker absolute left-0 top-0 flex h-[34px] w-6 select-none items-center justify-center text-[15px] text-foreground/80";
   if (kind === "step") {
     const badge = document.createElement("span");
-    badge.className = "flex size-[22px] items-center justify-center rounded-full bg-sky-500 text-[12px] font-semibold text-white tabular-nums";
+    badge.className = "flex size-[22px] items-center justify-center rounded-full bg-foreground text-[12px] font-semibold text-background tabular-nums";
     badge.textContent = label;
     el.appendChild(badge);
   } else if (kind === "bullet") {
@@ -820,23 +831,52 @@ export function pickedMarkdown(md: string): string {
 /** The address part of a picked file's markdown (`![alt](asset:ID/name)` → `asset:ID/name`). */
 const targetOf = (md: string | null) => (md ? (/\]\((\S+?)(?:\s+"[^"]*")?\)/.exec(md)?.[1] ?? /^:::video\n(\S+)\n/.exec(md)?.[1] ?? null) : null);
 
-/** Opens its form when asked (just put in) or empty; Esc or Done closes it. */
-function useForm(id: string, empty: boolean) {
+/**
+ * Opens its form when asked (just put in) or empty; Esc or Done closes it. Closing puts the caret back in the
+ * text (the form's field leaves the page, so focus would fall to the page) at the start of the block after it,
+ * so typing goes on below and never replaces the block.
+ */
+function useForm(id: string, empty: boolean, view?: Pick<NodeViewProps, "editor" | "getPos">) {
   const { formFor, setFormFor, editable } = useEd();
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpenState] = React.useState(false);
   React.useEffect(() => {
     if (formFor === id) {
-      setOpen(true);
+      setOpenState(true);
       setFormFor(null);
     }
   }, [formFor, id, setFormFor]);
+  const setOpen = React.useCallback(
+    (v: boolean) => {
+      setOpenState(v);
+      if (v || !view) return;
+      window.requestAnimationFrame(() => {
+        const pos = view.getPos();
+        if (typeof pos !== "number" || view.editor.isDestroyed) return;
+        const ed = view.editor;
+        // Only when focus fell to the page: something else may have taken it meanwhile (the next block's form).
+        const at = document.activeElement;
+        if (at && at !== document.body && at.isConnected) return;
+        ed.commands.focus(undefined, { scrollIntoView: false });
+        const { state } = ed;
+        const node = state.doc.nodeAt(pos);
+        if (!node) return;
+        const after = pos + node.nodeSize;
+        const tr = state.tr;
+        // The last block: an empty line under it to type on (as Enter on a selected block makes).
+        if (after >= tr.doc.content.size) tr.insert(after, state.schema.nodes.paragraph.create());
+        ed.view.dispatch(tr.setSelection(Selection.near(tr.doc.resolve(after + (tr.doc.nodeAt(after)?.isTextblock ? 1 : 0)), 1)).scrollIntoView());
+      });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [view?.editor, view?.getPos]
+  );
   return { open: editable && (open || empty), setOpen };
 }
 
-function CardView({ node, updateAttributes, deleteNode, selected }: NodeViewProps) {
+function CardView({ node, updateAttributes, deleteNode, selected, editor, getPos }: NodeViewProps) {
   const { t, editable, resolveFileUrl, onPickMedia } = useEd();
   const a = node.attrs as { bid: string; href: string; label: string; description: string; image: string; alt: string };
-  const { open, setOpen } = useForm(a.bid, !a.href && !a.label);
+  const { open, setOpen } = useForm(a.bid, !a.href && !a.label, { editor, getPos });
   const first = React.useRef<HTMLInputElement>(null);
   React.useEffect(() => {
     if (open) first.current?.focus();
@@ -926,12 +966,12 @@ function CardView({ node, updateAttributes, deleteNode, selected }: NodeViewProp
   );
 }
 
-function VideoView({ node, updateAttributes, deleteNode, selected }: NodeViewProps) {
+function VideoView({ node, updateAttributes, deleteNode, selected, editor, getPos }: NodeViewProps) {
   const { t, editable, resolveFileUrl, onPickMedia, videoHosts, uploads, retryUpload } = useEd();
   const a = node.attrs as { bid: string; src: string; caption: string };
   // A video file being uploaded shows its progress (or the failure) instead of the empty form.
   const upload = a.src ? undefined : uploads.get(a.bid);
-  const form = useForm(a.bid, !a.src && !upload);
+  const form = useForm(a.bid, !a.src && !upload, { editor, getPos });
   const open = form.open && !upload;
   const setOpen = form.setOpen;
   const [draft, setDraft] = React.useState(a.src);
@@ -1181,10 +1221,10 @@ function SnippetPicker({ onPick, onClose }: { onPick: (key: string) => void; onC
   );
 }
 
-function SnippetView({ node, updateAttributes, deleteNode, selected }: NodeViewProps) {
+function SnippetView({ node, updateAttributes, deleteNode, selected, editor, getPos }: NodeViewProps) {
   const { t, editable } = useEd();
   const a = node.attrs as { bid: string; key: string };
-  const { open, setOpen } = useForm(a.bid, !a.key);
+  const { open, setOpen } = useForm(a.bid, !a.key, { editor, getPos });
   return (
     <NodeViewWrapper data-block-id={a.bid} data-block-type="snippet" className="cms-b group/snip my-3">
       <div contentEditable={false}>
@@ -1195,10 +1235,10 @@ function SnippetView({ node, updateAttributes, deleteNode, selected }: NodeViewP
             {a.key ? <span className="font-mono">· {a.key}</span> : null}
           </span>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span className="grow">{a.key ? t("blk_snippet_shown") : t("blk_snippet_pick")}</span>
+            <span className="min-w-0 grow">{a.key ? t("blk_snippet_shown") : t("blk_snippet_pick")}</span>
             {editable ? (
               <>
-                <button type="button" className="rounded-md border bg-background px-2 py-0.5 text-xs font-medium text-foreground hover:bg-muted" onClick={() => setOpen(!open)} aria-expanded={open}>
+                <button type="button" className="shrink-0 whitespace-nowrap rounded-md border bg-background px-2 py-0.5 text-xs font-medium text-foreground hover:bg-muted" onClick={() => setOpen(!open)} aria-expanded={open}>
                   {a.key ? t("blk_snippet_change") : t("blk_snippet_choose")}
                 </button>
                 <button type="button" aria-label={t("blk_delete")} className="rounded-md p-1 hover:bg-destructive/10 hover:text-destructive" onClick={() => deleteNode()}>
@@ -1592,8 +1632,15 @@ function buildExtensions(ctl: React.MutableRefObject<Ctl>) {
         if (node.type.name === "heading") return t(`blk_t_h${headingLevel(node.attrs.level)}`);
         if (editor.state.doc.childCount === 1 && editor.state.doc.firstChild?.type.name === "paragraph" && !editor.state.doc.textContent) return t("blk_placeholder");
         if (node.type.name === "line") {
-          const parent = editor.state.selection.$from.node(editor.state.selection.$from.depth - 1);
+          const $from = editor.state.selection.$from;
+          const parent = $from.node($from.depth - 1);
           if (parent?.type.name === "toggle") return t("blk_t_toggle");
+          // The line of a list item says what the item is (a step, a numbered line, a to-do), not always "bulleted".
+          if (parent?.type.name === "listItem") {
+            if ($from.depth >= 2 && $from.node($from.depth - 2)?.type.name === "steps") return t("blk_step_placeholder");
+            if (parent.attrs.kind === "number") return t("blk_t_number");
+            if (parent.attrs.kind === "todo") return t("blk_t_todo");
+          }
           return t("blk_t_bullet");
         }
         if (node.type.name === "quote" || node.type.name === "callout") return t("blk_empty_hint");
@@ -1684,6 +1731,10 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
         "aria-label": t("blk_body"),
         ...(describedBy ? { "aria-describedby": describedBy } : {}),
       },
+      // The page keeps a header and the toolbar on top and a status bar at the bottom: the line being typed
+      // must stay clear of them, not end up under the status bar.
+      scrollThreshold: { top: 120, bottom: 72, left: 8, right: 8 },
+      scrollMargin: { top: 120, bottom: 72, left: 8, right: 8 },
       clipboardTextSerializer: (slice) => sliceToMarkdown(slice),
       clipboardTextParser: (txt, $ctx) => markdownSlice(txt, $ctx.doc.type.schema),
     },
@@ -2198,7 +2249,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
       return;
     }
     const before = sel.$from.parent.textBetween(0, sel.$from.parentOffset, "\n", "\ufffc");
-    const m = /(^|\s)\/([^\s/]{0,24})$/.exec(before);
+    const m = slashQuery(before, t);
     if (!m) {
       if (menuRef.current) setMenu(null);
       return;
@@ -2211,7 +2262,7 @@ export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, 
     const inline = (parent.type.name === "paragraph" || parent.type.name === "line" || parent.type.name === "heading" || parent.type.name === "quote" || parent.type.name === "callout") && !!(before.slice(0, before.length - m[0].length + m[1].length) + after).trim();
     // A new search starts at the first match.
     setMenu((old) => ({ query: m[2], from, x: r.left, y: r.bottom, index: old && old.from === from && old.query === m[2] ? old.index : 0, opened: old?.from === from ? old.opened : undefined, inline }));
-  }, [editor, editable]);
+  }, [editor, editable, t]);
 
   /** Where the table toolbar sits, and which row and column the caret is in. */
   const updateTableBar = React.useCallback(() => {
@@ -4106,8 +4157,12 @@ interface MenuAction {
   icon: Icon;
   run: () => void;
   keys?: string;
+  /** A few words on the right saying what it does (instead of keys). */
+  hint?: string;
+  /** The longer explanation, on hover. */
+  tip?: string;
   danger?: boolean;
-  group: "turn" | "tone" | "act" | "danger";
+  group: "anchor" | "turn" | "tone" | "act" | "danger";
   words?: string;
 }
 
@@ -4157,18 +4212,19 @@ function BlockMenu({
   const current = blocks.length === 1 ? blocks[0].type : null;
   const callouts = blocks.length > 0 && blocks.every((b) => b.type === "callout");
   const actions: MenuAction[] = [
+    // A heading's anchor comes first: it is what a heading's menu is opened for most (copy the link to it).
+    ...(anchor && onAnchor
+      ? [
+          { key: "anchor-copy", label: t("blk_anchor_copy"), icon: Hash, run: () => onAnchor("copy"), keys: `#${anchor.id}`, group: "anchor" as const, words: "anchor link copy 앵커 링크 복사" },
+          anchor.pinned
+            ? { key: "anchor-unpin", label: t("blk_anchor_unpin"), icon: PinOff, run: () => onAnchor("unpin"), group: "anchor" as const, words: "anchor unpin 앵커 고정 풀기" }
+            : { key: "anchor-pin", label: t("blk_anchor_pin"), icon: Pin, run: () => onAnchor("pin"), hint: t("blk_anchor_pin_short"), tip: t("blk_anchor_pin_hint", { id: anchor.id }), group: "anchor" as const, words: "anchor pin keep 앵커 고정" },
+        ]
+      : []),
     ...(turnable
       ? TURN_INTO.map((x) => ({ key: `turn-${x.type}`, label: t(x.label), icon: x.icon, run: () => onTurn(x.type), keys: x.digit ? `${mod}${alt}${x.digit}` : undefined, group: "turn" as const, words: `turn into ${x.type} 바꾸기` }))
       : []),
     ...(callouts ? (["note", "tip", "warning"] as const).map((tone) => ({ key: `tone-${tone}`, label: t(`blk_tone_${tone}` as Key), icon: Info, run: () => onTone(tone), group: "tone" as const, words: `tone ${tone} 종류` })) : []),
-    ...(anchor && onAnchor
-      ? [
-          { key: "anchor-copy", label: t("blk_anchor_copy"), icon: Hash, run: () => onAnchor("copy"), keys: `#${anchor.id}`, group: "act" as const, words: "anchor link copy 앵커 링크 복사" },
-          anchor.pinned
-            ? { key: "anchor-unpin", label: t("blk_anchor_unpin"), icon: PinOff, run: () => onAnchor("unpin"), group: "act" as const, words: "anchor unpin 앵커 고정 풀기" }
-            : { key: "anchor-pin", label: t("blk_anchor_pin"), icon: Pin, run: () => onAnchor("pin"), group: "act" as const, words: "anchor pin keep 앵커 고정" },
-        ]
-      : []),
     { key: "above", label: t("blk_add_above"), icon: ArrowUpToLine, run: () => onInsert(true), group: "act", words: "insert add above new 위에 추가" },
     { key: "below", label: t("blk_add_below"), icon: ArrowDownToLine, run: () => onInsert(false), group: "act", words: "insert add below new 아래에 추가" },
     { key: "duplicate", label: t("blk_duplicate"), icon: CopyPlus, run: onDuplicate, keys: `${mod}D`, group: "act", words: "duplicate copy 복제" },
@@ -4189,7 +4245,7 @@ function BlockMenu({
   if (!blocks.length) return null;
   let lastGroup = "";
   return (
-    <Floating x={at.x} y={at.y} className="w-64 p-1">
+    <Floating x={at.x} y={at.y} className={cn("p-1", anchor ? "w-72" : "w-64")}>
       <div className="flex items-center gap-1.5 border-b px-2 pb-1.5 pt-1">
         <Search className="size-3.5 shrink-0 text-muted-foreground" />
         <input
@@ -4235,14 +4291,16 @@ function BlockMenu({
                   role="option"
                   aria-selected={n === pick}
                   data-index={n}
+                  title={a.tip}
                   className={cn("flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors duration-75", n === pick && (a.danger ? "bg-destructive/10" : "bg-accent text-accent-foreground"), a.danger && "text-destructive")}
                   onMouseMove={() => n !== pick && setIndex(n)}
                   onClick={a.run}
                 >
                   <I className="size-4 shrink-0" />
-                  <span className="grow truncate">{a.label}</span>
+                  <span className={cn("grow truncate", a.hint && "shrink-0")}>{a.label}</span>
                   {a.group === "turn" && current && `turn-${current}` === a.key ? <Check className="size-3.5 text-sky-600" /> : null}
                   {a.keys ? <kbd className="shrink-0 font-sans text-[11px] text-muted-foreground [@media(pointer:coarse)]:hidden">{a.keys}</kbd> : null}
+                  {a.hint ? <span className="min-w-0 shrink truncate text-[11px] text-muted-foreground">{a.hint}</span> : null}
                 </div>
               </React.Fragment>
             );

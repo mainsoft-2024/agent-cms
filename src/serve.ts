@@ -131,7 +131,8 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
     "img-src 'self' data: blob: https: http:",
     "media-src 'self' blob: https: http:",
     "font-src 'self' data:",
-    "connect-src 'self'",
+    // Uploads go from the browser straight to the storage (signed URLs): its origins, or any https address when a store does not say.
+    `connect-src 'self' ${(o.cms.assets.browserOrigins() ?? ["https:"]).join(" ")}`.trim(),
     // The preview of HTML blocks runs in a sandboxed frame; embeds the HTML policy allows.
     "frame-src 'self' blob: https:",
     "frame-ancestors 'none'",

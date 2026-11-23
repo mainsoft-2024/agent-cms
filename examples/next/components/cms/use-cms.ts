@@ -193,6 +193,47 @@ export function applyTheme(theme: CmsTheme = storedTheme()): void {
 
 const NO_SLOTS: CmsSlots = {};
 
+const LAYER = '[role="dialog"], [role="alertdialog"]';
+
+/**
+ * Focus goes back where it was when a dialog closes. The admin opens its dialogs from code (no `DialogTrigger`),
+ * and Radix then has nothing to return focus to: it would fall to the page, and the next Tab would start from
+ * the top. When the focused element leaves the page and nothing else took focus, the most recent element that
+ * had focus and is still there (enabled, and inside the dialog still open on top, if any) gets it back.
+ * Base UI returns focus itself; this then does nothing.
+ */
+function useFocusReturn() {
+  React.useEffect(() => {
+    if (typeof MutationObserver === "undefined") return;
+    let seen: HTMLElement[] = [];
+    const onFocus = (e: FocusEvent) => {
+      if (!(e.target instanceof HTMLElement)) return;
+      seen = [...seen.filter((x) => x !== e.target && x.isConnected).slice(-19), e.target];
+    };
+    const mo = new MutationObserver(() => {
+      const last = seen[seen.length - 1];
+      if (!last || last.isConnected) return;
+      const at = document.activeElement;
+      if (at && at !== document.body) return;
+      const layers = document.querySelectorAll<HTMLElement>(LAYER);
+      const top = layers.length ? layers[layers.length - 1] : null;
+      for (let i = seen.length - 1; i >= 0; i--) {
+        const el = seen[i];
+        if (!el.isConnected || (el as HTMLButtonElement).disabled || el.closest("[inert]")) continue;
+        if (top ? !top.contains(el) : !!el.closest(LAYER)) continue;
+        el.focus({ preventScroll: true });
+        return;
+      }
+    });
+    document.addEventListener("focusin", onFocus, true);
+    mo.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      document.removeEventListener("focusin", onFocus, true);
+      mo.disconnect();
+    };
+  }, []);
+}
+
 export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, slots = NO_SLOTS, children }: CmsProviderProps) {
   const client = React.useMemo(() => createRestClient({ url: baseUrl, fetch: f }), [baseUrl, f]);
   const t = React.useMemo(() => createT(messages), [messages]);
@@ -208,6 +249,7 @@ export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, 
     mq?.addEventListener?.("change", on);
     return () => mq?.removeEventListener?.("change", on);
   }, []);
+  useFocusReturn();
   React.useEffect(() => {
     let live = true;
     client.me().then(

@@ -237,7 +237,7 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
   redirects?: boolean | { ttlMs?: number };
   /** Address suggestions (0.21.0): Korean titles romanized (default), kept as they are, or left out. */
   slugs?: { hangul?: "romanize" | "keep" | "off" };
-  /** Hosts `:::video` blocks may embed (0.21.0). Default: YouTube and Vimeo. Files from the media library always work. */
+  /** More hosts `:::video` blocks may embed (0.21.0), added to YouTube and Vimeo (always allowed). Files from the media library always work. */
   video?: { hosts?: readonly string[] };
 }
 
@@ -578,7 +578,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
    * added after `fn` is done, as the transaction's last statements: the log's order lock is then
    * taken after every other lock the write holds, so two writes cannot wait on each other.
    */
-  async function loggedTx<T>(fn: (r: CmsRepo, log: TxLog) => Promise<T>): Promise<T> {
+  async function loggedTx<T>(fn: (r: CmsRepo, log: TxLog) => Promise<T>, o: { atomic?: boolean } = {}): Promise<T> {
     const notes: { key: string; seq: number; e: OutEvent }[] = [];
     const out = await repo.tx(async (r) => {
       notes.length = 0;
@@ -593,7 +593,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
         notes.push({ key: logKey(e), seq, e });
       }
       return res;
-    });
+    }, o);
     // Only after the commit: a rolled-back transaction left no rows to reuse.
     if (notes.length) {
       for (const n of notes) preLogged.set(n.key, [...(preLogged.get(n.key) ?? []), { seq: n.seq, e: n.e }]);
@@ -975,7 +975,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     report,
     urlOf: (col, slug) => urlOf(col, slug),
     redirects: opts.redirects ? { ttlMs: Math.max(1000, (typeof opts.redirects === "object" ? opts.redirects.ttlMs : undefined) ?? 30_000) } : false,
-    videoHosts: opts.video?.hosts ?? DEFAULT_VIDEO_HOSTS,
+    // YouTube and Vimeo always; `video.hosts` adds to them (the decision recorded in the 0.21.0 plan).
+    videoHosts: [...new Set([...DEFAULT_VIDEO_HOSTS, ...(opts.video?.hosts ?? [])])],
     publicReadable: (col, slug) => readable({ kind: "anonymous" }, col, slug),
     publicCopy: (doc) => {
       if (!collections.has(doc.collection)) return null;
@@ -2097,13 +2098,26 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const pre = await repo.findDoc(col, slug);
       if (pre && can(actor, col, "publish", pre) && pre.publishedVersion !== null && pre.status !== "archived" && (o.expectedVersion === undefined || o.expectedVersion === pre.version)) await assertNotReferenced(actor, pre);
     }
-    const doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
-      if (cur.publishedVersion === null) throw fail("not_published");
-      if (cur.status === "archived") return cur;
-      const out = await r.updateDoc(cur.id, { status: "archived", updatedAt: nowIso() }, cur.version);
-      if (!out) throw await movedOn(r, actor, cur);
-      return out;
-    }, "archive");
+    const raced = new Error("referenced since the check");
+    let doc: CmsDoc;
+    try {
+      doc = await stateChange(actor, col, slug, o.expectedVersion, async (r, cur) => {
+        if (cur.publishedVersion === null) throw fail("not_published");
+        if (cur.status === "archived") return cur;
+        // Asked again inside the transaction, on its own connection only (`r`): a reference saved
+        // between the check above and here stops it too. The rules and names are read after the
+        // rollback (a second connection here would wait on this one forever on pglite).
+        if (!o.force && (await model.referencedBy(cur.id, r)).some((x) => collections.has(x.doc.collection))) throw raced;
+        const out = await r.updateDoc(cur.id, { status: "archived", updatedAt: nowIso() }, cur.version);
+        if (!out) throw await movedOn(r, actor, cur);
+        return out;
+      }, "archive");
+    } catch (e) {
+      if (e !== raced) throw e;
+      const now = await repo.findDoc(col, slug);
+      if (now) await assertNotReferenced(actor, now);
+      throw fail("doc_referenced", { count: 1 }, { status: 409 });
+    }
     audit(actor, "doc.archive", { collection: col, slug, version: doc.version });
     return doc;
   }
@@ -2968,7 +2982,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!model.treeOf(col)) throw fail("tree_off", { collection: col });
     // Moves of one collection go one at a time: in this process by a queue, across processes by the
     // database's lock (`lockTree`, held until the transaction ends). Two opposite moves at once would
-    // otherwise each pass the cycle check and together make a loop.
+    // otherwise each pass the cycle check and together make a loop. That lock needs a transaction, so a
+    // driver without them refuses moves (`transactions_required`) rather than move without the lock.
     const prev = treeQueue.get(col) ?? Promise.resolve();
     let release!: () => void;
     const mine = new Promise<void>((res) => (release = res));
@@ -2995,7 +3010,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (!moved) throw fail("not_found", { collection: col, slug });
       if (actor.kind !== "anonymous") await log({ event: "doc.moved", actor: actorRef(actor), collection: col, slug, version: cur.version, url: urlOf(col, slug), detail: { parentId: place.parentId } });
       return moved;
-    });
+    }, { atomic: true });
     audit(actor, "doc.move", { collection: col, slug, version: out.version, detail: { parentId: out.parentId ?? null } });
     invalidate(col);
     return out;
@@ -3093,15 +3108,38 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const d = r.data as StoredTemplate;
     return { key: r.id, id: r.id, label: d.label, description: d.description, title: d.title, summary: d.summary, body: d.body, fields: d.fields, source: "admin", createdBy: d.createdBy ?? null, createdAt: r.createdAt };
   };
-  /** Templates for new documents: the collection's own, then the ones editors saved. Read rights are enough (an agent with a read key may look); anonymous readers get none. */
+  /**
+   * Templates for new documents: the collection's own, then the ones editors saved. Read rights are enough
+   * to see the list (an agent with a read key may look), but only people who may write the collection get
+   * the content (title, summary, body, fields), since a saved template may be a copy of a draft. Fields the
+   * reader may not see (`fieldAccess`) are left out for them too. Anonymous readers get none.
+   */
   async function templates(actor: Actor, col: string): Promise<DocTemplate[]> {
     await ensureSchema();
     if (actor.kind === "anonymous") throw fail("unauthorized");
     assert(actor, col, "read");
     const code = (collection(col).templates ?? []).map((t) => ({ ...t, source: "code" as const }));
     const saved = (await repo.listRecords({ kind: "template", scope: col, order: "asc", limit: 200 })).map(templateOf);
-    return [...code, ...saved];
+    const all: DocTemplate[] = [...code, ...saved];
+    if (!can(actor, col, "write")) return all.map(templateMeta);
+    if (!collection(col).fieldAccess) return all;
+    return all.map((t) => {
+      if (!t.fields) return t;
+      // The rules look at the document the template would make.
+      const proposed = { collection: col, title: t.title ?? "", summary: t.summary ?? "", body: t.body ?? "", fields: t.fields } as unknown as CmsDoc;
+      return projectWith(hiddenPaths(actor, col, proposed), t);
+    });
   }
+  /** What a reader without write access sees of a template: what it is called, not what is in it. */
+  const templateMeta = (t: DocTemplate): DocTemplate => {
+    const out: DocTemplate = { key: t.key, label: t.label, source: t.source ?? "code" };
+    if (t.description !== undefined) out.description = t.description;
+    if (t.icon !== undefined) out.icon = t.icon;
+    if (t.id !== undefined) out.id = t.id;
+    if (t.createdBy !== undefined) out.createdBy = t.createdBy;
+    if (t.createdAt !== undefined) out.createdAt = t.createdAt;
+    return out;
+  };
   const TEMPLATE_LABEL_MAX = 80;
   function cleanTemplate(t: Partial<StoredTemplate>): StoredTemplate {
     const label = String(t.label ?? "").trim();
@@ -3235,6 +3273,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     },
     /** Where an old address goes now (public; counts the visit). */
     resolve: (path: string) => model.resolveRedirect(path),
+    /** Write the visits counted so far now instead of within the minute (before a shutdown, in tests). */
+    flushHits: () => model.flushHits(),
   };
 
   type SeoSource = Pick<CmsDoc, "collection" | "slug" | "title" | "summary" | "body"> & { seo?: DocSeo | null };

@@ -7,6 +7,7 @@
 import * as React from "react";
 import { Check, ChevronDown, ChevronUp, CircleAlert, CircleCheck, File as FileIcon, FileText, Film, Lock, Music, Search, Upload, X } from "lucide-react";
 import type { AssetCounts, AssetView, FolderTree, MediaStoreInfo } from "@mainsoft/agent-cms/client";
+import { acceptsFile, mimeOf } from "@mainsoft/agent-cms/storage";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -70,6 +71,7 @@ export function AssetGrid({
   onCheck,
   order,
   taken,
+  accept,
 }: {
   assets: AssetView[];
   selected?: string | null;
@@ -84,6 +86,8 @@ export function AssetGrid({
   order?: ReadonlyMap<string, number>;
   /** Files that are already in the field: shown, not pickable again. */
   taken?: ReadonlySet<string>;
+  /** File types the field takes (its `accept`): other files are shown, not pickable. */
+  accept?: readonly string[];
 }) {
   const { t } = useCms();
   return (
@@ -92,13 +96,14 @@ export function AssetGrid({
         const place = order?.get(a.id);
         const on = order ? place !== undefined : a.id === selected;
         const isTaken = !!taken?.has(a.id);
-        if (isTaken)
+        const refused = !isTaken && !!accept?.length && !acceptsFile(accept, a);
+        if (isTaken || refused)
           return (
             <li key={a.id} className="relative min-w-0">
               <div aria-disabled className="block w-full rounded-lg p-1.5 opacity-50">
                 <span className="relative block">
                   <AssetThumb asset={a} />
-                  <span className="absolute inset-x-1.5 bottom-1.5 rounded bg-background/90 px-1.5 py-0.5 text-center text-[11px] font-medium">{t("media_pick_added")}</span>
+                  <span className="absolute inset-x-1.5 bottom-1.5 rounded bg-background/90 px-1.5 py-0.5 text-center text-[11px] font-medium">{t(isTaken ? "media_pick_added" : "media_pick_wrong_type")}</span>
                 </span>
                 <span className="mt-1.5 block truncate text-sm font-medium">{a.name}</span>
                 <span className="block truncate text-xs tabular-nums text-muted-foreground">{assetMeta(a)}</span>
@@ -384,8 +389,9 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
   const room = many?.room ?? null;
   const taken = React.useMemo(() => new Set(many?.taken ?? []), [many?.taken]);
   const order = React.useMemo(() => new Map(picks.map((a, i) => [a.id, i + 1])), [picks]);
+  const fits = (a: { name: string; mime: string }) => !accept?.length || acceptsFile(accept, a);
   const togglePick = (a: AssetView) => {
-    if (taken.has(a.id)) return;
+    if (taken.has(a.id) || !fits(a)) return;
     setPicks((old) => {
       if (old.some((x) => x.id === a.id)) {
         setFull(false);
@@ -403,14 +409,23 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
   const list = useAssetList({ store: activeStore, folder: where.folder, kind, q, tag: null }, open);
   const uploads = useUploads((a) => {
     list.reload();
+    if (!fits(a)) return;
     if (many) togglePick(a);
     else setPicked(a);
   });
+  // Files of a type the field does not take are not sent (the file dialog's filter can be switched off).
+  const [refused, setRefused] = React.useState<string[]>([]);
+  const upload = (files: File[]) => {
+    const ok = files.filter((f) => fits({ name: f.name, mime: f.type || mimeOf(f.name) }));
+    setRefused(files.filter((f) => !ok.includes(f)).map((f) => f.name));
+    if (ok.length) uploads.add(ok, { store: activeStore, folder: where.folder, field });
+  };
   React.useEffect(() => {
     if (!open) return;
     setPicked(null);
     setPicks([]);
     setFull(false);
+    setRefused([]);
     client.assetFolders().then((s) => setTree(s.filter((x) => !store || x.store === store)), () => {});
   }, [open, client, store]);
   const tabs = kindTabs(list.counts, t).filter((x) => !kinds?.length || kinds.includes(x.value) || (x.value === "all" && kinds.length > 1));
@@ -470,7 +485,7 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
         <div className="min-h-[240px] flex-1 overflow-y-auto px-3.5 py-3">
           {list.error ? <StatusText tone="error">{errorMessage(list.error, t)}</StatusText> : null}
           {!list.loading && !list.assets.length && !list.error ? <p className="px-1.5 py-8 text-center text-sm text-muted-foreground">{t("media_empty")}</p> : null}
-          <AssetGrid assets={list.assets} selected={picked?.id} onSelect={many ? togglePick : setPicked} order={many ? order : undefined} taken={many ? taken : undefined} picking className="md:grid-cols-4 xl:grid-cols-4" />
+          <AssetGrid assets={list.assets} selected={picked?.id} onSelect={many ? togglePick : setPicked} order={many ? order : undefined} taken={many ? taken : undefined} accept={accept} picking className="md:grid-cols-4 xl:grid-cols-4" />
           {list.cursor ? (
             <div className="pt-3 text-center">
               <Button type="button" variant="outline" size="sm" onClick={() => void list.more()}>
@@ -480,8 +495,13 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2 border-t px-5 py-3">
-          {canWrite ? <UploadButton variant="outline" accept={accept ?? stores.find((s) => s.name === activeStore)?.accept} onFiles={(files) => uploads.add(files, { store: activeStore, folder: where.folder, field })} /> : null}
-          <span className={cn("min-w-0 flex-1", many && "order-first basis-full sm:order-none sm:basis-0")}>
+          {canWrite ? <UploadButton variant="outline" accept={accept ?? stores.find((s) => s.name === activeStore)?.accept} onFiles={upload} /> : null}
+          <span className={cn("min-w-0 flex-1", (many || refused.length > 0) && "order-first basis-full sm:order-none sm:basis-0")}>
+            {refused.length ? (
+              <span role="alert" className="block truncate text-xs text-destructive">
+                {t("media_pick_refused", { names: refused.join(", ") })}
+              </span>
+            ) : null}
             {many ? (
               <span role="status" aria-live="polite" className={cn("block truncate text-xs", full ? "text-destructive" : "text-muted-foreground")}>
                 {full && room !== null ? t("media_pick_full", { max: (many.taken?.length ?? 0) + room }) : left !== null ? t("media_pick_left", { n: left }) : t("media_pick_many_hint")}

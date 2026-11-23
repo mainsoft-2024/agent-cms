@@ -190,6 +190,9 @@ function inlineHtml(items: Inline[], o: ToHtmlOptions): string {
           const href = o.link?.(i.key) ?? null;
           return href ? `<a href="${esc(href)}">${esc(i.v)}</a>` : `<span>${esc(i.v)}</span>`;
         }
+        case "snippet":
+          // Public reads fill snippets in before this; a draft shows the token.
+          return esc(i.v);
       }
     })
     .join("");

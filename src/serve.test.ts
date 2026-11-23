@@ -51,3 +51,23 @@ test("serve: health, the admin page with its settings and a strict policy, the A
   }
   await assert.rejects(fetch(`${s.url}/healthz`));
 });
+
+test("serve: the admin may connect to the storage it uploads to (connect-src lists the store's origin)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "serve-"));
+  const admin = join(cwd, "admin");
+  mkdirSync(admin);
+  writeFileSync(join(admin, "index.html"), `<!doctype html><html><head><!--settings--></head><body></body></html>`);
+  const { createCms } = await import("./cms");
+  const { MemoryRepo } = await import("./repo");
+  const { s3Storage } = await import("./storage-s3");
+  const s3 = s3Storage({ bucket: "media", endpoint: "http://127.0.0.1:9100", region: "us-east-1", accessKeyId: "a", secretAccessKey: "b" });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [], media: { stores: { public: { adapter: s3, visibility: "public" } } } });
+  const s = await startServer({ cms, port: 0, host: "127.0.0.1", adminDir: admin, auth: false, cron: false, log: () => {} });
+  try {
+    const csp = (await fetch(`${s.url}/admin`)).headers.get("content-security-policy") ?? "";
+    assert.match(csp, /connect-src 'self' http:\/\/127\.0\.0\.1:9100(;|$)/);
+  } finally {
+    await s.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

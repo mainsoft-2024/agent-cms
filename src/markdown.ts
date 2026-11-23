@@ -43,7 +43,9 @@ export type Inline =
   /** An image inside a line of text. `asset` (a media library id) or `src` (https). */
   | { t: "image"; asset: string | null; name: string; src: string | null; alt: string; v: string }
   /** `[[link:key|label]]` — an app screen, resolved by the collection. */
-  | { t: "applink"; key: string; v: string };
+  | { t: "applink"; key: string; v: string }
+  /** `[[snippet:key]]` (0.21.0): filled in on public reads; `v` is the token as written. Escaped (`\[[snippet:x]]`) or in code it is text. */
+  | { t: "snippet"; key: string; v: string };
 
 /** With `parseMarkdown(src, { lines: true })` every top-level block says which lines of the source it came from (1-based). */
 export type Block = BlockBody & { line?: number; endLine?: number };
@@ -139,6 +141,7 @@ const INLINE_RE = new RegExp(
     String.raw`(?<br>\\\n)`,
     String.raw`\\(?<esc>[\\${"`"}*_~\[\]#>!|:+.)(\-])`,
     String.raw`\[\[link:(?<key>[a-z0-9][a-z0-9._-]*)\|(?<keyLabel>[^\]]+)\]\]`,
+    String.raw`\[\[snippet:(?<snip>[a-z0-9][a-z0-9._-]*)\]\]`,
     "(?<ticks>``+)(?<code2>.+?)\\k<ticks>(?!`)",
     "`(?<code>[^`]+)`",
     String.raw`!\[(?<alt>[^\]]*)\]\(\s*(?<img>(?:[^()\s]|\([^()\s]*\))+)(?:\s+"(?<cap>[^"]*)")?\s*\)`,
@@ -182,6 +185,7 @@ export function parseInline(src: string): Inline[] {
     if (g.br !== undefined) out.push({ t: "br", v: "\n" });
     else if (g.esc !== undefined) text(g.esc);
     else if (g.key) out.push({ t: "applink", key: g.key, v: g.keyLabel });
+    else if (g.snip) out.push({ t: "snippet", key: g.snip.toLowerCase(), v: m[0] });
     else if (g.code2 !== undefined) out.push({ t: "code", v: g.code2.replace(/^ (.*) $/, "$1") });
     else if (g.code !== undefined) out.push({ t: "code", v: g.code });
     else if (g.img !== undefined) {
@@ -342,6 +346,8 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
   /** `from`, `to`: 0-based source lines of the block. */
   const push = (b: Block, from: number, to: number) => out.push(o.lines ? { ...b, line: from + 1, endLine: to + 1 } : b);
   const used = new Map<string, number>();
+  /** Heading 4 blocks (index in `out`), given their ids at the end. */
+  const h4s: { at: number; pinned: string | null }[] = [];
   let para: string[] = [];
   let paraAt = [0, 0];
   type ListAcc = { kind: "ul" | "ol" | "todo"; items: string[]; checks: boolean[]; start: number; from: number; to: number; indent: number; kids: (string[] | null)[]; width: number };
@@ -480,7 +486,12 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
       flush();
       const parts = headingParts(h[2]);
       const inline = parseInline(parts.text);
-      if (parts.pinned) {
+      if (h[1].length === 4) {
+        // Heading 4 (0.21.0) gets its id after every ## and ### took theirs, so adding one never
+        // moves an anchor that existed before (see the second pass at the end).
+        h4s.push({ at: out.length, pinned: parts.pinned ?? null });
+        push({ t: "heading", level: 4, id: parts.pinned ?? "", text: inlineText(inline), inline, ...(parts.pinned ? { pinned: true as const } : {}) }, i, i);
+      } else if (parts.pinned) {
         used.set(parts.pinned, (used.get(parts.pinned) ?? 0) + 1);
         push({ t: "heading", level: h[1].length as 2 | 3 | 4, id: parts.pinned, text: inlineText(inline), inline, pinned: true }, i, i);
       } else push({ t: "heading", level: h[1].length as 2 | 3 | 4, id: uniqueId(inlineText(inline)), text: inlineText(inline), inline }, i, i);
@@ -571,6 +582,25 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
     para.push(line.trim());
   }
   flush();
+  // Second pass: heading 4 ids take the next free id after the ## / ### ones.
+  if (h4s.length) {
+    const taken = new Set<string>();
+    for (const b of out) if (b.t === "heading" && b.level !== 4) taken.add(b.id);
+    for (const { at, pinned } of h4s) {
+      const b = out[at] as Extract<Block, { t: "heading" }>;
+      if (pinned) {
+        used.set(pinned, (used.get(pinned) ?? 0) + 1);
+        taken.add(pinned);
+        continue;
+      }
+      const base = anchorOf(b.text);
+      let n = used.get(base) ?? 0;
+      while (taken.has(n ? `${base}-${n}` : base)) n++;
+      b.id = n ? `${base}-${n}` : base;
+      used.set(base, n + 1);
+      taken.add(b.id);
+    }
+  }
   return out;
 }
 
@@ -607,6 +637,8 @@ function inlineMd(items: Inline[], esc: boolean): string {
           return `![${i.alt}](${i.asset ? `asset:${i.asset}${i.name ? "/" + encodeName(i.name) : ""}` : (i.src ?? "")})`;
         case "applink":
           return `[[link:${i.key}|${i.v}]]`;
+        case "snippet":
+          return i.v;
       }
     })
     .join("");
@@ -844,11 +876,25 @@ export function assetUses(body: string): AssetUse[] {
   const out: AssetUse[] = [];
   const inCode = fenceTracker();
   let inHtml = false;
+  let videoNext = false;
   body.replace(/\r/g, "").split("\n").forEach((line, i) => {
     if (!inHtml && inCode(line)) return;
     if (!inHtml && /^:::html(\s+isolated)?\s*$/.test(line)) {
       inHtml = true;
       return;
+    }
+    // `:::video` (0.21.0): the line after the opener is its address, also inside columns, toggles and steps.
+    if (!inHtml && /^\s*:::video\s*$/.test(line)) {
+      videoNext = true;
+      return;
+    }
+    if (videoNext) {
+      videoNext = false;
+      const v = /^\s*asset:([a-z0-9]{12})(?:\/\S*)?\s*$/.exec(line);
+      if (v) {
+        out.push({ id: v[1], as: "media", alt: "", line: i + 1 });
+        return;
+      }
     }
     if (inHtml) {
       if (CLOSE.test(line)) inHtml = false;
@@ -938,8 +984,9 @@ export function splitSections(body: string): Section[] {
       cur = { anchor: n && !parts.pinned ? `${base}-${n}` : base, heading: text, markdown: "" };
       continue;
     }
-    // ### and #### headings also take an anchor slot so ids match parseMarkdown().
-    const h3 = !inFence ? /^#{3,4}\s+(.+?)\s*#*\s*$/.exec(line) : null;
+    // ### headings also take an anchor slot so ids match parseMarkdown(); #### ones take theirs after
+    // every ## and ###, so they never change a section's anchor.
+    const h3 = !inFence ? /^#{3}\s+(.+?)\s*#*\s*$/.exec(line) : null;
     if (h3) {
       const p3 = headingParts(h3[1]);
       const base = p3.pinned ?? anchorOf(inlineText(parseInline(p3.text)));
@@ -968,15 +1015,54 @@ export function videoUses(body: string): { src: string | null; asset: string | n
   return out;
 }
 
-/** Every `[[snippet:key]]` in a body (code fences skipped). */
+/** A `[[snippet:key]]` token anywhere (no context: see `mapSnippetTokens` for the rules). */
 export const SNIPPET_RE = /\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]/gi;
-export function snippetKeys(body: string): string[] {
-  const keys = new Set<string>();
-  const inCode = fenceTracker();
-  for (const line of body.replace(/\r/g, "").split("\n")) {
-    if (inCode(line)) continue;
-    for (const m of line.matchAll(SNIPPET_RE)) keys.add(m[1].toLowerCase());
+const SNIPPET_WITH_SLASHES = /(\\*)\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]/gi;
+const SNIPPET_ALONE = /^\s*\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]\s*$/i;
+/** `fn` applied to the parts of a line outside inline code spans (`` `…` ``, ``` ``…`` ```). */
+export function outsideCodeSpans(line: string, fn: (part: string) => string): string {
+  if (!line.includes("`")) return fn(line);
+  let out = "";
+  let last = 0;
+  for (const m of line.matchAll(/(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g)) {
+    out += fn(line.slice(last, m.index)) + m[0];
+    last = m.index! + m[0].length;
   }
+  return out + fn(line.slice(last));
+}
+/**
+ * The one reader of snippet tokens (expansion, diagnostics, usage and the editor agree on it).
+ * A token counts unless it is in a code fence, in an inline code span, or escaped (`\[[snippet:x]]`
+ * is the text itself). `fn` gets each one (`alone`: the token is the whole line) and returns what
+ * goes in its place, or null to keep it. Returns the body with the replacements.
+ */
+export function mapSnippetTokens(body: string, fn: (key: string, alone: boolean) => string | null): string {
+  const inCode = fenceTracker();
+  return body
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => {
+      if (inCode(line)) return line;
+      const alone = SNIPPET_ALONE.exec(line);
+      if (alone) return fn(alone[1].toLowerCase(), true) ?? line;
+      return outsideCodeSpans(line, (part) =>
+        part.replace(SNIPPET_WITH_SLASHES, (m, slashes: string, k: string) => {
+          if (slashes.length % 2) return m;
+          const r = fn(k.toLowerCase(), false);
+          return r === null ? m : slashes + r;
+        })
+      );
+    })
+    .join("\n");
+}
+/** Every snippet key a body uses, in order of first use (see `mapSnippetTokens`). `inline`: only tokens inside a line of text. */
+export function snippetKeys(body: string, o: { inline?: boolean } = {}): string[] {
+  const keys = new Set<string>();
+  if (!body.includes("[[snippet:")) return [];
+  mapSnippetTokens(body, (k, alone) => {
+    if (!o.inline || !alone) keys.add(k);
+    return null;
+  });
   return [...keys];
 }
 

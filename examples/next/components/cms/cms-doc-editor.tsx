@@ -23,7 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { errorMessage } from "./cms-messages";
+import { errorMessage, serverText } from "./cms-messages";
 import { CmsFieldForm, FieldGate, problemKey, type FieldProblem } from "./cms-field-form";
 import { AddToReleaseDialog, BodyBackdrop, CommentsPanel, offsetOf, placeOf, PublishButton, ReviewStrip, ScheduleStrip, type BodyCursor } from "./cms-flow";
 import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
@@ -186,6 +186,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     []
   );
   const [finding, setFinding] = React.useState<{ n: number; replace: boolean; initial: string } | null>(null);
+  const bodySectionRef = React.useRef<HTMLElement>(null);
+  /** The share image picker is open: what to do with the picked file. */
+  const [seoPick, setSeoPick] = React.useState<((ref: string) => void) | null>(null);
   const [findMarks, setFindMarks] = React.useState<{ start: number; end: number }[]>([]);
   const mdReadOnly = React.useRef(false);
   // `live` and `setContent` are declared further down; they are only read when a button is pressed.
@@ -242,7 +245,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const [seoOpen, setSeoOpen] = React.useState(false);
   const [slugAsk, setSlugAsk] = React.useState<{ publish: boolean } | null>(null);
   const [relLabels, setRelLabels] = React.useState<Record<string, RelatedLabel | null>>({});
-  const relCtx = React.useMemo(() => ({ labels: relLabels, remember: (l: RelatedLabel) => setRelLabels((m) => ({ ...m, [l.id]: l })) }), [relLabels]);
+  const selfId = doc?.id ?? null;
+  const relCtx = React.useMemo(() => ({ labels: relLabels, remember: (l: RelatedLabel) => setRelLabels((m) => ({ ...m, [l.id]: l })), self: selfId }), [relLabels, selfId]);
   const currentSlug = doc?.slug ?? slug ?? "";
   const myLabel = me?.actor.label ?? "";
 
@@ -353,6 +357,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     if (!tpl) return;
     const c = { ...EMPTY, ...contentFromTemplate(tpl) };
     setContentRaw(c);
+    // A blank document given a title in the picker comes as a template without a name: nothing to say then.
+    if (!tpl.label) return;
     setTplFit({ label: tpl.label, fields: { ...(c.fields ?? {}) } });
     setStatus({ text: t("tpl_applied", { name: tpl.label }), tone: "muted" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -432,7 +438,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     try {
       const d = await client.diagnose(collection, toInput(c, doc?.fields), doc?.slug);
       if (mine !== diagSeq.current) return;
-      setProblems(d as Diagnostic[]);
+      setProblems((d as Diagnostic[]).map((p) => ({ ...p, message: serverText(p, t) })));
     } catch {
       /* the save will tell */
     }
@@ -615,7 +621,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
         setSlugAsk({ publish });
         return null;
       }
-      if (isCmsRemoteError(e) && e.diagnostics?.length) setProblems(e.diagnostics as Diagnostic[]);
+      if (isCmsRemoteError(e) && e.diagnostics?.length) setProblems((e.diagnostics as Diagnostic[]).map((p) => ({ ...p, message: serverText(p, t) })));
       setStatus({ text: errorMessage(e, t), tone: "error" });
       return null;
     } finally {
@@ -1313,6 +1319,19 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     const el = bodyRef.current;
     const picked = !blocksOn && el ? el.value.slice(el.selectionStart, el.selectionEnd) : typeof window !== "undefined" ? (window.getSelection()?.toString() ?? "") : "";
     setFinding((f) => ({ n: (f?.n ?? 0) + (f ? 0 : 1), replace: replace || !!f?.replace, initial: picked && !picked.includes("\n") ? picked : (f?.initial ?? "") }));
+    // The find bar opens under the toolbar: when the body starts low on the page (tall fields above), the bar
+    // would sit under the status line, cut off. Bring the body's top up under the header first.
+    if (!focus && typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        const sec = bodySectionRef.current;
+        const box = sec?.closest<HTMLElement>(".overflow-y-auto");
+        if (!sec || !box) return;
+        const top = sec.getBoundingClientRect().top;
+        const under = headRef.current?.getBoundingClientRect().bottom ?? box.getBoundingClientRect().top;
+        const room = (footRef.current?.getBoundingClientRect().top ?? box.getBoundingClientRect().bottom) - top;
+        if (room < 200) box.scrollBy({ top: top - under, behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      });
+    }
   };
   /** Ctrl/Cmd+F finds and Ctrl+H (Cmd+Shift+H) replaces, inside the body. */
   const onBodyKeys = (e: React.KeyboardEvent) => {
@@ -1352,7 +1371,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     />
   );
   const bodyPane = schema.hideBody ? null : (
-    <section className="relative flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onBodyKeys}>
+    <section ref={bodySectionRef} className="relative flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onBodyKeys}>
       {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={doc.slug} canWrite={canWrite} onApplied={() => void client.get(collection, doc.slug, { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
       {focus ? null : toolbar(false)}
       {finding ? <FindBar key={finding.n} commands={toolbarCommands} replace={finding.replace} canWrite={canWrite} initial={finding.initial} onClose={() => setFinding(null)} className={focus ? "top-2" : undefined} /> : null}
@@ -1370,7 +1389,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
         }}
       >
         <ul className="grid max-h-72 gap-1.5 overflow-y-auto text-sm" aria-label={t("checks_list")}>
-          {[...(checks?.diagnostics.filter((d) => d.severity === "error") ?? []).map((d) => ({ severity: "error" as const, message: d.message, where: d.path })), ...(checks?.checks ?? []).map((c) => ({ severity: c.severity, message: c.message, where: c.line ? t("checks_line", { n: c.line }) : c.path }))].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "error" ? -1 : 1)).map((c, i) => (
+          {[...(checks?.diagnostics.filter((d) => d.severity === "error") ?? []).map((d) => ({ severity: "error" as const, message: serverText(d, t), where: d.path })), ...(checks?.checks ?? []).map((c) => ({ severity: c.severity, message: c.message, where: c.line ? t("checks_line", { n: c.line }) : c.path }))].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "error" ? -1 : 1)).map((c, i) => (
             <li key={i} className="flex items-start gap-2 rounded-md border px-3 py-2">
               <span className={cn("mt-0.5 shrink-0 rounded px-1.5 text-[11px] font-medium", c.severity === "error" ? "bg-destructive/10 text-destructive" : "bg-amber-500/15 text-amber-700 dark:text-amber-400")}>{c.severity === "error" ? t("checks_error") : t("checks_warning")}</span>
               <span className="min-w-0 flex-1 break-words">{c.message}</span>
@@ -1402,8 +1421,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
           }}
         />
       ) : null}
+      {/* The block editor reaches 40px past its box on the right (room for its side buttons): the padding matches, so it never runs past the page. */}
       {blocksOn && BlockEditor ? (
-        <div className="mx-auto flex w-full max-w-[780px] flex-1 flex-col px-5 sm:pl-12 sm:pr-8">
+        <div className="mx-auto flex w-full max-w-[780px] flex-1 flex-col px-5 sm:pl-12 sm:pr-10">
           <React.Suspense fallback={<p className="py-6 text-sm text-muted-foreground">{t("blk_loading")}</p>}>
             <BlockEditor key={`${collection}/${currentSlug}`} {...blockProps} />
           </React.Suspense>
@@ -1525,6 +1545,15 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
             {seoWarnings ? <span className="ml-1 rounded bg-amber-500/15 px-1.5 text-[11px] text-amber-700 dark:text-amber-400">{seoWarnings}</span> : null}
           </summary>
           <div className="border-t p-3">
+            <CmsMediaPicker
+              open={!!seoPick}
+              onOpenChange={(o) => !o && setSeoPick(null)}
+              kinds={["image"]}
+              onPick={(a) => {
+                seoPick?.(`asset:${a.id}/${encodeURIComponent(a.name)}`);
+                setSeoPick(null);
+              }}
+            />
             <SeoPanel
               value={content.seo}
               onChange={(seo) => setContent({ ...content, seo })}
@@ -1532,6 +1561,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
               limits={schema.seo}
               url={publicUrlFor && content.slug ? publicUrlFor(collection, content.slug) : null}
               disabled={!canWrite}
+              onPickImage={me?.media ? (done) => setSeoPick(() => done) : undefined}
               descriptionAddon={slots.fieldAddon && !!slotCtx ? slots.fieldAddon({ key: "seo.description", label: t("seo_field_description"), widget: "textarea" }, { ...slotCtx, value: content.seo?.description ?? "", setValue: (v) => setContent({ ...content, seo: { ...(content.seo ?? {}), description: typeof v === "string" ? v : null } }) }) : undefined}
             />
           </div>
@@ -1768,7 +1798,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
             {saveButtons()}
           </div>
         ) : (
-        <PageHeader title={title} crumbs={[schema.label]} after={stateBits}>
+        // A single is its own page in the menu: "Site settings / Site settings" would say the same thing twice.
+        <PageHeader title={title} crumbs={schema.single ? undefined : [schema.label]} after={stateBits}>
           <People people={others} className="mr-1" />
           {doc && canWrite ? (
             <Button type="button" variant="ghost" className="gap-1.5" aria-pressed={commentsOpen} onClick={() => setCommentsOpen((v) => !v)}>
@@ -1831,7 +1862,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
         </div>
       ) : (
         // One column: the body grows with its text and the page scrolls (the header and the status line stay).
-        <div ref={rowRef} className="flex min-h-[360px] flex-1 divide-x">
+        // `flex-1` alone would let it shrink to its 360px minimum when the fields above are tall: the text then
+        // spills out of its box, under the status line, and the page stops scrolling before its end.
+        <div ref={rowRef} className="flex min-h-[360px] flex-[1_0_auto] divide-x">
           {bodyPane}
           {commentsOpen && !focus ? <div className="sticky top-0 flex max-h-dvh w-80 shrink-0 flex-col self-start">{comments(() => setCommentsOpen(false))}</div> : null}
         </div>

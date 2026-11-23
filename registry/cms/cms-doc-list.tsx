@@ -8,7 +8,7 @@
 "use client";
 
 import * as React from "react";
-import { Bookmark, ChevronRight, CircleAlert, CircleCheck, EyeOff, Eye, MoreHorizontal, Plus, Search, Trash2, Undo2, Upload, Users, X, type LucideIcon } from "lucide-react";
+import { Bookmark, ChevronRight, CircleAlert, CircleCheck, EyeOff, Eye, List, ListTree, MoreHorizontal, Plus, Search, Trash2, Undo2, Upload, Users, X, type LucideIcon } from "lucide-react";
 import type { RestClient } from "@mainsoft/agent-cms/client";
 import type { DocSummary, Presence } from "@mainsoft/agent-cms/types";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -504,10 +504,26 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
           value={view}
           onChange={setView}
           options={[
-            { value: "list", label: t("view_list") },
-            { value: "tree", label: t("view_tree") },
+            {
+              value: "list",
+              label: (
+                <>
+                  <List aria-hidden className="h-3.5 w-3.5" />
+                  {t("view_list")}
+                </>
+              ),
+            },
+            {
+              value: "tree",
+              label: (
+                <>
+                  <ListTree aria-hidden className="h-3.5 w-3.5" />
+                  {t("view_tree")}
+                </>
+              ),
+            },
           ]}
-          itemClassName="h-7 px-2.5 text-xs"
+          itemClassName="h-7 gap-1.5 px-2.5 text-xs"
         />
       ) : null}
       {onNewDocument && canWrite ? (

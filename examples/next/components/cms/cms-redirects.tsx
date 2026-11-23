@@ -206,7 +206,7 @@ export function CmsRedirects({ className }: CmsRedirectsProps) {
                             </span>
                           </TableCell>
                           <TableCell className="hidden text-sm text-muted-foreground lg:table-cell">{r.lastHitAt ? relativeTime(r.lastHitAt, t, locale) : "—"}</TableCell>
-                          <TableCell className="hidden text-sm tabular-nums text-muted-foreground lg:table-cell">{formatDate(r.createdAt, locale, true)}</TableCell>
+                          <TableCell className="hidden whitespace-nowrap text-sm tabular-nums text-muted-foreground lg:table-cell">{formatDate(r.createdAt, locale, true)}</TableCell>
                           <TableCell className="py-1">
                             <DropdownMenu>
                               <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon", className: "h-8 w-8" })} aria-label={t("redir_actions", { from: r.from })}>

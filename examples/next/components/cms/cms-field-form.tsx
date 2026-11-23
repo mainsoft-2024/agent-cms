@@ -81,6 +81,26 @@ function unwrap(s: JsonSchema): JsonSchema {
   return s;
 }
 
+/** How many columns of the form grid a field takes (the cell around it carries this). */
+export function fieldSpan(s: Pick<FieldSpec, "widget" | "relation">): string | undefined {
+  switch (s.widget) {
+    case "rows":
+      return "md:col-span-2 xl:col-span-3";
+    case "gallery":
+      return "md:col-span-2";
+    case "relation":
+      return s.relation?.many ? "md:col-span-2" : undefined;
+    case "textarea":
+    case "json":
+    case "image":
+    case "file":
+    case "group":
+      return "md:col-span-2";
+    default:
+      return undefined;
+  }
+}
+
 /** Which widget fits a JSON Schema property (an `admin.widget` hint wins). */
 export function widgetFor(schema: JsonSchema, hint?: string): Widget {
   if (hint) return hint as Widget;
@@ -119,7 +139,8 @@ export function fieldSpecs(schema: CollectionSchema): FieldSpec[] {
     return {
       key,
       label: hint?.label ?? key,
-      help: hint?.help ?? s.description,
+      // A relation's own description ("Id of a document in …") is for agents; the picker already says it.
+      help: hint?.help ?? (s["x-cms-relation"] ? undefined : s.description),
       widget,
       required: req.has(key),
       options,
@@ -174,7 +195,7 @@ function FieldShell({ id, label, help, errors, required, children, className, as
       ) : null}
       {errors?.length ? (
         <p id={`${id}-err`} className={cn("text-xs", hasError ? "text-destructive" : "text-amber-700")}>
-          {errors.map((e) => e.message).join(" ")}
+          {sameOnce(errors.map((e) => e.message))}
         </p>
       ) : null}
     </>
@@ -205,6 +226,13 @@ function FieldShell({ id, label, help, errors, required, children, className, as
       {msgs}
     </div>
   );
+}
+
+/** The same message for several items (three images without alt text) shows once, with how many. */
+function sameOnce(msgs: string[]): string {
+  const n = new Map<string, number>();
+  for (const m of msgs) n.set(m, (n.get(m) ?? 0) + 1);
+  return [...n].map(([m, c]) => (c > 1 ? `${m} (×${c})` : m)).join(" ");
 }
 
 /** Chips with an input: Enter or comma adds, the x removes. */
@@ -376,7 +404,7 @@ function FieldControl({ spec, idPrefix, value, onChange, problems }: { spec: Fie
           ) : null}
           {errors.length ? (
             <p id={`${id}-err`} className="text-xs text-destructive">
-              {errors.map((e) => e.message).join(" ")}
+              {sameOnce(errors.map((e) => e.message))}
             </p>
           ) : null}
         </div>
@@ -574,7 +602,7 @@ export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocke
       ) : null}
       {text("summary", t("field_summary"), { wide: true })}
       {specs.map((s) => (
-        <div key={s.key} className="min-w-0">
+        <div key={s.key} className={cn("min-w-0", fieldSpan(s))}>
           <FieldInput spec={s} idPrefix={idPrefix} value={value.fields[s.key]} onChange={(v) => setField(s.key, v)} problems={problems[`fields.${s.key}`]} />
           {slots.fieldAddon && slotContext && !s.readOnly ? <div className="mt-1 flex flex-wrap gap-2">{slots.fieldAddon({ key: s.key, label: s.label, widget: s.widget }, { ...slotContext, value: value.fields[s.key], setValue: (v) => setField(s.key, v) })}</div> : null}
         </div>

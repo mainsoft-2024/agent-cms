@@ -7,7 +7,8 @@ import userEvent from "@testing-library/user-event";
 import { CmsDocEditor } from "../cms/cms-doc-editor";
 import CmsBlockEditor from "../cms/cms-block-editor";
 import { bodyStats, findInText, fitToolbar, markdownCommands, TOOLBAR_PRIORITY, type FitItem } from "../cms/cms-editor-toolbar";
-import { isVideoFile, pickedMarkdown } from "../cms/cms-block-editor";
+import { isVideoFile, pickedMarkdown, slashQuery } from "../cms/cms-block-editor";
+import { createT, ko } from "../cms/cms-messages";
 import type { BlockEditorCommands } from "../cms/use-cms";
 import { admin, axeViolations, makeServer, renderWith } from "./server";
 
@@ -239,6 +240,9 @@ test("block editor: a heading's menu copies its anchor link and pins and unpins 
   };
   let menu = await openMenu();
   const copy = within(menu).getByRole("option", { name: /Copy anchor link/ });
+  // On a heading the anchor actions come first (what its menu is opened for most), copy highlighted.
+  assert.equal(within(menu).getAllByRole("option")[0], copy);
+  assert.equal(copy.getAttribute("aria-selected"), "true");
   assert.match(copy.textContent ?? "", /#setup-guide/);
   fireEvent.click(copy);
   // user-event puts its own clipboard on navigator: read it back from there.
@@ -505,4 +509,30 @@ test("block editor: a snippet inside a line is a chip; Enter opens its popover t
   await user.click(await screen.findByRole("button", { name: "Remove snippet" }));
   await waitFor(() => assert.equal(ed.last(), "Call  today."));
   assert.ok(!screen.queryByRole("button", { name: /Snippet: / }));
+});
+
+test("/ menu: a query may have spaces between words while something matches (Korean labels have them)", () => {
+  const t = createT(ko);
+  assert.equal(slashQuery("/링크 카드", t)?.[2], "링크 카드");
+  assert.equal(slashQuery("/할 일 목록", t)?.[2], "할 일 목록");
+  assert.equal(slashQuery("/링크 ", t)?.[2], "링크 ", "a space after a word that matches keeps the menu while the next word comes");
+  assert.equal(slashQuery("text /ste", t)?.[2], "ste");
+  assert.equal(slashQuery("/", t)?.[2], "");
+  // A slash that was only a slash: the menu closes at the first space that matches nothing.
+  assert.equal(slashQuery("/usr 폴더", t), null);
+  assert.equal(slashQuery("/ ", t), null);
+  assert.equal(slashQuery("/링크  카드", t), null, "two spaces in a row end the query");
+  assert.equal(slashQuery("and/or", t), null);
+});
+
+test("server messages follow the screens' language; a message the CMS was given in its own words stays", async () => {
+  const { serverText, errorMessage, en } = await import("../cms/cms-messages");
+  const { CmsRemoteError } = await import("@mainsoft/agent-cms/client");
+  const ko = createT((await import("../cms/cms-messages")).ko);
+  const english = createT(en);
+  assert.equal(serverText({ code: "redirect_loop", message: "This redirect would lead back to itself" }, ko), "이 리다이렉트는 자기 자신으로 돌아옴");
+  const { en: serverEn } = await import("@mainsoft/agent-cms/messages/en");
+  assert.equal(serverText({ code: "slug_taken", message: "이미 쓰는 주소임: intro", params: { slug: "intro" } }, english), String(serverEn.slug_taken).replace("{slug}", "intro"));
+  assert.equal(serverText({ code: "redirect_loop", message: "Nope, loops are bad here" }, ko), "Nope, loops are bad here");
+  assert.equal(errorMessage(new CmsRemoteError("This redirect would lead back to itself", "redirect_loop", { params: {} }), ko), "이 리다이렉트는 자기 자신으로 돌아옴");
 });

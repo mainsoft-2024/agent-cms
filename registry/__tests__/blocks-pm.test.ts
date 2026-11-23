@@ -166,3 +166,27 @@ test("editor document: a snippet inside a line is an inline chip and writes back
   const made = s.nodes.doc.create(null, [p]);
   assert.equal(blocksToMarkdown(docToBlocks(made)), "See [[snippet:terms]].");
 });
+
+test("editor document: an escaped \\[[snippet:x]] is text, not a chip, and stays escaped; the server reads the same tokens", async () => {
+  const { snippetKeys } = await import("@mainsoft/agent-cms/markdown");
+  const md = "Write \\[[snippet:vat]] for the note, or use [[snippet:vat]] and `[[snippet:code]]` here.\n\n\\[[snippet:footer]]";
+  const { doc, save } = load(md);
+  const chips: string[] = [];
+  doc.descendants((n) => {
+    if (n.type.name === "snippetRef") chips.push(n.attrs.key as string);
+  });
+  assert.deepEqual(chips, snippetKeys(md), "chips are exactly the tokens the server fills in");
+  assert.deepEqual(chips, ["vat"]);
+  assert.equal(doc.child(1).type.name, "paragraph", "an escaped token alone on its line is text, not the snippet block");
+  assert.ok(doc.textContent.includes("Write [[snippet:vat]] for the note"), doc.textContent);
+  assert.equal(save(), md, "nothing edited: byte for byte");
+  // Written fresh (the clipboard, a changed block): the literal stays escaped, the chip stays a token.
+  const fresh = blocksToMarkdown(docToBlocks(doc));
+  assert.deepEqual(snippetKeys(fresh), ["vat"], fresh);
+  assert.ok(sameMarkdown(fresh, md), fresh);
+  // Typed text that looks like a token is text too (only the menu makes chips).
+  const s = cmsSchema();
+  const typed = s.nodes.doc.create(null, [s.nodes.paragraph.create({ bid: "t" }, [s.text("See [[snippet:terms]].")])]);
+  const out = blocksToMarkdown(docToBlocks(typed));
+  assert.deepEqual(snippetKeys(out), [], out);
+});

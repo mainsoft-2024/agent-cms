@@ -7,7 +7,7 @@
 import type { AnyCollection } from "./cms";
 import type { CmsError, CmsErrorCode, CmsErrorOptions, Diagnostic, ErrorParams } from "./errors";
 import { fieldMarks, DOC_ID_RE, type FieldMark } from "./fields";
-import { anchorOf, headingAnchors, parseMarkdown, snippetKeys, SNIPPET_RE, videoUses } from "./markdown";
+import { anchorOf, headingAnchors, mapSnippetTokens, parseMarkdown, snippetKeys, videoUses } from "./markdown";
 import type { CmsRepo } from "./repo";
 import type { CmsDoc, CmsRedirect, DocContent, DocRef, DocSeo } from "./types";
 import { DEFAULT_VIDEO_HOSTS, hostAllowed, videoEmbed, videoHost } from "./video";
@@ -280,59 +280,16 @@ export function createModel(ctx: ModelContext) {
       const block = b === null ? "" : await expandSnippets(b, depth + 1, [...seen, k]);
       bodies.set(k, { block, inline: b === null ? "" : inlineText(block) });
     }
-    let inFence: string | null = null;
-    return body
-      .split("\n")
-      .map((line) => {
-        const f = /^\s*(`{3,}|~{3,})/.exec(line);
-        if (f) {
-          if (!inFence) inFence = f[1];
-          else if (line.trim().startsWith(inFence)) inFence = null;
-          return line;
-        }
-        if (inFence) return line;
-        const alone = /^\s*\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]\s*$/i.exec(line);
-        if (alone) return bodies.get(alone[1].toLowerCase())?.block ?? "";
-        // Inline code (`…`) shows the token as written.
-        return outsideCode(line, (part) =>
-          part.replace(SNIPPET_RE, (m, k: string) => {
-            const s = bodies.get(k.toLowerCase());
-            if (!s) return "";
-            return s.inline ?? m;
-          })
-        );
-      })
-      .join("\n");
+    // Code fences, inline code and escaped tokens (`\[[snippet:x]]`) stay as written (`mapSnippetTokens`).
+    return mapSnippetTokens(body, (k, alone) => {
+      const s = bodies.get(k);
+      if (!s) return "";
+      return alone ? s.block : s.inline;
+    });
   }
-  /** Keys used inside a line of text (not on a line of their own), code fences skipped. */
+  /** Keys used inside a line of text (not on a line of their own). */
   function inlineSnippetKeys(body: string): Set<string> {
-    const out = new Set<string>();
-    let inFence: string | null = null;
-    for (const line of body.replace(/\r/g, "").split("\n")) {
-      const f = /^\s*(`{3,}|~{3,})/.exec(line);
-      if (f) {
-        if (!inFence) inFence = f[1];
-        else if (line.trim().startsWith(inFence)) inFence = null;
-        continue;
-      }
-      if (inFence || /^\s*\[\[snippet:[a-z0-9][a-z0-9._-]*\]\]\s*$/i.test(line)) continue;
-      outsideCode(line, (part) => {
-        for (const m of part.matchAll(SNIPPET_RE)) out.add(m[1].toLowerCase());
-        return part;
-      });
-    }
-    return out;
-  }
-  /** `fn` applied to the parts of a line outside inline code spans (`` `…` ``, ``` ``…`` ```). */
-  function outsideCode(line: string, fn: (part: string) => string): string {
-    if (!line.includes("`")) return fn(line);
-    let out = "";
-    let last = 0;
-    for (const m of line.matchAll(/(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g)) {
-      out += fn(line.slice(last, m.index)) + m[0];
-      last = m.index! + m[0].length;
-    }
-    return out + fn(line.slice(last));
+    return new Set(snippetKeys(body, { inline: true }));
   }
   /** The text of a snippet that is one paragraph (soft line breaks become spaces); null when it is more. */
   function inlineText(body: string): string | null {
@@ -388,9 +345,11 @@ export function createModel(ctx: ModelContext) {
   }
   /** Documents whose working copy names snippet `key`. */
   async function snippetUsage(key: string): Promise<CmsDoc[]> {
-    const token = `[[snippet:${key.toLowerCase()}]]`;
+    const k = key.toLowerCase();
+    const token = `[[snippet:${k}]]`;
     const out: CmsDoc[] = [];
-    for (const c of ctx.collections.keys()) for (const d of await repo.listDocs({ collection: c })) if (d.body.toLowerCase().includes(token)) out.push(d);
+    // The cheap text test first, then the same reader expansion uses (code and escaped tokens do not count).
+    for (const c of ctx.collections.keys()) for (const d of await repo.listDocs({ collection: c })) if (d.body.toLowerCase().includes(token) && snippetKeys(d.body).includes(k)) out.push(d);
     return out;
   }
 
@@ -522,7 +481,6 @@ export function createModel(ctx: ModelContext) {
 
   const redirectsOn = () => !!ctx.redirects && typeof repo.listRedirects === "function";
   let table: { at: number; rows: Map<string, CmsRedirect> } | null = null;
-  const hits = new Map<string, number>();
   let hitTimer: ReturnType<typeof setTimeout> | null = null;
   async function loadTable(r: CmsRepo = repo): Promise<Map<string, CmsRedirect>> {
     const ttl = ctx.redirects ? ctx.redirects.ttlMs : 30_000;
@@ -534,19 +492,42 @@ export function createModel(ctx: ModelContext) {
   function forgetRedirects() {
     table = null;
   }
+  /**
+   * Visits not written yet, per day of the visit (a batch that spans midnight counts each visit on its
+   * own day), then per redirect. Batches being written stay in `writing` until the write ends, so the
+   * daily series never misses them.
+   */
+  let hits = new Map<string, Map<string, number>>();
+  const writing = new Set<Map<string, Map<string, number>>>();
   async function flushHits(): Promise<void> {
     if (hitTimer) clearTimeout(hitTimer);
     hitTimer = null;
     if (!hits.size || !repo.addRedirectHits) return;
-    const batch = new Map(hits);
-    hits.clear();
-    await repo.addRedirectHits(batch, ctx.nowIso(), ctx.today()).catch((e) => ctx.report(e, "redirect hits"));
+    const batch = hits;
+    hits = new Map();
+    writing.add(batch);
+    try {
+      for (const [day, perId] of [...batch]) {
+        await repo.addRedirectHits(perId, ctx.nowIso(), day).catch((e) => ctx.report(e, "redirect hits"));
+        batch.delete(day);
+      }
+    } finally {
+      writing.delete(batch);
+    }
+  }
+  function countHit(id: string) {
+    const day = ctx.today();
+    const perId = hits.get(day) ?? new Map<string, number>();
+    perId.set(id, (perId.get(id) ?? 0) + 1);
+    hits.set(day, perId);
   }
   /**
    * Public address of a document a redirect follows, cached like the table (TTL; a change in this
    * process forgets it at once). Null: gone, not published, archived, or its collection has no `url()`.
    */
-  let targets: { at: number; rows: Map<string, { col: string; slug: string; url: string } | null> } | null = null;
+  // The cache holds the document (one read per TTL), never a decision about who may read it: whether the
+  // public may open it (`access.read`, a function) is asked again on every visit.
+  let targets: { at: number; rows: Map<string, CmsDoc | null> } | null = null;
   function forgetTargets() {
     targets = null;
   }
@@ -554,17 +535,16 @@ export function createModel(ctx: ModelContext) {
     const ttl = ctx.redirects ? ctx.redirects.ttlMs : 30_000;
     if (!targets || Date.now() - targets.at >= ttl) targets = { at: Date.now(), rows: new Map() };
     const rows = targets.rows;
-    let t = rows.get(id);
-    if (t === undefined) {
-      const d = DOC_ID_RE.test(id) ? await repo.findDocById(id) : null;
-      const pub = d && !d.deletedAt ? (ctx.publicCopy ? ctx.publicCopy(d) : d.published && d.publishedVersion !== null && d.status !== "archived" ? d : null) : null;
-      const slug = pub ? (pub.published?.slug ?? pub.slug) : null;
-      const c = d && slug && ctx.collections.has(d.collection) ? ctx.collection(d.collection) : null;
-      const url = c && slug && c.visibility === "public" ? ctx.urlOf(d!.collection, slug) : null;
-      t = url && slug ? { col: d!.collection, slug, url } : null;
-      rows.set(id, t);
+    let d = rows.get(id);
+    if (d === undefined) {
+      d = DOC_ID_RE.test(id) ? await repo.findDocById(id) : null;
+      rows.set(id, d);
     }
-    return t;
+    const pub = d && !d.deletedAt ? (ctx.publicCopy ? ctx.publicCopy(d) : d.published && d.publishedVersion !== null && d.status !== "archived" ? d : null) : null;
+    const slug = pub ? (pub.published?.slug ?? pub.slug) : null;
+    const c = d && slug && ctx.collections.has(d.collection) ? ctx.collection(d.collection) : null;
+    const url = c && slug && c.visibility === "public" ? ctx.urlOf(d!.collection, slug) : null;
+    return url && slug ? { col: d!.collection, slug, url } : null;
   }
   /**
    * Where `path` goes now, or null. A redirect that follows a document goes to that document's current
@@ -586,7 +566,7 @@ export function createModel(ctx: ModelContext) {
       // The document now lives at the address this redirect starts from: no redirect.
       if (normalizePath(to) === p) return null;
     }
-    hits.set(hit.id, (hits.get(hit.id) ?? 0) + 1);
+    countHit(hit.id);
     if (!hitTimer) {
       hitTimer = setTimeout(() => void flushHits(), 60_000);
       (hitTimer as { unref?: () => void }).unref?.();
@@ -608,7 +588,7 @@ export function createModel(ctx: ModelContext) {
       out.set(id, s);
     };
     for (const r of repo.redirectHitDays ? await repo.redirectHitDays(dayList[0]) : []) add(r.redirectId, r.day, r.n);
-    for (const [id, n] of hits) add(id, today, n);
+    for (const pending of [...writing, hits]) for (const [day, perId] of pending) for (const [id, n] of perId) add(id, day, n);
     return out;
   }
   const validTarget = (to: string) => normalizePath(to) ?? (/^https?:\/\/[^\s]+$/i.test(to) && to.length <= 2000 ? to : null);
@@ -618,6 +598,7 @@ export function createModel(ctx: ModelContext) {
     const from = normalizePath(input.from);
     if (!from) throw fail("redirect_invalid", { reason: "from" });
     let to: string | null;
+    let docId = input.toDocumentId ?? null;
     const rows = await loadTable(r);
     if (input.toDocumentId && input.source === "manual") {
       // A document target: the address is the document's own (it follows later moves when read).
@@ -631,7 +612,11 @@ export function createModel(ctx: ModelContext) {
       if (!to) throw fail("redirect_invalid", { reason: "to" });
       // Follow the target's own redirect (one step is enough: the table never holds chains).
       const next = rows.get(to);
-      if (next && next.id !== input.id) to = next.to;
+      if (next && next.id !== input.id) {
+        to = next.to;
+        // The next step follows a document: so does this one (its `to` is only the address it had last).
+        if (next.toDocumentId && !docId) docId = next.toDocumentId;
+      }
     }
     if (to === from) throw fail("redirect_loop");
     const taken = rows.get(from);
@@ -642,14 +627,15 @@ export function createModel(ctx: ModelContext) {
     let saved: CmsRedirect;
     const status = input.status ?? 301;
     if (input.id) {
-      const u = await r.updateRedirect!(input.id, { from, to, status, toDocumentId: input.toDocumentId, source: input.source });
+      const u = await r.updateRedirect!(input.id, { from, to, status, toDocumentId: input.toDocumentId === undefined && docId === null ? undefined : docId, source: input.source });
       if (!u) throw fail("redirect_not_found");
       saved = u;
-    } else saved = await r.insertRedirect!({ from, to, status, toDocumentId: input.toDocumentId ?? null, source: input.source, createdBy: input.createdBy });
-    // Others that led to `from` now lead straight to `to` (those following a document keep following it).
+    } else saved = await r.insertRedirect!({ from, to, status, toDocumentId: docId, source: input.source, createdBy: input.createdBy });
+    // Others that led to `from` now lead straight to `to` (those following a document keep following it;
+    // plain ones start following the document `from` now follows, so a later move does not strand them).
     for (const x of rows.values()) if (x.to === from && x.id !== saved.id && !(x.toDocumentId && x.source === "manual")) {
       if (x.from === to) await r.deleteRedirect!(x.id);
-      else await r.updateRedirect!(x.id, { to });
+      else await r.updateRedirect!(x.id, x.toDocumentId || !saved.toDocumentId ? { to } : { to, toDocumentId: saved.toDocumentId });
     }
     forgetRedirects();
     return saved;

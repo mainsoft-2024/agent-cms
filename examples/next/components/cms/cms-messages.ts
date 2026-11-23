@@ -2,10 +2,12 @@
 //
 // UI strings for the admin screens. `en` is the default; pass `ko` (or your
 // own catalog, any subset of keys) to <CmsProvider messages={...}>.
-// Placeholders look like {name}. Server errors arrive already translated by
-// the CMS (`createCms({ messages })`), see `errorMessage`.
+// Placeholders look like {name}. Server errors arrive translated by the CMS
+// (`createCms({ messages })`) and follow the screens' language, see `serverText`.
 
 import { isCmsRemoteError } from "@mainsoft/agent-cms/client";
+import { en as serverEn } from "@mainsoft/agent-cms/messages/en";
+import { ko as serverKo } from "@mainsoft/agent-cms/messages/ko";
 
 export const en = {
   _locale: "en",
@@ -720,6 +722,8 @@ export const en = {
   media_pick_left: "{n} more can be added",
   media_pick_full: "No more room: the field takes {max}",
   media_pick_added: "already added",
+  media_pick_wrong_type: "type not allowed here",
+  media_pick_refused: "Not uploaded (this field does not take the type): {names}",
   media_pick_order: "{name}, picked {n}",
   media_pick_clear: "Clear picks",
   media_insert_button: "Insert media",
@@ -1488,11 +1492,11 @@ export const en = {
   rel_results: "Documents",
   rel_none: "No documents found",
   gallery_no_media: "This app has no media library.",
-  gallery_item: "Picture {n} of {total}. Alt+↑ ↓ to move",
+  gallery_item: "Picture {n} of {total}. Alt+← → to move",
   gallery_remove: "Remove picture {n}",
   gallery_add: "Add",
   gallery_added: "Added {n}; {total} files now",
-  gallery_reorder_hint: "Drag to reorder, or Alt+↑ ↓",
+  gallery_reorder_hint: "Drag to reorder, or Alt+← →",
   rows_item: "Item {n}",
   rows_add: "Add a row",
   rows_remove: "Remove item {n}",
@@ -1503,6 +1507,7 @@ export const en = {
   tree_empty: "No documents yet",
   tree_hint: "Drag to reorder or nest. Keyboard: Alt+↑ ↓ order, Alt+→ under the one above, Alt+← out",
   tree_label: "Document tree",
+  tree_count: "{n} documents",
   view_list: "List",
   view_tree: "Tree",
   view_as: "Show as",
@@ -1510,6 +1515,7 @@ export const en = {
   tpl_blank_help: "Start from nothing",
   tpl_by: "Made by {name}",
   tpl_manage: "Manage templates",
+  tpl_manage_short: "Manage",
   tpl_manage_help: "Templates editors saved. Their maker or an admin can rename or delete them.",
   tpl_new_title: "New document",
   tpl_new_help: "Start blank or from a template. People and agents get the same start.",
@@ -1552,6 +1558,7 @@ export const en = {
   seo_field_description: "Description",
   seo_description_empty: "No description: search engines pick some text",
   seo_field_image: "Share image",
+  seo_image_by_url: "or type an address",
   seo_image_size: "{width}×{height}",
   seo_image_small: "{width}×{height}: smaller than 1200×630, share cards may look blurry",
   seo_field_canonical: "Canonical URL",
@@ -1623,6 +1630,7 @@ export const en = {
   blk_group_new: "New blocks",
   blk_steps: "Steps",
   blk_steps_text: "Numbered steps for a how-to",
+  blk_step_placeholder: "Describe this step",
   blk_card: "Link card",
   blk_card_text: "A link with picture and description",
   blk_card_label: "Title",
@@ -1659,6 +1667,7 @@ export const en = {
   blk_anchor_copied: "Copied #{id}",
   blk_anchor_pin: "Pin anchor",
   blk_anchor_pin_hint: "Keeps #{id} when the heading changes",
+  blk_anchor_pin_short: "Stays when the heading changes",
   blk_anchor_unpin: "Unpin anchor",
   blk_quick_upload: "Upload",
   blk_quick_library: "Library",
@@ -1812,9 +1821,9 @@ export const ko: CmsMessages = {
   automation_test: "시험 실행",
   automation_test_text: "문서 하나로 조건을 확인하고 무엇을 할지 보여 줌. 아무것도 바뀌지 않음.",
   automation_test_slug: "문서 주소 (slug)",
-  automation_test_match: "“{title}”은 조건에 맞음. 할 일: {actions}",
-  automation_test_nomatch: "“{title}”은 조건에 맞지 않아 건너뜀.",
-  automation_delete_title: "“{name}”을 삭제할지 확인",
+  automation_test_match: "“{title}”{title|은|는} 조건에 맞음. 할 일: {actions}",
+  automation_test_nomatch: "“{title}”{title|은|는} 조건에 맞지 않아 건너뜀.",
+  automation_delete_title: "“{name}”{name|을|를} 삭제할지 확인",
   automation_delete_text: "실행 기록도 함께 지워짐.",
   automation_saved: "저장했음.",
   automation_enabled: "켜짐",
@@ -1912,7 +1921,7 @@ export const ko: CmsMessages = {
   webhooks_need_key: "웹훅을 쓰려면 createCms에 `secretsKey`가 있어야 함. 서명 키를 이 값으로 암호화해 저장함.",
   webhook_test: "시험 전송",
   webhook_test_ok: "주소가 {ms}ms 만에 응답했음.",
-  webhook_test_failed: "시험 전송에 실패했어요: {result}",
+  webhook_test_failed: "시험 전송 실패: {result}",
   webhook_no_answer: "응답 없음",
   webhook_secret: "서명 키",
   webhook_show: "보기",
@@ -1924,7 +1933,7 @@ export const ko: CmsMessages = {
   webhook_resent: "대기열에 넣었음. 다음 cron 호출 때 나감.",
   webhook_turn_on: "켜기",
   webhook_turned_on: "켬.",
-  webhook_auto_off: "자동으로 꺼졌어요: {reason}",
+  webhook_auto_off: "자동으로 꺼짐: {reason}",
   webhook_edit_title: "웹훅 수정",
   webhook_create: "만들기",
   webhook_dialog_text: "이벤트가 일어나면 이 주소로 서명된 POST를 보냄. 문서 본문은 담지 않음.",
@@ -2049,7 +2058,7 @@ export const ko: CmsMessages = {
   autosave_failed: "자동 저장 실패",
   saved: "v{version} 저장함",
   published_v: "v{version} 게시함",
-  restore_title: "{time}에 저장하지 않은 수정이 있음 ({who})",
+  restore_title: "저장하지 않은 수정이 있음 · {time} ({who})",
   restore: "복구",
   discard: "버리기",
   agent_banner: "{who}가 v{version}에서 {n}곳을 바꿈 (검토 {done}/{total})",
@@ -2423,6 +2432,8 @@ export const ko: CmsMessages = {
   media_pick_left: "{n}개 더 넣을 수 있음",
   media_pick_full: "더 넣을 수 없음: 최대 {max}개",
   media_pick_added: "이미 넣음",
+  media_pick_wrong_type: "넣을 수 없는 형식",
+  media_pick_refused: "올리지 않음 (이 필드가 받지 않는 형식): {names}",
   media_pick_order: "{name}, {n}번째로 고름",
   media_pick_clear: "고른 것 지우기",
   media_insert_button: "미디어 넣기",
@@ -3006,7 +3017,7 @@ export const ko: CmsMessages = {
   transfer_pictures_hint: "글은 여기서 들어옴. 그림까지 가져오려면 명령줄에서 zip을 가져올 것: npx @mainsoft/agent-cms import <zip> --from notion",
   transfer_more_n: "외 {n}개",
   trash_search: "휴지통에서 찾기",
-  trash_no_match: "“{q}”와 맞는 항목 없음.",
+  trash_no_match: "“{q}”{q|과|와} 맞는 항목 없음.",
   trash_not_restored: "{n}개는 복원 못 함",
   trash_some_left: "{n}개 항목",
   trash_deleted_at: "{at}에 지움",
@@ -3191,11 +3202,11 @@ export const ko: CmsMessages = {
   rel_results: "문서",
   rel_none: "맞는 문서 없음",
   gallery_no_media: "이 앱에는 미디어 라이브러리가 없음",
-  gallery_item: "그림 {total}개 중 {n}번째. Alt+↑ ↓로 옮김",
+  gallery_item: "그림 {total}개 중 {n}번째. Alt+← →로 옮김",
   gallery_remove: "{n}번째 그림 빼기",
   gallery_add: "더하기",
   gallery_added: "{n}개 넣음. 지금 {total}개",
-  gallery_reorder_hint: "끌거나 Alt+↑ ↓로 순서 바꿈",
+  gallery_reorder_hint: "끌거나 Alt+← →로 순서 바꿈",
   rows_item: "{n}번째 항목",
   rows_add: "줄 더하기",
   rows_remove: "{n}번째 항목 빼기",
@@ -3206,6 +3217,7 @@ export const ko: CmsMessages = {
   tree_empty: "아직 문서 없음",
   tree_hint: "끌어서 순서·위치 바꿈. 키보드: Alt+↑ ↓ 순서, Alt+→ 위 문서 아래로, Alt+← 밖으로",
   tree_label: "문서 트리",
+  tree_count: "문서 {n}개",
   view_list: "목록",
   view_tree: "트리",
   view_as: "보기",
@@ -3213,6 +3225,7 @@ export const ko: CmsMessages = {
   tpl_blank_help: "아무것도 없이 시작",
   tpl_by: "{name} 만듦",
   tpl_manage: "템플릿 관리",
+  tpl_manage_short: "관리",
   tpl_manage_help: "편집자가 저장한 템플릿. 만든 사람이나 관리자가 이름을 바꾸거나 지울 수 있음",
   tpl_new_title: "새 문서",
   tpl_new_help: "빈 문서나 템플릿으로 시작. 사람과 에이전트가 같은 뼈대로 시작함",
@@ -3237,7 +3250,7 @@ export const ko: CmsMessages = {
   tpl_saved: "“{name}” 템플릿 저장함",
   tpl_applied: "“{name}” 템플릿으로 시작함",
   tpl_dropped: "필드에 맞지 않는 템플릿 값은 뺌: {fields}",
-  refs_title: "다른 문서가 “{title}”을 가리킴",
+  refs_title: "다른 문서가 “{title}”{title|을|를} 가리킴",
   refs_help: "관계 필드로 이 문서를 가리키는 문서가 {n}개 있음",
   refs_list: "이 문서를 가리키는 문서",
   refs_hidden: "볼 수 없는 문서 {n}개 더 있음",
@@ -3255,6 +3268,7 @@ export const ko: CmsMessages = {
   seo_field_description: "설명",
   seo_description_empty: "설명 없음: 검색 엔진이 아무 글이나 고름",
   seo_field_image: "공유 그림",
+  seo_image_by_url: "또는 주소로 넣기",
   seo_image_size: "{width}×{height}",
   seo_image_small: "{width}×{height}. 1200×630보다 작아 공유 카드가 흐리게 보일 수 있음",
   seo_field_canonical: "대표 주소 (canonical)",
@@ -3326,6 +3340,7 @@ export const ko: CmsMessages = {
   blk_group_new: "새 블록",
   blk_steps: "단계",
   blk_steps_text: "번호 붙은 절차",
+  blk_step_placeholder: "이 단계에서 할 일",
   blk_card: "링크 카드",
   blk_card_text: "그림과 설명이 붙은 링크",
   blk_card_label: "제목",
@@ -3362,6 +3377,7 @@ export const ko: CmsMessages = {
   blk_anchor_copied: "#{id} 복사함",
   blk_anchor_pin: "앵커 고정",
   blk_anchor_pin_hint: "제목을 고쳐도 #{id} 유지",
+  blk_anchor_pin_short: "제목을 고쳐도 유지",
   blk_anchor_unpin: "앵커 고정 풀기",
   blk_quick_upload: "올리기",
   blk_quick_library: "라이브러리",
@@ -3460,11 +3476,40 @@ export function createT(messages: Partial<CmsMessages> = {}) {
 
 export type T = ReturnType<typeof createT>;
 
+/** The CMS's own message catalogs, by the `_locale` of a screen catalog. */
+const SERVER: Record<string, Record<string, unknown>> = { en: serverEn as Record<string, unknown>, ko: serverKo as Record<string, unknown> };
+
+function fill(tpl: unknown, params: Record<string, unknown>): string | null {
+  if (typeof tpl === "function") return String((tpl as (p: Record<string, unknown>) => unknown)(params));
+  if (typeof tpl !== "string") return null;
+  return tpl.replace(/\{(\w+)\}/g, (_, k: string) => {
+    const v = params[k];
+    return v == null ? "" : Array.isArray(v) ? v.join(", ") : String(v);
+  });
+}
+
 /**
- * What to show for a failed call: the server's message (already in the CMS's
- * language) for a CmsRemoteError, else a generic line.
+ * A message from the CMS (an error, a problem with a document) in the screens' language. The CMS writes
+ * them in its own language (`createCms({ messages })`); when someone picks another language in the admin,
+ * a stock message (English or Korean, word for word) is written again from its code and values in the
+ * admin's language. A message the CMS was given in its own words stays as it is.
+ */
+export function serverText(m: { code?: string; message: string; params?: Record<string, unknown> }, t: T): string {
+  const want = SERVER[t("_locale" as MessageKey)];
+  if (!m.code || !want || !(m.code in want)) return m.message;
+  const params = m.params ?? {};
+  for (const cat of Object.values(SERVER)) {
+    if (cat === want || !(m.code in cat)) continue;
+    if (fill(cat[m.code], params) === m.message) return fill(want[m.code], params) ?? m.message;
+  }
+  return m.message;
+}
+
+/**
+ * What to show for a failed call: the server's message (in the screens' language, see `serverText`) for a
+ * CmsRemoteError, else a generic line.
  */
 export function errorMessage(e: unknown, t: T): string {
-  if (isCmsRemoteError(e)) return e.code === "network" || e.code === "http" ? t("error_generic") : e.message;
+  if (isCmsRemoteError(e)) return e.code === "network" || e.code === "http" ? t("error_generic") : serverText({ code: e.code, message: e.message, params: e.extra.params as Record<string, unknown> | undefined }, t);
   return t("error_generic");
 }

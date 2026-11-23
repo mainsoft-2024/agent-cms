@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { DIALOG } from "./cms-parts";
+import { CopyButton, DIALOG, StateBadge } from "./cms-parts";
 import { useAsync, useCms, type DocContent } from "./use-cms";
 
 // ── tree ─────────────────────────────────────────────────────────────────────
@@ -157,8 +157,8 @@ export function CmsTreeView({ collection, canWrite, maxDepth, onOpen, hrefFor }:
   const current = focusId ?? rows[0]?.node.id;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {canWrite ? <p className="border-b px-4 py-1.5 text-xs text-muted-foreground md:px-6">{t("tree_hint")}</p> : null}
-      <div role="tree" aria-label={t("tree_label")} aria-busy={busy || undefined} className="flex-1 py-1">
+      {canWrite ? <p className="hidden border-b px-4 py-1.5 text-xs text-muted-foreground sm:block md:px-6">{t("tree_hint")}</p> : null}
+      <div role="tree" aria-label={t("tree_label")} aria-busy={busy || undefined} className="flex-1 px-4 py-2 md:px-6">
         {rows.map((r, i) => {
           const n = r.node;
           const over = drag?.over === n.id ? drag.where : null;
@@ -199,23 +199,25 @@ export function CmsTreeView({ collection, canWrite, maxDepth, onOpen, hrefFor }:
               }}
               onDragEnd={() => setDrag(null)}
               className={cn(
-                "group relative flex h-9 items-center gap-1 pr-3 text-sm outline-none focus-visible:bg-accent",
+                "group relative flex h-10 items-center gap-1.5 border-b pr-1 text-sm outline-none transition-colors duration-150 ease-out hover:bg-accent/50 focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                 over === "inside" && "bg-primary/10 ring-1 ring-inset ring-primary",
-                drag?.id === n.id && "opacity-50"
+                drag?.id === n.id && "opacity-50",
+                n.status === "archived" && "text-muted-foreground"
               )}
-              style={{ paddingLeft: `${12 + r.depth * 20}px` }}
+              style={{ paddingLeft: `${4 + r.depth * 28}px` }}
             >
-              {over === "before" ? <span aria-hidden className="absolute inset-x-2 top-0 h-0.5 bg-primary" /> : null}
-              {over === "after" ? <span aria-hidden className="absolute inset-x-2 bottom-0 h-0.5 bg-primary" /> : null}
-              {canWrite ? <GripVertical aria-hidden className="h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground opacity-0 group-hover:opacity-100" /> : null}
+              {over === "before" ? <span aria-hidden className="absolute -top-px right-0 h-0.5 bg-primary" style={{ left: `${4 + r.depth * 28}px` }} /> : null}
+              {over === "after" ? <span aria-hidden className="absolute -bottom-px right-0 h-0.5 bg-primary" style={{ left: `${4 + r.depth * 28}px` }} /> : null}
+              {canWrite ? <GripVertical aria-hidden className="h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground/70 transition-colors duration-150 ease-out group-hover:text-foreground" /> : null}
               {n.children.length ? (
-                <button type="button" tabIndex={-1} aria-hidden className="rounded p-0.5 text-muted-foreground hover:bg-accent" onClick={() => setOpen((o) => (o.has(n.id) ? (o.delete(n.id), new Set(o)) : new Set(o).add(n.id)))}>
-                  {open.has(n.id) ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                <button type="button" tabIndex={-1} aria-hidden className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-foreground hover:bg-accent" onClick={() => setOpen((o) => (o.has(n.id) ? (o.delete(n.id), new Set(o)) : new Set(o).add(n.id)))}>
+                  {open.has(n.id) ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                 </button>
               ) : (
-                <span className="w-[18px] shrink-0" />
+                <span className="grid h-5 w-5 shrink-0 place-items-center">
+                  <FileText aria-hidden className="h-4 w-4 text-muted-foreground" />
+                </span>
               )}
-              <FileText aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <a
                 href={hrefFor?.(n.slug)}
                 tabIndex={-1}
@@ -228,19 +230,21 @@ export function CmsTreeView({ collection, canWrite, maxDepth, onOpen, hrefFor }:
               >
                 {n.title || n.slug}
               </a>
-              {n.children.length ? <span className="text-xs tabular-nums text-muted-foreground">{n.children.length}</span> : null}
-              <span className={cn("ml-2 shrink-0 rounded px-1.5 py-0.5 text-[11px]", n.published ? "text-green-700 dark:text-green-400" : "bg-muted text-muted-foreground")}>{n.published ? t("state_published") : t(`state_${n.status}` as never)}</span>
+              {n.children.length && !open.has(n.id) ? <span className="text-xs tabular-nums text-muted-foreground">{n.children.length}</span> : null}
+              <StateBadge className={cn("ml-2 shrink-0", n.status === "archived" && "opacity-60")} state={n.status === "archived" ? "archived" : n.published ? "published" : "draft"} />
               {canWrite ? <TreeRowMenu title={n.title || n.slug} moves={movesOf(r)} disabled={busy} /> : null}
             </div>
           );
         })}
       </div>
+      <p className="px-4 py-3 text-xs text-muted-foreground md:px-6">{t("tree_count", { n: countNodes(tree) })}</p>
       <span className="sr-only" role="status" aria-live="polite">
         {say}
       </span>
     </div>
   );
 }
+const countNodes = (ns: TreeNodeView[]): number => ns.reduce((s, n) => s + 1 + countNodes(n.children), 0);
 
 /**
  * The moves of a tree row as a menu, for touch screens (no Alt key, dragging is unreliable) and for mouse users.
@@ -254,14 +258,20 @@ function TreeRowMenu({ title, moves, disabled }: { title: string; moves: Record<
     ["in", t("tree_move_in")],
     ["out", t("tree_move_out")],
   ];
+  const [open, setOpen] = React.useState(false);
+  const openRef = React.useRef(false);
   return (
     <span className="ml-1 shrink-0" onKeyDown={(e) => e.stopPropagation()}>
-      <DropdownMenu>
+      <DropdownMenu open={open} onOpenChange={(o: boolean) => ((openRef.current = o), setOpen(o))}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
             tabIndex={-1}
             draggable={false}
+            // When the menu closes it hands focus back to this button, where the row's arrow keys do nothing: give it to the row.
+            onFocus={(e) => {
+              if (!openRef.current) e.currentTarget.closest<HTMLElement>('[role="treeitem"]')?.focus();
+            }}
             aria-label={t("tree_row_menu", { title })}
             disabled={disabled}
             className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity duration-150 ease-out hover:bg-accent focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100"
@@ -283,6 +293,7 @@ function TreeRowMenu({ title, moves, disabled }: { title: string; moves: Record<
 
 // ── templates ────────────────────────────────────────────────────────────────
 
+const BLANK = "__blank";
 const TEMPLATE_KEY = (c: string) => `agent-cms:template:${c}`;
 /** The template picked for the next new document of a collection (the editor takes it once). */
 export function chooseTemplate(collection: string, t: TemplateView | null) {
@@ -333,26 +344,48 @@ export function fitsSchema(prop: unknown, value: unknown, exists = prop !== unde
   return (Array.isArray(p.type) ? p.type : [p.type]).some(kind);
 }
 
-/** "New document": start empty or from a template. Templates made in the admin can be renamed and deleted here. */
+/**
+ * "New document": pick blank or a template, give it a title (optional), Create. A double click on a card creates
+ * right away. Templates made in the admin can be renamed and deleted here ("Manage").
+ */
 export function TemplatePicker({ collection, onPick, onClose }: { collection: string; onPick: (t: TemplateView | null) => void; onClose: () => void }) {
   const { client, t, me, toast } = useCms();
   const q = useAsync(() => client.templates(collection), [client, collection]);
   const [manage, setManage] = React.useState(false);
   const [rename, setRename] = React.useState<{ id: string; label: string } | null>(null);
+  const [chosen, setChosen] = React.useState<string>(BLANK);
+  const [title, setTitle] = React.useState("");
   const list = q.data ?? [];
   const code = list.filter((x) => x.source !== "admin");
   const mine = list.filter((x) => x.source === "admin");
-  const card = (tpl: TemplateView | null) => (
-    <li key={tpl?.key ?? "__blank"}>
-      <button type="button" onClick={() => onPick(tpl)} className="flex h-full w-full flex-col gap-1 rounded-md border p-3 text-left transition-colors duration-150 ease-out hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <span className="flex items-center gap-2 text-sm font-medium">
-          {tpl ? <LayoutTemplate aria-hidden className="h-4 w-4 text-muted-foreground" /> : <FileText aria-hidden className="h-4 w-4 text-muted-foreground" />}
-          {tpl ? tpl.label : t("tpl_blank")}
-        </span>
-        <span className="line-clamp-2 text-xs text-muted-foreground">{tpl ? (tpl.description ?? tpl.summary ?? (tpl.source === "admin" && tpl.createdBy ? t("tpl_by", { name: tpl.createdBy }) : "")) : t("tpl_blank_help")}</span>
-      </button>
-    </li>
-  );
+  const create = (key = chosen) => {
+    const tpl = list.find((x) => x.key === key) ?? null;
+    const name = title.trim();
+    // A title typed here wins over the template's; a blank document with a title is a template with only that.
+    onPick(name ? { ...(tpl ?? { key: BLANK, label: "" }), title: name } : tpl);
+  };
+  const card = (tpl: TemplateView | null) => {
+    const key = tpl?.key ?? BLANK;
+    const on = chosen === key;
+    return (
+      <li key={key}>
+        <button
+          type="button"
+          aria-pressed={on}
+          onClick={() => setChosen(key)}
+          onDoubleClick={() => create(key)}
+          className={cn(
+            "flex h-full w-full flex-col items-start gap-1 rounded-md border p-3 text-left transition-colors duration-150 ease-out hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            on && "border-foreground ring-1 ring-foreground hover:bg-transparent"
+          )}
+        >
+          {tpl ? <LayoutTemplate aria-hidden className="mb-1 h-4 w-4 text-muted-foreground" /> : <FileText aria-hidden className="mb-1 h-4 w-4 text-muted-foreground" />}
+          <span className="text-sm font-medium">{tpl ? tpl.label : t("tpl_blank")}</span>
+          <span className="line-clamp-2 text-xs text-muted-foreground">{tpl ? (tpl.description ?? tpl.summary ?? (tpl.source === "admin" && tpl.createdBy ? t("tpl_by", { name: tpl.createdBy }) : "")) : t("tpl_blank_help")}</span>
+        </button>
+      </li>
+    );
+  };
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className={DIALOG.lg}>
@@ -362,7 +395,14 @@ export function TemplatePicker({ collection, onPick, onClose }: { collection: st
         </DialogHeader>
         {q.error ? <p className="text-sm text-destructive">{errorMessage(q.error, t)}</p> : null}
         {!manage ? (
-          <div className="grid gap-4">
+          <form
+            id="tpl-new"
+            className="grid gap-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              create();
+            }}
+          >
             <section aria-labelledby="tpl-code">
               <h3 id="tpl-code" className="mb-2 text-xs font-medium text-muted-foreground">
                 {t("tpl_group_code")}
@@ -371,13 +411,22 @@ export function TemplatePicker({ collection, onPick, onClose }: { collection: st
             </section>
             {mine.length ? (
               <section aria-labelledby="tpl-admin">
-                <h3 id="tpl-admin" className="mb-2 text-xs font-medium text-muted-foreground">
-                  {t("tpl_group_admin")}
-                </h3>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h3 id="tpl-admin" className="text-xs font-medium text-muted-foreground">
+                    {t("tpl_group_admin")}
+                  </h3>
+                  <button type="button" className="rounded text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t("tpl_manage")} onClick={() => setManage(true)}>
+                    {t("tpl_manage_short")}
+                  </button>
+                </div>
                 <ul className="grid gap-2 sm:grid-cols-2">{mine.map(card)}</ul>
               </section>
             ) : null}
-          </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="tpl-new-title">{t("field_title")}</Label>
+              <Input id="tpl-new-title" autoFocus maxLength={300} placeholder={list.find((x) => x.key === chosen)?.title ?? t("field_title")} value={title} onChange={(e) => setTitle(e.target.value)} />
+            </div>
+          </form>
         ) : (
           <table className="w-full text-sm">
             <thead>
@@ -446,13 +495,20 @@ export function TemplatePicker({ collection, onPick, onClose }: { collection: st
             </tbody>
           </table>
         )}
-        <DialogFooter className="sm:justify-between">
-          <Button type="button" variant="ghost" onClick={() => setManage((v) => !v)}>
-            {manage ? t("back") : t("tpl_manage")}
-          </Button>
+        <DialogFooter className={manage ? "sm:justify-between" : undefined}>
+          {manage ? (
+            <Button type="button" variant="ghost" onClick={() => setManage(false)}>
+              {t("back")}
+            </Button>
+          ) : null}
           <Button type="button" variant="outline" onClick={onClose}>
             {t("cancel")}
           </Button>
+          {!manage ? (
+            <Button type="submit" form="tpl-new">
+              {t("create")}
+            </Button>
+          ) : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -637,8 +693,9 @@ export function SnippetUses({ collection, slug, onOpen }: { collection: string; 
       <h3 id="snippet-uses" className="mb-1 text-sm font-medium">
         {ok ? t("snip_uses_title", { n: docs.length }) : t("snip_uses_title_plain")}
       </h3>
-      <p className="mb-2 text-xs text-muted-foreground">
+      <p className="mb-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
         {t("snip_token")} <code className="rounded bg-muted px-1 font-mono">{`[[snippet:${slug}]]`}</code>
+        <CopyButton value={`[[snippet:${slug}]]`} label={`[[snippet:${slug}]]`} className="h-6" />
       </p>
       {q.loading ? <p className="text-xs text-muted-foreground">{t("loading")}</p> : null}
       {!q.loading && q.error ? (
@@ -671,8 +728,9 @@ export function SnippetUses({ collection, slug, onOpen }: { collection: string; 
 export type SeoValue = { title?: string | null; description?: string | null; image?: string | null; canonical?: string | null; noindex?: boolean };
 
 /** Search title, description, share image, canonical and noindex, with a search result and a share card preview. */
-export function SeoPanel({ value, onChange, fallback, limits, url, disabled, idPrefix = "cms-seo", descriptionAddon }: { value: SeoValue | null | undefined; onChange: (v: SeoValue | null) => void; fallback: { title: string; description: string; image: string | null }; limits: { titleMax: number; descriptionMax: number }; url: string | null; disabled?: boolean; idPrefix?: string; descriptionAddon?: React.ReactNode }) {
+export function SeoPanel({ value, onChange, fallback, limits, url, disabled, idPrefix = "cms-seo", descriptionAddon, onPickImage }: { value: SeoValue | null | undefined; onChange: (v: SeoValue | null) => void; fallback: { title: string; description: string; image: string | null }; limits: { titleMax: number; descriptionMax: number }; url: string | null; disabled?: boolean; idPrefix?: string; descriptionAddon?: React.ReactNode; /** Opens the media library and gives back `asset:<id>/<name>`; with it the share image is picked, not typed. */ onPickImage?: (done: (ref: string) => void) => void }) {
   const { t, client } = useCms();
+  const [typeImage, setTypeImage] = React.useState(false);
   const v = value ?? {};
   const set = (k: keyof SeoValue, x: unknown) => {
     const next = { ...v, [k]: x === "" ? undefined : x };
@@ -719,7 +777,27 @@ export function SeoPanel({ value, onChange, fallback, limits, url, disabled, idP
           <Label htmlFor={`${idPrefix}-image`} className="text-xs font-medium text-muted-foreground">
             {t("seo_field_image")}
           </Label>
-          <Input id={`${idPrefix}-image`} placeholder={fallback.image ?? "asset:… / https://…"} value={v.image ?? ""} onChange={(e) => set("image", e.target.value)} className="font-mono text-xs" aria-describedby={dims ? `${idPrefix}-image-size` : undefined} />
+          {onPickImage && !typeImage && (!v.image || /^asset:/.test(v.image)) ? (
+            // From the media library: its picture and name, Replace / Remove; an address from another site still can be typed.
+            <div className="flex min-h-11 flex-wrap items-center gap-2">
+              {v.image && imgSrc ? <img src={imgSrc} alt="" className="h-9 w-14 shrink-0 rounded border object-cover" /> : null}
+              {v.image ? <span className="min-w-0 flex-1 truncate text-sm">{decodeURIComponent(/^asset:[a-z0-9]{12}\/(.+)$/.exec(v.image)?.[1] ?? v.image)}</span> : null}
+              <Button type="button" variant="outline" size="sm" id={`${idPrefix}-image`} aria-describedby={dims ? `${idPrefix}-image-size` : undefined} onClick={() => onPickImage((ref) => set("image", ref))}>
+                {v.image ? t("media_replace") : t("media_choose")}
+              </Button>
+              {v.image ? (
+                <Button type="button" variant="ghost" size="sm" onClick={() => set("image", "")}>
+                  {t("media_remove")}
+                </Button>
+              ) : (
+                <button type="button" className="rounded text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setTypeImage(true)}>
+                  {t("seo_image_by_url")}
+                </button>
+              )}
+            </div>
+          ) : (
+            <Input id={`${idPrefix}-image`} autoFocus={typeImage} placeholder={fallback.image ?? "https://…"} value={v.image ?? ""} onChange={(e) => set("image", e.target.value)} className="font-mono text-xs" aria-describedby={dims ? `${idPrefix}-image-size` : undefined} />
+          )}
           {dims ? (
             <p id={`${idPrefix}-image-size`} className={cn("flex items-start gap-1.5 text-xs", small ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")} role={small ? "status" : undefined}>
               {small ? <CircleAlert aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : null}
@@ -741,7 +819,7 @@ export function SeoPanel({ value, onChange, fallback, limits, url, disabled, idP
       <div className="grid min-w-0 content-start gap-3">
         <figure className="rounded-md border p-3">
           <figcaption className="mb-1.5 text-[11px] font-medium text-muted-foreground">{t("seo_preview_search")}</figcaption>
-          <p className="truncate text-xs text-muted-foreground">{url ?? "/"}</p>
+          {url ? <p className="truncate text-xs text-muted-foreground">{url}</p> : null}
           <p className="line-clamp-1 text-base text-blue-700 dark:text-blue-400">{title || t("untitled")}</p>
           <p className="line-clamp-2 text-xs text-muted-foreground">{desc || t("seo_description_empty")}</p>
         </figure>

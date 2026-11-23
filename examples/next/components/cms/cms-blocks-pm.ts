@@ -485,8 +485,9 @@ export function spansToContent(spans: Span[]): JSONContent[] {
     s.text.split(/(\n)/).forEach((part) => {
       if (!part) return;
       if (part === "\n") return void out.push({ type: "hardBreak" });
-      // A snippet token in plain text (not in code or a link) is a chip.
-      if (s.code || s.href) return void out.push(withMarks({ type: "text", text: part }));
+      // A snippet token (a `ref` span: not escaped, not in code or a link) is a chip; the same text
+      // written escaped (`\[[snippet:x]]`) stays text.
+      if (s.code || s.href || !s.ref) return void out.push(withMarks({ type: "text", text: part }));
       let last = 0;
       for (const m of part.matchAll(SNIPPET_IN_TEXT)) {
         if (m.index! > last) out.push(withMarks({ type: "text", text: part.slice(last, m.index) }));
@@ -511,7 +512,7 @@ export function nodeSpans(node: PMNode): Span[] {
     if (!child.isText && !ref) return;
     // A chip without a key (being picked) writes nothing.
     if (ref && !child.attrs.key) return;
-    const s: Span = { text: ref ? `[[snippet:${child.attrs.key as string}]]` : (child.text ?? "") };
+    const s: Span = ref ? { text: `[[snippet:${child.attrs.key as string}]]`, ref: true } : { text: child.text ?? "" };
     for (const m of child.marks) {
       if (m.type.name === "bold") s.b = true;
       else if (m.type.name === "italic") s.i = true;

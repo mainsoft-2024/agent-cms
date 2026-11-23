@@ -19,7 +19,11 @@ If you write your own `CmsRepo`, the new methods (`setDocRefs`, `listDocRefsTo`,
 - **A published document's address changes only when you publish** (with redirects on): a draft save with a new address answers `slug_needs_publish`.
 - **Deleting or archiving a document that relation fields point at** answers `409 doc_referenced` with the list. `DELETE …?force=1`, `POST …/archive` with `{ "force": true }`, `cms.remove(…, { force: true })`, `cms.archive(…, { force: true })` or the tools' `force` go ahead anyway. Collections without relation fields are not affected.
 - **`[[snippet:key]]` inside a line of text** is filled in for readers too when the snippet is one paragraph (before, only a token on a line of its own was). A longer snippet keeps the token there and editors get `snippet_inline_multi`.
-- **`list_templates` needs read rights only.**
+- **`list_templates` needs read rights only.** Without write access, `GET …/_templates` gives each template's name, description and maker, not its title, summary, body or fields.
+- **Heading 4** (`####`) is a heading now; its anchor comes after the `##` and `###` ones, so existing links to sections keep landing where they did.
+- **Uploaded videos in `:::video` blocks count as in use**: deleting such a file asks first, like an image.
+- **`\[[snippet:x]]`** (escaped) shows the token as text and is no use of the snippet.
+- **Tree moves need transactions**: with `DrizzleRepo(db, { transactions: false })`, `cms.move()` answers `transactions_required`.
 - **Agent tools**: six new (`get_tree`, `move_document`, `get_single`, `update_single`, `list_templates`, `list_redirects`). `list_collections` says which collections are trees, singles, snippets, have SEO, templates and relation fields.
 
 ## New, when you want it

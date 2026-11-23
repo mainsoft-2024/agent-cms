@@ -16,7 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AssetThumb, CmsMediaPicker } from "./cms-media-picker";
-import { DIALOG } from "./cms-parts";
+import { DIALOG, StateBadge } from "./cms-parts";
 import { errorMessage } from "./cms-messages";
 import { useAsset, useCms, useDebounced } from "./use-cms";
 
@@ -32,7 +32,7 @@ export interface RelatedLabel {
 }
 
 /** id → label, filled by the editor (`?expand=`) and by picks; `remember` adds picks. */
-export const RelatedLabels = React.createContext<{ labels: Record<string, RelatedLabel | null>; remember: (l: RelatedLabel) => void } | null>(null);
+export const RelatedLabels = React.createContext<{ labels: Record<string, RelatedLabel | null>; remember: (l: RelatedLabel) => void; /** The document being edited: never offered as its own relation. */ self?: string | null } | null>(null);
 
 /** Move item `from` to `to` in a copy of `arr`. */
 export function moved<T>(arr: readonly T[], from: number, to: number): T[] {
@@ -43,11 +43,13 @@ export function moved<T>(arr: readonly T[], from: number, to: number): T[] {
   return next;
 }
 
-/** Alt+↑ / Alt+↓ on a row moves it (keyboard partner of dragging). */
+/** Alt+↑ / Alt+↓ on a row moves it (keyboard partner of dragging); Alt+← / Alt+→ as well (pictures in a row). */
 function moveKeys(i: number, n: number, move: (from: number, to: number) => void) {
   return (e: React.KeyboardEvent) => {
-    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
-    const to = e.key === "ArrowUp" ? i - 1 : i + 1;
+    if (!e.altKey || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+    // Alt+←/→ in a text box inside a row moves by words: only the item itself takes them.
+    if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.target !== e.currentTarget) return;
+    const to = e.key === "ArrowUp" || e.key === "ArrowLeft" ? i - 1 : i + 1;
     if (to < 0 || to >= n) return;
     e.preventDefault();
     move(i, to);
@@ -82,6 +84,31 @@ function useDragOrder(n: number, move: (from: number, to: number) => void) {
   return { rowProps, dragging: from, n };
 }
 
+/**
+ * A picker closed because the field became full: its "Add" button is then off or gone, so focus would fall to
+ * the page. Call the returned function when that happens; once the dialog is gone, the last item gets focus
+ * (where Alt+arrows reorder and Tab reaches its buttons).
+ */
+function useFocusLastWhenFull(open: boolean, listRef: React.RefObject<HTMLElement | null>) {
+  const want = React.useRef(false);
+  React.useEffect(() => {
+    if (open || !want.current) return;
+    let tries = 0;
+    let timer = 0;
+    const step = () => {
+      const at = document.activeElement;
+      // Still in the closing dialog (it keeps focus until its exit is done): look again shortly.
+      if (at?.closest('[role="dialog"]') && ++tries < 40) return void (timer = window.setTimeout(step, 25));
+      want.current = false;
+      const items = listRef.current?.querySelectorAll<HTMLElement>(":scope > li[tabindex]");
+      if (!at || at === document.body || (at instanceof HTMLButtonElement && at.disabled)) items?.[items.length - 1]?.focus();
+    };
+    timer = window.setTimeout(step, 0);
+    return () => window.clearTimeout(timer);
+  }, [open, listRef]);
+  return React.useCallback(() => void (want.current = true), []);
+}
+
 // ── relation ─────────────────────────────────────────────────────────────────
 
 export interface RelationSpec {
@@ -106,16 +133,18 @@ export function RelationField({ spec, id, value, onChange, invalid, describedBy 
   };
   const drag = useDragOrder(ids.length, move);
   const full = spec.many && spec.max !== null && ids.length >= spec.max;
+  const listRef = React.useRef<HTMLUListElement>(null);
+  const focusLast = useFocusLastWhenFull(open, listRef);
   const colLabel = (c: string) => me?.collections.find((x) => x.slug === c)?.label ?? c;
   return (
     <div className={cn("rounded-md border border-input", invalid && "border-destructive")} aria-describedby={describedBy}>
       {ids.length ? (
-        <ul className="divide-y" aria-label={spec.label}>
+        <ul ref={listRef} className="divide-y" aria-label={spec.label}>
           {ids.map((rid, i) => {
             const l = ctx?.labels[rid];
             const missing = l === null;
             return (
-              <li key={rid} {...(spec.many ? drag.rowProps(i) : {})} tabIndex={spec.many ? 0 : undefined} onKeyDown={spec.many ? moveKeys(i, ids.length, move) : undefined} className="group flex min-h-10 items-center gap-2 px-2 py-1.5 text-sm outline-none focus-visible:bg-accent data-[drop-target]:border-t-2 data-[drop-target]:border-t-primary">
+              <li key={rid} {...(spec.many ? drag.rowProps(i) : {})} tabIndex={spec.many ? 0 : undefined} onKeyDown={spec.many ? moveKeys(i, ids.length, move) : undefined} className="group flex min-h-9 items-center gap-2 px-2 py-1 text-sm outline-none focus-visible:bg-accent data-[drop-target]:border-t-2 data-[drop-target]:border-t-primary">
                 {spec.many ? <GripVertical aria-hidden className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground" /> : <Link2 aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />}
                 <span className="min-w-0 flex-1">
                   <span className={cn("block truncate", missing && "text-destructive line-through")}>{missing ? t("rel_missing") : (l?.title ?? rid)}</span>
@@ -136,6 +165,12 @@ export function RelationField({ spec, id, value, onChange, invalid, describedBy 
                     </Button>
                   </span>
                 ) : null}
+                {!spec.many ? (
+                  // One document: change it from the same line (no second row under it).
+                  <Button type="button" variant="ghost" size="sm" id={id} className="h-7 shrink-0 px-2 text-xs text-muted-foreground" onClick={() => setOpen(true)}>
+                    {t("rel_change")}
+                  </Button>
+                ) : null}
                 <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label={t("rel_remove", { title: l?.title ?? rid })} onClick={() => set(ids.filter((x) => x !== rid))}>
                   <X aria-hidden className="h-3.5 w-3.5" />
                 </Button>
@@ -144,13 +179,15 @@ export function RelationField({ spec, id, value, onChange, invalid, describedBy 
           })}
         </ul>
       ) : null}
-      <div className={cn("flex items-center gap-2 px-2 py-1.5", ids.length && "border-t")}>
-        <Button type="button" variant="ghost" size="sm" id={id} className="h-8 gap-1.5 px-2 text-muted-foreground" disabled={full} onClick={() => setOpen(true)}>
-          <Plus aria-hidden className="h-4 w-4" />
-          {spec.many ? t("rel_add") : ids.length ? t("rel_change") : t("rel_choose")}
-        </Button>
-        {spec.many && spec.max !== null ? <span className="ml-auto text-xs tabular-nums text-muted-foreground">{t("rel_count", { n: ids.length, max: spec.max })}</span> : null}
-      </div>
+      {spec.many || !ids.length ? (
+        <div className={cn("flex items-center gap-2 px-1 py-0.5", ids.length && "border-t")}>
+          <Button type="button" variant="ghost" size="sm" id={id} className="h-8 gap-1.5 px-2 text-muted-foreground" disabled={full} onClick={() => setOpen(true)}>
+            <Plus aria-hidden className="h-4 w-4" />
+            {spec.many ? t("rel_add") : t("rel_choose")}
+          </Button>
+          {spec.many && spec.max !== null ? <span className="ml-auto pr-1 text-xs tabular-nums text-muted-foreground">{t("rel_count", { n: ids.length, max: spec.max })}</span> : null}
+        </div>
+      ) : null}
       <span className="sr-only" aria-live="polite">
         {say}
       </span>
@@ -158,11 +195,12 @@ export function RelationField({ spec, id, value, onChange, invalid, describedBy 
         <RelationPicker
           title={spec.label}
           collections={spec.collections}
-          exclude={ids}
+          exclude={ctx?.self ? [...ids, ctx.self] : ids}
           onClose={() => setOpen(false)}
           onPick={(d) => {
             ctx?.remember({ id: d.id, collection: d.collection, slug: d.slug, title: d.title, status: d.status });
             set(spec.many ? [...ids, d.id] : [d.id]);
+            if (spec.many && spec.max !== null && ids.length + 1 >= spec.max) focusLast();
             if (!spec.many || (spec.max !== null && ids.length + 1 >= spec.max)) setOpen(false);
           }}
         />
@@ -208,7 +246,16 @@ export function RelationPicker({ title, collections, exclude = [], onPick, onClo
   const rows = kept ? kept.rows : null;
   const error = kept && !pending ? kept.error : null;
   const shown = (rows ?? []).filter((d) => !exclude.includes(d.id));
+  // A pick takes its row out of the list: the highlight stays on a row that is still there.
+  const cur = Math.max(0, Math.min(active, shown.length - 1));
   const pick = (d: DocSummary | undefined) => !pending && d && onPick(d);
+  const searchRef = React.useRef<HTMLInputElement>(null);
+  React.useEffect(() => {
+    // The search box takes focus, not the first collection tab: a dialog puts focus on the first thing it can
+    // (the tabs, when there are several collections), and typing would then go nowhere.
+    const id = window.requestAnimationFrame(() => (searchRef.current ?? document.querySelector<HTMLInputElement>(`[aria-controls="${listId}"]`))?.focus());
+    return () => window.cancelAnimationFrame(id);
+  }, [listId]);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className={cn(DIALOG.md, "gap-3")}>
@@ -219,7 +266,17 @@ export function RelationPicker({ title, collections, exclude = [], onPick, onClo
         {collections.length > 1 ? (
           <div role="tablist" aria-label={t("rel_collection")} className="flex flex-wrap gap-1">
             {collections.map((c) => (
-              <button key={c} type="button" role="tab" aria-selected={c === col} onClick={() => setCol(c)} className={cn("rounded-md border px-2.5 py-1 text-xs transition-colors duration-150 ease-out", c === col ? "border-primary bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-accent")}>
+              <button key={c} type="button" role="tab" aria-selected={c === col} tabIndex={c === col ? 0 : -1} onClick={() => setCol(c)}
+                onKeyDown={(e) => {
+                  // Arrow keys move between collections (a tab list), Enter/Space pick as a click does.
+                  if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+                  e.preventDefault();
+                  const i = collections.indexOf(c) + (e.key === "ArrowRight" ? 1 : -1);
+                  const next = collections[(i + collections.length) % collections.length];
+                  setCol(next);
+                  (e.currentTarget.parentElement?.querySelector<HTMLElement>(`[data-col="${next}"]`))?.focus();
+                }}
+                data-col={c} className={cn("rounded-md border px-2.5 py-1 text-xs transition-colors duration-150 ease-out", c === col ? "border-primary bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-accent")}>
                 {me?.collections.find((x) => x.slug === c)?.label ?? c}
               </button>
             ))}
@@ -228,11 +285,12 @@ export function RelationPicker({ title, collections, exclude = [], onPick, onClo
         <div className="relative">
           <Search aria-hidden className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
+            ref={searchRef}
             autoFocus
             role="combobox"
             aria-expanded
             aria-controls={listId}
-            aria-activedescendant={shown[active] ? `${listId}-${shown[active].id}` : undefined}
+            aria-activedescendant={shown[cur] ? `${listId}-${shown[cur].id}` : undefined}
             aria-label={t("rel_search")}
             placeholder={t("rel_search")}
             className="h-9 pl-8"
@@ -241,9 +299,9 @@ export function RelationPicker({ title, collections, exclude = [], onPick, onClo
             onKeyDown={(e) => {
               // A Korean (or other IME) word still being composed: its Enter and arrows belong to the IME.
               if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-              if (e.key === "ArrowDown") (e.preventDefault(), setActive((a) => Math.min(a + 1, shown.length - 1)));
-              else if (e.key === "ArrowUp") (e.preventDefault(), setActive((a) => Math.max(a - 1, 0)));
-              else if (e.key === "Enter") (e.preventDefault(), pick(shown[active]));
+              if (e.key === "ArrowDown") (e.preventDefault(), setActive(Math.min(cur + 1, shown.length - 1)));
+              else if (e.key === "ArrowUp") (e.preventDefault(), setActive(Math.max(cur - 1, 0)));
+              else if (e.key === "Enter") (e.preventDefault(), pick(shown[cur]));
             }}
           />
         </div>
@@ -256,18 +314,18 @@ export function RelationPicker({ title, collections, exclude = [], onPick, onClo
               key={d.id}
               id={`${listId}-${d.id}`}
               role="option"
-              aria-selected={i === active}
+              aria-selected={i === cur}
               aria-disabled={pending || undefined}
               onMouseEnter={() => setActive(i)}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => pick(d)}
-              className={cn("flex items-center gap-2 px-3 py-2 text-sm transition-opacity duration-150 ease-out", pending ? "cursor-default opacity-60" : "cursor-pointer", i === active && "bg-accent")}
+              className={cn("flex items-center gap-2 px-3 py-2 text-sm transition-opacity duration-150 ease-out", pending ? "cursor-default opacity-60" : "cursor-pointer", i === cur && "bg-accent")}
             >
               <span className="min-w-0 flex-1">
                 <span className="block truncate">{d.title || d.slug}</span>
                 <span className="block truncate font-mono text-xs text-muted-foreground">{d.slug}</span>
               </span>
-              {d.state !== "published" ? <span className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground">{t(`state_${d.status}` as never)}</span> : null}
+              <StateBadge className="shrink-0" state={d.state} />
             </li>
           ))}
         </ul>
@@ -296,12 +354,14 @@ export function GalleryField({ id, label, value, onChange, max, accept, store, f
   };
   const drag = useDragOrder(ids.length, move);
   const full = max !== null && ids.length >= max;
+  const listRef = React.useRef<HTMLUListElement>(null);
+  const focusLast = useFocusLastWhenFull(open, listRef);
   if (!me?.media) return <p className="text-xs text-muted-foreground">{t("gallery_no_media")}</p>;
   return (
     <div className={cn("rounded-md border border-input p-2", invalid && "border-destructive")} aria-describedby={describedBy}>
-      <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6" aria-label={label}>
+      <ul ref={listRef} className="flex flex-wrap gap-2" aria-label={label}>
         {ids.map((aid, i) => (
-          <li key={aid} {...drag.rowProps(i)} tabIndex={0} onKeyDown={moveKeys(i, ids.length, move)} aria-label={t("gallery_item", { n: i + 1, total: ids.length })} className="group relative rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring data-[drop-target]:ring-2 data-[drop-target]:ring-primary">
+          <li key={aid} {...drag.rowProps(i)} tabIndex={0} onKeyDown={moveKeys(i, ids.length, move)} aria-label={t("gallery_item", { n: i + 1, total: ids.length })} className="group relative w-24 shrink-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring data-[drop-target]:ring-2 data-[drop-target]:ring-primary">
             <GalleryThumb id={aid} />
             <span className="absolute left-1 top-1 rounded bg-background/80 px-1 text-[11px] tabular-nums">{i + 1}</span>
             {/* Buttons show on hover and focus; on touch screens (no hover) they are always there. */}
@@ -321,7 +381,7 @@ export function GalleryField({ id, label, value, onChange, max, accept, store, f
           </li>
         ))}
         {!full ? (
-          <li>
+          <li className="w-24 shrink-0">
             <button type="button" id={id} onClick={() => setOpen(true)} className="flex aspect-square w-full flex-col items-center justify-center gap-1 rounded-md border border-dashed text-xs text-muted-foreground transition-colors duration-150 ease-out hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <Plus aria-hidden className="h-4 w-4" />
               {t("gallery_add")}
@@ -348,6 +408,7 @@ export function GalleryField({ id, label, value, onChange, max, accept, store, f
             if (!fresh.length) return;
             set([...ids, ...fresh]);
             setSay(t("gallery_added", { n: fresh.length, total: ids.length + fresh.length }));
+            if (max !== null && ids.length + fresh.length >= max) focusLast();
           },
         }}
         kinds={accept?.every((x) => x.startsWith("image/")) ? ["image"] : undefined} accept={accept} store={store} field={field} />

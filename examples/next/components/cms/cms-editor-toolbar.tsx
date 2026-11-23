@@ -935,33 +935,36 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
         {stat ? <Sep /> : null}
         {stat}
       </div>
-      {/* Copies of the items, never shown: their widths decide what fits. */}
-      <div ref={measureRef} aria-hidden data-tb-measure="" className="pointer-events-none invisible absolute left-0 top-0 flex h-0 items-center gap-px overflow-hidden whitespace-nowrap">
-        {slots.map((x) =>
-          x.key === "style" ? (
-            <span key={x.key} data-tb-m="style" className={cn(BTN, WIDE, "min-w-[4.5rem] justify-between")}>
-              <span className="truncate">{t(styleNow.label)}</span>
-              <ChevronDown className="size-3" />
-            </span>
-          ) : x.key === "insert" ? (
-            <span key={x.key} data-tb-m="insert" className={cn(BTN, WIDE)}>
-              <Plus className="size-4" />
-              <span>{t("tb_insert_short")}</span>
-              <ChevronDown className="size-3" />
-            </span>
-          ) : (
-            <span key={x.key} data-tb-m={x.key} className={BTN} />
-          ),
-        )}
-        <span data-tb-m="more" className={BTN} />
-        <Sep data-tb-m="sep" />
-        <span data-tb-m="stat-full" className={STAT}>
-          {wordsText}
-          {minText ? ` · ${minText}` : null}
-        </span>
-        <span data-tb-m="stat-short" className={STAT}>
-          {wordsText}
-        </span>
+      {/* Copies of the items, never shown: their widths decide what fits. The zero-size box around them keeps
+          their full width from widening the scrolling page (a sideways scrollbar under a narrow window). */}
+      <div aria-hidden className="pointer-events-none invisible absolute left-0 top-0 h-0 w-0 overflow-hidden">
+        <div ref={measureRef} data-tb-measure="" className="flex h-0 w-max items-center gap-px whitespace-nowrap">
+          {slots.map((x) =>
+            x.key === "style" ? (
+              <span key={x.key} data-tb-m="style" className={cn(BTN, WIDE, "min-w-[4.5rem] justify-between")}>
+                <span className="truncate">{t(styleNow.label)}</span>
+                <ChevronDown className="size-3" />
+              </span>
+            ) : x.key === "insert" ? (
+              <span key={x.key} data-tb-m="insert" className={cn(BTN, WIDE)}>
+                <Plus className="size-4" />
+                <span>{t("tb_insert_short")}</span>
+                <ChevronDown className="size-3" />
+              </span>
+            ) : (
+              <span key={x.key} data-tb-m={x.key} className={BTN} />
+            ),
+          )}
+          <span data-tb-m="more" className={BTN} />
+          <Sep data-tb-m="sep" />
+          <span data-tb-m="stat-full" className={STAT}>
+            {wordsText}
+            {minText ? ` · ${minText}` : null}
+          </span>
+          <span data-tb-m="stat-short" className={STAT}>
+            {wordsText}
+          </span>
+        </div>
       </div>
     </div>
   );

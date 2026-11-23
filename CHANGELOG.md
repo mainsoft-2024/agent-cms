@@ -25,7 +25,13 @@ The content model, first half: documents point at each other, nest, hold one doc
 
 ### Changed
 - Tree moves of one collection run one at a time (a queue in the process, `pg_advisory_xact_lock` on Postgres across servers), so two opposite moves at once can no longer make a loop. Custom repos may add `lockTree(collection)`.
-- `list_templates` (and `GET …/_templates`) need read rights only, not write.
+- `list_templates` (and `GET …/_templates`) need read rights only, not write. Without write access `GET …/_templates` (and `cms.core.templates()`) answers names only: no title, summary, body or fields, since a saved template may copy a draft. Writers get the content without fields a `fieldAccess` rule hides from them.
+- Tree moves on a driver without transactions (`DrizzleRepo(db, { transactions: false })`) answer `transactions_required`: the lock that keeps two moves from making a loop needs one.
+- Heading 4 ids come after every `##` and `###` took theirs, so adding a `####` never moves an existing anchor (`#### Setup` above `## Setup`: the `##` keeps `#setup`).
+- Media in use (`usage`, the delete check) counts uploaded videos in `:::video` blocks, also inside columns, toggles and steps.
+- An escaped `\[[snippet:x]]` is text: not filled in, not counted as a use, not a chip in the editor. Tokens in inline code and code fences are ignored by the warnings and the uses list too. `parseInline()` returns `{ t: "snippet" }` for a real token.
+- A plain redirect leading to one that follows a document follows the document too (either creation order), so the document's later renames reach both. Redirects to documents ask the collection's `access.read` rule on every visit (only the document is cached). Visits are counted on the day they happened, also when the minute's batch crosses midnight. `cms.redirects.flushHits()` writes the counted visits now.
+- Gallery fields: the media picker shows files of a type the field does not take as not pickable, and does not upload them.
 - `list_collections` says which collections are trees, singles, snippets, have SEO, templates and relation fields; `get_document` keeps snippet tokens.
 - The address of a published document is no longer locked when redirects are on; it changes when you publish (a draft save with a new address answers `slug_needs_publish`).
 - A document GET whose body or fields depend on other documents (snippets, `?expand`) sends an ETag that follows the content.

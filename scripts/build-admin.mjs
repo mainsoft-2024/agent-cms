@@ -19,6 +19,7 @@ const alias = {
     b.onResolve({ filter: /^@\/(components\/ui|lib)\// }, (a) => ({ path: resolveTs(join(root, "admin", a.path.slice(2))) }));
     b.onResolve({ filter: /^@mainsoft\/agent-cms\/client$/ }, () => ({ path: join(root, "src/client.ts") }));
     b.onResolve({ filter: /^@mainsoft\/agent-cms\/(markdown|html-inspect|diff|types)$/ }, (a) => ({ path: join(root, `src/${a.path.split("/").pop()}.ts`) }));
+    b.onResolve({ filter: /^@mainsoft\/agent-cms\/messages\/(en|ko)$/ }, (a) => ({ path: join(root, `src/messages/${a.path.split("/").pop()}.ts`) }));
   },
 };
 function resolveTs(p) {

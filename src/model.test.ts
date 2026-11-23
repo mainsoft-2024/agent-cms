@@ -300,3 +300,21 @@ test("delta fixes: a closed snippet stops showing at once; a stale If-Match on a
   assert.equal((await put({ doc: { fields: { name: "B" } } })).status, 200);
   assert.equal((await put({ doc: { fields: { name: "C" } }, expectedVersion: 2 }, { "if-match": '"v1"' })).status, 409);
 });
+
+test("fields: marks made by another copy of the package (a config loaded through jiti) still reach the server's JSON Schema", async () => {
+  // A second, separate instance of fields.ts, as a config loader that keeps its own module cache would make.
+  const other = (await import(`./fields.ts?copy=${Date.now()}`)) as typeof import("./fields");
+  assert.notEqual(other.relation, relation);
+  const schema = toJsonSchema(z.object({ author: other.relation("people").optional(), photos: other.assetIds({ max: 2 }) })) as { properties: Record<string, Record<string, unknown>> };
+  assert.deepEqual(schema.properties.author["x-cms-relation"], { collections: ["people"], many: false, max: null });
+  assert.deepEqual(schema.properties.photos["x-cms-gallery"], { max: 2, accept: null });
+});
+
+test("video: `video.hosts` adds to YouTube and Vimeo, it does not replace them", async () => {
+  const repo = new MemoryRepo();
+  const guides = defineCollection({ slug: "guides", label: "Guides", visibility: "public" });
+  const cms = createCms({ repo, collections: [guides], video: { hosts: ["loom.com"] } });
+  await cms.create(admin, "guides", { slug: "a", title: "A", body: ":::video\nhttps://www.loom.com/share/0123456789abcdef\n:::" });
+  await cms.create(admin, "guides", { slug: "b", title: "B", body: ":::video\nhttps://youtu.be/dQw4w9WgXcQ\n:::" });
+  await rejects(cms.create(admin, "guides", { slug: "c", title: "C", body: ":::video\nhttps://evil.example/v.mp4\n:::" }), "video_host_blocked");
+});

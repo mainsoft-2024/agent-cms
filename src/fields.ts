@@ -12,7 +12,10 @@ export type FieldMark =
   | { kind: "relation"; collections: string[]; many: boolean; max: number | null }
   | { kind: "gallery"; max: number | null; accept: string[] | null };
 
-const MARKS = new WeakMap<object, FieldMark>();
+// One table for the whole process: a config loaded through another module loader (jiti in `dev` and the
+// CLI, a separate bundle) gets its own copy of this file, and its marks must still be seen by the server's copy.
+const MARKS_KEY = Symbol.for("@mainsoft/agent-cms:field-marks");
+const MARKS: WeakMap<object, FieldMark> = ((globalThis as Record<symbol, unknown>)[MARKS_KEY] as WeakMap<object, FieldMark> | undefined) ?? ((globalThis as Record<symbol, unknown>)[MARKS_KEY] = new WeakMap<object, FieldMark>());
 
 /** A document id (uuid shape). */
 export const DOC_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
