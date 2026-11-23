@@ -5,6 +5,7 @@
  */
 
 import { SCHEMA_VERSION } from "./schema-version";
+import type { AnchorAlias, CmsRedirect, DocRef } from "./types";
 import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter, CmsJob, CmsRecord, CmsWebhook, WebhookDelivery } from "./types";
 
 export type DocPatch = Partial<Omit<CmsDoc, "id" | "collection" | "createdAt">>;
@@ -278,7 +279,26 @@ export interface CmsRepo {
   cacheNamespace?(): string;
   /** One page of a list, filtered, sorted and cut in the database. */
   pageDocs?(q: DocPageQuery): Promise<DocPage>;
+
+  // ── 0.21.0 (schema 10): optional, so a repo written for an older version keeps working ──
+  /** Replace what `fromId` points at through relation fields. */
+  setDocRefs?(fromId: string, refs: readonly Omit<DocRef, "fromId">[]): Promise<void>;
+  /** Documents pointing at `toId`. */
+  listDocRefsTo?(toId: string): Promise<DocRef[]>;
+  /** Add old heading anchors (an existing `old` is pointed at the new `current`). */
+  addAnchorAliases?(documentId: string, rows: readonly { old: string; current: string }[]): Promise<void>;
+  listAnchorAliases?(documentId: string): Promise<AnchorAlias[]>;
+  listRedirects?(): Promise<CmsRedirect[]>;
+  /** A second row with the same `from` is refused. */
+  insertRedirect?(r: NewRedirect): Promise<CmsRedirect>;
+  updateRedirect?(id: string, patch: RedirectPatch): Promise<CmsRedirect | null>;
+  deleteRedirect?(id: string): Promise<void>;
+  /** Add counted visits (one statement per redirect). */
+  addRedirectHits?(hits: ReadonlyMap<string, number>, at: string): Promise<void>;
 }
+
+export type NewRedirect = Pick<CmsRedirect, "from" | "to" | "toDocumentId" | "status" | "source" | "createdBy">;
+export type RedirectPatch = Partial<Pick<CmsRedirect, "from" | "to" | "toDocumentId" | "status" | "source">>;
 
 /** A row of the change log. */
 export interface ChangeRow {
@@ -378,6 +398,9 @@ export class MemoryRepo implements CmsRepo {
   webhooks: CmsWebhook[] = [];
   deliveries: WebhookDelivery[] = [];
   meta = new Map<string, unknown>([["schema_version", SCHEMA_VERSION]]);
+  docRefs: DocRef[] = [];
+  anchorAliases: AnchorAlias[] = [];
+  redirects: CmsRedirect[] = [];
   private seq = 0;
   private id = () => `00000000-0000-4000-8000-${String(++this.seq).padStart(12, "0")}`;
 
@@ -390,6 +413,9 @@ export class MemoryRepo implements CmsRepo {
       assetRefs: this.assetRefs.map((r) => ({ ...r })),
       releases: structuredClone(this.releases),
       comments: structuredClone(this.comments),
+      docRefs: this.docRefs.map((r) => ({ ...r })),
+      anchorAliases: this.anchorAliases.map((r) => ({ ...r })),
+      redirects: structuredClone(this.redirects),
       changesTop: this.changeBase,
     };
     try {
@@ -403,6 +429,9 @@ export class MemoryRepo implements CmsRepo {
       this.assetRefs = snap.assetRefs;
       this.releases = snap.releases;
       this.comments = snap.comments;
+      this.docRefs = snap.docRefs;
+      this.anchorAliases = snap.anchorAliases;
+      this.redirects = snap.redirects;
       throw e;
     }
   }
@@ -451,6 +480,61 @@ export class MemoryRepo implements CmsRepo {
     this.assetRefs = this.assetRefs.filter((r) => r.documentId !== id);
     this.comments = this.comments.filter((c) => c.documentId !== id);
     this.presence = this.presence.filter((p) => p.documentId !== id);
+    this.docRefs = this.docRefs.filter((r) => r.fromId !== id);
+    this.anchorAliases = this.anchorAliases.filter((r) => r.documentId !== id);
+  }
+  async setDocRefs(fromId: string, refs: readonly Omit<DocRef, "fromId">[]) {
+    this.docRefs = this.docRefs.filter((r) => r.fromId !== fromId);
+    const seen = new Set<string>();
+    for (const r of refs) {
+      const k = `${r.toId}|${r.field}`;
+      if (seen.has(k) || (!r.inDraft && !r.inPublished)) continue;
+      seen.add(k);
+      this.docRefs.push({ fromId, toId: r.toId, field: r.field, inDraft: r.inDraft, inPublished: r.inPublished });
+    }
+  }
+  async listDocRefsTo(toId: string) {
+    return this.docRefs.filter((r) => r.toId === toId).map((r) => ({ ...r }));
+  }
+  async addAnchorAliases(documentId: string, rows: readonly { old: string; current: string }[]) {
+    const now = new Date().toISOString();
+    for (const r of rows) {
+      const have = this.anchorAliases.find((a) => a.documentId === documentId && a.old === r.old);
+      if (have) have.current = r.current;
+      else this.anchorAliases.push({ documentId, old: r.old, current: r.current, createdAt: now });
+    }
+  }
+  async listAnchorAliases(documentId: string) {
+    return this.anchorAliases.filter((a) => a.documentId === documentId).map((a) => ({ ...a }));
+  }
+  async listRedirects() {
+    return this.redirects.map((r) => ({ ...r })).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  }
+  async insertRedirect(r: NewRedirect) {
+    if (this.redirects.some((x) => x.from === r.from)) throw new Error("duplicate redirect");
+    const now = new Date().toISOString();
+    const row: CmsRedirect = { ...r, id: this.id(), hits: 0, lastHitAt: null, createdAt: now, updatedAt: now };
+    this.redirects.push(row);
+    return { ...row };
+  }
+  async updateRedirect(id: string, patch: RedirectPatch) {
+    const r = this.redirects.find((x) => x.id === id);
+    if (!r) return null;
+    if (patch.from && patch.from !== r.from && this.redirects.some((x) => x.from === patch.from)) throw new Error("duplicate redirect");
+    Object.assign(r, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)), { updatedAt: new Date().toISOString() });
+    return { ...r };
+  }
+  async deleteRedirect(id: string) {
+    this.redirects = this.redirects.filter((r) => r.id !== id);
+  }
+  async addRedirectHits(hits: ReadonlyMap<string, number>, at: string) {
+    for (const [id, n] of hits) {
+      const r = this.redirects.find((x) => x.id === id);
+      if (r) {
+        r.hits += n;
+        r.lastHitAt = at;
+      }
+    }
   }
   async insertVersion(v: NewVersion) {
     if (this.versions.some((x) => x.documentId === v.documentId && x.version === v.version)) throw new Error("duplicate version");

@@ -207,7 +207,11 @@ export interface Me {
   timeZone?: string;
   /** The media library, when the app has one and this actor may see it. */
   media?: MediaInfo | null;
-  collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean }[];
+  collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean; single?: boolean; tree?: boolean; snippets?: boolean }[];
+  /** 0.21.0: redirects are on and this caller manages them. */
+  redirects?: boolean;
+  /** 0.21.0: hosts `:::video` blocks may embed. */
+  videoHosts?: string[];
   /** The CMS's own sign-in, when the app uses it (`createAuth`). */
   auth?: { passwords: boolean; passkeys: boolean; sso: { label: string } | null; mail: boolean; adminPath: string; people: boolean } | null;
 }
@@ -364,6 +368,77 @@ export interface CollectionSchema {
   /** The collection's review rule, and whether it applies to you. */
   review?: { agents?: "required"; everyone?: "required" } | null;
   needsReview?: boolean;
+  /** 0.21.0: documents form a tree. */
+  tree?: { maxDepth: number } | null;
+  /** 0.21.0: one document only (`defineSingle`). */
+  single?: boolean;
+  /** 0.21.0: documents of this collection are snippets. */
+  snippets?: boolean;
+  /** 0.21.0: search engine details per document, with the length hints. */
+  seo?: { titleMax: number; descriptionMax: number } | null;
+  /** 0.21.0: the admin hides the body. */
+  hideBody?: boolean;
+  /** 0.21.0: relation fields. */
+  relations?: { path: string; collections: string[]; many: boolean }[];
+  templates?: boolean;
+  /** 0.21.0: a published document's address may change (the old one redirects). */
+  redirects?: boolean;
+  /** 0.21.0: collections whose documents are snippets. */
+  snippetCollections?: string[];
+}
+
+/** 0.21.0 content model shapes. */
+export interface TreeNodeView {
+  id: string;
+  slug: string;
+  title: string;
+  status: string;
+  published: boolean;
+  position: string | null;
+  children: TreeNodeView[];
+}
+export interface TemplateView {
+  key: string;
+  id?: string;
+  label: string;
+  description?: string;
+  icon?: string;
+  title?: string;
+  summary?: string;
+  body?: string;
+  fields?: Record<string, unknown>;
+  source?: "code" | "admin";
+  createdBy?: string | null;
+  createdAt?: string;
+}
+export interface RedirectView {
+  id: string;
+  from: string;
+  to: string;
+  toDocumentId: string | null;
+  status: 301 | 302;
+  source: "auto" | "manual";
+  hits: number;
+  lastHitAt: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface DocRefView {
+  id: string | null;
+  collection: string;
+  slug: string;
+  title: string;
+  status: string | null;
+  fields: string[];
+}
+export interface SeoView {
+  title: string;
+  description: string;
+  image: string | null;
+  canonical: string | null;
+  noindex: boolean;
+  url: string | null;
 }
 
 export interface ListQuery {
@@ -463,14 +538,31 @@ export function createRestClient(opts: RestClientOptions) {
       resetLink: (id: string) => req<{ link: string; sent: boolean }>("POST", `/users/${enc(id)}/reset-link`, { body: {} }),
       endSessions: (id: string) => req<{ ended: number }>("DELETE", `/users/${enc(id)}/sessions`),
     },
+    // ── 0.21.0 content model ──
+    tree: (c: string, o: { draft?: boolean } = {}) => req<{ tree: TreeNodeView[] }>("GET", `/collections/${enc(c)}/_tree${o.draft ? "?draft=1" : ""}`).then((r) => r.tree),
+    move: (c: string, slug: string, to: { parentId: string | null; before?: string | null }) => req<{ doc: CmsDoc }>("POST", `/collections/${enc(c)}/_move`, { body: { slug, parentId: to.parentId, before: to.before ?? null } }).then((r) => r.doc),
+    ancestors: (c: string, s: string, o: { draft?: boolean } = {}) => req<{ ancestors: { id: string; slug: string; title: string }[] }>("GET", `${doc(c, s)}/_ancestors${o.draft ? "?draft=1" : ""}`).then((r) => r.ancestors),
+    referencedBy: (c: string, s: string) => req<{ referencedBy: DocRefView[] }>("GET", `${doc(c, s)}/_refs`).then((r) => r.referencedBy),
+    seo: (c: string, s: string, o: { draft?: boolean } = {}) => req<{ seo: SeoView }>("GET", `${doc(c, s)}/_seo${o.draft ? "?draft=1" : ""}`).then((r) => r.seo),
+    snippetUses: (c: string, s: string) => req<{ docs: { id: string; collection: string; slug: string; title: string; status: string }[] }>("GET", `${doc(c, s)}/_snippet-uses`).then((r) => r.docs),
+    suggestSlug: (c: string, title: string) => req<{ slug: string }>("GET", `/collections/${enc(c)}/_suggest-slug?title=${enc(title)}`).then((r) => r.slug),
+    templates: (c: string) => req<{ templates: TemplateView[] }>("GET", `/collections/${enc(c)}/_templates`).then((r) => r.templates),
+    saveTemplate: (c: string, t: Partial<TemplateView>) => req<{ template: TemplateView }>("POST", `/collections/${enc(c)}/_templates`, { body: t }).then((r) => r.template),
+    updateTemplate: (c: string, id: string, t: Partial<TemplateView>) => req<{ template: TemplateView }>("PATCH", `/collections/${enc(c)}/_templates/${enc(id)}`, { body: t }).then((r) => r.template),
+    removeTemplate: (c: string, id: string) => req<{ ok: true }>("DELETE", `/collections/${enc(c)}/_templates/${enc(id)}`),
+    single: (c: string, o: { draft?: boolean } = {}) => req<{ doc: CmsDoc }>("GET", `/singles/${enc(c)}${o.draft ? "?draft=1" : ""}`).then((r) => r.doc),
+    redirects: () => req<{ redirects: RedirectView[] }>("GET", "/redirects").then((r) => r.redirects),
+    createRedirect: (r: { from: string; to: string; status?: 301 | 302 }) => req<{ redirect: RedirectView }>("POST", "/redirects", { body: r }).then((x) => x.redirect),
+    updateRedirect: (id: string, r: { from?: string; to?: string; status?: 301 | 302 }) => req<{ redirect: RedirectView }>("PATCH", `/redirects/${enc(id)}`, { body: r }).then((x) => x.redirect),
+    removeRedirect: (id: string) => req<{ ok: true }>("DELETE", `/redirects/${enc(id)}`),
     schema: (c: string, o: { slug?: string | null } = {}) => req<CollectionSchema>("GET", `/collections/${enc(c)}/_schema${o.slug ? `?slug=${enc(o.slug)}` : ""}`),
     list: (c: string, q: ListQuery = {}) => req<{ docs: DocSummary[]; total: number; nextCursor: string | null }>("GET", `/collections/${enc(c)}`, { query: { fields: "summary", ...q } }),
     counts: (c: string) => req<{ counts: DocCounts }>("GET", `/collections/${enc(c)}/_counts`).then((r) => r.counts),
-    get: (c: string, s: string, o: { draft?: boolean } = { draft: true }) => req<{ doc: CmsDoc }>("GET", doc(c, s), { query: { draft: o.draft } }).then((r) => r.doc),
-    create: (c: string, d: DocInputWire, o: { publish?: boolean; note?: string } = {}) => req<{ doc: CmsDoc }>("POST", `/collections/${enc(c)}`, { body: { doc: d, ...o } }).then((r) => r.doc),
+    get: (c: string, s: string, o: { draft?: boolean; expand?: string[] } = { draft: true }) => req<{ doc: CmsDoc }>("GET", doc(c, s), { query: { draft: o.draft, ...(o.expand?.length ? { expand: o.expand.join(",") } : {}) } }).then((r) => r.doc),
+    create: (c: string, d: DocInputWire, o: { publish?: boolean; note?: string; template?: string } = {}) => req<{ doc: CmsDoc }>("POST", `/collections/${enc(c)}`, { body: { doc: d, ...o } }).then((r) => r.doc),
     update: (c: string, s: string, d: DocInputWire, o: { expectedVersion: number; publish?: boolean; note?: string }) =>
       req<{ doc: CmsDoc }>("PATCH", doc(c, s), { body: { doc: d, publish: o.publish, note: o.note }, ifMatch: o.expectedVersion }).then((r) => r.doc),
-    remove: (c: string, s: string, expectedVersion?: number) => req<{ ok: true }>("DELETE", doc(c, s), { ifMatch: expectedVersion }),
+    remove: (c: string, s: string, expectedVersion?: number, o: { force?: boolean } = {}) => req<{ ok: true }>("DELETE", doc(c, s), { ifMatch: expectedVersion, query: o.force ? { force: "1" } : undefined }),
     diagnose: (c: string, d: DocInputWire, slug?: string) => req<{ diagnostics: Diagnostic[] }>("POST", `/collections/${enc(c)}/_diagnose`, { body: { doc: d, slug } }).then((r) => r.diagnostics),
     patch: (c: string, s: string, ops: PatchOp[], o: { expectedVersion?: number; dryRun?: boolean } = {}) => req<{ doc: CmsDoc | null; diff: string; diagnostics: Diagnostic[]; saved: boolean }>("POST", `${doc(c, s)}/patch`, { body: { ops, ...o } }),
     /** Agents' edits waiting as suggestions (collections with `agentEdits: "suggest"`). */

@@ -499,10 +499,11 @@ export function formatUntil(iso: string, locale: string): string {
 
 // ── documents ─────────────────────────────────────────────────────────────────
 
-export type DocContent = DocLike;
+/** 0.21.0: `seo` in collections with search engine details. */
+export type DocContent = DocLike & { seo?: { title?: string | null; description?: string | null; image?: string | null; canonical?: string | null; noindex?: boolean } | null };
 
-export function contentOf(d: DocLike): DocContent {
-  return { slug: d.slug, title: d.title, summary: d.summary, body: d.body, category: d.category, keywords: [...(d.keywords ?? [])], fields: structuredClone(d.fields ?? {}) };
+export function contentOf(d: DocContent): DocContent {
+  return { slug: d.slug, title: d.title, summary: d.summary, body: d.body, category: d.category, keywords: [...(d.keywords ?? [])], fields: structuredClone(d.fields ?? {}), ...(d.seo ? { seo: { ...d.seo } } : {}) };
 }
 
 /**
@@ -513,7 +514,7 @@ export function contentOf(d: DocLike): DocContent {
 export function toInput(next: DocContent, prevFields?: Record<string, unknown>): DocInputWire {
   const fields: Record<string, unknown> = { ...next.fields };
   for (const k of Object.keys(prevFields ?? {})) if (!(k in fields) || fields[k] === undefined) fields[k] = null;
-  return { slug: next.slug, title: next.title, summary: next.summary, body: next.body, category: next.category, keywords: next.keywords, fields };
+  return { slug: next.slug, title: next.title, summary: next.summary, body: next.body, category: next.category, keywords: next.keywords, fields, ...(next.seo !== undefined ? { seo: next.seo ?? null } : {}) } as DocInputWire;
 }
 
 export const sameContent = (a: DocContent, b: DocContent) => JSON.stringify(contentOf(a)) === JSON.stringify(contentOf(b));

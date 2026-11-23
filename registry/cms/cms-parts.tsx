@@ -5,8 +5,8 @@
 "use client";
 
 import * as React from "react";
-import { Bot, Check, ChevronDown, Copy, Download, FileText, ImageOff, Lightbulb, Link as LinkIcon, Menu, Paperclip, Pencil, TriangleAlert, Info, X } from "lucide-react";
-import { inspectHtml, parseMarkdown, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
+import { Bot, Check, ChevronDown, Copy, Download, ExternalLink, FileText, ImageOff, Lightbulb, Link as LinkIcon, Menu, Paperclip, Pencil, TriangleAlert, Info, X } from "lucide-react";
+import { DEFAULT_VIDEO_HOSTS, inspectHtml, parseMarkdown, videoEmbed, type Block, type Inline } from "@mainsoft/agent-cms/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -602,6 +602,27 @@ function MediaBlock({ asset, name, src, alt, caption }: { asset?: string | null;
   );
 }
 
+/** A `:::video` block: a file from the media library, or a player from an allowed site (0.21.0). */
+function VideoBlock({ src, asset, name, caption }: { src: string | null; asset: string | null; name: string; caption: string }) {
+  const { me } = useCms();
+  if (asset) return <MediaBlock asset={asset} name={name} alt={caption} caption={caption} />;
+  const hosts = (me as { videoHosts?: string[] } | null)?.videoHosts ?? DEFAULT_VIDEO_HOSTS;
+  const embed = src ? videoEmbed(src, hosts) : null;
+  return (
+    <figure data-block="video" className="my-4">
+      {embed ? (
+        <iframe src={embed} title={caption || "Video"} loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" className="aspect-video w-full rounded-md border-0 bg-black" />
+      ) : (
+        <a href={src ?? undefined} className="flex items-center gap-2 rounded-md border border-dashed px-3 py-2.5 text-sm text-muted-foreground">
+          <ExternalLink aria-hidden className="h-4 w-4" />
+          <span className="min-w-0 truncate">{src}</span>
+        </a>
+      )}
+      {caption ? <figcaption className="mt-1.5 text-center text-xs text-muted-foreground">{caption}</figcaption> : null}
+    </figure>
+  );
+}
+
 const CALLOUT_ICON = { note: Info, tip: Lightbulb, warning: TriangleAlert } as const;
 
 /**
@@ -778,6 +799,25 @@ function Block1({ b, components }: { b: Block; components?: BlockComponents }) {
       );
     case "html":
       return <HtmlBlock html={b.v} isolated={!!b.isolated} />;
+    case "steps":
+      return (
+        <div data-block="steps" className="my-3 border-l-2 border-primary/30 pl-4 [&_ol>li::marker]:font-semibold [&_ol>li]:pl-1 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+          <Blocks blocks={b.blocks} components={components} />
+        </div>
+      );
+    case "card":
+      return (
+        <a href={b.href} data-block="card" className="my-3 flex items-center gap-3 rounded-md border px-3 py-2.5 no-underline transition-colors duration-150 ease-out hover:bg-accent">
+          {b.image ? <MediaImage asset={b.image.asset} name={b.image.name} src={b.image.src} alt={b.image.alt} className="h-12 w-12 shrink-0 rounded object-cover" /> : null}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium">{b.label}</span>
+            {b.description ? <span className="block truncate text-xs text-muted-foreground">{b.description}</span> : null}
+          </span>
+          <ExternalLink aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </a>
+      );
+    case "video":
+      return <VideoBlock src={b.src} asset={b.asset} name={b.name} caption={b.caption} />;
     case "raw":
       return (
         <pre className="my-3 overflow-x-auto rounded-md border border-dashed p-3 font-mono text-xs text-muted-foreground" title="raw">

@@ -78,6 +78,73 @@ export interface DocContent {
   category: string | null;
   keywords: string[];
   fields: Record<string, unknown>;
+  /** Search engine and sharing details (0.21.0, collections with `seo`). Absent: none set. */
+  seo?: DocSeo | null;
+}
+
+/** What a document says to search engines and link previews (0.21.0). Empty parts fall back to the title, summary and first image. */
+export interface DocSeo {
+  title?: string | null;
+  description?: string | null;
+  /** A file id from the media library (`asset:` target), or a URL. */
+  image?: string | null;
+  canonical?: string | null;
+  noindex?: boolean;
+}
+
+/** One document pointing at another through a relation field (0.21.0). */
+export interface DocRef {
+  fromId: string;
+  toId: string;
+  /** The field path, `author` or `related`. */
+  field: string;
+  inDraft: boolean;
+  inPublished: boolean;
+}
+
+/** A heading's old anchor that still leads to it (0.21.0). */
+export interface AnchorAlias {
+  documentId: string;
+  old: string;
+  current: string;
+  createdAt: string;
+}
+
+/** An old address that sends readers to a new one (0.21.0). */
+export interface CmsRedirect {
+  id: string;
+  from: string;
+  to: string;
+  /** The document the target follows (its address is used when it moves again). */
+  toDocumentId: string | null;
+  status: 301 | 302;
+  /** "auto": made when a published document's address changed. "manual": made by a person. */
+  source: "auto" | "manual";
+  hits: number;
+  lastHitAt: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A starting point for a new document (0.21.0). */
+export interface DocTemplate {
+  key: string;
+  label: string;
+  /** One line shown under the label. */
+  description?: string;
+  /** Lucide-style icon name the admin may show. */
+  icon?: string;
+  title?: string;
+  summary?: string;
+  body?: string;
+  fields?: Record<string, unknown>;
+  /** "code" for templates in the collection config, "admin" for ones saved in the admin. */
+  source?: "code" | "admin";
+  /** Admin templates: the record id, who made it and when. */
+  id?: string;
+  createdBy?: string | null;
+  createdAt?: string;
 }
 
 /** Unsaved editor state kept by `cms.autosave()`. Never a version. */
@@ -126,6 +193,10 @@ export interface CmsDoc extends DocContent {
   dueAt: string | null;
   /** An open review request, or the reviewer's answer to it. */
   review: ReviewRequest | null;
+  /** The parent in a collection with `tree` (0.21.0). Null: top level. */
+  parentId?: string | null;
+  /** Order among siblings (a sortable string, 0.21.0). */
+  position?: string | null;
 }
 
 /** What `commit()` records about a version: changed fields and body hunks. */
@@ -356,6 +427,14 @@ export const AUDIT_ACTIONS = [
   "asset.share",
   "access.denied",
   "auth.failed",
+  // 0.21.0
+  "doc.move",
+  "redirect.create",
+  "redirect.update",
+  "redirect.delete",
+  "template.create",
+  "template.update",
+  "template.delete",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -400,7 +479,11 @@ export interface AccessArgs {
 export interface FieldAdmin {
   label?: string;
   help?: string;
-  widget?: "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json" | "image" | "file";
+  /**
+   * 0.21.0: "relation" (documents, from `relation()`), "gallery" (several files, from `assetIds()`),
+   * "rows" (a list of objects) and "group" (an object) are chosen from the schema when left out.
+   */
+  widget?: "text" | "textarea" | "number" | "switch" | "select" | "multiselect" | "date" | "tags" | "json" | "image" | "file" | "gallery" | "relation" | "rows" | "group";
   /**
    * For `image` and `file` (the value is a media library file id): which
    * files the field takes, as MIME types (`image/png`), groups (`image/*`)
@@ -494,6 +577,22 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
   };
   /** Slug rule override (default: lowercase ascii words joined by hyphens). */
   slugPattern?: RegExp;
+  /**
+   * Documents form a tree (0.21.0): each has a parent and a place among its siblings, moved with
+   * `cms.move()`. `maxDepth` (default 3) counts levels from the top. Off by default.
+   */
+  tree?: boolean | { maxDepth?: number };
+  /** One document only (0.21.0, made by `defineSingle`): site settings, a footer. Read with `cms.single()`. */
+  single?: boolean;
+  /** Starting points for a new document (0.21.0). Editors can add their own in the admin. */
+  templates?: readonly DocTemplate[];
+  /** Documents of this collection are snippets (0.21.0): `[[snippet:slug]]` in other bodies shows their published body. */
+  snippets?: boolean;
+  /**
+   * Search engine details per document (0.21.0): title, description, share image, canonical,
+   * noindex. Checks warn above `titleMax` (60) and `descriptionMax` (160) characters.
+   */
+  seo?: boolean | { titleMax?: number; descriptionMax?: number };
   /** Characters the house style bans from title, summary and body. */
   forbiddenChars?: readonly string[];
   search?: {
@@ -515,6 +614,8 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
   admin?: {
     /** Per field path (`tags`, `seo.title`): label, help text, widget. */
     fields?: Record<string, FieldAdmin>;
+    /** Hide the body in the admin form (0.21.0; `defineSingle` sets it unless `body: true`). */
+    hideBody?: boolean;
   };
   media?: {
     /** true: an image without alt text is an error, not a warning. */
@@ -683,6 +784,7 @@ export const WEBHOOK_EVENTS = [
   "asset.deleted",
   "release.published",
   "comment.created",
+  "doc.moved",
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 

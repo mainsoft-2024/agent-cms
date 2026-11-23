@@ -51,7 +51,8 @@ export type Block = BlockBody & { line?: number; endLine?: number };
 export type TableAlign = "left" | "center" | "right" | null;
 
 type BlockBody =
-  | { t: "heading"; level: 2 | 3; id: string; text: string; inline: Inline[] }
+  /** `pinned`: the id was written after the heading (`## Title {#id}`, 0.21.0) and stays when the text changes. */
+  | { t: "heading"; level: 2 | 3; id: string; text: string; inline: Inline[]; pinned?: true }
   | { t: "p"; inline: Inline[] }
   /**
    * `start`: the first number of an ordered list when it is not 1.
@@ -72,6 +73,12 @@ type BlockBody =
   | { t: "columns"; cols: Block[][] }
   /** `:::html`: the HTML exactly as written. Draw it with `./html`'s `sanitizeHtml` or in a sandboxed frame, never as is. */
   | { t: "html"; v: string; isolated?: true }
+  /** `:::steps` (0.21.0): numbered steps; the first bold words of an item are its title. */
+  | { t: "steps"; blocks: Block[] }
+  /** `:::card` (0.21.0): a link shown as a card, with an optional picture and description. */
+  | { t: "card"; href: string; label: string; description: string; image: { asset: string | null; name: string; src: string | null; alt: string } | null }
+  /** `:::video` (0.21.0): a video from an allowed site (`src`) or the media library (`asset`). */
+  | { t: "video"; src: string | null; asset: string | null; name: string; caption: string }
   /** Text the parser does not know (an unknown `:::name` block), kept word for word. */
   | { t: "raw"; v: string };
 
@@ -82,6 +89,14 @@ export interface TocItem {
 }
 
 export const APP_LINK_RE = /\[\[link:([a-z0-9][a-z0-9._-]*)\|([^\]]+)\]\]/gi;
+
+const PINNED = /\s+\{#([\p{L}\p{N}][\p{L}\p{N}_-]*)\}$/u;
+
+/** A heading's text and the id pinned after it (`## Title {#id}`), if any. */
+export function headingParts(raw: string): { text: string; pinned: string | null } {
+  const m = PINNED.exec(raw);
+  return m ? { text: raw.slice(0, m.index), pinned: m[1] } : { text: raw, pinned: null };
+}
 
 /** Heading anchor: lowercase, spaces → '-', keeps Hangul; stable across renders. */
 export function anchorOf(text: string): string {
@@ -451,16 +466,24 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
           cols[cols.length - 1].push(l);
         }
         push({ t: "columns", cols: cols.map((c) => parseMarkdown(c.join("\n"))) }, i, to);
-      } else push({ t: "raw", v: lines.slice(i, end + 1).join("\n") }, i, to);
+      } else {
+        const raw = lines.slice(i, end + 1).join("\n");
+        // 0.21.0 blocks; anything not in their exact form stays word for word.
+        const made = name === "steps" || name === "card" || name === "video" ? newBlock(name, inner, raw) : null;
+        push(made ?? { t: "raw", v: raw }, i, to);
+      }
       i = end;
       continue;
     }
     const h = /^(#{2,3})\s+(.+?)\s*#*\s*$/.exec(line);
     if (h) {
       flush();
-      const text = h[2];
-      const inline = parseInline(text);
-      push({ t: "heading", level: h[1].length as 2 | 3, id: uniqueId(inlineText(inline)), text: inlineText(inline), inline }, i, i);
+      const parts = headingParts(h[2]);
+      const inline = parseInline(parts.text);
+      if (parts.pinned) {
+        used.set(parts.pinned, (used.get(parts.pinned) ?? 0) + 1);
+        push({ t: "heading", level: h[1].length as 2 | 3, id: parts.pinned, text: inlineText(inline), inline, pinned: true }, i, i);
+      } else push({ t: "heading", level: h[1].length as 2 | 3, id: uniqueId(inlineText(inline)), text: inlineText(inline), inline }, i, i);
       continue;
     }
     if (/^#\s+/.test(line)) {
@@ -661,7 +684,7 @@ const cell = (items: Inline[]) => {
 function blockMd(b: Block): string {
   switch (b.t) {
     case "heading":
-      return `${b.level === 2 ? "##" : "###"} ${inlineToMarkdown(b.inline)}`;
+      return `${b.level === 2 ? "##" : "###"} ${inlineToMarkdown(b.inline)}${b.pinned ? ` {#${b.id}}` : ""}`;
     case "p":
       return inlineToMarkdown(b.inline);
     case "list":
@@ -705,9 +728,55 @@ function blockMd(b: Block): string {
       return `:::columns\n${b.cols.map((c) => `:::col\n${toMarkdown(c)}${c.length ? "\n" : ""}`).join("")}:::`;
     case "html":
       return `:::html${b.isolated ? " isolated" : ""}\n${b.v}\n:::`;
+    case "steps":
+      return `:::steps\n${toMarkdown(b.blocks)}${b.blocks.length ? "\n" : ""}:::`;
+    case "card":
+    case "video":
+      return newBlockMd(b);
     case "raw":
       return b.v;
   }
+}
+
+/** Markdown of a card or video block. */
+function newBlockMd(b: Extract<Block, { t: "card" } | { t: "video" }>): string {
+  if (b.t === "video") {
+    const target = b.asset ? `asset:${b.asset}${b.name ? "/" + encodeName(b.name) : ""}` : (b.src ?? "");
+    return `:::video\n${target}${b.caption ? `\n${b.caption}` : ""}\n:::`;
+  }
+  const img = b.image ? `\n![${b.image.alt}](${b.image.asset ? `asset:${b.image.asset}${b.image.name ? "/" + encodeName(b.image.name) : ""}` : (b.image.src ?? "")})` : "";
+  return `:::card\n[${b.label}](${b.href})${img}${b.description ? `\n${b.description}` : ""}\n:::`;
+}
+
+const LINK_LINE = /^\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)$/;
+const VIDEO_TARGET = /^(?:https:\/\/\S+|asset:[a-z0-9]{12}(?:\/\S*)?)$/;
+
+/** A `:::steps`, `:::card` or `:::video` block, or null when the text is not in the form `toMarkdown` writes (it is then kept as raw). */
+function newBlock(name: string, inner: string[], raw: string): Block | null {
+  let b: Block | null = null;
+  if (name === "steps") b = { t: "steps", blocks: parseMarkdown(inner.join("\n")) };
+  else if (name === "video") {
+    const [target = "", caption = "", ...rest] = inner;
+    if (rest.length || !VIDEO_TARGET.test(target) || caption.startsWith(" ")) return null;
+    const m = mediaTarget(target);
+    if (!m) return null;
+    b = { t: "video", src: m.src, asset: m.asset, name: m.name, caption };
+  } else if (name === "card") {
+    const [link = "", ...rest] = inner;
+    const l = LINK_LINE.exec(link);
+    if (!l) return null;
+    let image: Extract<Block, { t: "card" }>["image"] = null;
+    if (rest.length && IMAGE_LINE.test(rest[0])) {
+      const im = IMAGE_LINE.exec(rest[0])!;
+      const m = mediaTarget(im[2]);
+      if (!m || im[3] !== undefined) return null;
+      image = { ...m, alt: im[1] };
+      rest.shift();
+    }
+    if (rest.length > 1) return null;
+    b = { t: "card", href: l[2], label: l[1], description: rest[0] ?? "", image };
+  }
+  return b && blockMd(b) === raw ? b : null;
 }
 
 /** Blocks nested under a list item, indented under its text. */
@@ -822,7 +891,8 @@ export function plainText(body: string): string {
         .replace(/&gt;/g, ">") +
       " "
     )
-    .replace(/^:::(?:toggle|columns|col)?[ \t]*/gim, "")
+    .replace(/^:::(?:toggle|columns|col|steps|card|video)?[ \t]*/gim, "")
+    .replace(/^(#{1,3}\s+.*?)\s+\{#[\p{L}\p{N}][\p{L}\p{N}_-]*\}\s*$/gmu, "$1")
     .replace(APP_LINK_RE, "$2")
     .replace(IMAGE_ANY, (_m, alt: string, _t: string, cap?: string) => ` ${alt} ${cap ?? ""} `)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
@@ -860,17 +930,19 @@ export function splitSections(body: string): Section[] {
     const h = !inFence ? /^#{1,2}\s+(.+?)\s*#*\s*$/.exec(line) : null;
     if (h) {
       push();
-      const text = inlineText(parseInline(h[1]));
-      const base = anchorOf(text);
+      const parts = headingParts(h[1]);
+      const text = inlineText(parseInline(parts.text));
+      const base = parts.pinned ?? anchorOf(text);
       const n = used.get(base) ?? 0;
       used.set(base, n + 1);
-      cur = { anchor: n ? `${base}-${n}` : base, heading: text, markdown: "" };
+      cur = { anchor: n && !parts.pinned ? `${base}-${n}` : base, heading: text, markdown: "" };
       continue;
     }
     // ### headings also take an anchor slot so ids match parseMarkdown().
     const h3 = !inFence ? /^###\s+(.+?)\s*#*\s*$/.exec(line) : null;
     if (h3) {
-      const base = anchorOf(inlineText(parseInline(h3[1])));
+      const p3 = headingParts(h3[1]);
+      const base = p3.pinned ?? anchorOf(inlineText(parseInline(p3.text)));
       used.set(base, (used.get(base) ?? 0) + 1);
     }
     cur.markdown += line + "\n";
@@ -880,6 +952,43 @@ export function splitSections(body: string): Section[] {
 }
 
 export { inspectHtml, hasScripts, DEFAULT_IFRAME_HOSTS, type HtmlPolicy, type HtmlInert, type HtmlInertKind } from "./html-inspect";
+export { DEFAULT_VIDEO_HOSTS, videoEmbed, videoHost, hostAllowed } from "./video";
+
+/** Every `:::video` address in a body with its 1-based line (code fences skipped). */
+export function videoUses(body: string): { src: string | null; asset: string | null; line: number }[] {
+  const out: { src: string | null; asset: string | null; line: number }[] = [];
+  const walk = (bs: Block[]) => {
+    for (const b of bs) {
+      if (b.t === "video") out.push({ src: b.src, asset: b.asset, line: b.line ?? 0 });
+      else if (b.t === "quote" || b.t === "toggle" || b.t === "steps") walk(b.blocks);
+      else if (b.t === "columns") b.cols.forEach(walk);
+    }
+  };
+  walk(parseMarkdown(body, { lines: true }));
+  return out;
+}
+
+/** Every `[[snippet:key]]` in a body (code fences skipped). */
+export const SNIPPET_RE = /\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]/gi;
+export function snippetKeys(body: string): string[] {
+  const keys = new Set<string>();
+  const inCode = fenceTracker();
+  for (const line of body.replace(/\r/g, "").split("\n")) {
+    if (inCode(line)) continue;
+    for (const m of line.matchAll(SNIPPET_RE)) keys.add(m[1].toLowerCase());
+  }
+  return [...keys];
+}
+
+/** Heading anchors of a body in order (pinned ones included). */
+export function headingAnchors(body: string): { id: string; text: string; pinned: boolean }[] {
+  const out: { id: string; text: string; pinned: boolean }[] = [];
+  const walk = (bs: Block[]) => {
+    for (const b of bs) if (b.t === "heading") out.push({ id: b.id, text: b.text, pinned: !!b.pinned });
+  };
+  walk(parseMarkdown(body));
+  return out;
+}
 
 /** Every HTML block in a tree, nested ones included, in order. */
 export function htmlBlocks(blocks: Block[]): Extract<Block, { t: "html" }>[] {
@@ -887,7 +996,7 @@ export function htmlBlocks(blocks: Block[]): Extract<Block, { t: "html" }>[] {
   const walk = (bs: Block[]) => {
     for (const b of bs) {
       if (b.t === "html") out.push(b);
-      else if (b.t === "quote" || b.t === "toggle") walk(b.blocks);
+      else if (b.t === "quote" || b.t === "toggle" || b.t === "steps") walk(b.blocks);
       else if (b.t === "columns") b.cols.forEach(walk);
       else if (b.t === "list") b.kids?.forEach((k) => k && walk(k));
       else if (b.t === "todo") b.items.forEach((x) => x.kids && walk(x.kids));

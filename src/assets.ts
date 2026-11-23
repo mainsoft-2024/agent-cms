@@ -11,6 +11,7 @@
 import { z } from "zod";
 import type { AnyCollection } from "./cms";
 import type { CmsErrorCode, CmsErrorOptions, Diagnostic, ErrorParams } from "./errors";
+import { fieldMarks } from "./fields";
 import { assetUses, externalImages } from "./markdown";
 import { FetchGuardError, guardedFetch, imageSize, type ResolveHost } from "./net-guard";
 import { docsById, type AssetSort, type CmsRepo } from "./repo";
@@ -278,10 +279,24 @@ const cleanTags = (tags: unknown): string[] => [...new Set((Array.isArray(tags) 
 const getPath = (obj: unknown, path: string): unknown => path.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), obj);
 
 /** The asset fields of a collection: path, widget and rules (from `admin.fields`). */
-export function assetFields(cfg: AnyCollection): { path: string; widget: "image" | "file"; accept: readonly string[] | null; maxFileSize: number | null; store: string | null }[] {
-  return Object.entries(cfg.admin?.fields ?? {})
-    .filter(([, f]) => f.widget === "image" || f.widget === "file")
-    .map(([path, f]) => ({ path, widget: f.widget as "image" | "file", accept: f.accept ?? (f.widget === "image" ? ["image/*"] : null), maxFileSize: f.maxFileSize ?? null, store: f.store ?? null }));
+export function assetFields(cfg: AnyCollection): { path: string; widget: "image" | "file" | "gallery"; accept: readonly string[] | null; maxFileSize: number | null; store: string | null }[] {
+  const admin = cfg.admin?.fields ?? {};
+  const out = Object.entries(admin)
+    .filter(([, f]) => f.widget === "image" || f.widget === "file" || f.widget === "gallery")
+    .map(([path, f]) => ({ path, widget: f.widget as "image" | "file" | "gallery", accept: f.accept ?? (f.widget !== "file" ? ["image/*"] : null), maxFileSize: f.maxFileSize ?? null, store: f.store ?? null }));
+  // 0.21.0: `assetIds()` fields are galleries without an `admin.fields` line.
+  for (const [path, m] of fieldMarks(cfg.fields)) {
+    if (m.kind !== "gallery" || out.some((f) => f.path === path)) continue;
+    const f = admin[path];
+    out.push({ path, widget: "gallery", accept: f?.accept ?? m.accept ?? ["image/*"], maxFileSize: f?.maxFileSize ?? null, store: f?.store ?? null });
+  }
+  return out;
+}
+
+/** The file ids in one asset field value (a gallery holds several). */
+function fieldIds(v: unknown): string[] {
+  if (typeof v === "string") return v ? [v] : [];
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x !== "") : [];
 }
 
 export function createAssets(ctx: AssetsContext) {
@@ -977,10 +992,7 @@ export function createAssets(ctx: AssetsContext) {
   /** Ids of every file a piece of content uses (body and asset fields). */
   function idsIn(cfg: AnyCollection, c: Pick<DocContent, "body" | "fields">): Set<string> {
     const ids = new Set(assetUses(c.body).map((u) => u.id));
-    for (const f of assetFields(cfg)) {
-      const v = getPath(c.fields, f.path);
-      if (typeof v === "string" && ASSET_ID_RE.test(v)) ids.add(v);
-    }
+    for (const f of assetFields(cfg)) for (const v of fieldIds(getPath(c.fields, f.path))) if (ASSET_ID_RE.test(v)) ids.add(v);
     return ids;
   }
 
@@ -989,7 +1001,7 @@ export function createAssets(ctx: AssetsContext) {
     const out: Diagnostic[] = [];
     const uses = assetUses(c.body);
     const fields = assetFields(cfg);
-    const fieldValues = fields.map((f) => ({ f, v: getPath(c.fields, f.path) })).filter((x): x is { f: (typeof fields)[number]; v: string } => typeof x.v === "string" && x.v !== "");
+    const fieldValues = fields.flatMap((f) => fieldIds(getPath(c.fields, f.path)).map((v) => ({ f, v })));
     const altSeverity = cfg.media?.requireAlt ? "error" : "warning";
     for (const e of externalImages(c.body)) if (!e.alt) out.push(ctx.diag("body", "asset_alt_missing", { line: e.line }, altSeverity));
     if (!uses.length && !fieldValues.length) return out;

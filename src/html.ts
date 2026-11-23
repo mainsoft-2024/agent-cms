@@ -16,6 +16,7 @@
 import sanitize from "sanitize-html";
 import { DEFAULT_IFRAME_HOSTS, SAFE_TAGS, type HtmlPolicy } from "./html-inspect";
 import { parseMarkdown, type Block, type Inline } from "./markdown";
+import { DEFAULT_VIDEO_HOSTS, videoEmbed } from "./video";
 
 export { inspectHtml, hasScripts, DEFAULT_IFRAME_HOSTS, SAFE_TAGS, type HtmlPolicy, type HtmlInert, type HtmlInertKind } from "./html-inspect";
 
@@ -151,6 +152,10 @@ export interface ToHtmlOptions extends DrawOptions {
   policy?: HtmlPolicy;
   /** URL for `[[link:key|…]]`; null draws the label only. */
   link?: (key: string) => string | null;
+  /** Hosts `:::video` may embed (0.21.0). Default: YouTube and Vimeo. */
+  videoHosts?: readonly string[];
+  /** Old heading anchors by current anchor (0.21.0): an empty `<span id>` keeps old links working. */
+  anchorAliases?: Record<string, readonly string[]>;
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -194,7 +199,7 @@ function blockHtml(b: Block, o: ToHtmlOptions): string {
   const url = (id: string, name: string) => (o.assetUrl ?? defaultAssetUrl)(id, name);
   switch (b.t) {
     case "heading":
-      return `<h${b.level} id="${esc(b.id)}">${inlineHtml(b.inline, o)}</h${b.level}>`;
+      return `${(o.anchorAliases?.[b.id] ?? []).map((a) => `<span id="${esc(a)}"></span>`).join("")}<h${b.level} id="${esc(b.id)}">${inlineHtml(b.inline, o)}</h${b.level}>`;
     case "p":
       return `<p>${inlineHtml(b.inline, o)}</p>`;
     case "list": {
@@ -235,6 +240,19 @@ function blockHtml(b: Block, o: ToHtmlOptions): string {
       if (b.isolated && o.policy?.render === "isolated")
         return `<iframe class="html-isolated" sandbox="${ISOLATED_SANDBOX}" srcdoc="${esc(isolatedHtml(b.v, o))}" title="HTML" loading="lazy"></iframe>`;
       return sanitizeHtml(b.v, o.policy, o);
+    case "steps":
+      return `<div class="steps">${blocksHtml(b.blocks, o)}</div>`;
+    case "card": {
+      const img = b.image ? `<img src="${esc(b.image.asset ? url(b.image.asset, b.image.name) : (b.image.src ?? ""))}" alt="${esc(b.image.alt)}">` : "";
+      return `<a class="link-card" href="${esc(/^\s*(javascript|data|vbscript):/i.test(b.href) ? "#" : b.href)}">${img}<span class="link-card-title">${esc(b.label)}</span>${b.description ? `<span class="link-card-text">${esc(b.description)}</span>` : ""}</a>`;
+    }
+    case "video": {
+      const cap = b.caption ? `<figcaption>${esc(b.caption)}</figcaption>` : "";
+      if (b.asset) return `<figure class="video"><video src="${esc(url(b.asset, b.name))}" controls preload="metadata"></video>${cap}</figure>`;
+      const embed = b.src ? videoEmbed(b.src, o.videoHosts ?? DEFAULT_VIDEO_HOSTS) : null;
+      if (!embed) return `<p class="video-blocked"><a href="${esc(b.src ?? "")}">${esc(b.caption || b.src || "")}</a></p>`;
+      return `<figure class="video"><iframe src="${esc(embed)}" title="${esc(b.caption || "Video")}" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>${cap}</figure>`;
+    }
     case "raw":
       return `<pre class="raw">${esc(b.v)}</pre>`;
   }

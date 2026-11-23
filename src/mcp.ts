@@ -22,6 +22,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod";
 import { toJSONSchema as toJSONSchemaV4 } from "zod/v4";
+import { markJson, markOf } from "./fields";
 import { coreOf, type CmsCore, type CmsLike } from "./cms";
 import { CMS_TOOL_NAMES, runTool, toolsFor, type ToolOutcome } from "./tools";
 import type { Actor } from "./types";
@@ -52,10 +53,20 @@ export const ANONYMOUS_READ_TOOLS = ["list_collections", "search_documents", "re
 export function toJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   const v4 = (schema as unknown as { _zod?: unknown })._zod;
   if (v4) {
-    const out = { ...(toJSONSchemaV4(schema as never, { unrepresentable: "any" }) as Record<string, unknown>) };
+    const out = {
+      ...(toJSONSchemaV4(schema as never, {
+        unrepresentable: "any",
+        // 0.21.0: relation and gallery fields carry what they are (`x-cms-relation`, `x-cms-gallery`).
+        override: (c: { zodSchema: unknown; jsonSchema: Record<string, unknown> }) => {
+          const m = markOf(c.zodSchema as z.ZodTypeAny);
+          if (m) Object.assign(c.jsonSchema, markJson(m));
+        },
+      } as never) as Record<string, unknown>),
+    };
     delete out.$schema;
     return out;
   }
+  const marked = markOf(schema);
   const def = (s: z.ZodTypeAny): AnyDef => (s as unknown as { _def: AnyDef })._def ?? {};
   const kind = (s: z.ZodTypeAny): string => def(s).typeName ?? "";
 
@@ -136,6 +147,7 @@ export function toJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   if (dflt) out.default = dflt.value;
   // Outermost description wins (it is the one written at the use site).
   if (descriptions.length) out.description = descriptions[0];
+  if (marked) Object.assign(out, markJson(marked));
   return out;
 }
 

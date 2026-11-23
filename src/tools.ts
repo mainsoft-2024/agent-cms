@@ -19,7 +19,12 @@ const docInput = {
   body: z.string().optional().describe("Markdown body. `## ` headings split it into sections for search and patch_document. A file from the media library: `![alt text](asset:ID/name.jpg \"caption\")` on its own line (image, video or download card), `[label](asset:ID/name.pdf)` for a link (ids from list_assets)"),
   category: z.string().nullable().optional(),
   keywords: z.array(z.string()).optional().describe("Other words people search with, e.g. synonyms or English names"),
-  fields: z.record(z.unknown()).optional().describe("Collection-specific fields (see list_collections). On update a JSON Merge Patch: null removes a key"),
+  fields: z.record(z.unknown()).optional().describe("Collection-specific fields (see list_collections). On update a JSON Merge Patch: null removes a key. Relation fields take document ids or { collection, slug }"),
+  seo: z
+    .object({ title: z.string().nullable().optional(), description: z.string().nullable().optional(), image: z.string().nullable().optional(), canonical: z.string().nullable().optional(), noindex: z.boolean().optional() })
+    .nullable()
+    .optional()
+    .describe("Search title, description, share image (asset id or URL), canonical URL, noindex. Collections with seo only"),
 };
 
 export interface CmsToolDef {
@@ -100,6 +105,16 @@ export const CMS_TOOLS: CmsToolDef[] = [
           draftsMode: c.versions?.drafts !== false,
           canWrite: cms.can(actor, c.slug, "write"),
           canPublish: cms.can(actor, c.slug, "publish"),
+          // 0.21.0: what kind of collection it is
+          ...(c.tree ? { tree: true } : {}),
+          ...(c.single ? { single: true } : {}),
+          ...(c.snippets ? { snippets: true } : {}),
+          ...(c.seo ? { seo: true } : {}),
+          ...(c.templates?.length ? { templates: c.templates.map((t) => t.key) } : {}),
+          ...(() => {
+            const rel = cms.collectionRelations(c.slug);
+            return rel.length ? { relations: rel } : {};
+          })(),
         })),
   },
   {
@@ -132,10 +147,11 @@ export const CMS_TOOLS: CmsToolDef[] = [
   },
   {
     name: "get_document",
-    description: "Read one document. draft=true returns the latest working copy (needs write access); use its version as expectedVersion when updating.",
-    input: z.object({ collection: col, slug, draft: z.boolean().optional() }),
+    description: "Read one document. draft=true returns the latest working copy (needs write access); use its version as expectedVersion when updating. expand lists relation fields to fill in with the documents they point at. Snippets ([[snippet:key]]) are kept as tokens.",
+    input: z.object({ collection: col, slug, draft: z.boolean().optional(), expand: z.array(z.string()).max(20).optional().describe("Relation fields to fill in (one level), e.g. [\"author\"]") }),
     run: async (cms, actor, a) => {
-      const { autosave: _a, ...doc } = await cms.get(actor, a.collection as string, a.slug as string, { draft: !!a.draft });
+      const got = await cms.get(actor, a.collection as string, a.slug as string, { draft: !!a.draft, snippets: "raw" });
+      const { autosave: _a, ...doc } = await cms.expand(actor, got, (a.expand as string[] | undefined) ?? [], !!a.draft);
       return doc;
     },
   },
@@ -149,9 +165,9 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "create_document",
     needs: "write",
-    description: "Create a document. It stays a draft unless publish=true (needs publish access).",
-    input: z.object({ collection: col, doc: z.object(docInput), publish: z.boolean().optional(), note: z.string().optional().describe("Why, shown in the version history") }),
-    run: async (cms, actor, a) => cms.create(actor, a.collection as string, a.doc as never, { publish: a.publish as boolean | undefined, note: a.note as string | undefined }),
+    description: "Create a document. It stays a draft unless publish=true (needs publish access). template starts from one of list_templates (what you pass wins over it). In a single collection use update_single instead.",
+    input: z.object({ collection: col, doc: z.object(docInput), publish: z.boolean().optional(), note: z.string().optional().describe("Why, shown in the version history"), template: z.string().optional().describe("A template key or id from list_templates") }),
+    run: async (cms, actor, a) => cms.create(actor, a.collection as string, a.doc as never, { publish: a.publish as boolean | undefined, note: a.note as string | undefined, template: a.template as string | undefined }),
   },
   {
     name: "update_document",
@@ -261,12 +277,55 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "delete_document",
     needs: "publish",
-    description: "Delete a document. It goes to the trash, where it can be restored (restore_from_trash) until the trash is emptied; in an app without a trash it is gone for good. Prefer archive_document unless asked to delete.",
-    input: z.object({ collection: col, slug, expectedVersion }),
+    description: "Delete a document. It goes to the trash, where it can be restored (restore_from_trash) until the trash is emptied; in an app without a trash it is gone for good. Prefer archive_document unless asked to delete. When other documents link to it the answer is doc_referenced with their list; force=true deletes anyway (ask the person first).",
+    input: z.object({ collection: col, slug, expectedVersion, force: z.boolean().optional() }),
     run: async (cms, actor, a) => {
-      await cms.remove(actor, a.collection as string, a.slug as string, { expectedVersion: a.expectedVersion as number | undefined });
+      await cms.remove(actor, a.collection as string, a.slug as string, { expectedVersion: a.expectedVersion as number | undefined, force: !!a.force });
       return { deleted: true };
     },
+  },
+  // ── 0.21.0 content model ──
+  {
+    name: "get_tree",
+    description: "The documents of a tree collection (list_collections says tree: true) as nested { slug, title, children }. draft=true includes drafts (needs write).",
+    input: z.object({ collection: col, draft: z.boolean().optional() }),
+    run: async (cms, actor, a) => ({ tree: await cms.tree(actor, a.collection as string, { draft: !!a.draft }) }),
+  },
+  {
+    name: "move_document",
+    needs: "write",
+    description: "Move a document in a tree collection: under parentId (null = top level), in front of the sibling with id before (null = last). No new version is made. Fails with tree_cycle (under itself) or tree_too_deep.",
+    input: z.object({ collection: col, slug, parentId: z.string().nullable(), before: z.string().nullable().optional() }),
+    run: async (cms, actor, a) => summaryOf(await cms.move(actor, a.collection as string, a.slug as string, { parentId: (a.parentId as string | null) ?? null, before: (a.before as string | null | undefined) ?? null })),
+  },
+  {
+    name: "get_single",
+    description: "Read the one document of a single collection (list_collections says single: true), e.g. site settings. Before the first save you get the defaults (version 0).",
+    input: z.object({ collection: col, draft: z.boolean().optional() }),
+    run: async (cms, actor, a) => {
+      const { autosave: _a, ...doc } = await cms.single(actor, a.collection as string, { draft: !!a.draft });
+      return doc;
+    },
+  },
+  {
+    name: "update_single",
+    needs: "write",
+    description: "Save the one document of a single collection (made on the first save). Pass expectedVersion from get_single(draft=true).",
+    input: z.object({ collection: col, doc: z.object(docInput), expectedVersion, publish: z.boolean().optional(), note: z.string().optional() }),
+    run: async (cms, actor, a) => cms.updateSingle(actor, a.collection as string, a.doc as never, { expectedVersion: a.expectedVersion as number | undefined, publish: a.publish as boolean | undefined, note: a.note as string | undefined }),
+  },
+  {
+    name: "list_templates",
+    needs: "write",
+    description: "Templates for new documents in a collection (the collection's own and the ones editors saved). Pass one's key or id as create_document's template.",
+    input: z.object({ collection: col }),
+    run: async (cms, actor, a) => ({ templates: (await cms.templates(actor, a.collection as string)).map((t) => ({ key: t.key, label: t.label, description: t.description ?? null, source: t.source ?? "code" })) }),
+  },
+  {
+    name: "list_redirects",
+    description: "Old addresses and where they lead (admins; when redirects are on).",
+    input: z.object({}),
+    run: async (cms, actor) => ({ redirects: await cms.redirects.list(actor) }),
   },
   {
     name: "bulk_documents",

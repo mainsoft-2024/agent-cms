@@ -213,7 +213,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_changes", "blog_comments", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
+      ["blog_anchor_aliases", "blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_changes", "blog_comments", "blog_doc_refs", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_redirects", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -248,12 +248,12 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_jobs", "cms_presence", "cms_releases", "cms_saved_filters", "cms_webhook_deliveries", "cms_webhooks"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 7], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 6], /0\.10\.0/);
-    assert.match(pending.steps[pending.steps.length - 5], /0\.11\.0/);
-    assert.match(pending.steps[pending.steps.length - 4], /0\.12\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.15\.0/);
+    assert.match(pending.steps[pending.steps.length - 8], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 7], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 6], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.15\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -433,9 +433,10 @@ test("db: schema 6 → 7 adds cms_records; automations, runs and roles work on a
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [6, ["cms_records"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.match(pending.steps[pending.steps.length - 3], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.15\.0: body format/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.17\.0: change log/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.15\.0: body format/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.17\.0: change log/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.21\.0: relations/);
     await run(db, pending.sql);
     await run(db, pending.sql); // safe to run again
     assert.deepEqual([(await repo.inspect()).schemaVersion, (await repo.inspect()).missingTables], [SCHEMA_VERSION, []]);
@@ -518,7 +519,7 @@ test("db: schema 8 → 9 adds the change log and indexes; paging, the log and do
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [8, ["cms_changes"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs"]);
+    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs", "agent-cms 0.21.0: relations, document trees, SEO, heading anchor aliases, redirects"]);
     await run(db, pending.sql);
     const after = await repo.inspect();
     assert.deepEqual([after.schemaVersion, after.missingTables, after.missingIndexes], [SCHEMA_VERSION, [], []]);

@@ -418,6 +418,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
     "aws4fetch": "^1.0.20",
+    "es-hangul": "^2.4.0",
     "jiti": "2.7.0",
     "sanitize-html": "^2.18.2"
   },

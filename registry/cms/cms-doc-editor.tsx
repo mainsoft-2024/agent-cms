@@ -17,6 +17,8 @@ import { docState, type CmsDoc, type AutosaveState, type Presence } from "@mains
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { RelatedLabels, type RelatedLabel } from "./cms-fields-more";
+import { contentFromTemplate, SaveTemplateDialog, SeoPanel, SlugChangeDialog, SnippetUses, takeTemplate } from "./cms-structure";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -59,6 +61,8 @@ export interface CmsDocEditorProps {
   /** How often this screen says "I am here" and looks for other people's saves, in ms. Default 15000 (3000 while someone else is here); 0 turns it off. */
   presenceMs?: number;
   className?: string;
+  /** 0.21.0: open another document (the documents that use a snippet). */
+  onOpenDocument?: (collection: string, slug: string) => void;
 }
 
 const EMPTY: DocContent = { slug: "", title: "", summary: "", body: "", category: null, keywords: [], fields: {} };
@@ -132,7 +136,7 @@ function takeStatus(collection: string, slug: string): string | null {
   }
 }
 
-export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className }: CmsDocEditorProps) {
+export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className, onOpenDocument }: CmsDocEditorProps) {
   const { client, t, locale, me, baseUrl, slots, toast } = useCms();
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
   /** Where the cursor last was in the body (null: the person never put it there). */
@@ -182,7 +186,14 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const [releaseOpen, setReleaseOpen] = React.useState(false);
   const [others, setOthers] = React.useState<Presence[]>([]);
 
-  const isNew = !slug;
+  /** The one document of a single that was never saved: edited as new, saved under its fixed slug. */
+  const [singleNew, setSingleNew] = React.useState(false);
+  const isNew = !slug || singleNew;
+  const [tplDialog, setTplDialog] = React.useState(false);
+  const [seoOpen, setSeoOpen] = React.useState(false);
+  const [slugAsk, setSlugAsk] = React.useState<{ publish: boolean } | null>(null);
+  const [relLabels, setRelLabels] = React.useState<Record<string, RelatedLabel | null>>({});
+  const relCtx = React.useMemo(() => ({ labels: relLabels, remember: (l: RelatedLabel) => setRelLabels((m) => ({ ...m, [l.id]: l })) }), [relLabels]);
   const currentSlug = doc?.slug ?? slug ?? "";
   const myLabel = me?.actor.label ?? "";
 
@@ -257,6 +268,24 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       },
       (e) => {
         if (!live) return;
+        // A single that was never saved: start from the schema's defaults.
+        if (isCmsRemoteError(e) && e.code === "not_found" && slug === "_single") {
+          void client.single(collection, { draft: true }).then(
+            (d) => {
+              if (!live) return;
+              const c = { ...EMPTY, ...contentOf(d), slug: "_single" };
+              setSingleNew(true);
+              setDoc(null);
+              setContentRaw(c);
+              setSaved(c);
+              setLoadError(null);
+              setLoading(false);
+              setStatus({ text: t("single_not_saved"), tone: "muted" });
+            },
+            (e2) => live && (setLoadError(e2), setLoading(false))
+          );
+          return;
+        }
         setLoadError(e);
         setLoading(false);
       }
@@ -264,7 +293,65 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     return () => {
       live = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, collection, slug, applyDoc]);
+
+  // A new document may start from the template picked in the list ("New document").
+  React.useEffect(() => {
+    if (slug) return;
+    const tpl = takeTemplate(collection);
+    if (!tpl) return;
+    const c = { ...EMPTY, ...contentFromTemplate(tpl) };
+    setContentRaw(c);
+    setStatus({ text: t("tpl_applied", { name: tpl.label }), tone: "muted" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collection, slug]);
+
+  // Relation fields show the titles of what they point at (one read with ?expand=).
+  const relPaths = schemaQ.data?.relations?.map((r) => r.path) ?? [];
+  const relKey = relPaths.join(",");
+  React.useEffect(() => {
+    if (!slug || singleNew || !relKey) return;
+    let live = true;
+    client.get(collection, slug, { draft: true, expand: relKey.split(",") }).then(
+      (d) => {
+        if (!live) return;
+        const out: Record<string, RelatedLabel | null> = {};
+        const raw = doc?.fields ?? {};
+        for (const path of relKey.split(",")) {
+          const got = (d.fields as Record<string, unknown>)[path];
+          const ids = (raw as Record<string, unknown>)[path];
+          const idList = Array.isArray(ids) ? ids : ids ? [ids] : [];
+          const list = Array.isArray(got) ? got : got !== undefined ? [got] : [];
+          idList.forEach((id, i) => {
+            const x = list[i] as RelatedLabel | null | undefined;
+            if (typeof id === "string") out[id] = x ? { id: x.id, collection: x.collection, slug: x.slug, title: x.title, status: x.status } : null;
+          });
+        }
+        setRelLabels((m) => ({ ...out, ...m }));
+      },
+      () => undefined
+    );
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, collection, slug, relKey, doc?.version]);
+
+  // A new document's address follows its title until someone types one (Korean titles are romanized on the server).
+  const lastSuggested = React.useRef("");
+  const suggest = useDebounced((title: string) => {
+    if (!title.trim()) return;
+    client.suggestSlug(collection, title).then(
+      (sl) => {
+        const c = live.current.content;
+        if (c.slug && c.slug !== lastSuggested.current) return;
+        lastSuggested.current = sl;
+        setContentRaw({ ...c, slug: sl });
+      },
+      () => undefined
+    );
+  }, 350);
 
   // ── diagnose and autosave ──
   // Each check and autosave gets a number; an answer to an older one is dropped,
@@ -304,6 +391,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
 
   const setContent = (next: DocContent) => {
     edited.current = true;
+    if (!slug && next.title !== live.current.content.title && (!next.slug || next.slug === lastSuggested.current)) suggest(next.title);
     setContentRaw(next);
   };
 
@@ -377,8 +465,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const unparsedRef = React.useRef(unparsed);
   unparsedRef.current = unparsed;
 
-  const save = async (publish: boolean): Promise<CmsDoc | null> => {
+  const save = async (publish: boolean, confirmed = false): Promise<CmsDoc | null> => {
     setTried(true);
+    if (!confirmed && doc && doc.publishedVersion !== null && content.slug !== doc.slug && schema?.redirects) {
+      setSlugAsk({ publish });
+      return null;
+    }
     if (unparsedRef.current.length) {
       setStatus({ text: t("fields_unparsed", { fields: unparsedRef.current.join(", ") }), tone: "error" });
       document.getElementById(`cms-editor-f-${unparsedRef.current[0]}`)?.focus();
@@ -392,6 +484,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       if (isNew && !doc) {
         d = await client.create(collection, toInput(content), { publish });
         applyDoc(d);
+        if (singleNew) {
+          setSingleNew(false);
+          setStatus({ text: publish ? t("published_v", { version: d.version }) : t("saved", { version: d.version }), tone: "ok" });
+          onSaved?.(d);
+          return d;
+        }
         const text = publish ? t("published_v", { version: d.version }) : t("saved", { version: d.version });
         setStatus({ text, tone: "ok" });
         onSaved?.(d);
@@ -418,6 +516,11 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       await loadChanges(d.slug);
       setStatus({ text: publish ? t("published_v", { version: d.publishedVersion ?? d.version }) : t("saved", { version: d.version }), tone: "ok" });
       onSaved?.(d);
+      // A new address: the page follows the document.
+      if (d.slug !== doc.slug && onCreated) {
+        keepStatus(collection, d.slug, t("saved", { version: d.version }));
+        onCreated(collection, d.slug);
+      }
       return d;
     } catch (e) {
       if (isCmsRemoteError(e) && e.code === "conflict_version" && doc) {
@@ -1089,7 +1192,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   // Beside the preview the bar is half as wide: buttons keep their icon and name it in a tooltip.
   const compact = !mobile && !blocksOn && sidePreview;
   const label = (text: string, wide: string) => <span className={compact ? "sr-only" : wide}>{text}</span>;
-  const bodyPane = (
+  const bodyPane = schema.hideBody ? null : (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col">
       {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={doc.slug} canWrite={canWrite} onApplied={() => void client.get(collection, doc.slug, { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
       <div className="flex min-w-0 items-center gap-1.5 border-b px-3 py-2 text-xs text-muted-foreground">
@@ -1279,9 +1382,69 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     </section>
   );
 
+  const seoWarnings = shownProblems.filter((p) => p.path.startsWith("seo") || p.code?.startsWith?.("seo_")).length;
+  const takenRedirect = isNew ? (shownProblems.find((p) => p.code === "redirect_taken") as (Diagnostic & { params?: Record<string, unknown> }) | undefined) : undefined;
+  const redirectNote = takenRedirect ? (
+    <span className="text-amber-700 dark:text-amber-400">
+      {t("redirect_at_slug", { from: String(takenRedirect.params?.from ?? "") })}{" "}
+      {me?.isAdmin && takenRedirect.params?.id ? (
+        <button
+          type="button"
+          className="underline underline-offset-2"
+          onClick={() =>
+            client.removeRedirect(String(takenRedirect.params!.id)).then(
+              () => void diagnose(live.current.content),
+              (e) => setStatus({ text: errorMessage(e, t), tone: "error" })
+            )
+          }
+        >
+          {t("redirect_remove")}
+        </button>
+      ) : null}
+    </span>
+  ) : null;
   const form = (
     <FieldGate.Provider value={fieldGate}>
-      <CmsFieldForm disabled={!canWrite} schema={schema} value={content} onChange={setContent} problems={byField} slugLocked={!!doc && doc.publishedVersion !== null} slugPrefix={slugPrefix} idPrefix="cms-editor" slotContext={slotCtx} />
+      <RelatedLabels.Provider value={relCtx}>
+        <CmsFieldForm
+          disabled={!canWrite}
+          schema={schema}
+          value={content}
+          onChange={setContent}
+          problems={byField}
+          slugLocked={!!doc && doc.publishedVersion !== null && !schema.redirects}
+          slugPrefix={slugPrefix}
+          idPrefix="cms-editor"
+          slotContext={slotCtx}
+          hideSlug={!!schema.single}
+          slugNote={redirectNote}
+        />
+      </RelatedLabels.Provider>
+      {schema.seo ? (
+        <details className="group mt-4 min-w-0 rounded-md border" open={seoOpen} onToggle={(e) => setSeoOpen((e.currentTarget as HTMLDetailsElement).open)}>
+          <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <ChevronDown aria-hidden className="h-4 w-4 -rotate-90 transition-transform duration-150 ease-out group-open:rotate-0" />
+            {t("seo_title")}
+            {seoWarnings ? <span className="ml-1 rounded bg-amber-500/15 px-1.5 text-[11px] text-amber-700 dark:text-amber-400">{seoWarnings}</span> : null}
+          </summary>
+          <div className="border-t p-3">
+            <SeoPanel
+              value={content.seo}
+              onChange={(seo) => setContent({ ...content, seo })}
+              fallback={{ title: content.title, description: content.summary, image: /!\[[^\]]*\]\((asset:[^)\s]+|https:\/\/[^)\s]+)/.exec(content.body)?.[1] ?? null }}
+              limits={schema.seo}
+              url={publicUrlFor && content.slug ? publicUrlFor(collection, content.slug) : null}
+              disabled={!canWrite}
+              descriptionAddon={slots.fieldAddon && !!slotCtx ? slots.fieldAddon({ key: "seo.description", label: t("seo_field_description"), widget: "textarea" }, { ...slotCtx, value: content.seo?.description ?? "", setValue: (v) => setContent({ ...content, seo: { ...(content.seo ?? {}), description: typeof v === "string" ? v : null } }) }) : undefined}
+            />
+          </div>
+        </details>
+      ) : null}
+      {schema.snippets && doc ? (
+        <div className="mt-4 min-w-0">
+          <SnippetUses collection={collection} slug={doc.slug} onOpen={onOpenDocument} />
+        </div>
+      ) : null}
       {slots.editorPanel ? <div className="mt-4 min-w-0">{slots.editorPanel(slotCtx)}</div> : null}
     </FieldGate.Provider>
   );
@@ -1327,6 +1490,19 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
 
   const previewDialog = (
     <>
+      {tplDialog ? <SaveTemplateDialog collection={collection} content={content} onClose={() => setTplDialog(false)} /> : null}
+      {slugAsk && doc ? (
+        <SlugChangeDialog
+          from={publicUrlFor ? publicUrlFor(collection, doc.slug) : `${slugPrefix ?? ""}${doc.slug}`}
+          to={publicUrlFor ? publicUrlFor(collection, content.slug) : `${slugPrefix ?? ""}${content.slug}`}
+          onClose={() => setSlugAsk(null)}
+          onConfirm={() => {
+            const pub = slugAsk.publish;
+            setSlugAsk(null);
+            void save(pub, true);
+          }}
+        />
+      ) : null}
       {previewAllowed && doc ? <CmsPreviewLinkDialog open={previewOpen} onOpenChange={setPreviewOpen} collection={collection} slug={doc.slug} version={doc.version} /> : null}
       {doc ? (
         <AddToReleaseDialog
@@ -1364,7 +1540,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
             </Button>
           ) : null}
           <People people={others} max={2} />
-          {publicUrl || previewAllowed || canRelease ? (
+          {publicUrl || previewAllowed || canRelease || (canWrite && !schema.single) ? (
             <DropdownMenu>
               <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon", className: "h-8 w-8" })} aria-label={t("more")}>
                 <MoreHorizontal aria-hidden className="h-4 w-4" />
@@ -1373,6 +1549,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
                 {publicUrl ? <DropdownMenuItem onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")}>{t("public_page")}</DropdownMenuItem> : null}
                 {previewAllowed ? <DropdownMenuItem onClick={() => setPreviewOpen(true)}>{t("preview_link")}</DropdownMenuItem> : null}
                 {canRelease ? <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem> : null}
+                {canWrite && !schema.single ? <DropdownMenuItem onClick={() => setTplDialog(true)}>{t("doc_more_template")}</DropdownMenuItem> : null}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
@@ -1495,13 +1672,14 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
               {t("versions")}
             </Button>
           ) : null}
-          {canRelease ? (
+          {canRelease || (canWrite && !schema.single) ? (
             <DropdownMenu>
               <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon" })} aria-label={t("more")}>
                 <MoreHorizontal aria-hidden className="h-4 w-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem>
+                {canRelease ? <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem> : null}
+                {canWrite && !schema.single ? <DropdownMenuItem onClick={() => setTplDialog(true)}>{t("doc_more_template")}</DropdownMenuItem> : null}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
