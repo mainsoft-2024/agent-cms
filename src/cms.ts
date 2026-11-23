@@ -2882,15 +2882,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
     for (const x of await model.referencedBy(id)) {
       const d = x.doc;
       if (!collections.has(d.collection)) continue;
-      const hidden = new Set(fieldRulesFor(actor, d.collection, d).hidden);
-      const fieldsOk = (fs: string[]) => fs.filter((f) => !hidden.has(f) && !hidden.has(f.split(".")[0]));
+      const fieldsOk = (copy: CmsDoc, fs: string[]) => {
+        const hidden = fieldRulesFor(actor, d.collection, copy).hidden;
+        return fs.filter((f) => !isHiddenPath(hidden, f));
+      };
       let entry: (typeof out)[number] | null = null;
       if (can(actor, d.collection, "write", d)) {
-        const fs = fieldsOk(x.draftFields);
+        const fs = (await readable(actor, d.collection, d.slug, true)) ? fieldsOk(d, x.draftFields) : [];
         if (fs.length) entry = { id: d.id, collection: d.collection, slug: d.slug, title: d.title, status: d.status, fields: fs };
       } else {
         const pub = publicView(d);
-        const fs = fieldsOk(x.publishedFields);
+        const fs = pub ? fieldsOk(pub, x.publishedFields) : [];
         if (pub && fs.length && can(actor, d.collection, "read", pub) && (await readable(actor, d.collection, pub.slug))) entry = { id: d.id, collection: d.collection, slug: pub.slug, title: pub.title, status: pub.status, fields: fs };
       }
       if (entry) out.push(entry);
@@ -2899,9 +2901,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return out;
   }
   /** `beforeRead` hooks let this actor read the document. */
-  async function readable(actor: Actor, col: string, slug: string): Promise<boolean> {
+  async function readable(actor: Actor, col: string, slug: string, draft = false): Promise<boolean> {
     try {
-      await beforeRead(actor, col, slug, false);
+      await beforeRead(actor, col, slug, draft);
       return true;
     } catch {
       return false;
@@ -2920,7 +2922,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   /** What `actor` may see of a document a relation points at. */
   const relatedView = (actor: Actor, draft: boolean) => async (d: CmsDoc): Promise<CmsDoc | null> => {
     if (!collections.has(d.collection)) return null;
-    if (draft && can(actor, d.collection, "write", d)) return d;
+    if (draft && can(actor, d.collection, "write", d)) return (await readable(actor, d.collection, d.slug, true)) ? d : null;
     const pub = publicView(d);
     return pub && can(actor, d.collection, "read", pub) && (await readable(actor, d.collection, pub.slug)) ? pub : null;
   };

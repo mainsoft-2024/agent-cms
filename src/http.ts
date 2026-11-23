@@ -851,7 +851,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           if (m === "GET" || m === "HEAD") {
             const raw = await core.get(actor, col, slug, { draft: q.get("draft") === "1", snippets: q.get("snippets") === "raw" ? "raw" : undefined });
             const doc = await core.expand(actor, raw, expandOf(q), q.get("draft") === "1");
-            const tag = contentTag(raw, doc, expandOf(q).length > 0 || core.collections().some((c) => c.snippets));
+            const tag = contentTag(raw, doc, expandOf(q).length > 0 || (q.get("draft") !== "1" && q.get("snippets") !== "raw" && core.collections().some((c) => c.snippets)));
             if (req.headers.get("if-none-match") === tag) return new Response(null, { status: 304, headers: { etag: tag } });
             // Editors also learn which open release the document is in.
             const release = q.get("draft") === "1" && core.can(actor, col, "write", doc) ? await core.releases.of(doc.id) : undefined;
@@ -1026,8 +1026,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (seg.length === 2 && m === "PUT") {
           // expectedVersion 0: what GET says before the first save ("create it").
           const b = await body(req, WriteBody.extend({ expectedVersion: z.number().int().nonnegative().optional() }));
-          const ifMatch = req.headers.get("if-match");
-          return json({ doc: wire(await core.updateSingle(actor, sl, b.doc, { ...b, expectedVersion: b.expectedVersion ?? versionFromIfMatch(ifMatch) })) });
+          return json({ doc: wire(await core.updateSingle(actor, sl, b.doc, { ...b, expectedVersion: needMatch(expected(b.expectedVersion)) })) });
         }
         if (seg.length === 3 && seg[2] === "_publish" && m === "POST") {
           const b = await body(req, Expected, true);

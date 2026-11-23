@@ -236,24 +236,26 @@ export function createModel(ctx: ModelContext) {
 
   const snippetCols = () => [...ctx.collections.values()].filter((c) => c.snippets).map((c) => c.slug);
   /** Published snippet bodies by key, refreshed when a snippet changes here or after 30 s. */
-  let snippetCache: { at: number; bodies: Map<string, string | null> } | null = null;
+  let snippetCache: { at: number; bodies: Map<string, { col: string; slug: string; body: string } | null> } | null = null;
   function forgetSnippets() {
     snippetCache = null;
   }
   async function snippetBody(key: string): Promise<string | null> {
     if (!snippetCache || Date.now() - snippetCache.at > 30_000) snippetCache = { at: Date.now(), bodies: new Map() };
-    const hit = snippetCache.bodies.get(key);
-    if (hit !== undefined) return hit;
-    let body: string | null = null;
-    for (const c of snippetCols()) {
-      const d = await repo.findDoc(c, key);
-      if (d && d.published && d.publishedVersion !== null && d.status !== "archived" && ctx.collection(c).visibility === "public" && !ctx.collection(c).access?.read && (await ctx.publicReadable(c, d.published.slug ?? d.slug))) {
-        body = d.published.body ?? "";
-        break;
+    let hit = snippetCache.bodies.get(key);
+    if (hit === undefined) {
+      hit = null;
+      for (const c of snippetCols()) {
+        const d = await repo.findDoc(c, key);
+        if (d && d.published && d.publishedVersion !== null && d.status !== "archived" && ctx.collection(c).visibility === "public" && !ctx.collection(c).access?.read) {
+          hit = { col: c, slug: d.published.slug ?? d.slug, body: d.published.body ?? "" };
+          break;
+        }
       }
+      snippetCache.bodies.set(key, hit);
     }
-    snippetCache.bodies.set(key, body);
-    return body;
+    // The published text is cached; whether readers may see it is asked every time.
+    return hit && (await ctx.publicReadable(hit.col, hit.slug)) ? hit.body : null;
   }
   /** A body with `[[snippet:key]]` replaced by published snippets (3 levels; a missing one becomes nothing). Code fences stay as they are. */
   async function expandSnippets(body: string, depth = 0, seen: string[] = []): Promise<string> {

@@ -279,3 +279,24 @@ test("REST: snippet changes change the ETag, _move takes an id, a single's first
   assert.equal(put.status, 200);
   assert.equal((await call("PUT", "/singles/site", { doc: { fields: { name: "Y" } }, expectedVersion: 0 })).status, 409);
 });
+
+test("delta fixes: a closed snippet stops showing at once; a stale If-Match on a single is refused", async () => {
+  let open = true;
+  const repo = new MemoryRepo();
+  const snips = defineCollection({ slug: "snips", label: "S", visibility: "public", snippets: true, hooks: { beforeRead: [({ actor }: { actor: Actor }) => { if (!open && actor.kind === "anonymous") throw new Error("closed"); }] } } as never);
+  const pages = defineCollection({ slug: "pages", label: "P", visibility: "public" });
+  const c = createCms({ repo, collections: [snips, pages], searchRefreshMs: 0 });
+  await c.create(admin, "snips", { slug: "n", title: "N", body: "hello" }, { publish: true });
+  await c.create(admin, "pages", { slug: "p", title: "P", body: "[[snippet:n]]" }, { publish: true });
+  assert.match((await c.get(anon, "pages", "p")).body, /hello/);
+  open = false;
+  assert.doesNotMatch((await c.get(anon, "pages", "p")).body, /hello/);
+
+  const { createCmsHandler } = await import("./http");
+  const { cms } = setup();
+  const h = createCmsHandler({ cms, basePath: "/api", resolveUser: async () => admin });
+  const put = (body: unknown, headers: Record<string, string> = {}) => h(new Request("http://x/api/singles/site", { method: "PUT", headers: { "content-type": "application/json", origin: "http://x", ...headers }, body: JSON.stringify(body) }));
+  assert.equal((await put({ doc: { fields: { name: "A" } } })).status, 200);
+  assert.equal((await put({ doc: { fields: { name: "B" } } })).status, 200);
+  assert.equal((await put({ doc: { fields: { name: "C" } }, expectedVersion: 2 }, { "if-match": '"v1"' })).status, 409);
+});
