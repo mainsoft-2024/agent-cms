@@ -58,7 +58,7 @@ test("media: upload from the browser, describe the file, use it in a post, see i
   dialog = page.getByRole("dialog", { name: "Choose media" });
   await dialog.getByRole("button", { name, exact: true }).click();
   await dialog.getByRole("button", { name: "Insert" }).click();
-  await expect(page.getByLabel("Markdown")).toHaveValue(new RegExp(`!\\[A grey test picture\\]\\(asset:[a-z0-9]{12}/${name}\\)`));
+  await expect(page.getByLabel("Markdown", { exact: true })).toHaveValue(new RegExp(`!\\[A grey test picture\\]\\(asset:[a-z0-9]{12}/${name}\\)`));
   await page.getByRole("button", { name: "Publish", exact: true }).click();
   // A new document moves to its own address, which mounts a new editor: the line has to be there too.
   await expect(page).toHaveURL(new RegExp(`/admin/posts/${slug}$`));
