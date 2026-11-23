@@ -211,6 +211,7 @@ export const ERROR_CODES = {
   locale_field_shared: "invalid",
   locale_source_missing: "invalid",
   locale_is_source: "invalid",
+  translation_source_trashed: "conflict",
   // 0.22.0 forms
   forms_off: "not_found",
   form_not_found: "not_found",

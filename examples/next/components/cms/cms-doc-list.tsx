@@ -23,8 +23,8 @@ import { cn } from "@/lib/utils";
 import type { MessageKey } from "./cms-messages";
 import { errorMessage } from "./cms-messages";
 import { CmsEmpty } from "./cms-empty";
-import { ConfirmDialog, flowState, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, Who, DIALOG } from "./cms-parts";
-import { formatZoned, relativeTime, useAsync, useCms, trashChanged, useDebounced, useIsMobile, useLocalStorage, useShortcut } from "./use-cms";
+import { ConfirmDialog, flowState, LocaleStatus, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, TranslationMarks, Who, DIALOG } from "./cms-parts";
+import { formatZoned, languageName, relativeTime, useAsync, useCms, trashChanged, useDebounced, useIsMobile, useLocalStorage, useShortcut } from "./use-cms";
 import { chooseTemplate, CmsTreeView, ReferencedDialog, TemplatePicker } from "./cms-structure";
 
 type BulkAction = Parameters<RestClient["bulk"]>[1];
@@ -62,7 +62,14 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   const { client, t, locale, me, toast } = useCms();
   const mobile = useIsMobile();
   const schema = useAsync(() => client.schema(collection), [client, collection]);
-  const counts = useAsync(() => client.counts(collection), [client, collection]);
+  // 0.22.0: a localized collection lists one language at a time (the source's by default).
+  const [lang, setLang] = React.useState<string>("__source");
+  const langs = schema.data?.localized && !schema.data.single && (schema.data.locales?.length ?? 0) > 1 ? schema.data.locales! : null;
+  const sourceLang = langs ? (schema.data?.defaultLocale ?? langs[0]) : null;
+  const listLocale = langs && lang !== "__source" && lang !== sourceLang && langs.includes(lang) ? lang : null;
+  const counts = useAsync(() => client.counts(collection, listLocale ? { locale: listLocale } : {}), [client, collection, listLocale]);
+  /** How a row is named to the server and the editor: `slug@en` on a translation. */
+  const addrOf = (d: DocSummary) => (langs && d.locale && d.locale !== sourceLang ? `${d.slug}@${d.locale}` : d.slug);
 
   const [tab, setTab] = React.useState<Tab>("all");
   const [category, setCategory] = React.useState<string>("__all");
@@ -110,6 +117,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
     setTab(TABS.includes(f.state as Tab) ? (f.state as Tab) : "all");
     setCategory(f.category || "__all");
     setBy(f.by === "user" || f.by === "key" || f.by === "system" ? f.by : "__all");
+    setLang(f.locale || "__source");
     setQInput(f.q ?? "");
     setQ(f.q ?? "");
     if (f.q) setSearchOpen(true);
@@ -143,14 +151,19 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       by: by === "__all" ? undefined : by,
       hits: true,
       limit: pageSize,
+      ...(listLocale ? { locale: listLocale } : {}),
+      ...(langs ? { translations: true } : {}),
     }),
-    [tab, q, category, by, pageSize]
+    [tab, q, category, by, pageSize, listLocale, !!langs]
   );
 
   // Which list the rows on screen belong to: a page that arrives for an older one is dropped.
   const generation = React.useRef(0);
   const [moreError, setMoreError] = React.useState<unknown>(null);
+  // The schema first: a translated collection's rows come with their translations (no second load, no column popping in).
+  const schemaKnown = !schema.loading || !!schema.data || !!schema.error;
   React.useEffect(() => {
+    if (!schemaKnown) return;
     let live = true;
     const gen = ++generation.current;
     setLoading(true);
@@ -173,7 +186,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
     return () => {
       live = false;
     };
-  }, [client, collection, query, reloadTick]);
+  }, [client, collection, query, reloadTick, schemaKnown]);
 
   // A new filter clears the selection.
   React.useEffect(() => setSelected(new Set()), [collection, query]);
@@ -187,8 +200,8 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       const r = await client.list(collection, { ...query, cursor });
       if (gen !== generation.current) return;
       setDocs((d) => {
-        const have = new Set(d.map((x) => x.slug));
-        return [...d, ...r.docs.filter((x) => !have.has(x.slug))];
+        const have = new Set(d.map((x) => x.id));
+        return [...d, ...r.docs.filter((x) => !have.has(x.id))];
       });
       setCursor(r.nextCursor);
       setTotal(r.total);
@@ -207,9 +220,9 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       else n.delete(slug);
       return n;
     });
-  const allSelected = docs.length > 0 && docs.every((d) => selected.has(d.slug));
-  const someSelected = docs.some((d) => selected.has(d.slug));
-  const selectAll = (on: boolean) => setSelected(on ? new Set(docs.map((d) => d.slug)) : new Set());
+  const allSelected = docs.length > 0 && docs.every((d) => selected.has(addrOf(d)));
+  const someSelected = docs.some((d) => selected.has(addrOf(d)));
+  const selectAll = (on: boolean) => setSelected(on ? new Set(docs.map((d) => addrOf(d))) : new Set());
   const clearSelection = () => {
     setSelected(new Set());
     setSelectMode(false);
@@ -235,7 +248,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
     if (!confirm) return;
     setRunning(true);
     setRunError(null);
-    const bySlug = new Map(docs.map((d) => [d.slug, d]));
+    const bySlug = new Map(docs.map((d) => [addrOf(d), d]));
     try {
       const res = await client.bulk(
         collection,
@@ -288,7 +301,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
     if (single) onOpenDocument?.(collection, "_single");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [single, collection]);
-  const filtered = tab !== "all" || !!q || category !== "__all" || by !== "__all";
+  const filtered = tab !== "all" || !!q || category !== "__all" || by !== "__all" || !!listLocale;
   const isEmpty = !loading && !loadError && c?.all === 0 && !filtered;
 
   const actionAllowed = (a: BulkAction) => (a === "publish" || a === "unpublish" || a === "delete" ? canPublish : canWrite);
@@ -314,8 +327,28 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   );
 
   const categories = sch?.categories ?? [];
+  const langLabel = (l: string) => (l === sourceLang ? t("locale_source_suffix", { language: languageName(l) }) : languageName(l));
+  const langSelect =
+    langs && sourceLang ? (
+        <Select value={listLocale ?? "__source"} onValueChange={(v: string | null) => setLang(v ?? "__source")}>
+          <SelectTrigger className="h-8 w-auto gap-1.5 text-[13px]" aria-label={t("locale_filter_label")}>
+            <SelectValue>{t("locale_filter", { value: langLabel(listLocale ?? sourceLang) })}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__source">{langLabel(sourceLang)}</SelectItem>
+            {langs
+              .filter((l) => l !== sourceLang)
+              .map((l) => (
+                <SelectItem key={l} value={l}>
+                  {langLabel(l)}
+                </SelectItem>
+              ))}
+          </SelectContent>
+        </Select>
+      ) : null;
   const filters = (
     <>
+      {langSelect}
       {categories.length ? (
         <Select value={category} onValueChange={(v: string | null) => setCategory(v ?? "__all")}>
           <SelectTrigger className="h-8 w-auto gap-1.5 text-[13px]" aria-label={t("filter_category_label")}>
@@ -415,19 +448,19 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   const titleLink = (d: DocSummary, className?: string) =>
     hrefFor ? (
       <a
-        href={hrefFor(collection, d.slug)}
+        href={hrefFor(collection, addrOf(d))}
         className={cn("font-medium hover:underline", className)}
         onClick={(e) => {
           if (onOpenDocument && !e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
             e.preventDefault();
-            open(d.slug);
+            open(addrOf(d));
           }
         }}
       >
         {d.title || d.slug}
       </a>
     ) : (
-      <button type="button" className={cn("text-left font-medium hover:underline", className)} onClick={() => open(d.slug)}>
+      <button type="button" className={cn("text-left font-medium hover:underline", className)} onClick={() => open(addrOf(d))}>
         {d.title || d.slug}
       </button>
     );
@@ -445,16 +478,26 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
     );
   };
 
+  /** 0.22.0: on the source's rows each language's mark; on a translation's rows how it stands against its source. */
+  const translationCell = (d: DocSummary) => {
+    if (!langs || !d.translations) return null;
+    if (listLocale) {
+      const s = d.translations[listLocale];
+      return s ? <LocaleStatus status={s} /> : null;
+    }
+    return <TranslationMarks translations={d.translations} />;
+  };
+
   const rowMenu = (d: DocSummary) => (
     <DropdownMenu>
       <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon", className: "h-7 w-7" })} aria-label={t("row_actions", { title: d.title || d.slug })}>
         <MoreHorizontal aria-hidden className="h-4 w-4" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onClick={() => open(d.slug)}>{t("open")}</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => open(addrOf(d))}>{t("open")}</DropdownMenuItem>
         <DropdownMenuSeparator />
         {ACTIONS.filter((a) => actionAllowed(a.action)).map(({ action }) => (
-          <DropdownMenuItem key={action} className={action === "delete" ? "text-destructive" : undefined} onClick={() => setConfirm({ action, slugs: [d.slug] })}>
+          <DropdownMenuItem key={action} className={action === "delete" ? "text-destructive" : undefined} onClick={() => setConfirm({ action, slugs: [addrOf(d)] })}>
             {t(`action_${action}` as MessageKey)}
           </DropdownMenuItem>
         ))}
@@ -548,18 +591,19 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
             <div className="flex flex-col gap-2 border-b px-4 py-2.5">
               {searchOpen ? searchBox : null}
               {tabControl}
+              {langSelect ? <div className="flex">{langSelect}</div> : null}
             </div>
           ) : null}
           <ul className="flex-1" aria-label={sch?.label ?? collection}>
             {docs.map((d) => {
-              const on = selected.has(d.slug);
+              const on = selected.has(addrOf(d));
               return (
-                <li key={d.slug} className={cn("border-b", on && "bg-muted/60")}>
+                <li key={d.id} className={cn("border-b", on && "bg-muted/60")}>
                   <button
                     type="button"
                     aria-pressed={selectMode ? on : undefined}
                     className="flex w-full select-none items-start gap-3 px-4 py-3 text-left outline-none focus-visible:bg-muted"
-                    onPointerDown={() => startPress(d.slug)}
+                    onPointerDown={() => startPress(addrOf(d))}
                     onPointerUp={endPress}
                     onPointerLeave={endPress}
                     onPointerCancel={endPress}
@@ -568,7 +612,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
                       endPress();
                       if (!press.current.fired) {
                         setSelectMode(true);
-                        toggle(d.slug, true);
+                        toggle(addrOf(d), true);
                       }
                       press.current.fired = true;
                     }}
@@ -577,8 +621,8 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
                         press.current.fired = false;
                         return;
                       }
-                      if (selectMode) toggle(d.slug);
-                      else open(d.slug);
+                      if (selectMode) toggle(addrOf(d));
+                      else open(addrOf(d));
                     }}
                   >
                     {selectMode ? (
@@ -589,12 +633,13 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
                     <span className="flex min-w-0 flex-1 flex-col gap-1.5">
                       <span className="flex items-center gap-2">
                         <span className="flex-1 truncate font-medium">{d.title || d.slug}</span>
-                        <People people={here[d.slug] ?? []} max={2} />
+                        <People people={here[addrOf(d)] ?? []} max={2} />
                         {!selectMode ? <ChevronRight aria-hidden className="h-4 w-4 text-muted-foreground" /> : null}
                       </span>
                       <span className="flex flex-wrap items-center gap-1.5">
                         <StateBadge state={flowState(d)} />
                         {d.modifiedSincePublish ? <ModifiedMark /> : d.category ? <span className="text-xs text-muted-foreground">{d.category}</span> : null}
+                        {translationCell(d)}
                       </span>
                       {!selectMode ? (
                         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -645,6 +690,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
                 <TableHead className="w-[38%]">{t("col_title")}</TableHead>
                 <TableHead>{t("col_category")}</TableHead>
                 <TableHead>{t("col_state")}</TableHead>
+                {langs ? <TableHead>{t("col_translations")}</TableHead> : null}
                 <TableHead>{t("col_updated")}</TableHead>
                 <TableHead className="text-right">{t("col_views")}</TableHead>
                 <TableHead className="w-10">
@@ -654,21 +700,22 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
             </TableHeader>
             <TableBody>
               {docs.map((d) => {
-                const on = selected.has(d.slug);
+                const on = selected.has(addrOf(d));
                 return (
-                  <TableRow key={d.slug} data-state={on ? "selected" : undefined}>
+                  <TableRow key={d.id} data-state={on ? "selected" : undefined}>
                     <TableCell>
-                      <Checkbox aria-label={t("select_row", { title: d.title || d.slug })} checked={on} onCheckedChange={(v) => toggle(d.slug, v === true)} />
+                      <Checkbox aria-label={t("select_row", { title: d.title || d.slug })} checked={on} onCheckedChange={(v) => toggle(addrOf(d), v === true)} />
                     </TableCell>
                     <TableCell>
                       <span className="flex items-center gap-2">
                         {titleLink(d)}
-                        <People people={here[d.slug] ?? []} max={3} />
+                        <People people={here[addrOf(d)] ?? []} max={3} />
                       </span>
                       <div className="font-mono text-xs text-muted-foreground">{d.slug}</div>
                     </TableCell>
                     <TableCell className="text-[13.5px]">{d.category ?? ""}</TableCell>
                     <TableCell>{stateCell(d)}</TableCell>
+                    {langs ? <TableCell>{translationCell(d)}</TableCell> : null}
                     <TableCell className="text-[13.5px]">
                       <Who kind={d.updatedByKind} label={d.updatedBy} agent={d.updatedByAgent} />
                       <div className="text-xs text-muted-foreground">{relativeTime(d.updatedAt, t, locale)}</div>
@@ -739,7 +786,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
       {saving ? (
         <SaveFilterDialog
           collection={collection}
-          query={{ ...(tab !== "all" ? { state: tab } : {}), ...(q ? { q } : {}), ...(category !== "__all" ? { category } : {}), ...(by !== "__all" ? { by } : {}) }}
+          query={{ ...(tab !== "all" ? { state: tab } : {}), ...(q ? { q } : {}), ...(category !== "__all" ? { category } : {}), ...(by !== "__all" ? { by } : {}), ...(listLocale ? { locale: listLocale } : {}) }}
           onClose={() => setSaving(false)}
           onSaved={loadFilters}
         />

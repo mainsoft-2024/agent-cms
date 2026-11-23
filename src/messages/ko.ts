@@ -194,6 +194,7 @@ export const ko: Messages = {
   locale_field_shared: "{field}은(는) 모든 언어가 함께 씀: {source} 문서에서 바꿔야 함",
   locale_source_missing: "{slug}에 번역할 {source} 원문이 없음",
   locale_is_source: "{locale}은(는) {slug}의 원문 언어라 번역이 아님",
+  translation_source_trashed: "{source} 원문 {slug}이(가) 휴지통에 있음. 원문을 먼저 복원할 것 (번역도 함께 돌아옴)",
   // 0.22.0 forms
   forms_off: "이 서버는 폼이 꺼져 있음 (createCms({ forms: true }))",
   form_not_found: "폼 없음: {slug}",

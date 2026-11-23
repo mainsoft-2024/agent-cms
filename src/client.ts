@@ -447,6 +447,8 @@ export interface DocRefView {
   id: string | null;
   collection: string;
   slug: string;
+  /** 0.22.0: a translation that points here: its language (`slug` is the source's). */
+  locale?: string;
   title: string;
   status: string | null;
   fields: string[];
@@ -470,6 +472,8 @@ export interface ListQuery {
   hits?: boolean;
   /** 0.22.0: documents in this language (localized collections). */
   locale?: string;
+  /** 0.22.0: with each source row, how its translations stand (`translations` on each item; editors). */
+  translations?: boolean;
 }
 
 /** 0.22.0: one language of a document, as `GET …/_translations` lists it. */
@@ -481,6 +485,8 @@ export interface TranslationView {
   publishedVersion: number | null;
   updatedAt: string | null;
   docStatus: "draft" | "published" | "archived" | null;
+  /** Where the site shows this language of the document (the collection's `url()`), or null. */
+  url: string | null;
 }
 export interface TranslationsView {
   collection: string;
@@ -590,7 +596,7 @@ export function createRestClient(opts: RestClientOptions) {
     ancestors: (c: string, s: string, o: { draft?: boolean } = {}) => req<{ ancestors: { id: string; slug: string; title: string }[] }>("GET", `${doc(c, s)}/_ancestors${o.draft ? "?draft=1" : ""}`).then((r) => r.ancestors),
     referencedBy: (c: string, s: string) => req<{ referencedBy: DocRefView[] }>("GET", `${doc(c, s)}/_refs`).then((r) => r.referencedBy),
     seo: (c: string, s: string, o: { draft?: boolean } = {}) => req<{ seo: SeoView }>("GET", `${doc(c, s)}/_seo${o.draft ? "?draft=1" : ""}`).then((r) => r.seo),
-    snippetUses: (c: string, s: string) => req<{ docs: { id: string; collection: string; slug: string; title: string; status: string }[] }>("GET", `${doc(c, s)}/_snippet-uses`).then((r) => r.docs),
+    snippetUses: (c: string, s: string) => req<{ docs: { id: string; collection: string; slug: string; locale?: string; title: string; status: string }[] }>("GET", `${doc(c, s)}/_snippet-uses`).then((r) => r.docs),
     suggestSlug: (c: string, title: string) => req<{ slug: string }>("GET", `/collections/${enc(c)}/_suggest-slug?title=${enc(title)}`).then((r) => r.slug),
     templates: (c: string) => req<{ templates: TemplateView[] }>("GET", `/collections/${enc(c)}/_templates`).then((r) => r.templates),
     saveTemplate: (c: string, t: Partial<TemplateView>) => req<{ template: TemplateView }>("POST", `/collections/${enc(c)}/_templates`, { body: t }).then((r) => r.template),
@@ -655,7 +661,7 @@ export function createRestClient(opts: RestClientOptions) {
     },
     schema: (c: string, o: { slug?: string | null } = {}) => req<CollectionSchema>("GET", `/collections/${enc(c)}/_schema${o.slug ? `?slug=${enc(o.slug)}` : ""}`),
     list: (c: string, q: ListQuery = {}) => req<{ docs: DocSummary[]; total: number; nextCursor: string | null }>("GET", `/collections/${enc(c)}`, { query: { fields: "summary", ...q } }),
-    counts: (c: string) => req<{ counts: DocCounts }>("GET", `/collections/${enc(c)}/_counts`).then((r) => r.counts),
+    counts: (c: string, o: { locale?: string } = {}) => req<{ counts: DocCounts }>("GET", `/collections/${enc(c)}/_counts`, { query: o }).then((r) => r.counts),
     /** 0.22.0: `locale` reads that language; `fallback` gives the default language's document when it has none (with `requestedLocale`). */
     get: (c: string, s: string, o: { draft?: boolean; expand?: string[]; locale?: string; fallback?: boolean } = { draft: true }) =>
       req<{ doc: CmsDoc }>("GET", doc(c, s), { query: { draft: o.draft, ...(o.expand?.length ? { expand: o.expand.join(",") } : {}), locale: o.locale, fallback: o.fallback } }).then((r) => r.doc),

@@ -789,6 +789,10 @@ A translation is a document of its own, with the source's address: its own versi
 
 REST: `?locale=` on every document route (and `&fallback=1` on reads), `GET|POST /collections/<c>/<slug>/_translations`, `POST …/_align`, `GET …/_source-diff?locale=`, `GET /search?locale=`. Agents: `locale` on the document tools and `list_translations`. The sitemap names every language with `hreflang`. Search takes one language at a time; Korean 2-grams only for Korean. Upgrading a big table: [UPGRADE-0.22.md](UPGRADE-0.22.md).
 
+**In the admin** (`cms-doc-editor`, `cms-doc-list`): a tab per language with its status (source, none, needs update, up to date). A translation shows which source version it follows, "Show changes" (what the source changed since) and "Mark as matching v7"; the source sits beside the text with the changed lines marked. Fields every language shares, the address and the category are read only there, with a link to the source. A language not started yet says readers may get the source instead, and "Start translation" copies the source. The list filters by language and marks each row's translations. Hosts open another language through `onOpenDocument(collection, "start@en")`. A plugin can add its own button (say, a translation draft from your own service) with `slots.localeAction`.
+
+Export and import carry translations as `start@en.md` files with their `locale` and source version. In the trash, a source takes its translations with it, and restoring or purging the source restores or purges them too.
+
 ## Forms (0.22)
 
 Contact forms, sign-ups, bug reports: built by admins on the Forms screen, shown on your page with one component, kept in your database.

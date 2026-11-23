@@ -111,7 +111,7 @@ function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boole
     case "files":
       return <CmsFiles />;
     case "releases":
-      return p1 ? <CmsRelease id={p1} onBack={() => go(`${a}/releases`)} onOpenDocument={(c, s) => go(`${a}/${c}/${s}`)} /> : <CmsReleases hrefFor={(id) => `${a}/releases/${id}`} onOpenRelease={(id) => go(`${a}/releases/${id}`)} />;
+      return p1 ? <CmsRelease id={p1} onBack={() => go(`${a}/releases`)} onOpenDocument={(c, s) => go(`${a}/${c}/${encodeURIComponent(s)}`)} /> : <CmsReleases hrefFor={(id) => `${a}/releases/${id}`} onOpenRelease={(id) => go(`${a}/releases/${id}`)} />;
     case "trash":
       return <CmsTrash />;
     case "keys":

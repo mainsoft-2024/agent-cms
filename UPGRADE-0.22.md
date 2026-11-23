@@ -69,6 +69,20 @@ Nothing, unless you set `locales`. With `locales` and a `localized` collection:
 - **Search** searches the default language unless you pass `locale`; collections that are not translated are searched whatever the language. Korean 2-grams are used for Korean text (and text with no language, as before), not for other languages.
 - **Agent tools**: one new (`list_translations`). Document tools take `locale`; `list_collections` says which collections are translated and which fields every language shares (`sharedFields`).
 
+## Copied admin screens
+
+If you copied the admin screens (`npx @mainsoft/agent-cms add …`), take them again for languages: `npx @mainsoft/agent-cms add cms-doc-editor cms-doc-list` brings the new `cms-locale.tsx` and the changed `cms-doc-editor`, `cms-doc-list`, `cms-field-form`, `cms-parts`, `cms-structure`, `use-cms` and `cms-messages` (new `locale_*` keys in `en` and `ko`; if you keep your own catalog, add them, or the English text shows). Without `locales` the screens look as before.
+
+- Your editor route gets `slug@en` for a translation (the `@` arrives as `%40` in the URL; decode it as you already do). Give the editor `onOpenDocument` so the language tabs change the URL; without it the editor switches language in place:
+
+  ```tsx
+  onOpenDocument={(c, s) => router.push(`/admin/${c}/${encodeURIComponent(s)}`)}
+  ```
+- `publicUrlFor` is not used for a translation: its address comes from the collection's `url()` (it knows `doc.locale`), as `_translations` answers it.
+- `slots.localeAction(ctx)` is optional; nothing shows without it.
+
+In the trash, restoring a translation whose source is still in the trash answers `409 translation_source_trashed`: restore the source (its translations deleted with it come back too).
+
 ## Forms
 
 The same schema step adds one table (nothing else changes for apps that do not turn forms on):

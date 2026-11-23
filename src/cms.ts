@@ -307,6 +307,8 @@ export interface ListOptions {
   locale?: string;
   /** 0.22.0, readers: where a document has no published translation in `locale`, list the default language's. */
   fallback?: boolean;
+  /** 0.22.0, editors' pages of source rows: add how each translation stands (`translations` on each item). */
+  translations?: boolean;
 }
 
 /** RFC 7396 JSON Merge Patch: objects merge, null removes a key, anything else replaces. */
@@ -1290,13 +1292,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   /** Check a document without saving (`existing` slug: as an update of that document). */
-  async function diagnose(actor: Actor, col: string, input: DocInput, o: { slug?: string } = {}): Promise<Diagnostic[]> {
+  async function diagnose(actor: Actor, col: string, input: DocInput, o: { slug?: string; locale?: string } = {}): Promise<Diagnostic[]> {
     assert(actor, col, "write");
     const cfg = collection(col);
     const cur = o.slug ? await repo.findDoc(col, o.slug) : null;
     // An existing document is only looked at by someone who may edit it (its own rules).
     if (cur) assert(actor, col, "write", cur);
-    const base: DocContent = cur ?? { slug: "", title: "", summary: "", body: "", category: cfg.categories?.[0] ?? null, keywords: [], fields: {} };
+    // 0.22.0: a translation shares its address with its source: that the slug is "taken" (by the source)
+    // is how it should be. A new one (`locale`) is checked over its source's values.
+    const newTr = !cur && !!o.locale && localized(col) && o.locale !== defaultLocale && !!input.slug ? await repo.findDoc(col, input.slug) : null;
+    const isTr = (!!cur && isTranslationDoc(cur)) || !!newTr;
+    const base: DocContent = cur ?? newTr ?? { slug: "", title: "", summary: "", body: "", category: cfg.categories?.[0] ?? null, keywords: [], fields: {} };
     const content = merged(base, input);
     const { diagnostics, content: normalized } = check(col, content);
     if (cur && content.slug !== cur.slug && cur.publishedVersion !== null && !model.redirectsOn()) diagnostics.push({ path: "slug", code: "slug_locked", params: {}, severity: "error", message: formatMessage(messages, "slug_locked") });
@@ -1304,11 +1310,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
     diagnostics.push(...(await modelDiagnostics(col, content.slug, { ...content, fields: resolved ?? {} }, cur, repo, { publishing: true })));
     // Warnings only (a save never waits on them): asked here, where editors see diagnostics.
     diagnostics.push(...(await model.seoImageDiagnostics(col, normalized)));
-    if (!cur && content.slug) {
+    if (!cur && !isTr && content.slug) {
       const rd = await model.redirectAt(col, content.slug);
       if (rd) diagnostics.push({ path: "slug", code: "redirect_taken", params: { from: rd.from, id: rd.id }, severity: "warning", message: formatMessage(messages, "redirect_taken", { from: rd.from }) });
     }
-    const other = content.slug ? await repo.findDoc(col, content.slug, { trashed: true }) : null;
+    const other = content.slug && !isTr ? await repo.findDoc(col, content.slug, { trashed: true }) : null;
     const taken = other?.deletedAt ? "slug_in_trash" : "slug_taken";
     if (other && other.id !== cur?.id) diagnostics.push({ path: "slug", code: taken, params: { slug: content.slug }, severity: "error", message: formatMessage(messages, taken, { slug: content.slug }) });
     const files = await assets.checkDoc(cfg, content, cur ? assets.idsIn(cfg, cur) : undefined);
@@ -1669,7 +1675,36 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   /** A page of list items without bodies. `cursor` comes from the previous page. */
+  /** 0.22.0: on an editor's page of source rows, how each other language stands (one lookup per row's group). */
+  async function withTranslations<T extends { docs: DocSummary[] }>(actor: Actor, col: string, o: ListOptions, p: T): Promise<T> {
+    if (!o.translations || !localized(col) || !o.drafts || !can(actor, col, "write")) return p;
+    const l = localeOf(col, o.locale);
+    if (l) {
+      // A page of one language's rows: how each stands against its source.
+      const rows = await docsById(repo, p.docs.map((d) => d.id));
+      const sources = await docsById(repo, [...new Set([...rows.values()].map((d) => d.groupId).filter((x): x is string => !!x))]);
+      for (const d of p.docs) {
+        const row = rows.get(d.id);
+        const src = row?.groupId ? sources.get(row.groupId) : undefined;
+        if (row && src && isTranslationDoc(row)) d.translations = { [l]: statusOf(src, row) as "outdated" | "current" };
+      }
+      return p;
+    }
+    const others = locales.filter((x) => x !== defaultLocale);
+    await Promise.all(
+      p.docs.map(async (s) => {
+        const rows = await repo.listDocs({ groupId: s.id });
+        const src = { version: s.version, publishedVersion: s.publishedVersion };
+        s.translations = Object.fromEntries(others.map((l) => [l, statusOf(src, rows.find((d) => isTranslationDoc(d) && d.locale === l) ?? null) as "missing" | "outdated" | "current"]));
+      })
+    );
+    return p;
+  }
+
   async function page(actor: Actor, col: string, o: ListOptions & { limit?: number; cursor?: string | null; hits?: boolean } = {}) {
+    return withTranslations(actor, col, o, await pageOf(actor, col, o));
+  }
+  async function pageOf(actor: Actor, col: string, o: ListOptions & { limit?: number; cursor?: string | null; hits?: boolean } = {}) {
     const limit = Math.max(1, Math.min(o.limit ?? 50, 200));
     const keyset = decodeCursor(o.cursor);
     const editor = !!o.drafts && can(actor, col, "write");
@@ -1714,14 +1749,16 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   /** Numbers for the list tabs (editors). */
-  async function counts(actor: Actor, col: string): Promise<DocCounts> {
+  async function counts(actor: Actor, col: string, o: { locale?: string | null } = {}): Promise<DocCounts> {
     assert(actor, col, "write");
     await ensureSchema();
+    // 0.22.0: the numbers of one language's documents (the list filtered to it).
+    const l = localeOf(col, o.locale);
     const out: DocCounts = { all: 0, draft: 0, published: 0, modified: 0, archived: 0, scheduled: 0, review: 0 };
     // The same selection as the editor's list: working copies of what this person may edit, the
     // published copy of the rest they may read, nothing else.
     const perDoc = !!collection(col).access?.write;
-    for (const d of await repo.listDocs({ collection: col, ...srcOnly() })) {
+    for (const d of await repo.listDocs({ collection: col, ...(l ? { locale: l } : srcOnly()) })) {
       if (perDoc && !can(actor, col, "write", d)) {
         const pub = publicView(d);
         if (pub && can(actor, col, "read", pub)) {
@@ -2067,6 +2104,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
         updatedAt: at,
       });
       await r.insertVersion({ documentId: row.id, version: 1, snapshot: content, authorKind: who.kind, authorId: who.id, authorLabel: who.label, authorAgent: who.agent, note: o.note ?? null, createdAt: at, changed: changeOf(1, null, content) });
+      // The files and documents the translation points at (its own images, a translatable relation).
+      await syncAllRefs(r, row);
       await logWrite(log, actor, null, row);
       return row;
     });
@@ -2102,9 +2141,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     assert(actor, col, "write", src);
     const rows = await repo.listDocs({ groupId: src.id });
     const list: TranslationInfo[] = locales.map((l) => {
-      if (l === defaultLocale) return { locale: l, status: "source", version: src.version, sourceVersion: null, publishedVersion: src.publishedVersion, updatedAt: src.updatedAt, docStatus: src.status };
+      if (l === defaultLocale) return { locale: l, status: "source", version: src.version, sourceVersion: null, publishedVersion: src.publishedVersion, updatedAt: src.updatedAt, docStatus: src.status, url: urlOf(col, src.slug) };
       const t = rows.find((d) => isTranslationDoc(d) && d.locale === l) ?? null;
-      return { locale: l, status: statusOf(src, t), version: t?.version ?? null, sourceVersion: t?.sourceVersion ?? null, publishedVersion: t?.publishedVersion ?? null, updatedAt: t?.updatedAt ?? null, docStatus: t?.status ?? null };
+      return { locale: l, status: statusOf(src, t), version: t?.version ?? null, sourceVersion: t?.sourceVersion ?? null, publishedVersion: t?.publishedVersion ?? null, updatedAt: t?.updatedAt ?? null, docStatus: t?.status ?? null, url: urlOf(col, localeAddress(src.slug, l)) };
     });
     return { collection: col, slug: src.slug, defaultLocale, sourceVersion: referenceVersion(src), translations: list };
   }
@@ -2508,8 +2547,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await loggedTx(async (r, log) => {
       // 0.22.0: a source takes its translations with it (each can be restored from the trash).
       const kids = localized(col) && !isTranslationDoc(cur) ? (await r.listDocs({ groupId: cur.id })).filter((d) => d.id !== cur.id) : [];
+      // One moment for all of them: restoring the source brings back the translations deleted with it.
+      const at = nowIso();
       for (const d of [...kids, cur]) {
-        if (trashDays > 0) await r.updateDoc(d.id, { deletedAt: nowIso(), deletedBy: actorRef(actor).label, schedule: null, dueAt: null, updatedAt: nowIso() });
+        if (trashDays > 0) await r.updateDoc(d.id, { deletedAt: at, deletedBy: actorRef(actor).label, schedule: null, dueAt: null, updatedAt: at });
         else await r.deleteDoc(d.id);
       }
       if (actor.kind !== "anonymous") await log({ event: "doc.deleted", actor: actorRef(actor), collection: col, slug, version: cur.version, url: urlOf(col, slug) });
@@ -3144,6 +3185,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     create,
     update,
     publish,
+    locales,
+    defaultLocale: locales.length ? defaultLocale : null,
+    localized: (col) => localized(col),
+    translatable: (col) => translatable(col),
     assetsOf: async (_actor, docs) => {
       if (!opts.media) return [];
       const ids = [...new Set(docs.flatMap((d) => [...(d.body + JSON.stringify(d.fields)).matchAll(/asset:([a-z0-9]{12})/g)].map((m) => m[1])))];
@@ -3262,26 +3307,29 @@ export function createCmsCore(opts: CreateCmsOptions) {
    * Documents pointing at `id`. Writers of a source see its working-copy links; others only links in
    * what is published and readable. `forDelete`: every source counts (unreadable ones without a name).
    */
-  async function refsShown(actor: Actor, id: string, o: { forDelete?: boolean } = {}): Promise<{ id: string | null; collection: string; slug: string; title: string; status: DocStatus | null; fields: string[] }[]> {
-    const out: { id: string | null; collection: string; slug: string; title: string; status: DocStatus | null; fields: string[] }[] = [];
+  async function refsShown(actor: Actor, id: string, o: { forDelete?: boolean } = {}): Promise<{ id: string | null; collection: string; slug: string; locale?: string; title: string; status: DocStatus | null; fields: string[] }[]> {
+    const out: { id: string | null; collection: string; slug: string; locale?: string; title: string; status: DocStatus | null; fields: string[] }[] = [];
     for (const x of await model.referencedBy(id)) {
       const d = x.doc;
       if (!collections.has(d.collection)) continue;
+      // 0.22.0: a translation is listed for its own (translatable) fields only: a shared relation is
+      // the source's, which is listed already. It says its language; `slug` is the source's.
+      const tr = isTranslationDoc(d) ? translatable(d.collection) : null;
       const fieldsOk = (copy: CmsDoc, fs: string[]) => {
         const hidden = fieldRulesFor(actor, d.collection, copy).hidden;
-        return fs.filter((f) => !isHiddenPath(hidden, f));
+        return fs.filter((f) => !isHiddenPath(hidden, f) && (!tr || tr[f.split(".")[0]] === true));
       };
       let entry: (typeof out)[number] | null = null;
       if (can(actor, d.collection, "write", d)) {
         const fs = (await readable(actor, d.collection, d.slug, true)) ? fieldsOk(d, x.draftFields) : [];
-        if (fs.length) entry = { id: d.id, collection: d.collection, slug: d.slug, title: d.title, status: d.status, fields: fs };
+        if (fs.length) entry = { id: d.id, collection: d.collection, slug: d.slug, ...(tr && d.locale ? { locale: d.locale } : {}), title: d.title, status: d.status, fields: fs };
       } else {
         const pub = publicView(d);
         const fs = pub ? fieldsOk(pub, x.publishedFields) : [];
-        if (pub && fs.length && can(actor, d.collection, "read", pub) && (await readable(actor, d.collection, pub.slug))) entry = { id: d.id, collection: d.collection, slug: pub.slug, title: pub.title, status: pub.status, fields: fs };
+        if (pub && fs.length && can(actor, d.collection, "read", pub) && (await readable(actor, d.collection, pub.slug))) entry = { id: d.id, collection: d.collection, slug: pub.slug, ...(tr && d.locale ? { locale: d.locale } : {}), title: pub.title, status: pub.status, fields: fs };
       }
       if (entry) out.push(entry);
-      else if (o.forDelete) out.push({ id: null, collection: d.collection, slug: "", title: "", status: null, fields: [] });
+      else if (o.forDelete && (!tr || [...x.draftFields, ...x.publishedFields].some((f) => tr[f.split(".")[0]] === true))) out.push({ id: null, collection: d.collection, slug: "", title: "", status: null, fields: [] });
     }
     return out;
   }
@@ -3572,7 +3620,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (!collection(col).snippets) throw fail("unknown_collection", { collection: col });
     assert(actor, col, "write");
     const docs = await model.snippetUsage(slug);
-    return docs.filter((d) => collections.has(d.collection) && can(actor, d.collection, "write", d)).map((d) => ({ id: d.id, collection: d.collection, slug: d.slug, title: d.title, status: d.status }));
+    return docs.filter((d) => collections.has(d.collection) && can(actor, d.collection, "write", d)).map((d) => ({ id: d.id, collection: d.collection, slug: d.slug, ...(isTranslationDoc(d) && d.locale ? { locale: d.locale } : {}), title: d.title, status: d.status }));
   }
 
   // redirects

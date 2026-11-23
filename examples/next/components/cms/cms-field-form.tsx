@@ -51,6 +51,8 @@ export interface FieldSpec {
   store?: string;
   /** This person cannot change it (`fieldAccess` on the server). */
   readOnly?: boolean;
+  /** 0.22.0: read-only because a translation shares this value with its source. */
+  followsSource?: boolean;
   /** 0.21.0: relation targets, gallery limits, and the small fields of rows and groups. */
   relation?: { collections: string[]; many: boolean; max: number | null };
   max?: number | null;
@@ -332,6 +334,20 @@ export const FieldGate = React.createContext<((key: string, bad: boolean) => voi
 export function FieldInput(props: { spec: FieldSpec; idPrefix: string; value: unknown; onChange: (v: unknown) => void; problems?: FieldProblem[] }) {
   const { t } = useCms();
   if (!props.spec.readOnly) return <FieldControl {...props} />;
+  // 0.22.0: a value a translation shares with its source: the same control as there (an image shows as an
+  // image, a relation by its title), turned off, with a word saying where it is changed.
+  if (props.spec.followsSource)
+    return (
+      <div className="min-w-0 space-y-1">
+        <fieldset disabled className="m-0 min-w-0 border-0 p-0 opacity-80" aria-describedby={`${props.idPrefix}-f-${props.spec.key}-src`}>
+          <FieldControl {...props} onChange={() => undefined} />
+        </fieldset>
+        <p id={`${props.idPrefix}-f-${props.spec.key}-src`} className="inline-flex items-center gap-1 text-[11.5px] text-muted-foreground">
+          <Lock className="size-3" aria-hidden />
+          {t("locale_follows_source")}
+        </p>
+      </div>
+    );
   // Read-only for this person (`fieldAccess`): the value as text (selectable, copyable), not a greyed-out control.
   const id = `${props.idPrefix}-f-${props.spec.key}`;
   const v = props.value;
@@ -344,7 +360,7 @@ export function FieldInput(props: { spec: FieldSpec; idPrefix: string; value: un
         </span>
         <span id={`${id}-ro`} className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground">
           <Lock className="size-3" aria-hidden />
-          {t("field_read_only")}
+          {props.spec.followsSource ? t("locale_follows_source") : t("field_read_only")}
         </span>
       </div>
       <div className={cn("min-h-9 rounded-md border border-dashed bg-muted/30 px-3 py-2 text-sm break-words", typeof v === "object" && v !== null && !Array.isArray(v) && "whitespace-pre-wrap font-mono text-xs")}>
@@ -530,11 +546,16 @@ export interface CmsFieldFormProps {
   hideSlug?: boolean;
   /** 0.21.0: a note under the slug (e.g. an old address that redirects there now). */
   slugNote?: React.ReactNode;
+  /**
+   * 0.22.0: the form of a translation. The address, the category and the fields the schema does not
+   * translate (`schema.translatable[key] === false`) are the source's: shown, not editable.
+   */
+  translation?: boolean;
 }
 
-export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocked, slugPrefix, idPrefix = "cms", className, slotContext, disabled, hideSlug, slugNote }: CmsFieldFormProps) {
+export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocked, slugPrefix, idPrefix = "cms", className, slotContext, disabled, hideSlug, slugNote, translation }: CmsFieldFormProps) {
   const { t, slots } = useCms();
-  const specs = React.useMemo(() => fieldSpecs(schema), [schema]);
+  const specs = React.useMemo(() => fieldSpecs(schema).map((s) => (translation && schema.translatable?.[s.key] === false ? { ...s, readOnly: true, followsSource: true } : s)), [schema, translation]);
   const set = <K extends keyof DocContent>(k: K, v: DocContent[K]) => onChange({ ...value, [k]: v });
   const setField = (k: string, v: unknown) => {
     const fields = { ...value.fields };
@@ -579,13 +600,13 @@ export function CmsFieldForm({ schema, value, onChange, problems = {}, slugLocke
       {text("title", t("field_title"))}
       {hideSlug ? null : (
         <div className="min-w-0">
-          {text("slug", t("field_slug"), { mono: true, disabled: slugLocked, help: slugLocked ? t("field_slug_locked") : undefined })}
+          {text("slug", t("field_slug"), { mono: true, disabled: slugLocked || translation, help: translation ? t("locale_slug_follows") : slugLocked ? t("field_slug_locked") : undefined })}
           {slugNote ? <div className="mt-1 text-xs">{slugNote}</div> : null}
         </div>
       )}
       {!hideSlug && schema.categories?.length ? (
         <FieldShell id={catId} label={t("field_category")} errors={catErr}>
-          <Select value={value.category ?? "__none"} onValueChange={(v: string | null) => set("category", !v || v === "__none" ? null : v)}>
+          <Select value={value.category ?? "__none"} disabled={translation} onValueChange={(v: string | null) => set("category", !v || v === "__none" ? null : v)}>
             <SelectTrigger id={catId} className="h-9" aria-invalid={catErr?.some((e) => e.severity === "error") || undefined} aria-describedby={describedBy({ id: catId, errors: catErr })}>
               <SelectValue>{value.category ?? t("no_category")}</SelectValue>
             </SelectTrigger>

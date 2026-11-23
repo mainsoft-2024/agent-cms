@@ -212,6 +212,10 @@
         {
           "path": "registry/cms/cms-editor-toolbar.tsx",
           "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-locale.tsx",
+          "type": "registry:component"
         }
       ]
     },

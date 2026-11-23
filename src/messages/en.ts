@@ -194,6 +194,7 @@ export const en: Messages = {
   locale_field_shared: "{field} is shared by every language: change it in the {source} document",
   locale_source_missing: "{slug} has no {source} document to translate from",
   locale_is_source: "{locale} is the source language of {slug}; it is not a translation",
+  translation_source_trashed: "The {source} document {slug} is in the trash: restore it first (its translations come back with it)",
   // 0.22.0 forms
   forms_off: "Forms are off on this server (createCms({ forms: true }))",
   form_not_found: "Form not found: {slug}",

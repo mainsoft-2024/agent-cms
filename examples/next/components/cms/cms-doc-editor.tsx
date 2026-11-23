@@ -33,7 +33,8 @@ import { pasteAsMarkdown } from "./cms-paste";
 import { bodyStats, EditorToolbar, FindBar, markdownCommands, TipButton } from "./cms-editor-toolbar";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, DIALOG } from "./cms-parts";
-import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type BlockEditorCommands, type DocContent, type EditorSlotContext } from "./use-cms";
+import { changedSourceLines, LocaleLeaveDialog, LocaleTabs, MissingTranslation, SourceChanges, SourcePane, TranslationBar } from "./cms-locale";
+import { contentOf, docAddr, formatTime, formatUntil, formatZoned as formatZonedTime, languageName, personColor, relativeTime, sameContent, splitAddr, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type BlockEditorCommands, type DocContent, type EditorSlotContext } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
 type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
@@ -67,7 +68,10 @@ export interface CmsDocEditorProps {
   /** How often this screen says "I am here" and looks for other people's saves, in ms. Default 15000 (3000 while someone else is here); 0 turns it off. */
   presenceMs?: number;
   className?: string;
-  /** 0.21.0: open another document (the documents that use a snippet). */
+  /**
+   * 0.21.0: open another document (the documents that use a snippet). 0.22.0: also another language of
+   * this one (`slug@locale`); without it the editor switches languages in place.
+   */
   onOpenDocument?: (collection: string, slug: string) => void;
 }
 
@@ -142,8 +146,11 @@ function takeStatus(collection: string, slug: string): string | null {
   }
 }
 
-export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onRenamed, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className, onOpenDocument }: CmsDocEditorProps) {
-  const { client, t, locale, me, baseUrl, slots, toast } = useCms();
+export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, onSaved, onRenamed, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className, onOpenDocument }: CmsDocEditorProps) {
+  const { client, t, locale, me, baseUrl, appUrl, slots, toast } = useCms();
+  // 0.22.0: another language opened here (no `onOpenDocument`): it replaces the slug until the host passes another.
+  const [slugOverride, setSlugOverride] = React.useState<{ from: string | null | undefined; to: string } | null>(null);
+  const slug = slugOverride && slugOverride.from === slugProp ? slugOverride.to : slugProp;
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
   /** Where the cursor last was in the body (null: the person never put it there). */
   const caretRef = React.useRef<[number, number] | null>(null);
@@ -209,6 +216,28 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   // With the slug: field rules (`fieldAccess`) may depend on the document.
   const schemaQ = useAsync(() => client.schema(collection, { slug }), [client, collection, slug]);
   const schema = schemaQ.data;
+  // 0.22.0: languages. `slug@en` is the English translation of `slug`; the bare slug is the source.
+  const defaultLocale = schema?.defaultLocale ?? null;
+  const localized = !!schema?.localized && !!defaultLocale && (schema.locales?.length ?? 0) > 1 && !schema.single;
+  const addrParts = slug ? splitAddr(slug) : null;
+  const baseSlug = addrParts?.slug ?? null;
+  const viewLocale = localized ? (addrParts?.locale ?? defaultLocale) : null;
+  const onTranslation = localized && !!viewLocale && viewLocale !== defaultLocale;
+  /** What a save sends: a translation leaves out what it shares with its source (the address, category, shared fields). */
+  const shareRef = React.useRef<{ on: boolean; translatable: Record<string, boolean> | null | undefined }>({ on: false, translatable: null });
+  shareRef.current = { on: onTranslation, translatable: schema?.translatable };
+  const inputOf = (c: DocContent, prev?: Record<string, unknown>) => {
+    const input = toInput(c, prev);
+    const { on, translatable } = shareRef.current;
+    if (!on) return input;
+    const fields = { ...((input.fields ?? {}) as Record<string, unknown>) };
+    for (const k of Object.keys(fields)) if (translatable?.[k] === false) delete fields[k];
+    const { slug: _s, category: _c, ...rest } = input as typeof input & { slug?: unknown; category?: unknown };
+    return { ...rest, fields } as typeof input;
+  };
+  /** A translation that was not started: the source document (its title for the header), else null. */
+  const [missing, setMissing] = React.useState<CmsDoc | null>(null);
+  const [reloadTick, setReloadTick] = React.useState(0);
 
   const [doc, setDoc] = React.useState<CmsDoc | null>(null);
   const [loadError, setLoadError] = React.useState<unknown>(null);
@@ -247,7 +276,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const [relLabels, setRelLabels] = React.useState<Record<string, RelatedLabel | null>>({});
   const selfId = doc?.id ?? null;
   const relCtx = React.useMemo(() => ({ labels: relLabels, remember: (l: RelatedLabel) => setRelLabels((m) => ({ ...m, [l.id]: l })), self: selfId }), [relLabels, selfId]);
-  const currentSlug = doc?.slug ?? slug ?? "";
+  const currentSlug = (doc ? docAddr(doc) : null) ?? slug ?? "";
   const myLabel = me?.actor.label ?? "";
 
   /** Set when a write answered with only the document's state: this person may no longer edit it. */
@@ -304,6 +333,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     }
     let live = true;
     setLoading(true);
+    setMissing(null);
     Promise.all([client.getWithRelease(collection, slug), client.changes(collection, slug).catch(() => [] as AgentChange[]), client.comments(collection, slug).catch(() => [] as CommentThread[])]).then(
       ([r, ch, cm]) => {
         if (!live) return;
@@ -339,6 +369,21 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
           );
           return;
         }
+        // 0.22.0: a language not started yet (`slug@en` with no English document): its own screen, when the source is there.
+        const parts = splitAddr(slug);
+        if (isCmsRemoteError(e) && e.code === "not_found" && parts.locale) {
+          void client.get(collection, parts.slug, { draft: true }).then(
+            (src) => {
+              if (!live) return;
+              setDoc(null);
+              setMissing(src);
+              setLoadError(null);
+              setLoading(false);
+            },
+            () => live && (setLoadError(e), setLoading(false))
+          );
+          return;
+        }
         setLoadError(e);
         setLoading(false);
       }
@@ -347,7 +392,82 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, collection, slug, applyDoc]);
+  }, [client, collection, slug, applyDoc, reloadTick]);
+
+  // ── languages (0.22.0) ──
+  // Every language's status; asked again whenever this document's version, publication or alignment moves.
+  const trQ = useAsync(
+    () => (localized && baseSlug && slug ? client.translations(collection, baseSlug) : Promise.resolve(null)),
+    [client, collection, baseSlug, localized, doc?.version, doc?.publishedVersion, doc?.status, doc?.sourceVersion, missing?.id]
+  );
+  const trList = trQ.data ?? null;
+  const trInfo = trList?.translations.find((x) => x.locale === viewLocale) ?? null;
+  const refVersion = trList?.sourceVersion ?? null;
+  const trOutdated = onTranslation && trInfo?.status === "outdated";
+  // The source as translations compare with it (its published version, else its latest), shown beside the translation.
+  const srcQ = useAsync(
+    () => (onTranslation && baseSlug && refVersion && !missing ? client.version(collection, baseSlug, refVersion).then((v) => v.snapshot) : Promise.resolve(null)),
+    [client, collection, baseSlug, onTranslation, refVersion, !!missing]
+  );
+  const diffQ = useAsync(
+    () => (trOutdated && baseSlug && viewLocale ? client.sourceDiff(collection, baseSlug, viewLocale) : Promise.resolve(null)),
+    [client, collection, baseSlug, viewLocale, trOutdated, refVersion, trInfo?.sourceVersion]
+  );
+  const marked = React.useMemo(() => (trOutdated ? changedSourceLines(diffQ.data) : new Set<number>()), [trOutdated, diffQ.data]);
+  const [changesOpen, setChangesOpen] = React.useState(false);
+  const [aligning, setAligning] = React.useState(false);
+  const [starting, setStarting] = React.useState(false);
+  /** After "Start translation" the button is gone: the title of the new translation takes focus. */
+  const focusTitle = React.useRef(false);
+  React.useEffect(() => {
+    if (!doc || !focusTitle.current) return;
+    focusTitle.current = false;
+    const id = requestAnimationFrame(() => document.getElementById("cms-editor-title")?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [doc]);
+  const [startError, setStartError] = React.useState<string | null>(null);
+  /** Switching language with unsaved edits: the language asked for while the person decides. */
+  const [leaveTo, setLeaveTo] = React.useState<string | null>(null);
+  const [leaving, setLeaving] = React.useState(false);
+  const openAddress = (addr: string) => {
+    setLeaveTo(null);
+    if (onOpenDocument) onOpenDocument(collection, addr);
+    else setSlugOverride({ from: slugProp, to: addr });
+  };
+  const addressOf = (l: string) => (!baseSlug ? "" : l === defaultLocale ? baseSlug : `${baseSlug}@${l}`);
+  const markAligned = async () => {
+    if (!baseSlug || !viewLocale) return;
+    setAligning(true);
+    try {
+      const d = await client.markAligned(collection, baseSlug, viewLocale);
+      setDoc((prev) => (prev ? { ...prev, sourceVersion: d.sourceVersion } : prev));
+      setChangesOpen(false);
+      // The buttons are gone: focus stays in the bar, on what it says now.
+      requestAnimationFrame(() => document.getElementById("cms-locale-status")?.focus());
+      toast(t("locale_marked", { version: d.sourceVersion ?? refVersion ?? "" }), { tone: "ok" });
+    } catch (e) {
+      toast(errorMessage(e, t), { tone: "error" });
+    } finally {
+      setAligning(false);
+    }
+  };
+  const startTranslation = async () => {
+    if (!baseSlug || !viewLocale) return;
+    setStarting(true);
+    setStartError(null);
+    try {
+      await client.startTranslation(collection, baseSlug, viewLocale);
+      toast(t("locale_started", { language: languageName(viewLocale) }), { tone: "ok" });
+      focusTitle.current = true;
+      setReloadTick((n) => n + 1);
+    } catch (e) {
+      // Someone else started it meanwhile: open theirs.
+      if (isCmsRemoteError(e) && e.code === "translation_exists") setReloadTick((n) => n + 1);
+      else setStartError(errorMessage(e, t));
+    } finally {
+      setStarting(false);
+    }
+  };
 
   // A new document may start from the template picked in the list ("New document").
   const [tplFit, setTplFit] = React.useState<{ label: string; fields: Record<string, unknown> } | null>(null);
@@ -436,7 +556,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const diagnose = useDebounced(async (c: DocContent) => {
     const mine = ++diagSeq.current;
     try {
-      const d = await client.diagnose(collection, toInput(c, doc?.fields), doc?.slug);
+      const d = await client.diagnose(collection, inputOf(c, doc?.fields), doc ? docAddr(doc) : undefined);
       if (mine !== diagSeq.current) return;
       setProblems((d as Diagnostic[]).map((p) => ({ ...p, message: serverText(p, t) })));
     } catch {
@@ -448,7 +568,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     const mine = ++autoSeq.current;
     setAuto({ state: "saving" });
     try {
-      const a = await client.autosave(collection, s, toInput(c, doc?.fields), base);
+      const a = await client.autosave(collection, s, inputOf(c, doc?.fields), base);
       if (mine === autoSeq.current) setAuto({ state: "saved", at: a.at });
     } catch {
       if (mine === autoSeq.current) setAuto({ state: "failed" });
@@ -474,7 +594,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     if (!schema?.canWrite || lostWrite) return;
     if (loading) return;
     void diagnose(content);
-    if (edited.current && doc && !sameContent(content, saved) && !unparsedRef.current.length) autosave(content, baseVersion, doc.slug);
+    if (edited.current && doc && !sameContent(content, saved) && !unparsedRef.current.length) autosave(content, baseVersion, docAddr(doc));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, schema?.canWrite, lostWrite, loading]);
 
@@ -518,7 +638,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const accept = async (ids: string[]) => {
     if (!doc || !ids.length) return;
     try {
-      await client.review(collection, doc.slug, ids, "accepted");
+      await client.review(collection, docAddr(doc), ids, "accepted");
       setReviewed((r) => ({ ...r, ...Object.fromEntries(ids.map((id) => [id, { action: "accepted" as const, by: myLabel }])) }));
     } catch (e) {
       setStatus({ text: errorMessage(e, t), tone: "error" });
@@ -578,9 +698,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
       if (!doc) return null;
       const sent = content;
       // The server marks a reverted change against the version that made it, so this goes first.
-      if (revertedIds.length) await client.review(collection, doc.slug, revertedIds, "reverted").catch(() => undefined);
-      if (!sameContent(content, saved) || !publish) d = await client.update(collection, doc.slug, toInput(content, doc.fields), { expectedVersion: baseVersion, publish });
-      else d = await client.publish(collection, doc.slug, { expectedVersion: baseVersion });
+      if (revertedIds.length) await client.review(collection, docAddr(doc), revertedIds, "reverted").catch(() => undefined);
+      if (!sameContent(content, saved) || !publish) d = await client.update(collection, docAddr(doc), inputOf(content, doc.fields), { expectedVersion: baseVersion, publish });
+      else d = await client.publish(collection, docAddr(doc), { expectedVersion: baseVersion });
       // Typing that happened while the save was on its way stays (and stays unsaved).
       const typed = live.current.content;
       applyDoc(d);
@@ -591,7 +711,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
       setRestoreOffer(null);
       setAuto({ state: "idle" });
       setReviewed((r) => Object.fromEntries(Object.entries(r).filter(([, x]) => x.action === "accepted")));
-      await loadChanges(d.slug);
+      await loadChanges(docAddr(d));
       const doneText = publish ? t("published_v", { version: d.publishedVersion ?? d.version }) : t("saved", { version: d.version });
       setStatus({ text: doneText, tone: "ok" });
       onSaved?.(d);
@@ -609,7 +729,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
           return null;
         }
         try {
-          const base = baseVersion === doc.version ? contentOf(doc) : (await client.version(collection, doc.slug, baseVersion)).snapshot;
+          const base = baseVersion === doc.version ? contentOf(doc) : (await client.version(collection, docAddr(doc), baseVersion)).snapshot;
           setMode({ kind: "merge", base, baseVersion, mine: content, theirs: e.current as CmsDoc });
         } catch (e2) {
           setStatus({ text: errorMessage(e2, t), tone: "error" });
@@ -654,14 +774,14 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const zone = me?.timeZone;
   const scheduleAt = (when: { publishAt: string | null; unpublishAt: string | null }) =>
     flow(
-      (d) => client.schedule(collection, d.slug, { ...when, expectedVersion: d.version }),
+      (d) => client.schedule(collection, docAddr(d), { ...when, expectedVersion: d.version }),
       (d) => (d.schedule?.publishAt ? t("sched_done", { version: d.schedule.version, time: formatZonedTime(d.schedule.publishAt, locale, zone) }) : t("sched_go")),
       true
     );
-  const unschedule = () => flow((d) => client.unschedule(collection, d.slug), () => t("sched_cleared"), true);
-  const requestReview = () => flow((d) => client.requestReview(collection, d.slug), () => t("review_requested_done"));
-  const approve = () => flow((d) => client.approveReview(collection, d.slug, { publish: true }), (d) => t("published_v", { version: d.publishedVersion ?? d.version }));
-  const reject = (note: string) => flow((d) => client.rejectReview(collection, d.slug, note || null), () => t("review_rejected_done"), true);
+  const unschedule = () => flow((d) => client.unschedule(collection, docAddr(d)), () => t("sched_cleared"), true);
+  const requestReview = () => flow((d) => client.requestReview(collection, docAddr(d)), () => t("review_requested_done"));
+  const approve = () => flow((d) => client.approveReview(collection, docAddr(d), { publish: true }), (d) => t("published_v", { version: d.publishedVersion ?? d.version }));
+  const reject = (note: string) => flow((d) => client.rejectReview(collection, docAddr(d), note || null), () => t("review_rejected_done"), true);
 
   const restore = () => {
     if (!restoreOffer) return;
@@ -671,13 +791,13 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   };
   const discard = async () => {
     setRestoreOffer(null);
-    if (doc) await client.discardAutosave(collection, doc.slug).catch(() => undefined);
+    if (doc) await client.discardAutosave(collection, docAddr(doc)).catch(() => undefined);
   };
 
   // ── who else is here, and their saves ──
   const live = React.useRef({ content, saved, baseVersion, dirty, others: 0 });
   live.current = { content, saved, baseVersion, dirty, others: others.length };
-  const slugNow = doc?.slug;
+  const slugNow = doc ? docAddr(doc) : undefined;
   React.useEffect(() => {
     if (!slugNow || !presenceMs || mode.kind !== "edit") return;
     let stop = false;
@@ -758,10 +878,14 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const rowRef = React.useRef<HTMLDivElement>(null);
   const footRef = React.useRef<HTMLDivElement>(null);
   const [rowHeight, setRowHeight] = React.useState<number | null>(null);
+  const [headHeight, setHeadHeight] = React.useState(0);
   React.useEffect(() => {
     const [root, head, foot] = [rootRef.current, headRef.current, footRef.current];
     if (!wide || !root || !head || !foot) return;
-    const fit = () => setRowHeight(Math.max(360, root.clientHeight - head.offsetHeight - foot.offsetHeight));
+    const fit = () => {
+      setRowHeight(Math.max(360, root.clientHeight - head.offsetHeight - foot.offsetHeight));
+      setHeadHeight(head.offsetHeight);
+    };
     fit();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(fit);
@@ -803,7 +927,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     if (isNew || !doc || !schema?.publishChecks) return void save(true, confirmed);
     setBusy(true);
     try {
-      const r = await client.publishChecks(collection, doc.slug, toInput(content, doc.fields));
+      const r = await client.publishChecks(collection, docAddr(doc), inputOf(content, doc.fields));
       setBusy(false);
       if (r.checks.length || r.blocking) {
         checksConfirmed.current = confirmed;
@@ -933,7 +1057,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
       /* bad JSON: ignore */
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, doc?.slug, me?.actor.id, localKey]);
+  }, [loading, slugNow, me?.actor.id, localKey]);
   React.useEffect(() => {
     if (loading || localChecked.current !== localKey) return;
     if (edited.current && !sameContent(content, saved)) writeLocal(content, baseVersion);
@@ -971,7 +1095,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     };
   }, []);
   React.useEffect(() => {
-    if (!offline && auto.state === "failed" && doc && live.current.dirty) autosave(live.current.content, live.current.baseVersion, doc.slug);
+    if (!offline && auto.state === "failed" && doc && live.current.dirty) autosave(live.current.content, live.current.baseVersion, docAddr(doc));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offline]);
 
@@ -979,7 +1103,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     return (
       <CmsMerge
         collection={collection}
-        slug={doc.slug}
+        slug={docAddr(doc)}
         base={mode.base}
         baseVersion={mode.baseVersion}
         mine={mode.mine}
@@ -996,7 +1120,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
             live.current.content = submitted;
           }
           applyDoc(d);
-          void loadChanges(d.slug);
+          void loadChanges(docAddr(d));
           setStatus({ text: t("saved", { version: d.version }), tone: "ok" });
           onSaved?.(d);
         }}
@@ -1016,11 +1140,73 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
       </div>
     );
 
+  // ── languages: the tabs, a translation's bar, the source beside it ──
+  const pickLocale = (l: string) => {
+    if (!baseSlug) return;
+    if (unsaved && schema.canWrite && !lostWrite) setLeaveTo(l);
+    else openAddress(addressOf(l));
+  };
+  const localeTabs =
+    localized && viewLocale && (doc || missing) ? <LocaleTabs languages={trList?.translations ?? null} current={viewLocale} onPick={pickLocale} error={trQ.error} onRetry={trQ.reload} /> : null;
+  const localeSlotCtx = (status: "missing" | "outdated" | "current") =>
+    baseSlug && viewLocale && defaultLocale
+      ? { collection, slug: baseSlug, locale: viewLocale, defaultLocale, status, content: doc ? content : null, setContent: doc && canWriteNow() ? (patch: Partial<DocContent>) => setContent({ ...live.current.content, ...patch }) : null, reload: () => (setReloadTick((n) => n + 1), trQ.reload()), readOnly: !canWriteNow() }
+      : null;
+  function canWriteNow() {
+    return !!schema?.canWrite && !lostWrite;
+  }
+  const leaveDialog = (
+    <LocaleLeaveDialog
+      locale={leaveTo}
+      busy={leaving}
+      onCancel={() => setLeaveTo(null)}
+      onDiscard={() => leaveTo && openAddress(addressOf(leaveTo))}
+      onSave={() => {
+        const to = leaveTo;
+        if (!to) return;
+        setLeaving(true);
+        void save(false).then(
+          (d) => {
+            setLeaving(false);
+            if (d) openAddress(addressOf(to));
+            else setLeaveTo(null);
+          },
+          () => (setLeaving(false), setLeaveTo(null))
+        );
+      }}
+    />
+  );
+
+  if (missing && viewLocale && defaultLocale) {
+    const ctx = localeSlotCtx("missing");
+    return (
+      <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
+        <PageHeader
+          title={missing.title || missing.slug}
+          crumbs={[schema.label]}
+          back={
+            mobile && onBack ? (
+              <Button type="button" variant="ghost" size="icon" className="-ml-2 h-8 w-8" aria-label={t("back")} onClick={onBack}>
+                <ChevronLeft aria-hidden className="h-4 w-4" />
+              </Button>
+            ) : undefined
+          }
+        />
+        {localeTabs}
+        <div className="px-4">
+          <MissingTranslation locale={viewLocale} defaultLocale={defaultLocale} canWrite={!!schema.canWrite} busy={starting} error={startError} onStart={() => void startTranslation()} action={ctx ? slots.localeAction?.(ctx) : null} />
+        </div>
+      </div>
+    );
+  }
+
   const st = doc ? docState(doc) : null;
   const canWrite = schema.canWrite && !lostWrite;
   const canPublish = schema.canPublish;
   const published = !!doc && doc.publishedVersion !== null && doc.status !== "archived";
-  const publicUrl = published && schema.hasUrl && publicUrlFor && doc ? publicUrlFor(collection, doc.slug) : null;
+  // A translation's own address comes from the collection's `url()` (it knows the language).
+  const trUrl = onTranslation && trInfo?.url ? (/^https?:\/\//.test(trInfo.url) ? trInfo.url : `${appUrl}${trInfo.url.startsWith("/") ? "" : "/"}${trInfo.url}`) : null;
+  const publicUrl = published && schema.hasUrl && doc ? (onTranslation ? trUrl : publicUrlFor ? publicUrlFor(collection, docAddr(doc)) : null) : null;
   const previewAllowed = !!doc && !!me?.previewLinks && schema.hasUrl;
   const title = content.title || (isNew ? t("new_doc_title") : currentSlug);
   // Hide (archive) a published document or show it again. Only the state changes, so what is being
@@ -1030,7 +1216,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   const takeState = (d: CmsDoc) => setDoc((prev) => (prev ? { ...prev, status: d.status, publishedAt: d.publishedAt, republishedAt: d.republishedAt, updatedAt: d.updatedAt } : prev));
   const setHidden = (hide: boolean) => {
     if (!doc) return;
-    (hide ? client.archive(collection, doc.slug) : client.unarchive(collection, doc.slug)).then(
+    (hide ? client.archive(collection, docAddr(doc)) : client.unarchive(collection, docAddr(doc))).then(
       (d) => {
         takeState(d);
         toast(t(hide ? "done_archive" : "done_unarchive"), { tone: "ok" });
@@ -1114,6 +1300,41 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
     </>
   ) : null;
 
+  const trSlot = localeSlotCtx(trInfo?.status === "outdated" ? "outdated" : "current");
+  const trBar =
+    onTranslation && doc && trInfo && refVersion && defaultLocale ? (
+      <>
+        <TranslationBar
+          info={trInfo}
+          sourceVersion={refVersion}
+          defaultLocale={defaultLocale}
+          changesOpen={changesOpen}
+          onToggleChanges={() => setChangesOpen((v) => !v)}
+          onAlign={() => void markAligned()}
+          aligning={aligning}
+          canWrite={canWrite}
+          published={published}
+          onOpenSource={() => pickLocale(defaultLocale)}
+          url={trUrl}
+          action={trSlot ? slots.localeAction?.(trSlot) : null}
+        />
+        {changesOpen && trOutdated ? <SourceChanges diff={diffQ.data ?? null} loading={diffQ.loading} error={diffQ.error} onRetry={diffQ.reload} /> : null}
+      </>
+    ) : null;
+  const srcSnap = srcQ.data;
+  const sourcePane =
+    onTranslation && defaultLocale && doc ? (
+      <SourcePane
+        locale={defaultLocale}
+        version={refVersion}
+        source={srcSnap ? { title: srcSnap.title, summary: srcSnap.summary ?? "", body: srcSnap.body ?? "" } : null}
+        loading={srcQ.loading || (trQ.loading && !trList)}
+        error={srcQ.error ?? trQ.error}
+        onRetry={() => (trQ.error ? trQ.reload() : srcQ.reload())}
+        marked={marked}
+      />
+    ) : null;
+
   /** Select a part of the body and bring it into view (a comment was pressed). */
   const showInBody = (start: number, end: number) => {
     setMobileTab("edit");
@@ -1129,7 +1350,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   };
   const comments = (onClose?: () => void) =>
     doc ? (
-      <CommentsPanel collection={collection} slug={doc.slug} body={content.body} canWrite={canWrite} threads={threads} onChanged={() => void loadComments(doc.slug)} getSelection={() => (caretRef.current && bodyRef.current ? [bodyRef.current.selectionStart, bodyRef.current.selectionEnd] : caretRef.current)} onGo={showInBody} onClose={onClose} />
+      <CommentsPanel collection={collection} slug={docAddr(doc)} body={content.body} canWrite={canWrite} threads={threads} onChanged={() => void loadComments(docAddr(doc))} getSelection={() => (caretRef.current && bodyRef.current ? [bodyRef.current.selectionStart, bodyRef.current.selectionEnd] : caretRef.current)} onGo={showInBody} onClose={onClose} />
     ) : null;
   // Drawn behind the text: what open comments are attached to, and where the others are.
   const marks = [
@@ -1272,7 +1493,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   /** What editor slots (`slots.editorActions`, `editorPanel`, `fieldAddon`) get. */
   const slotCtx: EditorSlotContext = {
     collection,
-    slug: doc?.slug ?? null,
+    slug: doc ? docAddr(doc) : null,
     content,
     setContent: (patch) => setContent({ ...content, ...patch }),
     insertMarkdown: (md) => {
@@ -1372,7 +1593,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
   );
   const bodyPane = schema.hideBody ? null : (
     <section ref={bodySectionRef} className="relative flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onBodyKeys}>
-      {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={doc.slug} canWrite={canWrite} onApplied={() => void client.get(collection, doc.slug, { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
+      {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={docAddr(doc)} canWrite={canWrite} onApplied={() => void client.get(collection, docAddr(doc), { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
       {focus ? null : toolbar(false)}
       {finding ? <FindBar key={finding.n} commands={toolbarCommands} replace={finding.replace} canWrite={canWrite} initial={finding.initial} onClose={() => setFinding(null)} className={focus ? "top-2" : undefined} /> : null}
       <ConfirmDialog
@@ -1535,6 +1756,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
           slotContext={slotCtx}
           hideSlug={!!schema.single}
           slugNote={redirectNote}
+          translation={onTranslation}
         />
       </RelatedLabels.Provider>
       {schema.seo ? (
@@ -1569,7 +1791,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
       ) : null}
       {schema.snippets && doc ? (
         <div className="mt-4 min-w-0">
-          <SnippetUses collection={collection} slug={doc.slug} onOpen={onOpenDocument} />
+          <SnippetUses collection={collection} slug={docAddr(doc)} onOpen={onOpenDocument} />
         </div>
       ) : null}
       {slots.editorPanel ? <div className="mt-4 min-w-0">{slots.editorPanel(slotCtx)}</div> : null}
@@ -1625,11 +1847,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
 
   const previewDialog = (
     <>
+      {leaveDialog}
       {tplDialog ? <SaveTemplateDialog collection={collection} content={content} onClose={() => setTplDialog(false)} /> : null}
       {hideAsk && doc ? (
         <ReferencedDialog
           collection={collection}
-          slug={doc.slug}
+          slug={docAddr(doc)}
           title={content.title || doc.slug}
           action="archive"
           onClose={() => setHideAsk(false)}
@@ -1653,13 +1876,13 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
           }}
         />
       ) : null}
-      {previewAllowed && doc ? <CmsPreviewLinkDialog open={previewOpen} onOpenChange={setPreviewOpen} collection={collection} slug={doc.slug} version={doc.version} /> : null}
+      {previewAllowed && doc ? <CmsPreviewLinkDialog open={previewOpen} onOpenChange={setPreviewOpen} collection={collection} slug={docAddr(doc)} version={doc.version} /> : null}
       {doc ? (
         <AddToReleaseDialog
           open={releaseOpen}
           onOpenChange={setReleaseOpen}
           collection={collection}
-          slug={doc.slug}
+          slug={docAddr(doc)}
           published={published}
           onAdded={(r) => {
             setRelease({ id: r.id, name: r.name, state: "open", publishAt: null });
@@ -1685,7 +1908,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
           }
         >
           {doc && onOpenVersions ? (
-            <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label={t("versions")} onClick={() => onOpenVersions(collection, doc.slug)}>
+            <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label={t("versions")} onClick={() => onOpenVersions(collection, docAddr(doc))}>
               <History aria-hidden className="h-4 w-4" />
             </Button>
           ) : null}
@@ -1705,7 +1928,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
             </DropdownMenu>
           ) : null}
         </PageHeader>
+        {localeTabs}
         {strips}
+        {trBar}
         <Tabs value={mobileTab} onValueChange={(v) => setMobileTab(String(v))} className="flex min-h-0 flex-1 flex-col">
           <div className="flex items-center gap-1.5 border-b px-4 py-2">
             {stateBits}
@@ -1714,6 +1939,11 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
               <TabsTrigger value="edit" className="h-6 text-xs">
                 {t("edit")}
               </TabsTrigger>
+              {sourcePane ? (
+                <TabsTrigger value="source" className="h-6 text-xs">
+                  {t("locale_source_tab")}
+                </TabsTrigger>
+              ) : null}
               <TabsTrigger value="preview" className="h-6 text-xs">
                 {t("preview")}
               </TabsTrigger>
@@ -1724,7 +1954,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
               ) : null}
             </TabsList>
           </div>
-          <TabsContent value="edit" className="mt-0 flex min-h-0 flex-1 flex-col">
+          <TabsContent value="edit" className="mt-0 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden [&[hidden]]:hidden">
             {agentBanner || restoreBanner || lostBanner ? (
               <div className="flex flex-col gap-2 px-4 pt-2.5">
                 {lostBanner}
@@ -1745,10 +1975,15 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
             </div>
             {bodyPane}
           </TabsContent>
-          <TabsContent value="preview" className="mt-0 flex min-h-0 flex-1 flex-col">
+          {sourcePane ? (
+            <TabsContent value="source" className="mt-0 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden [&[hidden]]:hidden">
+              {sourcePane}
+            </TabsContent>
+          ) : null}
+          <TabsContent value="preview" className="mt-0 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden [&[hidden]]:hidden">
             {previewPane(false)}
           </TabsContent>
-          <TabsContent value="comments" className="mt-0 flex min-h-0 flex-1 flex-col">
+          <TabsContent value="comments" className="mt-0 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden [&[hidden]]:hidden">
             {comments()}
           </TabsContent>
         </Tabs>
@@ -1820,7 +2055,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
             </Button>
           ) : null}
           {doc && onOpenVersions ? (
-            <Button type="button" variant="ghost" className="gap-1.5" onClick={() => onOpenVersions(collection, doc.slug)}>
+            <Button type="button" variant="ghost" className="gap-1.5" onClick={() => onOpenVersions(collection, docAddr(doc))}>
               <History aria-hidden className="h-4 w-4" />
               {t("versions")}
             </Button>
@@ -1841,8 +2076,10 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
           {saveButtons()}
         </PageHeader>
         )}
+        {focus ? null : localeTabs}
       </div>
       {focus ? null : strips}
+      {focus ? null : trBar}
       {agentBanner || restoreBanner || lostBanner ? (
         <div className="flex flex-col gap-2 px-6 pt-2.5">
           {lostBanner}
@@ -1856,8 +2093,10 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
       </div>
       {sideBySide ? (
         <div ref={rowRef} className={cn("flex min-h-[360px] divide-x", rowHeight === null ? "flex-1" : "shrink-0")} style={rowHeight === null ? undefined : { height: rowHeight }}>
+          {/* A translation: the source on the left instead of the preview (the preview window is still in the toolbar). */}
+          {sourcePane && !focus ? sourcePane : null}
           {bodyPane}
-          {previewPane(true)}
+          {sourcePane && !focus ? null : previewPane(true)}
           {commentsOpen && !focus ? comments(() => setCommentsOpen(false)) : null}
         </div>
       ) : (
@@ -1865,6 +2104,11 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onR
         // `flex-1` alone would let it shrink to its 360px minimum when the fields above are tall: the text then
         // spills out of its box, under the status line, and the page stops scrolling before its end.
         <div ref={rowRef} className="flex min-h-[360px] flex-[1_0_auto] divide-x">
+          {sourcePane && !focus ? (
+            <div className="sticky flex min-w-0 flex-1 flex-col self-start" style={{ top: headHeight, height: rowHeight ?? undefined }}>
+              {sourcePane}
+            </div>
+          ) : null}
           {bodyPane}
           {commentsOpen && !focus ? <div className="sticky top-0 flex max-h-dvh w-80 shrink-0 flex-col self-start">{comments(() => setCommentsOpen(false))}</div> : null}
         </div>

@@ -293,3 +293,159 @@ test("locales: REST routes (?locale=, _translations, _align, _source-diff); the 
   const unknown = await call("GET", "/collections/guide/r?locale=fr");
   assert.deepEqual([unknown.status, unknown.json!.error], [422, "locale_unknown"]);
 });
+
+// ── 0.22.0 leftovers: export/import, trash, "who points here", list marks, counts ──
+
+function setupTrash() {
+  const repo = new MemoryRepo();
+  const cms = createCms({ repo, collections: [guide, blog], locales: ["ko", "en", "ja"], defaultLocale: "ko", searchRefreshMs: 0, warn: () => {}, trash: { days: 30 } });
+  return { cms, repo };
+}
+
+test("transfer: translations are exported as their own files and come back with their source version", async () => {
+  const { cms } = setup();
+  await cms.create(admin, "guide", { slug: "start", title: "시작", body: "가\n", fields: { order: 2, note: "메모", subtitle: "부제" } }, { publish: true });
+  await cms.create(admin, "guide", { slug: "start", title: "Start", body: "a\n", fields: { subtitle: "Sub" } }, { locale: "en", from: "start", publish: true });
+  await cms.create(admin, "guide", { slug: "start", title: "始め", body: "あ\n" }, { locale: "ja", from: "start" });
+  await cms.update(admin, "guide", "start", { body: "가\n\n나\n" }, { publish: true }); // en and ja are now outdated
+  await cms.markAligned(admin, "guide", "start", "ja"); // ja is current again
+  const out = await cms.transfer.export(admin, { drafts: true, collections: ["guide"] });
+  assert.deepEqual(out.files.map((f) => f.path).sort(), ["_meta.json", "guide/start.md", "guide/start@en.md", "guide/start@ja.md"]);
+  const en = out.files.find((f) => f.path === "guide/start@en.md")!.text;
+  assert.match(en, /^locale: en$/m);
+  assert.match(en, /^sourceVersion: 1$/m);
+  assert.match(en, /^translationStatus: outdated$/m);
+  assert.doesNotMatch(en, /order:/, "shared fields are the source's: not in the translation's file");
+  assert.equal(out.documents, 3);
+
+  // Into an empty CMS: the source first (whatever the file order), then its translations.
+  const { cms: other } = setup();
+  const dry = await other.transfer.import(admin, [...out.files].reverse(), { dryRun: true });
+  assert.deepEqual(dry.items.map((i) => [i.slug, i.locale ?? null, i.change]).sort(), [["start", "en", "new"], ["start", "ja", "new"], ["start", null, "new"]].sort());
+  const done = await other.transfer.import(admin, [...out.files].reverse(), { publish: true });
+  assert.ok(done.items.every((i) => i.change === "new"), JSON.stringify(done.items));
+  const tr = await other.translations(admin, "guide", "start");
+  assert.deepEqual(tr.translations.map((x) => [x.locale, x.status]), [["ko", "source"], ["en", "outdated"], ["ja", "current"]]);
+  const enBack = await other.get(admin, "guide", "start", { locale: "en" });
+  assert.deepEqual([enBack.title, enBack.fields.subtitle, enBack.fields.order, enBack.status], ["Start", "Sub", 2, "published"]);
+  // Importing the same files again changes nothing.
+  assert.deepEqual((await other.transfer.import(admin, out.files)).items.map((i) => i.change), ["same", "same", "same"]);
+});
+
+test("transfer: a translation whose source is missing or in the trash is refused with a clear error", async () => {
+  const { cms } = setupTrash();
+  await cms.create(admin, "guide", { slug: "start", title: "시작", body: "가\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "start", title: "Start", body: "a\n" }, { locale: "en", from: "start" });
+  const out = await cms.transfer.export(admin, { drafts: true, collections: ["guide"] });
+  const onlyEn = out.files.filter((f) => f.path === "guide/start@en.md");
+  const { cms: other } = setupTrash();
+  const r = await other.transfer.import(admin, onlyEn);
+  assert.equal(r.items[0].change, "error");
+  assert.match(r.items[0].reason ?? "", /start/);
+  assert.equal(r.items[0].locale, "en");
+  // The source in the trash: restore it first.
+  await other.create(admin, "guide", { slug: "start", title: "시작", body: "가\n" });
+  await other.remove(admin, "guide", "start");
+  const t = await other.transfer.import(admin, onlyEn);
+  assert.equal(t.items[0].change, "error");
+  assert.match(t.items[0].reason ?? "", /trash|휴지통/);
+  // An unknown language is refused too.
+  const bad = await other.transfer.import(admin, [{ path: "guide/start@fr.md", text: "---\nslug: start\nlocale: fr\ntitle: x\n---\nx" }]);
+  assert.equal(bad.items[0].change, "error");
+});
+
+test("trash: deleting a source takes its translations; restoring brings them back; purging removes them", async () => {
+  const { cms } = setupTrash();
+  await cms.create(admin, "guide", { slug: "start", title: "시작", body: "가\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "start", title: "Start", body: "a\n" }, { locale: "en", from: "start" });
+  await cms.create(admin, "guide", { slug: "start", title: "始め", body: "あ\n" }, { locale: "ja", from: "start" });
+  // ja deleted on its own first: it stays in the trash when the source comes back.
+  await cms.remove(admin, "guide", "start@ja");
+  await new Promise((r) => setTimeout(r, 5));
+  await cms.remove(admin, "guide", "start");
+  const list = await cms.trash.list(admin);
+  const docs = list.items.filter((i) => i.kind === "document");
+  assert.equal(docs.length, 3);
+  const en = docs.find((i) => i.locale === "en")!;
+  assert.equal(en.where, "Guide / start · en", "a translation says its language, not its internal address");
+  // A translation alone cannot come back while its source is in the trash.
+  assert.equal(await code(cms.trash.restore(admin, [{ kind: "document", id: en.id }])), "translation_source_trashed");
+  const src = docs.find((i) => !i.locale)!;
+  await cms.trash.restore(admin, [{ kind: "document", id: src.id }]);
+  assert.equal((await cms.get(admin, "guide", "start", { locale: "en", draft: true })).title, "Start");
+  assert.equal(await code(cms.get(admin, "guide", "start", { locale: "ja", draft: true })), "not_found", "deleted on its own before: still in the trash");
+  assert.deepEqual((await cms.trash.list(admin)).items.map((i) => i.locale), ["ja"]);
+
+  // Purging a source purges its trashed translations with it.
+  await cms.remove(admin, "guide", "start");
+  const again = (await cms.trash.list(admin)).items;
+  assert.equal(again.length, 3);
+  const r = await cms.trash.purge(admin, [{ kind: "document", id: again.find((i) => !i.locale)!.id }]);
+  assert.equal(r.purged, 3);
+  assert.deepEqual((await cms.trash.list(admin)).items, []);
+});
+
+test("refs: a translation that points somewhere is listed with its language; a shared relation is the source's only", async () => {
+  const team = defineCollection({ slug: "team", label: "Team", visibility: "public" });
+  const { relation } = await import("./fields");
+  const docs = defineCollection({ slug: "docs", label: "Docs", visibility: "public", localized: true, fields: z.object({ author: relation("team").optional(), reviewer: relation("team").optional() }), admin: { fields: { reviewer: { localized: true } } } });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [docs, team], locales: ["ko", "en"], warn: () => {} });
+  const kim = await cms.create(admin, "team", { slug: "kim", title: "Kim", body: "" }, { publish: true });
+  const lee = await cms.create(admin, "team", { slug: "lee", title: "Lee", body: "" }, { publish: true });
+  await cms.create(admin, "docs", { slug: "a", title: "가", body: "x", fields: { author: kim.id } }, { publish: true });
+  await cms.create(admin, "docs", { slug: "a", title: "A", body: "x", fields: { reviewer: lee.id } }, { locale: "en", from: "a", publish: true });
+  // The shared author: the source only, once.
+  assert.deepEqual((await cms.referencedBy(admin, "team", "kim")).map((r) => [r.slug, r.locale ?? null, r.fields]), [["a", null, ["author"]]]);
+  // The English reviewer: the translation, by its slug and language (not "a@en").
+  assert.deepEqual((await cms.referencedBy(admin, "team", "lee")).map((r) => [r.slug, r.locale ?? null, r.fields]), [["a", "en", ["reviewer"]]]);
+  // Deleting Lee asks first, because the translation points at them.
+  assert.equal(await code(cms.remove(admin, "team", "lee")), "doc_referenced");
+});
+
+test("list: editors' pages carry each row's translation status; counts per language", async () => {
+  const { cms } = setup();
+  const h = createCmsHandler({ cms, resolveUser: async () => admin });
+  await cms.create(admin, "guide", { slug: "a", title: "가", body: "x\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "b", title: "나", body: "x\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" }, { locale: "en", from: "a", publish: true });
+  await cms.update(admin, "guide", "a", { body: "y\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "b", title: "B", body: "x\n" }, { locale: "en", from: "b" });
+  const get = async (q: string) => (await (await h(new Request(`http://x/api/cms/collections/guide?${q}`))).json()) as { docs: { slug: string; translations?: Record<string, string> }[] };
+  const src = await get("fields=summary&translations=1");
+  assert.deepEqual(Object.fromEntries(src.docs.map((d) => [d.slug, d.translations])), { a: { en: "outdated", ja: "missing" }, b: { en: "current", ja: "missing" } });
+  const en = await get("fields=summary&translations=1&locale=en");
+  assert.deepEqual(Object.fromEntries(en.docs.map((d) => [d.slug, d.translations])), { a: { en: "outdated" }, b: { en: "current" } });
+  // Without asking (or for readers) nothing is added.
+  assert.equal((await get("fields=summary")).docs[0].translations, undefined);
+  assert.equal((await cms.page(anon, "guide", { translations: true })).docs[0]?.translations, undefined);
+  // Counts of one language.
+  assert.deepEqual([(await cms.counts(admin, "guide")).all, (await cms.counts(admin, "guide", { locale: "en" })).all, (await cms.counts(admin, "guide", { locale: "en" })).draft, (await cms.counts(admin, "guide", { locale: "ja" })).all], [2, 2, 1, 0]);
+  const c = (await (await h(new Request("http://x/api/cms/collections/guide/_counts?locale=en"))).json()) as { counts: { all: number } };
+  assert.equal(c.counts.all, 2);
+  // The translations view says where each language lives on the site.
+  assert.deepEqual((await cms.translations(admin, "guide", "a")).translations.map((x) => x.url), ["/ko/guide/a", "/en/guide/a", "/ja/guide/a"]);
+});
+
+test("diagnose: a translation's shared address is not reported as taken", async () => {
+  const { cms } = setup();
+  await cms.create(admin, "guide", { slug: "a", title: "가", body: "x\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" }, { locale: "en", from: "a" });
+  assert.deepEqual((await cms.diagnose(admin, "guide", { title: "A2" }, { slug: "a@en" })).filter((d) => d.severity === "error"), []);
+  assert.deepEqual((await cms.diagnose(admin, "guide", { slug: "a", title: "始め" }, { locale: "ja" })).filter((d) => d.severity === "error"), []);
+  // A source with that slug is still taken.
+  assert.ok((await cms.diagnose(admin, "guide", { slug: "a", title: "x" })).some((d) => d.code === "slug_taken"));
+});
+
+test("trash: restoring a source and its translation together works in any order", async () => {
+  const { cms } = setupTrash();
+  await cms.create(admin, "guide", { slug: "start", title: "시작", body: "가\n" });
+  await cms.create(admin, "guide", { slug: "start", title: "Start", body: "a\n" }, { locale: "en", from: "start" });
+  await cms.remove(admin, "guide", "start");
+  const items = (await cms.trash.list(admin)).items;
+  const tr = items.find((i) => i.locale === "en")!;
+  const src = items.find((i) => !i.locale)!;
+  const r = await cms.trash.restore(admin, [{ kind: "document", id: tr.id }, { kind: "document", id: src.id }]);
+  assert.equal(r.restored, 2);
+  assert.ok(r.results.every((x) => x.ok));
+  assert.deepEqual((await cms.trash.list(admin)).items, []);
+});

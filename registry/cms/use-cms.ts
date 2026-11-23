@@ -42,6 +42,50 @@ export interface CmsSlots {
   editorPanel?: (ctx: EditorSlotContext) => React.ReactNode;
   /** 0.17.0: next to a field's input in the editor's form (a "Generate" button, a counter). */
   fieldAddon?: (field: { key: string; label: string; widget: string }, ctx: EditorSlotContext & { value: unknown; setValue: (v: unknown) => void }) => React.ReactNode;
+  /**
+   * 0.22.0: next to "Start translation" and in a translation's status bar (a "Draft a translation"
+   * button of a plugin). Nothing shows when it is not set.
+   */
+  localeAction?: (ctx: LocaleSlotContext) => React.ReactNode;
+}
+
+/** What `slots.localeAction` gets (0.22.0). */
+export interface LocaleSlotContext {
+  collection: string;
+  /** The source document's slug. */
+  slug: string;
+  /** The language on screen and the source's. */
+  locale: string;
+  defaultLocale: string;
+  /** How this language stands: `missing` before it is started. */
+  status: "missing" | "outdated" | "current";
+  /** The translation's working copy on screen (null while missing), and a way to change it (the person still saves). */
+  content: DocContent | null;
+  setContent: ((patch: Partial<DocContent>) => void) | null;
+  /** Load the languages and the document again (after the plugin wrote through the API). */
+  reload: () => void;
+  readOnly: boolean;
+}
+
+/** 0.22.0: how a client names a document: `slug`, or `slug@locale` for a translation. */
+export const docAddr = (d: { id: string; slug: string; locale?: string; groupId?: string | null }): string => (d.groupId && d.groupId !== d.id && d.locale ? `${d.slug}@${d.locale}` : d.slug);
+
+/** `about@en` → { slug: "about", locale: "en" }; `about` → { slug: "about", locale: null }. */
+export function splitAddr(address: string): { slug: string; locale: string | null } {
+  const at = address.lastIndexOf("@");
+  if (at <= 0) return { slug: address, locale: null };
+  const l = address.slice(at + 1);
+  return /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(l) ? { slug: address.slice(0, at), locale: l } : { slug: address, locale: null };
+}
+
+/** A language's own name ("한국어", "English", "日本語"); the code when the browser does not know it. */
+export function languageName(code: string): string {
+  try {
+    const n = new Intl.DisplayNames([code], { type: "language" }).of(code);
+    return n ? n.charAt(0).toLocaleUpperCase(code) + n.slice(1) : code;
+  } catch {
+    return code;
+  }
 }
 
 /** What editor slots get: the document as it is on screen, and ways to change it (the person still saves). */

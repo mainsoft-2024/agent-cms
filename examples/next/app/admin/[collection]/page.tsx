@@ -15,16 +15,16 @@ export default function ListPage({ params }: { params: { collection: string } })
       <CmsDocEditor
         collection={params.collection}
         slug="_single"
-        onOpenVersions={(c, s) => router.push(`/admin/${c}/${s}/versions`)}
+        onOpenVersions={(c, s) => router.push(`/admin/${c}/${encodeURIComponent(s)}/versions`)}
         onOpenRelease={(id) => router.push(`/admin/releases/${id}`)}
-        onOpenDocument={(c, s) => router.push(`/admin/${c}/${s}`)}
+        onOpenDocument={(c, s) => router.push(`/admin/${c}/${encodeURIComponent(s)}`)}
       />
     );
   return (
     <CmsDocList
       collection={params.collection}
       hrefFor={(c, s) => `/admin/${c}/${s}`}
-      onOpenDocument={(c, s) => router.push(`/admin/${c}/${s}`)}
+      onOpenDocument={(c, s) => router.push(`/admin/${c}/${encodeURIComponent(s)}`)}
       onNewDocument={(c) => router.push(`/admin/${c}/new`)}
       keysHref="/admin/keys"
     />

@@ -455,7 +455,9 @@ export function CmsFormSubmissions({
                   <TableHead className="w-10 px-2">
                     <Checkbox
                       aria-label={t("fs_pick_all")}
-                      checked={allOn ? true : someOn ? "indeterminate" : false}
+                      // Both flavours: Radix takes "indeterminate" in `checked`, Base UI a separate prop.
+                      checked={allOn}
+                      aria-checked={allOn ? true : someOn ? "mixed" : false}
                       onCheckedChange={(on) =>
                         setPicked(
                           on === true

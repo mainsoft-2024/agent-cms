@@ -33,6 +33,8 @@ export interface TranslationInfo {
   updatedAt: string | null;
   /** Document state (draft, published, archived) of this locale (null: missing). */
   docStatus: CmsDoc["status"] | null;
+  /** Where the site shows this language of the document (the collection's `url()`), or null. */
+  url: string | null;
 }
 
 /** The answer of `cms.translations()`. */

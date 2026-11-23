@@ -806,6 +806,11 @@ export interface DocSummary {
   locale?: string;
   /** 0.22.0, lists with `fallback`: the language asked for when this row is the default language's. */
   requestedLocale?: string;
+  /**
+   * 0.22.0, editors' lists with `translations` (source rows of a localized collection): how each other
+   * language stands against this document: `missing`, `outdated` or `current`.
+   */
+  translations?: Record<string, "missing" | "outdated" | "current">;
   schedule: Pick<Schedule, "publishAt" | "unpublishAt" | "version" | "by"> | null;
   review: Pick<ReviewRequest, "state" | "version" | "by" | "note"> | null;
 }

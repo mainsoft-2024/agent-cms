@@ -842,7 +842,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const col = seg[1];
         const cfg = core.collection(col);
 
-        if (seg.length === 3 && seg[2] === "_counts" && m === "GET") return json({ counts: await core.counts(actor, col) });
+        if (seg.length === 3 && seg[2] === "_counts" && m === "GET") return json({ counts: await core.counts(actor, col, { locale: q.get("locale") }) });
         if (seg.length === 3 && seg[2] === "_schema" && m === "GET") {
           // Field rules depend on the document when `fieldAccess` looks at it (`?slug=`).
           const forSlug = q.get("slug");
@@ -939,6 +939,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
               q: q.get("q") ?? undefined,
               locale: q.get("locale") ?? undefined,
               fallback: q.get("fallback") === "1",
+              translations: q.get("translations") === "1",
             };
             if (q.get("fields") === "summary") {
               return json(await core.page(actor, col, { ...lo, limit: Number(q.get("limit") ?? 50) || 50, cursor: q.get("cursor"), hits: q.get("hits") === "1" }));
