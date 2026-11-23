@@ -572,10 +572,15 @@ test("relation picker: with several collections typing goes to the search box, a
   await waitFor(() => assert.ok(document.activeElement === box, `focus on ${document.activeElement?.tagName} ${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.slice(0, 40)}`));
   const user = userEvent.setup();
   const docsTab = screen.getByRole("tab", { name: "Docs" });
+  // `autoFocus` puts focus on the search box at once, and the picker focuses it again on the next frame.
+  // Let that frame pass, or on a slow runner it takes focus back from the tab right after the click.
+  await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
   await user.click(docsTab);
+  // On a slow runner the click can land before the dialog's own focus settles: wait until the tab has it.
+  await waitFor(() => assert.ok(document.activeElement === docsTab, `focus on ${document.activeElement?.tagName}`));
   await user.keyboard("{ArrowRight}");
   const teamTab = screen.getByRole("tab", { name: "Team" });
-  assert.equal(teamTab.getAttribute("aria-selected"), "true");
+  await waitFor(() => assert.equal(teamTab.getAttribute("aria-selected"), "true"));
   assert.ok(document.activeElement === teamTab, `focus on ${document.activeElement?.tagName} ${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.slice(0, 40)}`);
   assert.equal(docsTab.tabIndex, -1);
   assert.ok(await screen.findByRole("option", { name: /Paul Park/ }));
