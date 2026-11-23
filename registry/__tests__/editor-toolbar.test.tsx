@@ -120,7 +120,12 @@ test("editor toolbar: icon buttons named for screen readers, one tab stop moved 
   assert.equal(within(bar).getByRole("button", { name: "Bold" }).textContent, "");
   assert.ok(within(bar).getByRole("button", { name: "Text style" }));
   assert.ok(within(bar).getByRole("button", { name: "Insert a block" }));
-  assert.match(bar.textContent ?? "", /\d+ words/);
+  assert.equal(within(bar).getByRole("button", { name: "Insert a block" }).textContent, "", "insert is an icon like the rest");
+  // The word count is in the status line, not in the bar.
+  assert.ok(!/\d+ words/.test(bar.textContent ?? ""));
+  const stats = container.querySelector<HTMLElement>("[data-cms-stats]");
+  assert.ok(stats && /\d+ words · 1 min read/.test(stats.textContent ?? ""), stats?.textContent ?? "no stats");
+  assert.match(stats!.title, /characters/);
 
   // One tab stop; arrows move it.
   const stops = () => [...bar.querySelectorAll<HTMLElement>("[data-tb-item]")].filter((el) => el.tabIndex === 0);
@@ -138,6 +143,79 @@ test("editor toolbar: icon buttons named for screen readers, one tab stop moved 
   const bold = within(bar).getByRole("button", { name: "Bold" });
   assert.equal(bold.getAttribute("aria-keyshortcuts"), "Control+B Meta+B");
   assert.deepEqual(await axeViolations(container), []);
+});
+
+test("full screen: one toggle at the bar's right end in both modes, pressed inside, no toast; the header keeps Save and Publish and the words stay in the status line", async () => {
+  const s = makeServer();
+  await s.cms.create(admin, "guide", { slug: "slack", title: "Connect Slack", body: BODY });
+  const { container } = renderWith(s, <CmsDocEditor collection="guide" slug="slack" presenceMs={0} autosaveDelay={0} />);
+  await screen.findByDisplayValue("Connect Slack");
+  const user = userEvent.setup();
+  const lastItem = () => {
+    const bar = screen.getByRole("toolbar", { name: "Formatting" });
+    const items = [...bar.querySelectorAll<HTMLElement>("[data-tb-item]")];
+    return items[items.length - 1];
+  };
+  const enter = screen.getByRole("button", { name: "Full screen" });
+  assert.ok(lastItem() === enter, "full screen is the bar's last button");
+  assert.equal(enter.getAttribute("aria-pressed"), "false");
+  assert.equal(enter.getAttribute("aria-keyshortcuts"), "Control+Shift+F Meta+Shift+F");
+  // Secondary header actions are icons: the header keeps Save and Publish on one line.
+  const header = container.querySelector("header")!;
+  assert.ok(!header.className.includes("flex-wrap"), "the doc header does not wrap");
+  assert.equal(within(header).getByRole("button", { name: "Comments" }).textContent, "", "comments is an icon with a tooltip");
+  assert.ok(within(header).getByRole("button", { name: "Save" }));
+  assert.ok(within(header).getByRole("button", { name: "Publish" }));
+
+  await user.click(enter);
+  const region = await screen.findByRole("region", { name: "Full screen editing" });
+  const leave = within(region).getByRole("button", { name: "Leave full screen" });
+  assert.ok(lastItem() === leave, "the same place: still the bar's last button");
+  assert.equal(leave.getAttribute("aria-pressed"), "true");
+  assert.ok(!document.querySelector("[data-cms-toast]"), "no toast on entering");
+  assert.match(container.querySelector("[aria-live=polite]")?.textContent ?? "", /Full screen\. Press Ctrl\+Shift\+F to leave/);
+  // No exit button of its own at the top left: only one button leaves.
+  assert.equal(within(region).getAllByRole("button", { name: "Leave full screen" }).length, 1);
+  assert.ok(within(region).getByRole("button", { name: "Save" }));
+  assert.ok(within(region).getByRole("button", { name: "Publish" }));
+  assert.match(container.querySelector("[data-cms-stats]")?.textContent ?? "", /\d+ words/);
+  // The fields and the browser's full screen are named in one view-options menu.
+  await user.click(within(region).getByRole("button", { name: "View options" }));
+  const menu = await screen.findByRole("menu");
+  await user.click(within(menu).getByRole("menuitem", { name: /Show fields/ }));
+  await waitFor(() => assert.ok(!document.getElementById("cms-focus-fields")?.className.includes("hidden")));
+
+  // Ctrl+Shift+F leaves (and enters again) from anywhere.
+  fireEvent.keyDown(document.body, { key: "F", ctrlKey: true, shiftKey: true });
+  await waitFor(() => assert.ok(!screen.queryByRole("region", { name: "Full screen editing" })));
+  assert.equal(screen.getByRole("button", { name: "Full screen" }).getAttribute("aria-pressed"), "false");
+  assert.ok(!document.querySelector("[data-cms-toast]"));
+  fireEvent.keyDown(document.body, { key: "F", ctrlKey: true, shiftKey: true });
+  assert.ok(await screen.findByRole("region", { name: "Full screen editing" }));
+  await user.click(screen.getByRole("button", { name: "Leave full screen" }));
+  await waitFor(() => assert.ok(!screen.queryByRole("region", { name: "Full screen editing" })));
+});
+
+test("editor toolbar: blocks or markdown is a two-icon switch in the view zone, pressed for the one shown", async () => {
+  window.localStorage.removeItem("cms-body-view");
+  const s = makeServer();
+  await s.cms.create(admin, "guide", { slug: "slack", title: "Connect Slack", body: BODY });
+  renderWith(s, <CmsDocEditor collection="guide" slug="slack" presenceMs={0} autosaveDelay={0} />, { slots: { blockEditor: CmsBlockEditor } });
+  await screen.findByDisplayValue("Connect Slack");
+  const bar = screen.getByRole("toolbar", { name: "Formatting" });
+  const sw = within(bar).getByRole("group", { name: "Body view" });
+  const blocksBtn = within(sw).getByRole("button", { name: "Edit as blocks" });
+  const mdBtn = within(sw).getByRole("button", { name: "Edit as markdown" });
+  assert.equal(blocksBtn.textContent, "", "icons, no text");
+  assert.equal(blocksBtn.getAttribute("aria-pressed"), "true");
+  assert.equal(mdBtn.getAttribute("aria-pressed"), "false");
+  // The switch sits in the right (view) zone, before full screen.
+  const view = bar.querySelector('[data-tb-group="view"]')!;
+  assert.ok(view.contains(sw) && view.contains(within(bar).getByRole("button", { name: "Full screen" })));
+  await userEvent.setup().click(mdBtn);
+  await waitFor(() => assert.equal(mdBtn.getAttribute("aria-pressed"), "true"));
+  assert.ok(screen.getByLabelText("Markdown"), "the text box is shown");
+  window.localStorage.removeItem("cms-body-view");
 });
 
 test("editor toolbar: Bold wraps the text box's selection; Ctrl+F finds, Ctrl+H replaces all", async () => {
@@ -331,58 +409,56 @@ test("reading time: 200 words a minute, Korean 500 characters a minute, a mixed 
   assert.equal(bodyStats("").minutes, 1);
 });
 
-/** Items of a full bar (views, word count) with the real classes' widths: 28px buttons + 1px gap. */
+/** Items of a full bar with the real classes' widths: 32px buttons + 1px gap. */
 function barItems(o: { outline?: boolean; media?: boolean } = {}): FitItem[] {
-  const b = (key: string, group: FitItem["group"], width = 29) => ({ key, group, width });
+  const b = (key: string, group: FitItem["group"], width = 33) => ({ key, group, width });
   return [
     b("undo", "history"),
     b("redo", "history"),
-    b("style", "style", 78),
+    b("style", "style", 85),
     ...["bold", "italic", "strike", "code", "link"].map((k) => b(k, "marks")),
     ...["bullet", "number", "todo", "quote", "callout"].map((k) => b(k, "lists")),
     ...["table", "codeblock", "hr"].map((k) => b(k, "blocks")),
     ...(o.media === false ? [] : [b("media", "media")]),
-    b("insert", "insert", 68),
-    b("find", "right"),
-    ...(o.outline === false ? [] : [b("outline", "right")]),
-    b("side", "right"),
-    b("window", "right"),
-    b("full", "right"),
-    b("stat-min", "stat", 52),
-    b("stat", "stat", 62),
+    b("insert", "insert"),
+    b("find", "view"),
+    ...(o.outline === false ? [] : [b("outline", "view")]),
+    b("side", "view"),
+    b("window", "view"),
   ];
 }
-const fit = (avail: number, items = barItems()) => fitToolbar({ avail, fixed: 24 + 140 + 8, items, sep: 8, more: 29, leadSep: true });
+/** Padding 24, the zone line 11, the view switch 69, full screen 33, the spacer and rounding 8. */
+const FIXED = 24 + 11 + 69 + 33 + 8;
+const fit = (avail: number, items = barItems()) => fitToolbar({ avail, fixed: FIXED, items, sep: 11, more: 33, leadSep: false });
 
-test("toolbar fit: items leave one by one, rare blocks first; the reading time goes before any button", () => {
+test("toolbar fit: items leave one by one, rare blocks first; the view buttons go last", () => {
   assert.equal(fit(2000).size, 0, "everything fits on a wide bar");
-  // A little short: only the reading time goes (and no More button for it).
   const all = barItems();
-  const full = 24 + 140 + 8 + all.reduce((s, i) => s + i.width, 0) + 8 * 7 + 8;
-  assert.deepEqual([...fit(full - 10)], ["stat-min"]);
-  // Shorter: the rarer blocks go next, in their order, and More comes in.
-  assert.deepEqual([...fit(full - 60)], ["stat-min", "hr", "codeblock"]);
-  assert.deepEqual([...fit(full - 120)], ["stat-min", "hr", "codeblock", "table", "callout"]);
+  const full = FIXED + all.reduce((s, i) => s + i.width, 0) + 11 * 6;
+  assert.equal(fit(full).size, 0, "exactly wide enough: nothing hidden");
+  // A little short: the rarest block goes, and More comes in.
+  assert.deepEqual([...fit(full - 1)], ["hr", "codeblock"]);
+  assert.deepEqual([...fit(full - 100)], ["hr", "codeblock", "table", "callout"], "an emptied group also gives back its line");
   // The order is the priority list.
   const keys = Object.entries(TOOLBAR_PRIORITY)
     .sort((a, b) => a[1] - b[1])
     .map(([k]) => k);
-  assert.deepEqual(keys.slice(0, 9), ["stat-min", "hr", "codeblock", "table", "callout", "quote", "todo", "strike", "code"]);
-  assert.deepEqual(keys.slice(-4), ["window", "side", "outline", "full"], "the view buttons go last");
-  assert.ok(TOOLBAR_PRIORITY.outline > TOOLBAR_PRIORITY.undo && TOOLBAR_PRIORITY.full > TOOLBAR_PRIORITY.outline, "section order and full screen stay longest");
+  assert.deepEqual(keys.slice(0, 8), ["hr", "codeblock", "table", "callout", "quote", "todo", "strike", "code"]);
+  assert.deepEqual(keys.slice(-3), ["window", "side", "outline"], "the view buttons go last");
+  assert.ok(!("full" in TOOLBAR_PRIORITY) && !("view" in TOOLBAR_PRIORITY), "full screen and the view switch never leave");
   assert.ok(TOOLBAR_PRIORITY.media > TOOLBAR_PRIORITY.bold && TOOLBAR_PRIORITY.insert > TOOLBAR_PRIORITY.code && TOOLBAR_PRIORITY.style > TOOLBAR_PRIORITY.number);
 });
 
 test("toolbar fit: at the side-preview width (560px) section order and insert media stay as buttons", () => {
   const hidden = fit(560);
-  for (const k of ["outline", "media", "full", "side", "window", "undo", "redo"]) assert.ok(!hidden.has(k), `${k} stays`);
-  for (const k of ["hr", "codeblock", "table", "callout", "quote", "todo", "strike", "code", "stat-min"]) assert.ok(hidden.has(k), `${k} goes into More`);
+  for (const k of ["outline", "media", "side", "window", "undo", "redo"]) assert.ok(!hidden.has(k), `${k} stays`);
+  for (const k of ["hr", "codeblock", "table", "callout", "quote", "todo", "strike", "code"]) assert.ok(hidden.has(k), `${k} goes into More`);
   // Wider (no side preview): the everyday buttons come back.
-  const wide = fit(900);
-  for (const k of ["bold", "italic", "link", "style", "insert", "bullet", "number", "media", "outline"]) assert.ok(!wide.has(k), `${k} shown at 900px`);
+  const wide = fit(1000);
+  for (const k of ["bold", "italic", "link", "style", "insert", "bullet", "number", "media", "outline"]) assert.ok(!wide.has(k), `${k} shown at 1000px`);
   // Very narrow: the view buttons are the last left.
   const tiny = fit(330);
-  assert.ok(!tiny.has("full") && !tiny.has("outline"));
+  assert.ok(!tiny.has("outline"));
   // Without an outline (one section) the same width keeps one more editing button.
   const without = fit(560, barItems({ outline: false }));
   assert.ok(without.size <= hidden.size);
@@ -403,7 +479,7 @@ test("editor toolbar: hidden items go into More as flat items in toolbar order, 
   });
   proto.getBoundingClientRect = function (this: HTMLElement) {
     const m = this.getAttribute("data-tb-m");
-    const w = m === "style" ? 78 : m === "insert" ? 68 : m === "sep" ? 7 : m === "stat-full" ? 120 : m === "stat-short" ? 62 : m ? 28 : this.getAttribute("data-tb-group") === "lead" ? 140 : 0;
+    const w = m === "style" ? 85 : m === "sep" ? 11 : m === "view" ? 68 : m ? 32 : this.getAttribute("data-tb-group") === "lead" ? 0 : 0;
     return new window.DOMRect(0, 0, w, 28);
   };
   try {
@@ -416,11 +492,8 @@ test("editor toolbar: hidden items go into More as flat items in toolbar order, 
     assert.ok(within(bar).getByRole("button", { name: "Undo" }));
     assert.ok(!within(bar).queryByRole("button", { name: "Divider" }));
     assert.ok(!within(bar).queryByRole("button", { name: "Table" }));
-    // The word count keeps its words, drops the reading time, and says it in its title.
-    const stat = bar.querySelector<HTMLElement>("[data-tb-stat]")!;
-    assert.ok(stat && /words/.test(stat.textContent ?? ""));
-    assert.ok(!/min read/.test(stat.textContent ?? ""));
-    assert.match(stat.title, /min read/);
+    // The view switch and full screen never go into More.
+    assert.ok(within(bar).getByRole("button", { name: "Full screen" }));
     const user = userEvent.setup();
     await user.click(within(bar).getByRole("button", { name: "More" }));
     const menu = await screen.findByRole("menu");

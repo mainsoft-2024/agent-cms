@@ -1,4 +1,4 @@
-// agent-cms registry: cms-lib (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-lib (0.22.1). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // Small pieces the admin screens share: state badges, avatars, copy
 // buttons, the confirm dialog, the page header and the markdown preview.
@@ -522,11 +522,12 @@ export function ConfirmDialog({ open, onOpenChange, title, description, children
 // ── page header ──────────────────────────────────────────────────────────────
 
 /** The bar on top of each screen. On phones it shows the menu button of <CmsShell>. */
-export function PageHeader({ title, crumbs, children, after, className, back }: { title: React.ReactNode; crumbs?: React.ReactNode[]; children?: React.ReactNode; after?: React.ReactNode; className?: string; back?: React.ReactNode }) {
+/** `nowrap`: one line always; the title gives way (truncates) and the actions keep their room. */
+export function PageHeader({ title, crumbs, children, after, className, back, nowrap }: { title: React.ReactNode; crumbs?: React.ReactNode[]; children?: React.ReactNode; after?: React.ReactNode; className?: string; back?: React.ReactNode; nowrap?: boolean }) {
   const nav = useShellNav();
   const { t } = useCms();
   return (
-    <header className={cn("flex min-h-14 flex-wrap items-center gap-2.5 border-b px-4 py-2.5 md:px-6", className)}>
+    <header className={cn("flex min-h-14 items-center gap-2.5 border-b px-4 py-2.5 md:px-6", !nowrap && "flex-wrap", className)}>
       {back ??
         (nav ? (
           <Button type="button" variant="ghost" size="icon" className="-ml-2 h-8 w-8 md:hidden" aria-label={t("menu")} onClick={nav.openNav}>
@@ -534,7 +535,7 @@ export function PageHeader({ title, crumbs, children, after, className, back }: 
           </Button>
         ) : null)}
       {crumbs?.length ? (
-        <nav aria-label="Breadcrumb" className="hidden items-center gap-1 text-sm text-muted-foreground md:flex">
+        <nav aria-label="Breadcrumb" className={cn("hidden items-center gap-1 text-sm text-muted-foreground md:flex", nowrap && "shrink-0 whitespace-nowrap")}>
           {crumbs.map((c, i) => (
             <span key={i} className="inline-flex items-center gap-1">
               {c}
@@ -544,9 +545,9 @@ export function PageHeader({ title, crumbs, children, after, className, back }: 
         </nav>
       ) : null}
       <h1 className="min-w-0 truncate text-base font-semibold md:text-lg">{title}</h1>
-      {after}
+      {nowrap && after ? <span className="flex shrink-0 items-center gap-1.5">{after}</span> : after}
       <span className="flex-1" />
-      <div className="flex flex-wrap items-center gap-1.5">{children}</div>
+      <div className={cn("flex items-center gap-1.5", nowrap ? "shrink-0" : "flex-wrap")}>{children}</div>
     </header>
   );
 }
