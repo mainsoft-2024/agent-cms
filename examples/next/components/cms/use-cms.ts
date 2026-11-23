@@ -73,8 +73,62 @@ export interface BlockEditorProps {
   onPickMedia?: () => Promise<string | null>;
   /** The screen puts markdown at the cursor through this. */
   insertRef?: React.MutableRefObject<((markdown: string) => void) | null>;
+  /** The screen's toolbar runs editing commands through this (0.21.0). */
+  commandsRef?: React.MutableRefObject<BlockEditorCommands | null>;
+  /** Called when what the toolbar shows may have changed (selection, marks, history). */
+  onStateChange?: () => void;
+  /** Collections whose documents can be put in as snippets (`[[snippet:key]]`). */
+  snippetCollections?: string[];
   id?: string;
   describedBy?: string;
+}
+
+/** Commands of the body editor's toolbar, in either mode. `kind` names a block or a mark. */
+export type EditorCommand =
+  | "undo"
+  | "redo"
+  | "p"
+  | "h2"
+  | "h3"
+  | "h4"
+  | "bold"
+  | "italic"
+  | "strike"
+  | "code"
+  | "link"
+  | "bullet"
+  | "number"
+  | "todo"
+  | "quote"
+  | "callout"
+  | "table"
+  | "codeblock"
+  | "hr"
+  | "steps"
+  | "card"
+  | "video"
+  | "snippet"
+  /** Two columns side by side (`:::columns`). */
+  | "columns"
+  /** A toggle: a title that opens to show what is inside (`:::toggle`). */
+  | "toggle"
+  /** An HTML block (`:::html`). */
+  | "html";
+
+/** What the block editor offers the toolbar (find and replace included). */
+export interface BlockEditorCommands {
+  run: (cmd: EditorCommand) => boolean;
+  /** Is the command possible here, and is it on (a mark, the current block type)? */
+  state: (cmd: EditorCommand) => { enabled: boolean; active: boolean };
+  /** Find: highlights matches, returns how many and which one is current (0-based, -1 none). */
+  find: (query: string, o: { caseSensitive: boolean; wholeWord: boolean }) => { count: number; current: number };
+  /** Move to the next or previous match. */
+  findStep: (dir: 1 | -1) => { count: number; current: number };
+  /** Replace the current match (and go to the next), or all. Returns how many were replaced. */
+  replace: (text: string, all: boolean) => number;
+  /** Drop the find highlights. */
+  findClear: () => void;
+  focus: () => void;
 }
 
 export interface CmsContextValue {
@@ -139,6 +193,61 @@ export function applyTheme(theme: CmsTheme = storedTheme()): void {
 
 const NO_SLOTS: CmsSlots = {};
 
+const LAYER = '[role="dialog"], [role="alertdialog"]';
+
+let focusClaim: object | null = null;
+/**
+ * Says "I put focus somewhere myself when this dialog closes" (a picker that filled its field). While a
+ * claim is held the fallback below stands aside, so the explicit target wins. Returns the release.
+ */
+export function claimFocusReturn(): () => void {
+  const mine = {};
+  focusClaim = mine;
+  return () => {
+    if (focusClaim === mine) focusClaim = null;
+  };
+}
+
+/**
+ * Focus goes back where it was when a dialog closes. The admin opens its dialogs from code (no `DialogTrigger`),
+ * and Radix then has nothing to return focus to: it would fall to the page, and the next Tab would start from
+ * the top. When the focused element leaves the page and nothing else took focus, the most recent element that
+ * had focus and is still there (enabled, and inside the dialog still open on top, if any) gets it back.
+ * Base UI returns focus itself; this then does nothing. A `claimFocusReturn()` holder goes first.
+ */
+function useFocusReturn() {
+  React.useEffect(() => {
+    if (typeof MutationObserver === "undefined") return;
+    let seen: HTMLElement[] = [];
+    const onFocus = (e: FocusEvent) => {
+      if (!(e.target instanceof HTMLElement)) return;
+      seen = [...seen.filter((x) => x !== e.target && x.isConnected).slice(-19), e.target];
+    };
+    const mo = new MutationObserver(() => {
+      if (focusClaim) return;
+      const last = seen[seen.length - 1];
+      if (!last || last.isConnected) return;
+      const at = document.activeElement;
+      if (at && at !== document.body) return;
+      const layers = document.querySelectorAll<HTMLElement>(LAYER);
+      const top = layers.length ? layers[layers.length - 1] : null;
+      for (let i = seen.length - 1; i >= 0; i--) {
+        const el = seen[i];
+        if (!el.isConnected || (el as HTMLButtonElement).disabled || el.closest("[inert]")) continue;
+        if (top ? !top.contains(el) : !!el.closest(LAYER)) continue;
+        el.focus({ preventScroll: true });
+        return;
+      }
+    });
+    document.addEventListener("focusin", onFocus, true);
+    mo.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      document.removeEventListener("focusin", onFocus, true);
+      mo.disconnect();
+    };
+  }, []);
+}
+
 export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, slots = NO_SLOTS, children }: CmsProviderProps) {
   const client = React.useMemo(() => createRestClient({ url: baseUrl, fetch: f }), [baseUrl, f]);
   const t = React.useMemo(() => createT(messages), [messages]);
@@ -154,6 +263,7 @@ export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, 
     mq?.addEventListener?.("change", on);
     return () => mq?.removeEventListener?.("change", on);
   }, []);
+  useFocusReturn();
   React.useEffect(() => {
     let live = true;
     client.me().then(
@@ -499,10 +609,11 @@ export function formatUntil(iso: string, locale: string): string {
 
 // ── documents ─────────────────────────────────────────────────────────────────
 
-export type DocContent = DocLike;
+/** 0.21.0: `seo` in collections with search engine details. */
+export type DocContent = DocLike & { seo?: { title?: string | null; description?: string | null; image?: string | null; canonical?: string | null; noindex?: boolean } | null };
 
-export function contentOf(d: DocLike): DocContent {
-  return { slug: d.slug, title: d.title, summary: d.summary, body: d.body, category: d.category, keywords: [...(d.keywords ?? [])], fields: structuredClone(d.fields ?? {}) };
+export function contentOf(d: DocContent): DocContent {
+  return { slug: d.slug, title: d.title, summary: d.summary, body: d.body, category: d.category, keywords: [...(d.keywords ?? [])], fields: structuredClone(d.fields ?? {}), ...(d.seo ? { seo: { ...d.seo } } : {}) };
 }
 
 /**
@@ -513,7 +624,7 @@ export function contentOf(d: DocLike): DocContent {
 export function toInput(next: DocContent, prevFields?: Record<string, unknown>): DocInputWire {
   const fields: Record<string, unknown> = { ...next.fields };
   for (const k of Object.keys(prevFields ?? {})) if (!(k in fields) || fields[k] === undefined) fields[k] = null;
-  return { slug: next.slug, title: next.title, summary: next.summary, body: next.body, category: next.category, keywords: next.keywords, fields };
+  return { slug: next.slug, title: next.title, summary: next.summary, body: next.body, category: next.category, keywords: next.keywords, fields, ...(next.seo !== undefined ? { seo: next.seo ?? null } : {}) } as DocInputWire;
 }
 
 export const sameContent = (a: DocContent, b: DocContent) => JSON.stringify(contentOf(a)) === JSON.stringify(contentOf(b));

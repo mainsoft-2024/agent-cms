@@ -1,10 +1,10 @@
 {
   "canvas": "content-model",
   "title": "콘텐츠 모델",
-  "description": "문서 트리, 관계와 갤러리 필드, 다국어, 단일 문서, 템플릿, 블록 본문, 폼, SEO, 리다이렉트의 화면 구성과 문구를 정한다",
+  "description": "0.21.0·0.22.0 화면: 노션급 본문 도구 줄, 새 블록, 템플릿 저장, 확인 창, 폼 목록·제출·설정을 정한다",
   "sections": [
     {
-      "title": "문서 구조",
+      "title": "문서 구조 (0.21.0)",
       "artboards": [
         {
           "id": "tree",
@@ -19,50 +19,118 @@
           "device": "browser"
         },
         {
-          "id": "locale",
-          "path": ".slash/workspace/mockups/content-model/locale.html",
-          "label": "3. 다국어",
-          "device": "browser"
-        },
-        {
           "id": "single",
           "path": ".slash/workspace/mockups/content-model/single.html",
-          "label": "4. 단일 문서",
+          "label": "3. 단일 문서와 목록 필드",
           "device": "browser"
         },
         {
           "id": "template",
           "path": ".slash/workspace/mockups/content-model/template.html",
-          "label": "5. 템플릿으로 새 문서",
+          "label": "4. 템플릿으로 새 문서",
           "device": "browser"
         },
         {
-          "id": "blocks",
-          "path": ".slash/workspace/mockups/content-model/blocks.html",
-          "label": "6. 블록 본문",
+          "id": "template-save",
+          "path": ".slash/workspace/mockups/content-model/template-save.html",
+          "label": "5. 이 문서를 템플릿으로 저장",
           "device": "browser"
         }
       ]
     },
     {
-      "title": "사이트 도구",
+      "title": "본문 편집기 (0.21.0)",
       "artboards": [
         {
-          "id": "forms",
-          "path": ".slash/workspace/mockups/content-model/forms.html",
-          "label": "7. 폼",
+          "id": "blocks",
+          "path": ".slash/workspace/mockups/content-model/blocks.html",
+          "label": "6. 새 도구 줄과 새 블록",
           "device": "browser"
         },
         {
+          "id": "insert",
+          "path": ".slash/workspace/mockups/content-model/insert.html",
+          "label": "7. 블록 넣기: + 메뉴 빠른 줄, 빈 줄 아이콘, 끌어 놓기",
+          "device": "browser"
+        },
+        {
+          "id": "toolbar",
+          "path": ".slash/workspace/mockups/content-model/toolbar.html",
+          "label": "8. 도구 줄 상태: 툴팁, 좁은 폭, 찾기·바꾸기, 앵커",
+          "width": 1040,
+          "device": "none",
+          "height": 760
+        },
+        {
+          "id": "fullscreen",
+          "path": ".slash/workspace/mockups/content-model/fullscreen.html",
+          "label": "9. 전체화면",
+          "device": "browser"
+        }
+      ]
+    },
+    {
+      "title": "주소·SEO·확인 창 (0.21.0)",
+      "artboards": [
+        {
           "id": "seo",
           "path": ".slash/workspace/mockups/content-model/seo.html",
-          "label": "8. SEO",
+          "label": "10. SEO",
           "device": "browser"
         },
         {
           "id": "redirects",
           "path": ".slash/workspace/mockups/content-model/redirects.html",
-          "label": "9. 리다이렉트",
+          "label": "11. 리다이렉트",
+          "device": "browser"
+        },
+        {
+          "id": "dialogs",
+          "path": ".slash/workspace/mockups/content-model/dialogs.html",
+          "label": "12. 확인 창: 주소 변경, 새 리다이렉트, 가리켜지는 문서 삭제",
+          "width": 1200,
+          "device": "none",
+          "height": 560
+        },
+        {
+          "id": "snippet-usage",
+          "path": ".slash/workspace/mockups/content-model/snippet-usage.html",
+          "label": "13. 스니펫과 쓰는 문서",
+          "device": "browser"
+        }
+      ]
+    },
+    {
+      "title": "다국어·폼 (0.22.0)",
+      "artboards": [
+        {
+          "id": "locale",
+          "path": ".slash/workspace/mockups/content-model/locale.html",
+          "label": "14. 다국어",
+          "device": "browser"
+        },
+        {
+          "id": "form-list",
+          "path": ".slash/workspace/mockups/content-model/form-list.html",
+          "label": "15. 폼 목록",
+          "device": "browser"
+        },
+        {
+          "id": "forms",
+          "path": ".slash/workspace/mockups/content-model/forms.html",
+          "label": "16. 폼 필드: 단계와 조건",
+          "device": "browser"
+        },
+        {
+          "id": "form-subs",
+          "path": ".slash/workspace/mockups/content-model/form-subs.html",
+          "label": "17. 폼 제출",
+          "device": "browser"
+        },
+        {
+          "id": "form-settings",
+          "path": ".slash/workspace/mockups/content-model/form-settings.html",
+          "label": "18. 폼 설정과 넣는 코드",
           "device": "browser"
         }
       ]

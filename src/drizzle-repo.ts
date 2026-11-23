@@ -3,7 +3,8 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { getTableConfig, type PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
-import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp, NewChange, ChangeRow, DocPageQuery, DocPage } from "./repo";
+import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp, NewChange, ChangeRow, DocPageQuery, DocPage, NewRedirect, RedirectPatch } from "./repo";
+import type { CmsRedirect, DocRef } from "./types";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
 import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsJob, CmsRecord, CmsRelease, CmsWebhook, WebhookDelivery, WebhookEvent, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
@@ -82,7 +83,108 @@ export class DrizzleRepo implements CmsRepo {
       schedule: r.schedule ?? null,
       dueAt: iso(r.dueAt),
       review: r.review ?? null,
+      ...(r.parentId != null ? { parentId: r.parentId } : {}),
+      ...(r.position != null ? { position: r.position } : {}),
+      ...(r.seo != null ? { seo: r.seo } : {}),
     };
+  }
+
+  private toRedirect(r: typeof this.t.redirects.$inferSelect): CmsRedirect {
+    return {
+      id: r.id,
+      from: r.fromPath,
+      to: r.toPath,
+      toDocumentId: r.toDocumentId ?? null,
+      status: r.status === 302 ? 302 : 301,
+      source: r.source === "auto" ? "auto" : "manual",
+      hits: r.hits,
+      lastHitAt: iso(r.lastHitAt),
+      createdBy: r.createdBy ?? null,
+      createdAt: iso(r.createdAt)!,
+      updatedAt: iso(r.updatedAt)!,
+    };
+  }
+
+  async setDocRefs(fromId: string, refs: readonly Omit<DocRef, "fromId">[]) {
+    const R = this.t.docRefs;
+    await this.db.delete(R).where(eq(R.fromId, fromId));
+    const rows = new Map<string, typeof R.$inferInsert>();
+    for (const r of refs) if (r.inDraft || r.inPublished) rows.set(`${r.toId}|${r.field}`, { fromId, toId: r.toId, field: r.field, inDraft: r.inDraft, inPublished: r.inPublished });
+    if (rows.size) await this.db.insert(R).values([...rows.values()]);
+  }
+  async listDocRefsTo(toId: string) {
+    const R = this.t.docRefs;
+    return (await this.db.select().from(R).where(eq(R.toId, toId))).map((r) => ({ fromId: r.fromId, toId: r.toId, field: r.field, inDraft: r.inDraft, inPublished: r.inPublished }));
+  }
+  async addAnchorAliases(documentId: string, rows: readonly { old: string; current: string }[]) {
+    if (!rows.length) return;
+    const A = this.t.anchorAliases;
+    await this.db
+      .insert(A)
+      .values(rows.map((r) => ({ documentId, old: r.old, current: r.current })))
+      .onConflictDoUpdate({ target: [A.documentId, A.old], set: { current: sql`excluded.current` } });
+  }
+  async listAnchorAliases(documentId: string) {
+    const A = this.t.anchorAliases;
+    return (await this.db.select().from(A).where(eq(A.documentId, documentId))).map((r) => ({ documentId: r.documentId, old: r.old, current: r.current, createdAt: iso(r.createdAt)! }));
+  }
+  async listRedirects() {
+    const R = this.t.redirects;
+    return (await this.db.select().from(R).orderBy(desc(R.createdAt), desc(R.id))).map((r) => this.toRedirect(r));
+  }
+  async insertRedirect(r: NewRedirect) {
+    const [row] = await this.db
+      .insert(this.t.redirects)
+      .values({ fromPath: r.from, toPath: r.to, toDocumentId: r.toDocumentId, status: r.status, source: r.source, createdBy: r.createdBy })
+      .returning();
+    return this.toRedirect(row);
+  }
+  async updateRedirect(id: string, p: RedirectPatch) {
+    const R = this.t.redirects;
+    const set: Partial<typeof R.$inferInsert> = { updatedAt: new Date() };
+    if (p.from !== undefined) set.fromPath = p.from;
+    if (p.to !== undefined) set.toPath = p.to;
+    if (p.toDocumentId !== undefined) set.toDocumentId = p.toDocumentId;
+    if (p.status !== undefined) set.status = p.status;
+    if (p.source !== undefined) set.source = p.source;
+    const [row] = await this.db.update(R).set(set).where(eq(R.id, id)).returning();
+    return row ? this.toRedirect(row) : null;
+  }
+  async deleteRedirect(id: string) {
+    await this.db.delete(this.t.redirects).where(eq(this.t.redirects.id, id));
+  }
+  async addRedirectHits(hits: ReadonlyMap<string, number>, at: string, day: string) {
+    const R = this.t.redirects;
+    const H = this.t.redirectHits;
+    for (const [id, n] of hits) {
+      const [row] = await this.db
+        .update(R)
+        .set({ hits: sql`${R.hits} + ${n}`, lastHitAt: new Date(at) })
+        .where(eq(R.id, id))
+        .returning({ id: R.id });
+      // A redirect deleted since the visit: nothing to count against.
+      if (!row) continue;
+      await this.db
+        .insert(H)
+        .values({ redirectId: id, day, n })
+        .onConflictDoUpdate({ target: [H.redirectId, H.day], set: { n: sql`${H.n} + ${n}` } })
+        .catch((e: unknown) => {
+          // Deleted between the two statements (foreign key): the visit has nowhere to go.
+          const err = e as { code?: string; cause?: { code?: string } };
+          if (err?.code !== "23503" && err?.cause?.code !== "23503") throw e;
+        });
+    }
+  }
+  async redirectHitDays(sinceDay: string) {
+    const H = this.t.redirectHits;
+    return (await this.db.select().from(H).where(gte(H.day, sinceDay))).map((r) => ({ redirectId: r.redirectId, day: String(r.day).slice(0, 10), n: r.n }));
+  }
+  /**
+   * Serialises tree moves of one collection inside a transaction (Postgres advisory lock, released at commit),
+   * so two concurrent moves cannot each pass the cycle check and together make a loop.
+   */
+  async lockTree(collection: string) {
+    await this.db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`agent-cms:tree:${collection}`}))`);
   }
 
   private patchRow(p: DocPatch): Partial<typeof this.t.documents.$inferInsert> {
@@ -346,7 +448,9 @@ export class DrizzleRepo implements CmsRepo {
           ? ([t.webhookDeliveries, lt(t.webhookDeliveries.at, new Date(before))] as const)
           : what === "keys"
             ? ([t.apiKeys, lt(t.apiKeys.revokedAt, new Date(before))] as const)
-            : ([t.hits, lt(t.hits.day, before)] as const);
+            : what === "redirect_hits"
+              ? ([t.redirectHits, lt(t.redirectHits.day, before)] as const)
+              : ([t.hits, lt(t.hits.day, before)] as const);
     if (dryRun) {
       const [r] = await this.db.select({ n: sql<number>`count(*)::int` }).from(table).where(where);
       return r?.n ?? 0;
@@ -875,7 +979,7 @@ export class DrizzleRepo implements CmsRepo {
       have.get(c.table_name)!.add(c.column_name);
     }
     const expected: Record<string, string[]> = {};
-    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries, records: this.t.records, changes: this.t.changes })) {
+    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries, records: this.t.records, changes: this.t.changes, doc_refs: this.t.docRefs, anchor_aliases: this.t.anchorAliases, redirects: this.t.redirects, redirect_hits: this.t.redirectHits })) {
       expected[prefix + key] = Object.values(tbl).filter((c) => c && typeof c === "object" && "name" in c && "columnType" in c).map((c) => (c as { name: string }).name);
     }
     const missingTables = Object.keys(expected).filter((t) => !have.has(t));

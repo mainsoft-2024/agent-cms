@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스니펫과 쓰는 문서</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="../media-library/app.css">
+<link rel="stylesheet" href="../publish-flow/x.css">
+<link rel="stylesheet" href="v2.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <div class="nav"><span data-icon="layout-dashboard"></span><span>대시보드</span></div>
+    <h2>컬렉션</h2>
+    <div class="nav"><span data-icon="book-open"></span><span>Blog</span><span class="n">5</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span>Guide</span><span class="n">6</span></div>
+    <div class="nav on"><span data-icon="puzzle"></span><span>Snippets</span><span class="n">3</span></div>
+    <div class="nav"><span data-icon="settings"></span><span>사이트 설정</span></div>
+  </aside>
+  <main class="main">
+    <header class="ed-top">
+      <span class="crumbs">Snippets <span>/</span></span>
+      <h1>support-contact</h1>
+      <span class="badge"><i class="dot draft"></i>초안 있음</span>
+      <span class="grow"></span>
+      <span class="b out sm">저장</span>
+      <span class="b sm">게시<span data-icon="chevron-down" class="i14"></span></span>
+    </header>
+    <div class="banner" data-label="게시 영향 안내"><span data-icon="info" class="i14"></span><span>게시하면 아래 문서 4개의 공개 본문이 바로 바뀜. 그 문서들은 새 버전이 생기지 않음.</span></div>
+    <div class="content">
+      <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+        <div class="tb"><div class="tmini"><span class="on">블록</span><span>마크다운</span></div><span class="tsep"></span><div class="grp"><span class="tbtn" data-icon="undo-2"></span><span class="tbtn" data-icon="redo-2"></span></div><span class="tsep"></span><div class="grp"><span class="tbtn" data-icon="bold"></span><span class="tbtn" data-icon="italic"></span><span class="tbtn" data-icon="link"></span></div><span class="grow"></span><span class="tstat">14단어</span></div>
+        <div class="paper"><div class="colw" style="width:auto;margin:0 40px">
+          <div class="blk"><p>Still stuck? Write to <u>support@example.com</u>. We answer within one working day.</p></div>
+        </div></div>
+      </div>
+      <aside class="side-form" style="width:360px" data-label="쓰는 문서 목록">
+        <div class="row"><b style="font-size:14px">이 스니펫을 쓰는 문서 4개</b></div>
+        <div class="rows">
+          <div><span data-icon="file-text" class="i14 muted"></span><span class="grow trunc">Connect Slack</span><span class="xs muted">Guide</span></div>
+          <div><span data-icon="file-text" class="i14 muted"></span><span class="grow trunc">Install</span><span class="xs muted">Guide</span></div>
+          <div><span data-icon="file-text" class="i14 muted"></span><span class="grow trunc">Billing FAQ</span><span class="xs muted">Guide</span></div>
+          <div><span data-icon="file-text" class="i14 muted"></span><span class="grow trunc">Release 0.21</span><span class="xs muted">Blog</span></div>
+        </div>
+        <div class="field"><label>넣는 법</label><div class="inp mono" style="font-size:13px"><span class="grow">[[snippet:support-contact]]</span><span data-icon="copy" class="i14 muted"></span></div></div>
+      </aside>
+    </div>
+  </main>
+</div>
+</body>
+</html>

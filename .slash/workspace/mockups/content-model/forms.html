@@ -50,18 +50,24 @@
     <div class="tabs2" data-label="탭"><span class="on">필드</span><span>제출 12</span><span>설정</span></div>
     <div class="content">
       <div class="pad" style="gap:8px" data-label="필드 목록">
+        <div class="row" data-label="1단계"><span class="lbl grow">1단계 · 연락처</span><span data-icon="ellipsis" class="i14 muted"></span></div>
         <div class="step"><span data-icon="grip-vertical" class="i14 muted"></span><span data-icon="type" class="muted"></span><span class="grow">이름</span><span class="chip">한 줄 글</span><span class="badge">필수</span></div>
-        <div class="step" style="outline:2px solid var(--ring);outline-offset:2px" data-label="고른 필드"><span data-icon="grip-vertical" class="i14 muted"></span><span data-icon="mail" class="muted"></span><span class="grow">이메일</span><span class="chip">이메일</span><span class="badge">필수</span></div>
+        <div class="step"><span data-icon="grip-vertical" class="i14 muted"></span><span data-icon="mail" class="muted"></span><span class="grow">이메일</span><span class="chip">이메일</span><span class="badge">필수</span></div>
+        <div class="row" style="margin-top:8px" data-label="2단계"><span class="lbl grow">2단계 · 문의 내용</span><span data-icon="ellipsis" class="i14 muted"></span></div>
         <div class="step"><span data-icon="grip-vertical" class="i14 muted"></span><span data-icon="chevron-down" class="muted"></span><span class="grow">문의 종류</span><span class="chip">선택</span></div>
         <div class="step"><span data-icon="grip-vertical" class="i14 muted"></span><span data-icon="align-left" class="muted"></span><span class="grow">내용</span><span class="chip">여러 줄 글</span><span class="badge">필수</span></div>
-        <div class="step"><span data-icon="grip-vertical" class="i14 muted"></span><span data-icon="paperclip" class="muted"></span><span class="grow">첨부</span><span class="chip">파일</span></div>
-        <div class="row" style="margin-top:6px"><span class="b out sm" data-label="필드 추가 버튼"><span data-icon="plus" class="i14"></span>필드 추가</span></div>
+        <div class="step" style="outline:2px solid var(--ring);outline-offset:2px" data-label="고른 필드"><span data-icon="grip-vertical" class="i14 muted"></span><span data-icon="paperclip" class="muted"></span><span class="grow">스크린샷</span><span class="chip"><span data-icon="git-branch" class="i12"></span>문의 종류 = 버그</span><span class="chip">파일</span></div>
+        <div class="row" style="margin-top:6px"><span class="b out sm" data-label="필드 추가 버튼"><span data-icon="plus" class="i14"></span>필드 추가</span><span class="b ghost sm" data-label="단계 추가 버튼"><span data-icon="plus" class="i14"></span>단계 추가</span></div>
       </div>
       <aside class="side-form" data-label="필드 설정">
-        <div class="field"><label>이름</label><div class="inp">이메일</div></div>
-        <div class="field"><label>종류</label><div class="inp"><span class="grow">이메일</span><span data-icon="chevron-down" class="i14 muted"></span></div></div>
-        <div class="field"><label>도움말</label><div class="inp ph-text">없음</div></div>
-        <div class="row"><span class="grow" style="font-size:14px;font-weight:500">필수</span><span class="sw on"></span></div>
+        <div class="field"><label>이름</label><div class="inp">스크린샷</div></div>
+        <div class="field"><label>종류</label><div class="inp"><span class="grow">파일</span><span data-icon="chevron-down" class="i14 muted"></span></div></div>
+        <div class="field"><label>받는 형식과 크기</label><div class="inp"><span class="grow">이미지 · 최대 10 MB · 3개까지</span></div></div>
+        <div class="row"><span class="grow" style="font-size:14px;font-weight:500">필수</span><span class="sw"></span></div>
+        <div class="field" data-label="보일 조건"><label>보일 조건</label>
+          <div class="row"><div class="sel" style="flex:1">문의 종류</div><div class="sel">=</div><div class="sel" style="flex:1">버그</div></div>
+          <span class="xs muted">조건이 맞지 않으면 숨기고, 서버도 그 값을 받지 않음</span>
+        </div>
         <span class="grow"></span>
         <div class="row"><span class="b out sm danger-text">삭제</span></div>
       </aside>

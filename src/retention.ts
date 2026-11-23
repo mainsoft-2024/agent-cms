@@ -19,6 +19,12 @@ export interface RetentionOptions {
   revokedKeysDays?: number;
   /** Days webhook deliveries are kept, when that should be shorter than the built-in 30. */
   deliveriesDays?: number;
+  /**
+   * Days a redirect's visits per day are kept (with `redirects` on). Default 90: the redirects screen
+   * shows 30 days and `GET /redirects/:id/hits` reads at most 90. 0 keeps them forever. The running
+   * total on each redirect stays either way.
+   */
+  redirectHitsDays?: number;
 }
 
 export interface RetentionReport {
@@ -35,6 +41,8 @@ export interface RetentionContext {
   dayIn: (timeZone: string, d: Date) => string;
   assertAdmin: (actor: Actor) => void;
   audit: (actor: Actor, detail: Record<string, unknown>) => void;
+  /** Redirects are on (their daily visits get the 90-day default). */
+  redirects?: boolean;
 }
 
 const DAY = 86_400_000;
@@ -48,6 +56,7 @@ export function createRetention(ctx: RetentionContext) {
       { what: "hits", days: o.hitsDays },
       { what: "keys", days: o.revokedKeysDays },
       { what: "deliveries", days: o.deliveriesDays },
+      { what: "redirect_hits", days: ctx.redirects ? (o.redirectHitsDays ?? 90) : o.redirectHitsDays },
     ];
     return out.filter((r): r is { what: PruneTarget; days: number } => typeof r.days === "number" && Number.isFinite(r.days) && r.days > 0);
   };
@@ -57,8 +66,8 @@ export function createRetention(ctx: RetentionContext) {
     const items: RetentionReport["items"] = [];
     for (const r of rules()) {
       const cut = new Date(now.getTime() - r.days * DAY);
-      // Hit counts are per calendar day in the CMS's time zone.
-      const before = r.what === "hits" ? ctx.dayIn(ctx.timeZone, cut) : cut.toISOString();
+      // Hit counts (and redirect visits) are per calendar day in the CMS's time zone.
+      const before = r.what === "hits" || r.what === "redirect_hits" ? ctx.dayIn(ctx.timeZone, cut) : cut.toISOString();
       items.push({ ...r, before, rows: await ctx.repo.prune(r.what, before, dryRun) });
     }
     return { dryRun, at: now.toISOString(), items };

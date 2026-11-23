@@ -141,9 +141,9 @@ test("tools: six file tools, offered by what the key may do", async () => {
   assert.deepEqual(names(await key(["read", "write"])), ["list_assets", "get_asset", "import_asset", "update_asset"]);
   const publisher = await key(["read", "write", "publish"]);
   assert.deepEqual(names(publisher), ["list_assets", "get_asset", "import_asset", "update_asset", "move_asset", "delete_asset"]);
-  assert.equal(toolsFor(cms, publisher).length, 45, "36 document tools (5 file-style since 0.15.0), 6 for the library, 3 for the bucket");
+  assert.equal(toolsFor(cms, publisher).length, 51, "42 document tools (5 file-style since 0.15.0, 6 content model tools since 0.21.0), 6 for the library, 3 for the bucket");
   const plain = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "g", label: "G", visibility: "public" })] });
-  assert.equal(toolsFor(plain, { kind: "system", label: "s" }).length, 36, "no media tools without a media library");
+  assert.equal(toolsFor(plain, { kind: "system", label: "s" }).length, 42, "no media tools without a media library");
 
   const writer = await key(["read", "write"]);
   const got = (await callTool(cms, writer, "import_asset", { url: "https://example.com/pics/team.png", folder: "blog", alt: "The team" })) as { id: string; markdown: string; width: number; url: string };

@@ -213,7 +213,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_changes", "blog_comments", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
+      ["blog_anchor_aliases", "blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_changes", "blog_comments", "blog_doc_refs", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_redirect_hits", "blog_redirects", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -248,12 +248,12 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_jobs", "cms_presence", "cms_releases", "cms_saved_filters", "cms_webhook_deliveries", "cms_webhooks"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 7], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 6], /0\.10\.0/);
-    assert.match(pending.steps[pending.steps.length - 5], /0\.11\.0/);
-    assert.match(pending.steps[pending.steps.length - 4], /0\.12\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.15\.0/);
+    assert.match(pending.steps[pending.steps.length - 8], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 7], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 6], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.15\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -433,9 +433,10 @@ test("db: schema 6 → 7 adds cms_records; automations, runs and roles work on a
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [6, ["cms_records"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.match(pending.steps[pending.steps.length - 3], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.15\.0: body format/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.17\.0: change log/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.15\.0: body format/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.17\.0: change log/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.21\.0: relations/);
     await run(db, pending.sql);
     await run(db, pending.sql); // safe to run again
     assert.deepEqual([(await repo.inspect()).schemaVersion, (await repo.inspect()).missingTables], [SCHEMA_VERSION, []]);
@@ -518,7 +519,7 @@ test("db: schema 8 → 9 adds the change log and indexes; paging, the log and do
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [8, ["cms_changes"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs"]);
+    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs", "agent-cms 0.21.0: relations, document trees, SEO, heading anchor aliases, redirects"]);
     await run(db, pending.sql);
     const after = await repo.inspect();
     assert.deepEqual([after.schemaVersion, after.missingTables, after.missingIndexes], [SCHEMA_VERSION, [], []]);
@@ -639,6 +640,13 @@ test("db: a driver without transactions (neon-http) still saves, once, with a wa
     await cms.releases.add(admin, rel.id, [{ collection: "guide", slug: "a" }]);
     await assert.rejects(cms.releases.publish(admin, rel.id), (e: unknown) => isCmsError(e) && e.code === "transactions_required");
     assert.equal((await cms.get(admin, "guide", "a", { draft: true })).publishedVersion, 1, "nothing went out");
+    // Tree moves need the transaction's lock: refused rather than moved without it (0.21.0 review).
+    const pages = defineCollection({ slug: "pages", label: "Pages", visibility: "public", tree: true });
+    const treeCms = createCms({ repo: new DrizzleRepo(noTx, { transactions: false }), collections: [pages] });
+    const p = await treeCms.create(admin, "pages", { slug: "p", title: "P" });
+    await treeCms.create(admin, "pages", { slug: "q", title: "Q" });
+    await assert.rejects(treeCms.core.move(admin, "pages", "q", { parentId: p.id }), (e: unknown) => isCmsError(e) && e.code === "transactions_required");
+    assert.equal((await treeCms.get(admin, "pages", "q", { draft: true })).parentId ?? null, null, "not moved");
   } finally {
     await close();
   }
@@ -717,4 +725,95 @@ test("db: versions in pages come from the database, newest first", async () => {
 test("splitSql keeps DO $$ bodies and quoted semicolons together", () => {
   const parts = splitSql("SELECT 'a;b'; -- c;d\nDO $$ BEGIN PERFORM 1; END $$;\nSELECT 2");
   assert.deepEqual(parts, ["SELECT 'a;b'", "DO $$ BEGIN PERFORM 1; END $$", "SELECT 2"]);
+});
+
+test("drizzle: 0.21 content model on Postgres (relations, trees, anchors, redirects)", async () => {
+  const { relation } = await import("../fields");
+  const { z } = await import("zod");
+  const c = await connectPostgres("memory:");
+  try {
+    await run(c.db, cmsDdl());
+    const people = defineCollection({ slug: "people", label: "People", visibility: "public", url: (d) => `/p/${d.slug}` });
+    const pages = defineCollection({ slug: "pages", label: "Pages", visibility: "public", tree: true, url: (d) => `/${d.slug}`, fields: z.object({ author: relation("people").optional() }) });
+    const cms = createCms({ repo: c.repo, collections: [people, pages], redirects: true });
+    const kim = await cms.create(admin, "people", { slug: "kim", title: "Kim" }, { publish: true });
+    await cms.create(admin, "pages", { slug: "a", title: "A", body: "## Install\n\nx", fields: { author: kim.id } }, { publish: true });
+    await cms.create(admin, "pages", { slug: "b", title: "B" });
+    const a = await cms.get(admin, "pages", "a", { draft: true });
+    assert.deepEqual((await cms.referencedBy(admin, "people", "kim")).map((r) => r.slug), ["a"]);
+    await assert.rejects(cms.remove(admin, "people", "kim"), (e: unknown) => isCmsError(e) && e.code === "doc_referenced");
+    await cms.move(admin, "pages", "b", { parentId: a.id });
+    assert.deepEqual((await cms.tree(admin, "pages", { draft: true })).map((n) => [n.slug, n.children.map((k) => k.slug)]), [["a", ["b"]]]);
+    await cms.update(admin, "pages", "a", { body: "## Installing\n\nx" });
+    assert.deepEqual({ ...(await cms.anchorAliases(a.id)) }, { installing: ["install"] });
+    await cms.update(admin, "pages", "a", { slug: "a2" }, { publish: true });
+    assert.deepEqual(await cms.redirects.resolve("/a"), { to: "/a2", status: 301 });
+    const r = await cms.redirects.create(admin, { from: "/old", to: "/a2", status: 302 });
+    await cms.redirects.update(admin, r.id, { to: "/b" });
+    assert.equal((await cms.redirects.list(admin)).find((x) => x.id === r.id)?.to, "/b");
+    await cms.redirects.remove(admin, r.id);
+    assert.equal(await cms.redirects.resolve("/old"), null);
+  } finally {
+    await c.close();
+  }
+});
+
+test("drizzle: 0.21 second pass on Postgres (opposite tree moves from two servers, redirect visits per day, document targets, archive asks)", async () => {
+  const { relation } = await import("../fields");
+  const { z } = await import("zod");
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const people = defineCollection({ slug: "people", label: "People", visibility: "public", url: (d) => `/p/${d.slug}` });
+    const pages = defineCollection({ slug: "pages", label: "Pages", visibility: "public", tree: { maxDepth: 10 }, url: (d) => `/${d.slug}`, fields: z.object({ author: relation("people").optional() }) });
+    // Two CMS instances on one database: two servers, so only the database's lock keeps their moves apart.
+    const one = createCms({ repo: new DrizzleRepo(db), collections: [people, pages], redirects: true });
+    const two = createCms({ repo: new DrizzleRepo(db), collections: [people, pages], redirects: true });
+    for (let round = 0; round < 6; round++) {
+      const a = await one.create(admin, "pages", { slug: `a${round}`, title: "A" });
+      const b = await one.create(admin, "pages", { slug: `b${round}`, title: "B" });
+      const res: PromiseSettledResult<unknown>[] = await Promise.allSettled([one.move(admin, "pages", a.slug, { parentId: b.id }), two.move(admin, "pages", b.slug, { parentId: a.id })]);
+      assert.equal(res.filter((x) => x.status === "fulfilled").length, 1, "one move goes through");
+      const rej = res.find((x) => x.status === "rejected") as PromiseRejectedResult;
+      assert.ok(isCmsError(rej.reason) && rej.reason.code === "tree_cycle", String(rej.reason));
+      const [ra] = await rows<{ parent_id: string | null }>(db, `SELECT parent_id FROM cms_documents WHERE id = '${a.id}'`);
+      const [rb] = await rows<{ parent_id: string | null }>(db, `SELECT parent_id FROM cms_documents WHERE id = '${b.id}'`);
+      assert.ok(!(ra.parent_id === b.id && rb.parent_id === a.id), "no loop");
+    }
+
+    // Redirect visits per day: written on flush, read for 30 days, pruned by retention, gone with the redirect.
+    const repo = new DrizzleRepo(db);
+    const r = await one.redirects.create(admin, { from: "/promo", to: "/a0" });
+    await repo.addRedirectHits(new Map([[r.id, 2]]), new Date().toISOString(), "2026-01-01");
+    await repo.addRedirectHits(new Map([[r.id, 3]]), new Date().toISOString(), "2026-01-01");
+    await repo.addRedirectHits(new Map([[r.id, 1]]), new Date().toISOString(), "2025-01-01");
+    assert.deepEqual(await repo.redirectHitDays("2025-12-01"), [{ redirectId: r.id, day: "2026-01-01", n: 5 }]);
+    const [{ hits }] = await rows<{ hits: number }>(db, `SELECT hits FROM cms_redirects WHERE id = '${r.id}'`);
+    assert.equal(Number(hits), 6);
+    assert.equal(await repo.prune("redirect_hits", "2025-06-01", true), 1);
+    assert.equal(await repo.prune("redirect_hits", "2025-06-01", false), 1);
+    assert.equal((await repo.redirectHitDays("2000-01-01")).length, 1);
+    for (let i = 0; i < 4; i++) await one.redirects.resolve("/promo");
+    assert.equal((await one.redirects.list(admin)).find((x) => x.id === r.id)?.hits30d, 4, "today's visits before the flush count");
+    // A redirect deleted while its visits wait: nothing breaks.
+    await one.redirects.remove(admin, r.id);
+    await repo.addRedirectHits(new Map([[r.id, 1]]), new Date().toISOString(), "2026-01-02");
+    assert.equal((await repo.redirectHitDays("2000-01-01")).length, 0, "days go with the redirect");
+
+    // A redirect that follows a document goes to its current address.
+    const kim = await one.create(admin, "people", { slug: "kim", title: "Kim" }, { publish: true });
+    const d = await one.redirects.create(admin, { from: "/team/kim", toDocumentId: kim.id });
+    assert.equal(d.toDocumentId, kim.id);
+    await one.update(admin, "people", "kim", { slug: "kim-minji" }, { publish: true });
+    assert.deepEqual(await one.redirects.resolve("/team/kim"), { to: "/p/kim-minji", status: 301 });
+    assert.equal((await one.redirects.list(admin)).find((x) => x.id === d.id)?.target?.slug, "kim-minji");
+
+    // Archive asks like delete.
+    await one.create(admin, "pages", { slug: "about", title: "About", fields: { author: kim.id } }, { publish: true });
+    await assert.rejects(one.archive(admin, "people", "kim-minji"), (e: unknown) => isCmsError(e) && e.code === "doc_referenced");
+    await one.archive(admin, "people", "kim-minji", { force: true });
+    assert.equal(await one.redirects.resolve("/team/kim"), null, "hidden: nowhere to go");
+  } finally {
+    await close();
+  }
 });

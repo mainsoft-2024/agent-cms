@@ -10,27 +10,30 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { AppWindow, ArrowUpDown, Bot, Columns2, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, FileText, History, Eye, ImagePlus, Layers, Link as LinkIcon, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Monitor, SlidersHorizontal } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, CircleAlert, CircleCheck, Cloud, ExternalLink, History, Eye, Layers, Link as LinkIcon, MessageSquare, Minimize2, MoreHorizontal, Monitor, SlidersHorizontal } from "lucide-react";
 import { isCmsRemoteError, type CollectionSchema, type CommentThread, type DocRelease } from "@mainsoft/agent-cms/client";
 import { mergeDocs, resolveDocMerge, splitLines } from "@mainsoft/agent-cms/diff";
 import { docState, type CmsDoc, type AutosaveState, type Presence } from "@mainsoft/agent-cms/types";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { RelatedLabels, type RelatedLabel } from "./cms-fields-more";
+import { contentFromTemplate, fitsSchema, ReferencedDialog, SaveTemplateDialog, SeoPanel, SlugChangeDialog, SnippetUses, takeTemplate } from "./cms-structure";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { errorMessage } from "./cms-messages";
+import { errorMessage, serverText } from "./cms-messages";
 import { CmsFieldForm, FieldGate, problemKey, type FieldProblem } from "./cms-field-form";
 import { AddToReleaseDialog, BodyBackdrop, CommentsPanel, offsetOf, placeOf, PublishButton, ReviewStrip, ScheduleStrip, type BodyCursor } from "./cms-flow";
 import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
 import { createUploader } from "./cms-upload";
 import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-tools";
 import { pasteAsMarkdown } from "./cms-paste";
+import { bodyStats, EditorToolbar, FindBar, markdownCommands, TipButton } from "./cms-editor-toolbar";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, DIALOG } from "./cms-parts";
-import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type DocContent, type EditorSlotContext } from "./use-cms";
+import { contentOf, formatTime, formatUntil, formatZoned as formatZonedTime, personColor, relativeTime, sameContent, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type BlockEditorCommands, type DocContent, type EditorSlotContext } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
 type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
@@ -46,6 +49,11 @@ export interface CmsDocEditorProps {
   onCreated?: (collection: string, slug: string) => void;
   /** After every save or publish. */
   onSaved?: (doc: CmsDoc) => void;
+  /**
+   * The document got a new address (published under a changed slug): replace the page's address with
+   * the new one, so reloading or going back does not open the old slug. Falls back to `onCreated`.
+   */
+  onRenamed?: (collection: string, slug: string) => void;
   /** Open the version history. */
   onOpenVersions?: (collection: string, slug: string) => void;
   /** The public page of a published document (shown as "Public page" when the collection has a URL). */
@@ -59,6 +67,8 @@ export interface CmsDocEditorProps {
   /** How often this screen says "I am here" and looks for other people's saves, in ms. Default 15000 (3000 while someone else is here); 0 turns it off. */
   presenceMs?: number;
   className?: string;
+  /** 0.21.0: open another document (the documents that use a snippet). */
+  onOpenDocument?: (collection: string, slug: string) => void;
 }
 
 const EMPTY: DocContent = { slug: "", title: "", summary: "", body: "", category: null, keywords: [], fields: {} };
@@ -132,7 +142,7 @@ function takeStatus(collection: string, slug: string): string | null {
   }
 }
 
-export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className }: CmsDocEditorProps) {
+export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onRenamed, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className, onOpenDocument }: CmsDocEditorProps) {
   const { client, t, locale, me, baseUrl, slots, toast } = useCms();
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
   /** Where the cursor last was in the body (null: the person never put it there). */
@@ -150,6 +160,50 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const [barQuiet, setBarQuiet] = React.useState(false);
   const focusButton = React.useRef<HTMLButtonElement | null>(null);
   const insertRef = React.useRef<((md: string) => void) | null>(null);
+  // The toolbar asks the block editor for its commands through this; `tbTick` redraws its buttons.
+  const blockCommandsRef = React.useRef<BlockEditorCommands | null>(null);
+  const [tbTick, setTbTick] = React.useState(0);
+  const tbFrame = React.useRef(0);
+  const bumpToolbar = React.useCallback(() => {
+    if (tbFrame.current) return;
+    tbFrame.current = requestAnimationFrame(() => {
+      tbFrame.current = 0;
+      setTbTick((x) => x + 1);
+    });
+  }, []);
+  React.useEffect(() => () => cancelAnimationFrame(tbFrame.current), []);
+  /** Stands for the block editor's commands while it loads (and stays the same object). */
+  const blockCommands = React.useMemo<BlockEditorCommands>(
+    () => ({
+      run: (c) => blockCommandsRef.current?.run(c) ?? false,
+      state: (c) => blockCommandsRef.current?.state(c) ?? { enabled: false, active: false },
+      find: (q, o) => blockCommandsRef.current?.find(q, o) ?? { count: 0, current: -1 },
+      findStep: (d) => blockCommandsRef.current?.findStep(d) ?? { count: 0, current: -1 },
+      replace: (x, all) => blockCommandsRef.current?.replace(x, all) ?? 0,
+      findClear: () => blockCommandsRef.current?.findClear(),
+      focus: () => blockCommandsRef.current?.focus(),
+    }),
+    []
+  );
+  const [finding, setFinding] = React.useState<{ n: number; replace: boolean; initial: string } | null>(null);
+  const bodySectionRef = React.useRef<HTMLElement>(null);
+  /** The share image picker is open: what to do with the picked file. */
+  const [seoPick, setSeoPick] = React.useState<((ref: string) => void) | null>(null);
+  const [findMarks, setFindMarks] = React.useState<{ start: number; end: number }[]>([]);
+  const mdReadOnly = React.useRef(false);
+  // `live` and `setContent` are declared further down; they are only read when a button is pressed.
+  const mdCommands = React.useMemo(
+    () =>
+      markdownCommands({
+        box: () => bodyRef.current,
+        body: () => liveRef.current?.().content.body ?? "",
+        setBody: (body) => liveRef.current?.().setBody(body),
+        onMarks: setFindMarks,
+        readOnly: () => mdReadOnly.current,
+      }),
+    []
+  );
+  const liveRef = React.useRef<(() => { content: DocContent; setBody: (b: string) => void }) | null>(null);
   const pickWaiter = React.useRef<((md: string | null) => void) | null>(null);
   const mobile = useIsMobile();
   // With the slug: field rules (`fieldAccess`) may depend on the document.
@@ -182,7 +236,17 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const [releaseOpen, setReleaseOpen] = React.useState(false);
   const [others, setOthers] = React.useState<Presence[]>([]);
 
-  const isNew = !slug;
+  /** The one document of a single that was never saved: edited as new, saved under its fixed slug. */
+  const [singleNew, setSingleNew] = React.useState(false);
+  const isNew = !slug || singleNew;
+  const [tplDialog, setTplDialog] = React.useState(false);
+  /** Hiding (archiving) was refused because other documents point here: ask before hiding anyway. */
+  const [hideAsk, setHideAsk] = React.useState(false);
+  const [seoOpen, setSeoOpen] = React.useState(false);
+  const [slugAsk, setSlugAsk] = React.useState<{ publish: boolean } | null>(null);
+  const [relLabels, setRelLabels] = React.useState<Record<string, RelatedLabel | null>>({});
+  const selfId = doc?.id ?? null;
+  const relCtx = React.useMemo(() => ({ labels: relLabels, remember: (l: RelatedLabel) => setRelLabels((m) => ({ ...m, [l.id]: l })), self: selfId }), [relLabels, selfId]);
   const currentSlug = doc?.slug ?? slug ?? "";
   const myLabel = me?.actor.label ?? "";
 
@@ -257,6 +321,24 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       },
       (e) => {
         if (!live) return;
+        // A single that was never saved: start from the schema's defaults.
+        if (isCmsRemoteError(e) && e.code === "not_found" && slug === "_single") {
+          void client.single(collection, { draft: true }).then(
+            (d) => {
+              if (!live) return;
+              const c = { ...EMPTY, ...contentOf(d), slug: "_single" };
+              setSingleNew(true);
+              setDoc(null);
+              setContentRaw(c);
+              setSaved(c);
+              setLoadError(null);
+              setLoading(false);
+              setStatus({ text: t("single_not_saved"), tone: "muted" });
+            },
+            (e2) => live && (setLoadError(e2), setLoading(false))
+          );
+          return;
+        }
         setLoadError(e);
         setLoading(false);
       }
@@ -264,7 +346,87 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     return () => {
       live = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, collection, slug, applyDoc]);
+
+  // A new document may start from the template picked in the list ("New document").
+  const [tplFit, setTplFit] = React.useState<{ label: string; fields: Record<string, unknown> } | null>(null);
+  React.useEffect(() => {
+    if (slug) return;
+    const tpl = takeTemplate(collection);
+    if (!tpl) return;
+    const c = { ...EMPTY, ...contentFromTemplate(tpl) };
+    setContentRaw(c);
+    // A blank document given a title in the picker comes as a template without a name: nothing to say then.
+    if (!tpl.label) return;
+    setTplFit({ label: tpl.label, fields: { ...(c.fields ?? {}) } });
+    setStatus({ text: t("tpl_applied", { name: tpl.label }), tone: "muted" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collection, slug]);
+  // Once the schema is here: template values the fields no longer take (renamed, removed, another type) are left out.
+  React.useEffect(() => {
+    const props = ((schemaQ.data?.fields ?? null) as { properties?: Record<string, unknown> } | null)?.properties;
+    if (!tplFit || !props) return;
+    setTplFit(null);
+    const dropped = Object.entries(tplFit.fields)
+      .filter(([k, v]) => !fitsSchema(props[k], v, k in props))
+      .map(([k]) => k);
+    if (!dropped.length) return;
+    setContentRaw((c) => {
+      const fields = { ...(c.fields ?? {}) };
+      // Only values still as the template left them (not something the person typed meanwhile).
+      for (const k of dropped) if (fields[k] === tplFit.fields[k]) delete fields[k];
+      return { ...c, fields };
+    });
+    setStatus({ text: `${t("tpl_applied", { name: tplFit.label })}. ${t("tpl_dropped", { fields: dropped.join(", ") })}`, tone: "muted" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tplFit, schemaQ.data]);
+
+  // Relation fields show the titles of what they point at (one read with ?expand=).
+  const relPaths = schemaQ.data?.relations?.map((r) => r.path) ?? [];
+  const relKey = relPaths.join(",");
+  React.useEffect(() => {
+    if (!slug || singleNew || !relKey) return;
+    let live = true;
+    client.get(collection, slug, { draft: true, expand: relKey.split(",") }).then(
+      (d) => {
+        if (!live) return;
+        const out: Record<string, RelatedLabel | null> = {};
+        const raw = doc?.fields ?? {};
+        for (const path of relKey.split(",")) {
+          const got = (d.fields as Record<string, unknown>)[path];
+          const ids = (raw as Record<string, unknown>)[path];
+          const idList = Array.isArray(ids) ? ids : ids ? [ids] : [];
+          const list = Array.isArray(got) ? got : got !== undefined ? [got] : [];
+          idList.forEach((id, i) => {
+            const x = list[i] as RelatedLabel | null | undefined;
+            if (typeof id === "string") out[id] = x ? { id: x.id, collection: x.collection, slug: x.slug, title: x.title, status: x.status } : null;
+          });
+        }
+        setRelLabels((m) => ({ ...out, ...m }));
+      },
+      () => undefined
+    );
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, collection, slug, relKey, doc?.version]);
+
+  // A new document's address follows its title until someone types one (Korean titles are romanized on the server).
+  const lastSuggested = React.useRef("");
+  const suggest = useDebounced((title: string) => {
+    if (!title.trim()) return;
+    client.suggestSlug(collection, title).then(
+      (sl) => {
+        const c = live.current.content;
+        if (c.slug && c.slug !== lastSuggested.current) return;
+        lastSuggested.current = sl;
+        setContentRaw({ ...c, slug: sl });
+      },
+      () => undefined
+    );
+  }, 350);
 
   // ── diagnose and autosave ──
   // Each check and autosave gets a number; an answer to an older one is dropped,
@@ -276,7 +438,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     try {
       const d = await client.diagnose(collection, toInput(c, doc?.fields), doc?.slug);
       if (mine !== diagSeq.current) return;
-      setProblems(d as Diagnostic[]);
+      setProblems((d as Diagnostic[]).map((p) => ({ ...p, message: serverText(p, t) })));
     } catch {
       /* the save will tell */
     }
@@ -304,6 +466,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
 
   const setContent = (next: DocContent) => {
     edited.current = true;
+    if (!slug && next.title !== live.current.content.title && (!next.slug || next.slug === lastSuggested.current)) suggest(next.title);
     setContentRaw(next);
   };
 
@@ -377,8 +540,15 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const unparsedRef = React.useRef(unparsed);
   unparsedRef.current = unparsed;
 
-  const save = async (publish: boolean): Promise<CmsDoc | null> => {
+  /** A published document under a new address: it changes only together with publishing (the server refuses it in a draft). */
+  const slugMoved = !!doc && doc.publishedVersion !== null && content.slug !== doc.slug && !!schema?.redirects;
+  const save = async (publish: boolean, confirmed = false): Promise<CmsDoc | null> => {
     setTried(true);
+    // Saving a draft never publishes by itself: the dialog explains, and its button goes through Publish.
+    if (slugMoved && !(publish && confirmed)) {
+      setSlugAsk({ publish });
+      return null;
+    }
     if (unparsedRef.current.length) {
       setStatus({ text: t("fields_unparsed", { fields: unparsedRef.current.join(", ") }), tone: "error" });
       document.getElementById(`cms-editor-f-${unparsedRef.current[0]}`)?.focus();
@@ -392,6 +562,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       if (isNew && !doc) {
         d = await client.create(collection, toInput(content), { publish });
         applyDoc(d);
+        if (singleNew) {
+          setSingleNew(false);
+          setStatus({ text: publish ? t("published_v", { version: d.version }) : t("saved", { version: d.version }), tone: "ok" });
+          onSaved?.(d);
+          return d;
+        }
         const text = publish ? t("published_v", { version: d.version }) : t("saved", { version: d.version });
         setStatus({ text, tone: "ok" });
         onSaved?.(d);
@@ -416,8 +592,15 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       setAuto({ state: "idle" });
       setReviewed((r) => Object.fromEntries(Object.entries(r).filter(([, x]) => x.action === "accepted")));
       await loadChanges(d.slug);
-      setStatus({ text: publish ? t("published_v", { version: d.publishedVersion ?? d.version }) : t("saved", { version: d.version }), tone: "ok" });
+      const doneText = publish ? t("published_v", { version: d.publishedVersion ?? d.version }) : t("saved", { version: d.version });
+      setStatus({ text: doneText, tone: "ok" });
       onSaved?.(d);
+      // A new address: the page follows the document (replacing the old address in the history).
+      const follow = onRenamed ?? onCreated;
+      if (d.slug !== doc.slug && follow) {
+        keepStatus(collection, d.slug, doneText);
+        follow(collection, d.slug);
+      }
       return d;
     } catch (e) {
       if (isCmsRemoteError(e) && e.code === "conflict_version" && doc) {
@@ -433,7 +616,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         }
         return null;
       }
-      if (isCmsRemoteError(e) && e.diagnostics?.length) setProblems(e.diagnostics as Diagnostic[]);
+      // The server knows better (the document was published meanwhile): explain as the dialog does.
+      if (isCmsRemoteError(e) && e.code === "slug_needs_publish" && schema?.redirects) {
+        setSlugAsk({ publish });
+        return null;
+      }
+      if (isCmsRemoteError(e) && e.diagnostics?.length) setProblems((e.diagnostics as Diagnostic[]).map((p) => ({ ...p, message: serverText(p, t) })));
       setStatus({ text: errorMessage(e, t), tone: "error" });
       return null;
     } finally {
@@ -608,17 +796,23 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   }, [mobileTab, sync]);
 
   // Publishing first asks the collection's checks; findings open a dialog (errors block, warnings may be accepted).
-  const publish = async () => {
-    if (isNew || !doc || !schema?.publishChecks) return void save(true);
+  // `confirmed`: the person already agreed to publish under a changed address (the slug dialog).
+  const checksConfirmed = React.useRef(false);
+  const publish = async (confirmed = false) => {
+    if (slugMoved && !confirmed) return void setSlugAsk({ publish: true });
+    if (isNew || !doc || !schema?.publishChecks) return void save(true, confirmed);
     setBusy(true);
     try {
       const r = await client.publishChecks(collection, doc.slug, toInput(content, doc.fields));
       setBusy(false);
-      if (r.checks.length || r.blocking) return setChecks(r);
+      if (r.checks.length || r.blocking) {
+        checksConfirmed.current = confirmed;
+        return setChecks(r);
+      }
     } catch {
       setBusy(false);
     }
-    void save(true);
+    void save(true, confirmed);
   };
   // ── keyboard ──
   const publishRef = React.useRef(publish);
@@ -655,7 +849,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const focusRef = React.useRef(focus);
   focusRef.current = focus;
   useShortcut(mode.kind === "edit" && !mobile && "mod+shift+f", () => setFocus(!focusRef.current), { inFields: true });
-  // Esc leaves full screen, but never while typing, and never when it closes a menu or a dialog first.
+  // Esc leaves full screen, but never while typing (inside the body Esc first clears the block selection,
+  // closes the block menus and the find bar), and never when it closes a menu or a dialog first.
+  // The hint says so: Mod+Shift+F works everywhere, Esc outside the text.
   useShortcut(focus && "escape", () => {
     if (document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return;
     setFocus(false);
@@ -827,6 +1023,30 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const publicUrl = published && schema.hasUrl && publicUrlFor && doc ? publicUrlFor(collection, doc.slug) : null;
   const previewAllowed = !!doc && !!me?.previewLinks && schema.hasUrl;
   const title = content.title || (isNew ? t("new_doc_title") : currentSlug);
+  // Hide (archive) a published document or show it again. Only the state changes, so what is being
+  // edited stays as it is.
+  const canHide = !!doc && canPublish && !schema.single && doc.publishedVersion !== null && doc.status !== "archived";
+  const canUnhide = !!doc && canPublish && doc.status === "archived";
+  const takeState = (d: CmsDoc) => setDoc((prev) => (prev ? { ...prev, status: d.status, publishedAt: d.publishedAt, republishedAt: d.republishedAt, updatedAt: d.updatedAt } : prev));
+  const setHidden = (hide: boolean) => {
+    if (!doc) return;
+    (hide ? client.archive(collection, doc.slug) : client.unarchive(collection, doc.slug)).then(
+      (d) => {
+        takeState(d);
+        toast(t(hide ? "done_archive" : "done_unarchive"), { tone: "ok" });
+      },
+      (e) => {
+        if (hide && isCmsRemoteError(e) && e.code === "doc_referenced") setHideAsk(true);
+        else toast(errorMessage(e, t), { tone: "error" });
+      }
+    );
+  };
+  const hideItems = (
+    <>
+      {canHide ? <DropdownMenuItem onClick={() => setHidden(true)}>{t("action_archive")}</DropdownMenuItem> : null}
+      {canUnhide ? <DropdownMenuItem onClick={() => setHidden(false)}>{t("action_unarchive")}</DropdownMenuItem> : null}
+    </>
+  );
   const fieldCount = Object.keys(((schema.fields ?? {}) as { properties?: object }).properties ?? {}).length;
 
   const stateBits = st ? (
@@ -1023,6 +1243,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     id: bodyId,
     describedBy: byField.body?.length ? `${bodyId}-err` : undefined,
     insertRef,
+    commandsRef: blockCommandsRef,
+    onStateChange: bumpToolbar,
+    snippetCollections: schema.snippetCollections,
     resolveFileUrl: (target: string) => {
       const m = /^asset:([a-z0-9]{12})(?:\/(.*))?$/.exec(target);
       return m ? client.fileUrl({ id: m[1], name: m[2] ? decodeURIComponent(m[2]) : "file" }) : target;
@@ -1062,100 +1285,96 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     readOnly: !canWrite,
   };
   const insertAsset = (a: Parameters<typeof assetMarkdown>[0]) => {
+    // A video file goes into a `:::video` block (what the Video block writes for a library file).
+    const video = a.kind === "video";
+    const md = video ? `:::video\n${targetOf(assetMarkdown(a))}\n:::` : assetMarkdown(a);
     if (pickWaiter.current) {
-      pickWaiter.current(assetMarkdown(a));
+      pickWaiter.current(md);
       pickWaiter.current = null;
       return;
     }
-    if (blocksOn && insertRef.current) return insertRef.current(assetMarkdown(a));
+    if (blocksOn && insertRef.current) return insertRef.current(md);
     const el = bodyRef.current;
     const [at, end] = caretRef.current ?? [content.body.length, content.body.length];
     const before = content.body.slice(0, at);
     const after = content.body.slice(end);
-    const md = assetMarkdown(a);
-    const block = md.startsWith("!");
+    const block = video || md.startsWith("!");
     const lead = !block || !before || before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
     const tail = !block || after.startsWith("\n\n") ? "" : after.startsWith("\n") || !after ? "\n" : "\n\n";
     setContent({ ...content, body: `${before}${lead}${md}${tail}${after}` });
-    const caret = before.length + lead.length + (block ? 2 : md.length);
+    // An image without alt text: leave the cursor between the brackets; otherwise after what was put in.
+    const caret = block && !video && !a.alt ? before.length + lead.length + 2 : before.length + lead.length + md.length;
     requestAnimationFrame(() => {
       el?.focus();
-      // An image without alt text: leave the cursor between the brackets.
-      el?.setSelectionRange(block && !a.alt ? caret : before.length + lead.length + md.length, block && !a.alt ? caret : before.length + lead.length + md.length);
+      el?.setSelectionRange(caret, caret);
     });
   };
   const bodyErr = byField.body;
   const bodyInvalid = bodyErr?.some((e) => e.severity === "error");
-  // Beside the preview the bar is half as wide: buttons keep their icon and name it in a tooltip.
-  const compact = !mobile && !blocksOn && sidePreview;
-  const label = (text: string, wide: string) => <span className={compact ? "sr-only" : wide}>{text}</span>;
-  const bodyPane = (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={doc.slug} canWrite={canWrite} onApplied={() => void client.get(collection, doc.slug, { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
-      <div className="flex min-w-0 items-center gap-1.5 border-b px-3 py-2 text-xs text-muted-foreground">
-        <FileText aria-hidden className={cn("h-3.5 w-3.5 shrink-0", BlockEditor && "hidden")} />
-        {/* With the Blocks / Markdown switch, the switch says what the box is. */}
-        <Label htmlFor={bodyId} className={cn("text-xs font-medium text-muted-foreground", BlockEditor && "sr-only")}>
+  // ── the toolbar: commands of the block editor, or of the text box ──
+  mdReadOnly.current = !canWrite;
+  liveRef.current = () => ({ content: live.current.content, setBody: (body) => setContent({ ...live.current.content, body }) });
+  const toolbarCommands = blocksOn ? blockCommands : mdCommands;
+  const openFind = (replace: boolean) => {
+    const el = bodyRef.current;
+    const picked = !blocksOn && el ? el.value.slice(el.selectionStart, el.selectionEnd) : typeof window !== "undefined" ? (window.getSelection()?.toString() ?? "") : "";
+    setFinding((f) => ({ n: (f?.n ?? 0) + (f ? 0 : 1), replace: replace || !!f?.replace, initial: picked && !picked.includes("\n") ? picked : (f?.initial ?? "") }));
+    // The find bar opens under the toolbar: when the body starts low on the page (tall fields above), the bar
+    // would sit under the status line, cut off. Bring the body's top up under the header first.
+    if (!focus && typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        const sec = bodySectionRef.current;
+        const box = sec?.closest<HTMLElement>(".overflow-y-auto");
+        if (!sec || !box) return;
+        const top = sec.getBoundingClientRect().top;
+        const under = headRef.current?.getBoundingClientRect().bottom ?? box.getBoundingClientRect().top;
+        const room = (footRef.current?.getBoundingClientRect().top ?? box.getBoundingClientRect().bottom) - top;
+        if (room < 200) box.scrollBy({ top: top - under, behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      });
+    }
+  };
+  /** Ctrl/Cmd+F finds and Ctrl+H (Cmd+Shift+H) replaces, inside the body. */
+  const onBodyKeys = (e: React.KeyboardEvent) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    if ((e.target as HTMLElement).closest("[data-cms-findbar]")) return;
+    const k = e.key.toLowerCase();
+    if (k === "f" && !e.shiftKey) {
+      e.preventDefault();
+      openFind(false);
+    } else if (k === "h" && (e.ctrlKey ? !e.metaKey : e.shiftKey)) {
+      e.preventDefault();
+      openFind(true);
+    }
+  };
+  /** The formatting toolbar: over the body, or inside the full-screen header (`inline`). */
+  const toolbar = (inline: boolean) => (
+    <EditorToolbar
+      commands={toolbarCommands}
+      tick={tbTick}
+      view={BlockEditor && !inline ? view : undefined}
+      onView={BlockEditor && !inline ? setView : undefined}
+      canWrite={canWrite}
+      body={content.body}
+      inline={inline}
+      label={
+        <Label htmlFor={bodyId} className={cn("shrink-0 text-xs font-medium text-muted-foreground", (BlockEditor || inline) && "sr-only")}>
           {blocksOn ? t("blk_body") : t("field_body")}
         </Label>
-        <span className="flex-1" />
-        {BlockEditor ? (
-          <div role="group" aria-label={t("blk_view")} className="-my-1 flex rounded-md border p-0.5">
-            {(["blocks", "markdown"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                aria-pressed={view === v}
-                onClick={() => setView(v)}
-                className={cn("rounded px-2 py-0.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring", view === v ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
-              >
-                {t(v === "blocks" ? "blk_view_blocks" : "blk_view_markdown")}
-              </button>
-            ))}
-          </div>
-        ) : null}
-        {canWrite && sectionCount > 1 && !blocksOn ? (
-          <Button type="button" variant="ghost" size="sm" aria-pressed={outline} aria-label={t("sections_order")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", outline && "bg-muted")} onClick={() => setOutline((v) => !v)}>
-            <ArrowUpDown aria-hidden className="h-3.5 w-3.5" />
-            {label(t("sections_order"), "hidden sm:inline")}
-          </Button>
-        ) : null}
-        {me?.media && canWrite ? (
-          <Button type="button" variant="ghost" size="sm" title={t("media_insert_button")} className="-my-1 h-7 gap-1.5 px-2 text-xs text-foreground" onClick={() => setPicking(true)}>
-            <ImagePlus aria-hidden className="h-3.5 w-3.5" />
-            {label(t("media_insert_button"), "")}
-          </Button>
-        ) : null}
-        {!mobile && !blocksOn ? (
-          <Button type="button" variant="ghost" size="sm" aria-pressed={sidePreview} title={t("blk_preview_side")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", sidePreview && "bg-muted")} onClick={() => setSidePreview(!sidePreview)}>
-            <Columns2 aria-hidden className="h-3.5 w-3.5" />
-            {label(t("blk_preview_side"), "hidden lg:inline")}
-          </Button>
-        ) : null}
-        {!mobile ? (
-          <Button type="button" variant="ghost" size="sm" aria-pressed={previewWindow} title={t("blk_preview_window")} className={cn("-my-1 h-7 gap-1.5 px-2 text-xs text-foreground", previewWindow && "bg-muted")} onClick={() => setPreviewWindow((v) => !v)}>
-            <AppWindow aria-hidden className="h-3.5 w-3.5" />
-            {label(t("blk_preview_window"), "hidden md:inline")}
-          </Button>
-        ) : null}
-        <BodyCount body={content.body} />
-        {!mobile && !focus ? (
-          <Button
-            ref={focusButton}
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-pressed={false}
-            title={`${t("focus_enter")} (${modLabel()}+Shift+F)`}
-            aria-keyshortcuts="Control+Shift+F Meta+Shift+F"
-            className="-my-1 h-7 gap-1.5 px-2 text-xs text-foreground"
-            onClick={() => setFocus(true)}
-          >
-            <Maximize2 aria-hidden className="h-3.5 w-3.5" />
-            {label(t("focus_enter"), "sr-only xl:not-sr-only")}
-          </Button>
-        ) : null}
-      </div>
+      }
+      outline={canWrite && sectionCount > 1 && !blocksOn ? { on: outline, toggle: () => setOutline((v) => !v) } : null}
+      onMedia={me?.media && canWrite ? () => setPicking(true) : null}
+      sidePreview={!mobile && !blocksOn ? { on: sidePreview, toggle: () => setSidePreview(!sidePreview) } : null}
+      previewWindow={!mobile ? { on: previewWindow, toggle: () => setPreviewWindow((v) => !v) } : null}
+      fullscreen={!mobile && !focus ? { onEnter: () => setFocus(true), buttonRef: focusButton } : null}
+      onFind={(replace) => openFind(replace)}
+      findOpen={!!finding}
+    />
+  );
+  const bodyPane = schema.hideBody ? null : (
+    <section ref={bodySectionRef} className="relative flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onBodyKeys}>
+      {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={doc.slug} canWrite={canWrite} onApplied={() => void client.get(collection, doc.slug, { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
+      {focus ? null : toolbar(false)}
+      {finding ? <FindBar key={finding.n} commands={toolbarCommands} replace={finding.replace} canWrite={canWrite} initial={finding.initial} onClose={() => setFinding(null)} className={focus ? "top-2" : undefined} /> : null}
       <ConfirmDialog
         open={!!checks}
         onOpenChange={(o) => !o && setChecks(null)}
@@ -1166,11 +1385,11 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         onConfirm={() => {
           const go = checks && !checks.blocking;
           setChecks(null);
-          if (go) void save(true);
+          if (go) void save(true, checksConfirmed.current);
         }}
       >
         <ul className="grid max-h-72 gap-1.5 overflow-y-auto text-sm" aria-label={t("checks_list")}>
-          {[...(checks?.diagnostics.filter((d) => d.severity === "error") ?? []).map((d) => ({ severity: "error" as const, message: d.message, where: d.path })), ...(checks?.checks ?? []).map((c) => ({ severity: c.severity, message: c.message, where: c.line ? t("checks_line", { n: c.line }) : c.path }))].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "error" ? -1 : 1)).map((c, i) => (
+          {[...(checks?.diagnostics.filter((d) => d.severity === "error") ?? []).map((d) => ({ severity: "error" as const, message: serverText(d, t), where: d.path })), ...(checks?.checks ?? []).map((c) => ({ severity: c.severity, message: c.message, where: c.line ? t("checks_line", { n: c.line }) : c.path }))].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "error" ? -1 : 1)).map((c, i) => (
             <li key={i} className="flex items-start gap-2 rounded-md border px-3 py-2">
               <span className={cn("mt-0.5 shrink-0 rounded px-1.5 text-[11px] font-medium", c.severity === "error" ? "bg-destructive/10 text-destructive" : "bg-amber-500/15 text-amber-700 dark:text-amber-400")}>{c.severity === "error" ? t("checks_error") : t("checks_warning")}</span>
               <span className="min-w-0 flex-1 break-words">{c.message}</span>
@@ -1202,15 +1421,16 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           }}
         />
       ) : null}
+      {/* The block editor reaches 40px past its box on the right (room for its side buttons): the padding matches, so it never runs past the page. */}
       {blocksOn && BlockEditor ? (
-        <div className="mx-auto flex w-full max-w-[780px] flex-1 flex-col px-5 sm:pl-12 sm:pr-8">
+        <div className="mx-auto flex w-full max-w-[780px] flex-1 flex-col px-5 sm:pl-12 sm:pr-10">
           <React.Suspense fallback={<p className="py-6 text-sm text-muted-foreground">{t("blk_loading")}</p>}>
             <BlockEditor key={`${collection}/${currentSlug}`} {...blockProps} />
           </React.Suspense>
         </div>
       ) : null}
       <div className={cn("relative flex min-h-[360px] flex-1 flex-col", ((outline && sectionCount > 1) || blocksOn) && "hidden")}>
-        {marks.length || cursors.length ? <BodyBackdrop box={bodyRef} text={content.body} marks={marks} cursors={cursors} /> : null}
+        {marks.length || cursors.length || (finding && findMarks.length) ? <BodyBackdrop box={bodyRef} text={content.body} marks={finding ? [...marks, ...findMarks] : marks} cursors={cursors} /> : null}
         <Textarea
           ref={bodyRef}
           id={bodyId}
@@ -1279,13 +1499,89 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
     </section>
   );
 
+  const seoWarnings = shownProblems.filter((p) => p.path.startsWith("seo") || p.code?.startsWith?.("seo_")).length;
+  const takenRedirect = isNew ? (shownProblems.find((p) => p.code === "redirect_taken") as (Diagnostic & { params?: Record<string, unknown> }) | undefined) : undefined;
+  const redirectNote = takenRedirect ? (
+    <span className="text-amber-700 dark:text-amber-400">
+      {t("redirect_at_slug", { from: String(takenRedirect.params?.from ?? "") })}{" "}
+      {me?.isAdmin && takenRedirect.params?.id ? (
+        <button
+          type="button"
+          className="underline underline-offset-2"
+          onClick={() =>
+            client.removeRedirect(String(takenRedirect.params!.id)).then(
+              () => void diagnose(live.current.content),
+              (e) => setStatus({ text: errorMessage(e, t), tone: "error" })
+            )
+          }
+        >
+          {t("redirect_remove")}
+        </button>
+      ) : null}
+    </span>
+  ) : null;
   const form = (
     <FieldGate.Provider value={fieldGate}>
-      <CmsFieldForm disabled={!canWrite} schema={schema} value={content} onChange={setContent} problems={byField} slugLocked={!!doc && doc.publishedVersion !== null} slugPrefix={slugPrefix} idPrefix="cms-editor" slotContext={slotCtx} />
+      <RelatedLabels.Provider value={relCtx}>
+        <CmsFieldForm
+          disabled={!canWrite}
+          schema={schema}
+          value={content}
+          onChange={setContent}
+          problems={byField}
+          slugLocked={!!doc && doc.publishedVersion !== null && !schema.redirects}
+          slugPrefix={slugPrefix}
+          idPrefix="cms-editor"
+          slotContext={slotCtx}
+          hideSlug={!!schema.single}
+          slugNote={redirectNote}
+        />
+      </RelatedLabels.Provider>
+      {schema.seo ? (
+        <details className="group mt-4 min-w-0 rounded-md border" open={seoOpen} onToggle={(e) => setSeoOpen((e.currentTarget as HTMLDetailsElement).open)}>
+          <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <ChevronDown aria-hidden className="h-4 w-4 -rotate-90 transition-transform duration-150 ease-out group-open:rotate-0" />
+            {t("seo_title")}
+            {seoWarnings ? <span className="ml-1 rounded bg-amber-500/15 px-1.5 text-[11px] text-amber-700 dark:text-amber-400">{seoWarnings}</span> : null}
+          </summary>
+          <div className="border-t p-3">
+            <CmsMediaPicker
+              open={!!seoPick}
+              onOpenChange={(o) => !o && setSeoPick(null)}
+              kinds={["image"]}
+              onPick={(a) => {
+                seoPick?.(`asset:${a.id}/${encodeURIComponent(a.name)}`);
+                setSeoPick(null);
+              }}
+            />
+            <SeoPanel
+              value={content.seo}
+              onChange={(seo) => setContent({ ...content, seo })}
+              fallback={{ title: content.title, description: content.summary, image: /!\[[^\]]*\]\((asset:[^)\s]+|https:\/\/[^)\s]+)/.exec(content.body)?.[1] ?? null }}
+              limits={schema.seo}
+              url={publicUrlFor && content.slug ? publicUrlFor(collection, content.slug) : null}
+              disabled={!canWrite}
+              onPickImage={me?.media ? (done) => setSeoPick(() => done) : undefined}
+              descriptionAddon={slots.fieldAddon && !!slotCtx ? slots.fieldAddon({ key: "seo.description", label: t("seo_field_description"), widget: "textarea" }, { ...slotCtx, value: content.seo?.description ?? "", setValue: (v) => setContent({ ...content, seo: { ...(content.seo ?? {}), description: typeof v === "string" ? v : null } }) }) : undefined}
+            />
+          </div>
+        </details>
+      ) : null}
+      {schema.snippets && doc ? (
+        <div className="mt-4 min-w-0">
+          <SnippetUses collection={collection} slug={doc.slug} onOpen={onOpenDocument} />
+        </div>
+      ) : null}
       {slots.editorPanel ? <div className="mt-4 min-w-0">{slots.editorPanel(slotCtx)}</div> : null}
     </FieldGate.Provider>
   );
 
+  const focusStats = (() => {
+    if (!focus) return "";
+    const s = bodyStats(content.body);
+    const n = (x: number) => x.toLocaleString(locale);
+    return s.words ? `${t("blk_words", { n: n(s.words) })} · ${t("blk_read_min", { n: n(s.minutes) })}` : t("blk_words", { n: n(0) });
+  })();
   const autosaveText =
     offline && dirty ? t("offline_kept") : auto.state === "saving" ? t("autosaving") : auto.state === "saved" && auto.at ? t("autosaved_at", { time: formatTime(auto.at, locale) }) : auto.state === "failed" ? t("autosave_failed") : dirty ? (localBroken ? t("unsaved_no_copy") : t("unsaved")) : "";
 
@@ -1312,6 +1608,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
           {autosaveText ? <Cloud aria-hidden className="h-3.5 w-3.5" /> : null}
           {autosaveText}
         </span>
+        {/* In full screen the toolbar sits in the header without its word count: it shows here. */}
+        {focus && !schema.hideBody ? <span className="tabular-nums">{focusStats}</span> : null}
       </div>
       {shownProblems.length && showProblems ? (
         <ul id="cms-editor-problems" aria-label={t("problems_list")} className="border-t px-4 py-2 text-xs md:px-6">
@@ -1327,6 +1625,34 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
 
   const previewDialog = (
     <>
+      {tplDialog ? <SaveTemplateDialog collection={collection} content={content} onClose={() => setTplDialog(false)} /> : null}
+      {hideAsk && doc ? (
+        <ReferencedDialog
+          collection={collection}
+          slug={doc.slug}
+          title={content.title || doc.slug}
+          action="archive"
+          onClose={() => setHideAsk(false)}
+          onDone={(d) => {
+            setHideAsk(false);
+            if (d) takeState(d);
+            toast(t("done_archive"), { tone: "ok" });
+          }}
+        />
+      ) : null}
+      {slugAsk && doc ? (
+        <SlugChangeDialog
+          from={publicUrlFor ? publicUrlFor(collection, doc.slug) : `${slugPrefix ?? ""}${doc.slug}`}
+          to={publicUrlFor ? publicUrlFor(collection, content.slug) : `${slugPrefix ?? ""}${content.slug}`}
+          canPublish={!!schema?.canPublish && !schema?.needsReview}
+          onClose={() => setSlugAsk(null)}
+          onConfirm={() => {
+            setSlugAsk(null);
+            // The address changes together with publishing: the normal Publish path (checks first).
+            void publish(true);
+          }}
+        />
+      ) : null}
       {previewAllowed && doc ? <CmsPreviewLinkDialog open={previewOpen} onOpenChange={setPreviewOpen} collection={collection} slug={doc.slug} version={doc.version} /> : null}
       {doc ? (
         <AddToReleaseDialog
@@ -1364,7 +1690,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
             </Button>
           ) : null}
           <People people={others} max={2} />
-          {publicUrl || previewAllowed || canRelease ? (
+          {publicUrl || previewAllowed || canRelease || (canWrite && !schema.single) || canHide || canUnhide ? (
             <DropdownMenu>
               <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon", className: "h-8 w-8" })} aria-label={t("more")}>
                 <MoreHorizontal aria-hidden className="h-4 w-4" />
@@ -1373,6 +1699,8 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
                 {publicUrl ? <DropdownMenuItem onClick={() => window.open(publicUrl, "_blank", "noopener,noreferrer")}>{t("public_page")}</DropdownMenuItem> : null}
                 {previewAllowed ? <DropdownMenuItem onClick={() => setPreviewOpen(true)}>{t("preview_link")}</DropdownMenuItem> : null}
                 {canRelease ? <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem> : null}
+                {canWrite && !schema.single ? <DropdownMenuItem onClick={() => setTplDialog(true)}>{t("doc_more_template")}</DropdownMenuItem> : null}
+                {hideItems}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
@@ -1444,32 +1772,34 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         {focus ? (
           <div
             className={cn(
-              "flex h-12 items-center gap-2 border-b px-3 transition-opacity duration-300 motion-reduce:transition-none focus-within:opacity-100 hover:opacity-100",
+              "flex h-12 items-center gap-1.5 border-b px-3 transition-opacity duration-300 ease-out motion-reduce:transition-none focus-within:opacity-100 hover:opacity-100",
               barQuiet && "opacity-0",
             )}
           >
-            <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={() => setFocus(false)} title={`${t("focus_exit")} (Esc)`}>
-              <Minimize2 aria-hidden className="h-4 w-4" />
-              <span className="hidden md:inline">{t("focus_exit")}</span>
-            </Button>
-            <span className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>
+            <TipButton label={t("focus_exit")} keys="Mod+Shift+F" tipAlign="start" onClick={() => setFocus(false)}>
+              <Minimize2 aria-hidden className="size-4" />
+            </TipButton>
+            <span className="min-w-0 max-w-[16rem] shrink truncate text-sm font-medium" title={title}>
               <bdi>{title}</bdi>
             </span>
-            <span className="hidden items-center gap-1.5 lg:flex">{stateBits}</span>
-            <Button type="button" variant="ghost" size="sm" className={cn("gap-1.5", focusFields && "bg-muted")} aria-pressed={focusFields} aria-controls="cms-focus-fields" onClick={() => setFocusFields((v) => !v)}>
-              <SlidersHorizontal aria-hidden className="h-4 w-4" />
-              <span className="hidden md:inline">{focusFields ? t("focus_fields_hide") : t("focus_fields")}</span>
-              {fieldErrors && !focusFields ? <span aria-label={t("problems_n", { n: fieldErrors })} className="h-2 w-2 rounded-full bg-destructive" /> : null}
-            </Button>
+            {/* The save state (the status line below announces it). */}
+            <span className="hidden shrink-0 whitespace-nowrap text-xs text-muted-foreground sm:inline">{autosaveText}</span>
+            {bodyPane ? toolbar(true) : <span className="flex-1" />}
+            <TipButton label={focusFields ? t("focus_fields_hide") : t("focus_fields")} tipAlign="end" className={cn("relative", focusFields && "bg-muted text-foreground")} aria-pressed={focusFields} aria-controls="cms-focus-fields" onClick={() => setFocusFields((v) => !v)}>
+              <SlidersHorizontal aria-hidden className="size-4" />
+              {fieldErrors && !focusFields ? <span aria-label={t("problems_n", { n: fieldErrors })} className="absolute right-1 top-1 size-2 rounded-full bg-destructive" /> : null}
+            </TipButton>
             {typeof document !== "undefined" && document.fullscreenEnabled ? (
-              <Button type="button" variant="ghost" size="icon" aria-pressed={screenFull} aria-label={screenFull ? t("focus_screen_off") : t("focus_screen")} title={screenFull ? t("focus_screen_off") : t("focus_screen")} onClick={toggleScreen}>
-                <Monitor aria-hidden className="h-4 w-4" />
-              </Button>
+              <TipButton label={screenFull ? t("focus_screen_off") : t("focus_screen")} tipAlign="end" aria-pressed={screenFull} onClick={toggleScreen}>
+                <Monitor aria-hidden className="size-4" />
+              </TipButton>
             ) : null}
+            {canWrite ? <span aria-hidden className="mx-[3px] h-5 w-px shrink-0 bg-border" /> : null}
             {saveButtons()}
           </div>
         ) : (
-        <PageHeader title={title} crumbs={[schema.label]} after={stateBits}>
+        // A single is its own page in the menu: "Site settings / Site settings" would say the same thing twice.
+        <PageHeader title={title} crumbs={schema.single ? undefined : [schema.label]} after={stateBits}>
           <People people={others} className="mr-1" />
           {doc && canWrite ? (
             <Button type="button" variant="ghost" className="gap-1.5" aria-pressed={commentsOpen} onClick={() => setCommentsOpen((v) => !v)}>
@@ -1495,13 +1825,15 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
               {t("versions")}
             </Button>
           ) : null}
-          {canRelease ? (
+          {canRelease || (canWrite && !schema.single) || canHide || canUnhide ? (
             <DropdownMenu>
               <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon" })} aria-label={t("more")}>
                 <MoreHorizontal aria-hidden className="h-4 w-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem>
+                {canRelease ? <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem> : null}
+                {canWrite && !schema.single ? <DropdownMenuItem onClick={() => setTplDialog(true)}>{t("doc_more_template")}</DropdownMenuItem> : null}
+                {hideItems}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
@@ -1530,7 +1862,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         </div>
       ) : (
         // One column: the body grows with its text and the page scrolls (the header and the status line stay).
-        <div ref={rowRef} className="flex min-h-[360px] flex-1 divide-x">
+        // `flex-1` alone would let it shrink to its 360px minimum when the fields above are tall: the text then
+        // spills out of its box, under the status line, and the page stops scrolling before its end.
+        <div ref={rowRef} className="flex min-h-[360px] flex-[1_0_auto] divide-x">
           {bodyPane}
           {commentsOpen && !focus ? <div className="sticky top-0 flex max-h-dvh w-80 shrink-0 flex-col self-start">{comments(() => setCommentsOpen(false))}</div> : null}
         </div>
@@ -1721,36 +2055,8 @@ function SuggestionCards({ collection, slug, canWrite, onApplied }: { collection
 
 // ── body length ───────────────────────────────────────────────────────────────
 
-/** Words, characters and reading time of the body (markup left out). */
-export function bodyStats(body: string): { words: number; chars: number; minutes: number } {
-  const text = body
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/:::html[\s\S]*?\n:::/g, " ")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[\[link:[^|\]]+\|([^\]]+)\]\]/g, "$1")
-    .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+[.)]|\|)\s?/gm, "")
-    .replace(/[*_~`|]/g, "");
-  const words = text.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)?.length ?? 0;
-  const chars = text.replace(/\s/g, "").length;
-  // Hangul and other scripts without spaces read by characters, the rest by words.
-  const cjk = text.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g)?.length ?? 0;
-  const minutes = Math.max(1, Math.round(cjk > chars / 2 ? chars / 500 : words / 230));
-  return { words, chars, minutes };
-}
-
-function BodyCount({ body }: { body: string }) {
-  const { t, locale } = useCms();
-  const s = React.useMemo(() => bodyStats(body), [body]);
-  const n = (x: number) => x.toLocaleString(locale);
-  // An empty body has no reading time; the count never wraps word by word in a narrow bar.
-  return (
-    <span title={`${t("blk_words", { n: n(s.words) })} · ${t("blk_chars", { n: n(s.chars) })}`} className="shrink-0 whitespace-nowrap tabular-nums">
-      {t("blk_words", { n: n(s.words) })}
-      {s.words ? <span className="hidden sm:inline"> · {t("blk_read_min", { n: n(s.minutes) })}</span> : null}
-    </span>
-  );
-}
+/** Words, characters and reading time of the body (markup left out). Lives with the toolbar that shows it. */
+export { bodyStats } from "./cms-editor-toolbar";
 
 // ── live preview in a window of its own ───────────────────────────────────────
 

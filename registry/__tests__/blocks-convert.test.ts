@@ -116,3 +116,66 @@ test("spans: toggling marks, links and typed markdown", () => {
   assert.equal(autoFormat([{ text: "2 * 3 * 4" }], 9), null);
   assert.equal(autoFormat([{ text: "**" }], 2), null);
 });
+
+test("blocks: steps, link cards, videos, snippets and pinned anchors are blocks and come back as written", () => {
+  const md = [
+    ":::steps\n**Install** the package.\n\n- run it\n:::",
+    ":::card\n[Pricing](/pricing)\n![Plans](asset:abcdefghijkl/plan%20a.png)\nWhat each plan costs\n:::",
+    ":::card\n[Docs](https://example.com/docs)\n:::",
+    ":::video\nhttps://www.youtube.com/watch?v=abc123\nThe tour\n:::",
+    ":::video\nasset:abcdefghijkl/tour.mp4\n:::",
+    "## Setup {#setup-guide}",
+    "[[snippet:support-contact]]",
+    "Call [[snippet:support_line]] today.",
+  ].join("\n\n");
+  const blocks = markdownToBlocks(md);
+  assert.deepEqual(
+    blocks.filter((b) => !b.parent).map((b) => b.type),
+    ["steps", "card", "card", "video", "video", "h2", "snippet", "p"]
+  );
+  const steps = blocks.find((b) => b.type === "steps")!;
+  assert.deepEqual(blocks.filter((b) => b.parent === steps.id).map((b) => b.type), ["p", "bullet"]);
+  const card = blocks.find((b) => b.type === "card") as Extract<EBlock, { type: "card" }>;
+  assert.equal(card.href, "/pricing");
+  assert.equal(card.image, "asset:abcdefghijkl/plan%20a.png");
+  assert.equal(card.alt, "Plans");
+  assert.equal((blocks.find((b) => b.type === "h2") as TextBlock).anchor, "setup-guide");
+  assert.equal((blocks.find((b) => b.type === "snippet") as Extract<EBlock, { type: "snippet" }>).key, "support-contact");
+  assert.equal(blocksToMarkdown(blocks), md);
+  assert.equal(blocksToMarkdown(fresh(blocks)), md);
+});
+
+test("blocks: new blocks not in the exact form stay source blocks, and edited ones write the exact form", () => {
+  for (const odd of [":::card\nno link here\n:::", ":::video\nhttp://insecure.example/v\n:::", ":::card\n[A](/a)\none\ntwo\n:::"]) {
+    const blocks = markdownToBlocks(odd);
+    assert.deepEqual(blocks.map((b) => b.type), ["source"], odd);
+    assert.equal(blocksToMarkdown(fresh(blocks)), odd);
+  }
+  const blocks = fresh(markdownToBlocks(":::card\n[A](/a)\n:::\n\n:::video\nhttps://vimeo.com/1\n:::\n\n## Title {#keep}"));
+  const card = blocks[0] as Extract<EBlock, { type: "card" }>;
+  card.label = "Two\nlines";
+  card.description = "![not a picture](x)";
+  card.image = "asset:abcdefghijkl/my file (1).png";
+  card.alt = "Alt";
+  (blocks[1] as Extract<EBlock, { type: "video" }>).caption = ":::sneaky";
+  delete (blocks[2] as TextBlock).anchor;
+  const out = blocksToMarkdown(blocks);
+  assert.equal(out, ":::card\n[Two lines](/a)\n![Alt](asset:abcdefghijkl/my%20file%201.png)\n[not a picture](x)\n:::\n\n:::video\nhttps://vimeo.com/1\nsneaky\n:::\n\n## Title");
+  assert.deepEqual(markdownToBlocks(out).map((b) => b.type), ["card", "video", "h2"]);
+  // An empty steps block writes nothing inside; a video without an address writes nothing.
+  assert.equal(blocksToMarkdown([{ id: "s", type: "steps" }]), ":::steps\n:::");
+  assert.equal(blocksToMarkdown([{ id: "v", type: "video", src: "", caption: "x" }]), "");
+});
+
+test("blocks: #### headings and snippets inside a line convert both ways", () => {
+  const md = "#### Rotate {#rotate}\n\n#### Plain\n\nCall [[snippet:support-phone]] now.";
+  const blocks = markdownToBlocks(md);
+  assert.deepEqual(
+    blocks.map((b) => b.type),
+    ["h4", "h4", "p"],
+  );
+  assert.equal(blocksToMarkdown(blocks), md);
+  assert.equal(blocksToMarkdown(fresh(blocks)), md);
+  // The token stays as written in the text (not escaped).
+  assert.equal(spansToMd((blocks[2] as TextBlock).spans), "Call [[snippet:support-phone]] now.");
+});

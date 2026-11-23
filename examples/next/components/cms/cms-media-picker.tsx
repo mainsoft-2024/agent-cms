@@ -7,6 +7,7 @@
 import * as React from "react";
 import { Check, ChevronDown, ChevronUp, CircleAlert, CircleCheck, File as FileIcon, FileText, Film, Lock, Music, Search, Upload, X } from "lucide-react";
 import type { AssetCounts, AssetView, FolderTree, MediaStoreInfo } from "@mainsoft/agent-cms/client";
+import { acceptsFile, mimeOf } from "@mainsoft/agent-cms/storage";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -68,6 +69,9 @@ export function AssetGrid({
   picking,
   checked,
   onCheck,
+  order,
+  taken,
+  accept,
 }: {
   assets: AssetView[];
   selected?: string | null;
@@ -78,12 +82,34 @@ export function AssetGrid({
   checked?: ReadonlySet<string>;
   /** `range`: shift was held (tick everything from the last ticked one). */
   onCheck?: (a: AssetView, range: boolean) => void;
+  /** Picking several: each picked file's place (1-based), shown as a number on the tile. */
+  order?: ReadonlyMap<string, number>;
+  /** Files that are already in the field: shown, not pickable again. */
+  taken?: ReadonlySet<string>;
+  /** File types the field takes (its `accept`): other files are shown, not pickable. */
+  accept?: readonly string[];
 }) {
   const { t } = useCms();
   return (
     <ul className={cn("grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4", className)}>
       {assets.map((a) => {
-        const on = a.id === selected;
+        const place = order?.get(a.id);
+        const on = order ? place !== undefined : a.id === selected;
+        const isTaken = !!taken?.has(a.id);
+        const refused = !isTaken && !!accept?.length && !acceptsFile(accept, a);
+        if (isTaken || refused)
+          return (
+            <li key={a.id} className="relative min-w-0">
+              <div aria-disabled className="block w-full rounded-lg p-1.5 opacity-50">
+                <span className="relative block">
+                  <AssetThumb asset={a} />
+                  <span className="absolute inset-x-1.5 bottom-1.5 rounded bg-background/90 px-1.5 py-0.5 text-center text-[11px] font-medium">{t(isTaken ? "media_pick_added" : "media_pick_wrong_type")}</span>
+                </span>
+                <span className="mt-1.5 block truncate text-sm font-medium">{a.name}</span>
+                <span className="block truncate text-xs tabular-nums text-muted-foreground">{assetMeta(a)}</span>
+              </div>
+            </li>
+          );
         return (
           <li key={a.id} className="group/tile relative min-w-0">
             {onCheck ? (
@@ -105,15 +131,15 @@ export function AssetGrid({
             <button
               type="button"
               aria-pressed={on}
-              aria-label={`${a.name}${a.visibility === "private" ? `, ${t("media_private")}` : ""}`}
+              aria-label={`${place !== undefined ? t("media_pick_order", { name: a.name, n: place }) : a.name}${a.visibility === "private" ? `, ${t("media_private")}` : ""}`}
               onClick={(e) => (onCheck && (checked?.size || e.shiftKey || e.metaKey || e.ctrlKey) ? onCheck(a, e.shiftKey) : onSelect(a))}
               className={cn("group block w-full rounded-lg p-1.5 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", on && "bg-accent ring-2 ring-ring", checked?.has(a.id) && "bg-primary/10 ring-2 ring-primary")}
             >
               <span className="relative block">
                 <AssetThumb asset={a} />
                 {picking && on ? (
-                  <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                    <Check aria-hidden className="h-3 w-3" />
+                  <span className="absolute right-1.5 top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold tabular-nums text-primary-foreground" style={{ animation: "cms-pick-in 140ms cubic-bezier(0.215, 0.61, 0.355, 1) both" }}>
+                    {place !== undefined ? place : <Check aria-hidden className="h-3 w-3" />}
                   </span>
                 ) : null}
               </span>
@@ -341,9 +367,14 @@ export interface CmsMediaPickerProps {
   store?: string;
   /** The field the file is for: the server applies its rules to uploads. */
   field?: { collection: string; path: string };
+  /**
+   * Pick several files in one go (a gallery). The files come back in the order they were picked.
+   * `room`: how many more the field takes (null: no limit). `taken`: files already in the field.
+   */
+  many?: { onPick: (assets: AssetView[]) => void; room: number | null; taken?: readonly string[] };
 }
 
-export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, store, field }: CmsMediaPickerProps) {
+export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, store, field, many }: CmsMediaPickerProps) {
   const { client, t, me } = useCms();
   const stores: MediaStoreInfo[] = (me?.media?.stores ?? []).filter((s) => !store || s.name === store);
   const [tree, setTree] = React.useState<FolderTree[]>([]);
@@ -352,26 +383,66 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
   const [text, setText] = React.useState("");
   const [q, setQ] = React.useState("");
   const [picked, setPicked] = React.useState<AssetView | null>(null);
+  // Picking several: in the order they were picked.
+  const [picks, setPicks] = React.useState<AssetView[]>([]);
+  const [full, setFull] = React.useState(false);
+  const room = many?.room ?? null;
+  const taken = React.useMemo(() => new Set(many?.taken ?? []), [many?.taken]);
+  const order = React.useMemo(() => new Map(picks.map((a, i) => [a.id, i + 1])), [picks]);
+  const fits = (a: { name: string; mime: string }) => !accept?.length || acceptsFile(accept, a);
+  const togglePick = (a: AssetView) => {
+    if (taken.has(a.id) || !fits(a)) return;
+    setPicks((old) => {
+      if (old.some((x) => x.id === a.id)) {
+        setFull(false);
+        return old.filter((x) => x.id !== a.id);
+      }
+      if (room !== null && old.length >= room) {
+        setFull(true);
+        return old;
+      }
+      return [...old, a];
+    });
+  };
   const applyQ = useDebounced(setQ, 250);
   const activeStore = where.store ?? stores[0]?.name ?? null;
   const list = useAssetList({ store: activeStore, folder: where.folder, kind, q, tag: null }, open);
   const uploads = useUploads((a) => {
     list.reload();
-    setPicked(a);
+    if (!fits(a)) return;
+    if (many) togglePick(a);
+    else setPicked(a);
   });
+  // Files of a type the field does not take are not sent (the file dialog's filter can be switched off).
+  const [refused, setRefused] = React.useState<string[]>([]);
+  const upload = (files: File[]) => {
+    const ok = files.filter((f) => fits({ name: f.name, mime: f.type || mimeOf(f.name) }));
+    setRefused(files.filter((f) => !ok.includes(f)).map((f) => f.name));
+    if (ok.length) uploads.add(ok, { store: activeStore, folder: where.folder, field });
+  };
   React.useEffect(() => {
     if (!open) return;
     setPicked(null);
+    setPicks([]);
+    setFull(false);
+    setRefused([]);
     client.assetFolders().then((s) => setTree(s.filter((x) => !store || x.store === store)), () => {});
   }, [open, client, store]);
   const tabs = kindTabs(list.counts, t).filter((x) => !kinds?.length || kinds.includes(x.value) || (x.value === "all" && kinds.length > 1));
   const options = folderOptions(tree, t);
   const canWrite = stores.find((s) => s.name === activeStore)?.can.write;
   const choose = (a: AssetView | null) => {
+    if (many) {
+      if (!picks.length) return;
+      many.onPick(picks);
+      onOpenChange(false);
+      return;
+    }
     if (!a) return;
     onPick(a);
     onOpenChange(false);
   };
+  const left = room === null ? null : Math.max(0, room - picks.length);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className={cn(DIALOG.xl, "flex max-h-[min(92dvh,720px)] flex-col gap-0 p-0")}>
@@ -414,7 +485,7 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
         <div className="min-h-[240px] flex-1 overflow-y-auto px-3.5 py-3">
           {list.error ? <StatusText tone="error">{errorMessage(list.error, t)}</StatusText> : null}
           {!list.loading && !list.assets.length && !list.error ? <p className="px-1.5 py-8 text-center text-sm text-muted-foreground">{t("media_empty")}</p> : null}
-          <AssetGrid assets={list.assets} selected={picked?.id} onSelect={setPicked} picking className="md:grid-cols-4 xl:grid-cols-4" />
+          <AssetGrid assets={list.assets} selected={picked?.id} onSelect={many ? togglePick : setPicked} order={many ? order : undefined} taken={many ? taken : undefined} accept={accept} picking className="md:grid-cols-4 xl:grid-cols-4" />
           {list.cursor ? (
             <div className="pt-3 text-center">
               <Button type="button" variant="outline" size="sm" onClick={() => void list.more()}>
@@ -423,15 +494,32 @@ export function CmsMediaPicker({ open, onOpenChange, onPick, kinds, accept, stor
             </div>
           ) : null}
         </div>
-        <div className="flex items-center gap-2 border-t px-5 py-3">
-          {canWrite ? <UploadButton variant="outline" accept={accept ?? stores.find((s) => s.name === activeStore)?.accept} onFiles={(files) => uploads.add(files, { store: activeStore, folder: where.folder, field })} /> : null}
-          <span className="flex-1" />
+        <div className="flex flex-wrap items-center gap-2 border-t px-5 py-3">
+          {canWrite ? <UploadButton variant="outline" accept={accept ?? stores.find((s) => s.name === activeStore)?.accept} onFiles={upload} /> : null}
+          <span className={cn("min-w-0 flex-1", (many || refused.length > 0) && "order-first basis-full sm:order-none sm:basis-0")}>
+            {refused.length ? (
+              <span role="alert" className="block truncate text-xs text-destructive">
+                {t("media_pick_refused", { names: refused.join(", ") })}
+              </span>
+            ) : null}
+            {many ? (
+              <span role="status" aria-live="polite" className={cn("block truncate text-xs", full ? "text-destructive" : "text-muted-foreground")}>
+                {full && room !== null ? t("media_pick_full", { max: (many.taken?.length ?? 0) + room }) : left !== null ? t("media_pick_left", { n: left }) : t("media_pick_many_hint")}
+              </span>
+            ) : null}
+          </span>
+          {many && picks.length ? (
+            <Button type="button" variant="ghost" onClick={() => (setPicks([]), setFull(false))}>
+              {t("media_pick_clear")}
+            </Button>
+          ) : null}
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t("cancel")}
           </Button>
-          <Button type="button" disabled={!picked} onClick={() => choose(picked)}>
-            {t("media_insert")}
+          <Button type="button" disabled={many ? !picks.length : !picked} onClick={() => choose(picked)}>
+            {many && picks.length ? t("media_insert_n", { n: picks.length }) : t("media_insert")}
           </Button>
+          <style>{`@keyframes cms-pick-in { from { opacity: 0; transform: scale(0.6) } to { opacity: 1; transform: scale(1) } }`}</style>
         </div>
         <UploadPanel items={uploads.items} onRetry={uploads.retry} onRemove={uploads.remove} onClose={uploads.clear} />
       </DialogContent>

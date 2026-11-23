@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { createRestClient } from "@mainsoft/agent-cms/client";
 import { PART_SIZE } from "@mainsoft/agent-cms/storage";
 import { CmsDocEditor } from "../cms/cms-doc-editor";
+import { GalleryField } from "../cms/cms-fields-more";
 import { CmsMedia } from "../cms/cms-media";
 import { ko } from "../cms/cms-messages";
 import { CmsShell } from "../cms/cms-shell";
@@ -188,10 +189,11 @@ test("media: import from a URL into the open folder, and rename a file in its pa
   await user.click(await within(folders).findByRole("button", { name: /brand/ }));
   await user.click(screen.getByRole("button", { name: "URL에서 가져오기" }));
   let dialog = await screen.findByRole("dialog", { name: "URL에서 가져오기" });
-  // An address inside the network is refused by the server, and the dialog says so.
+  // An address inside the network is refused by the server, and the dialog says so, in the screens' language
+  // (the server wrote it in English).
   await user.type(within(dialog).getByLabelText("주소"), "https://intranet.example/a.png");
   await user.click(within(dialog).getByRole("button", { name: "가져오기" }));
-  assert.ok(await within(dialog).findByText("That address cannot be fetched"));
+  assert.ok(await within(dialog).findByText("가져올 수 없는 주소임"));
   await user.clear(within(dialog).getByLabelText("주소"));
   await user.type(within(dialog).getByLabelText("주소"), "https://example.com/pics/team-photo.png");
   assert.deepEqual(await axeViolations(), []);
@@ -338,4 +340,125 @@ test("media: the focal point by keyboard, and replacing a file asks first", asyn
   await user.click(within(dialog).getByRole("button", { name: "바꾸기" }));
   await waitFor(() => assert.deepEqual(s.requests.find((r) => r.method === "POST" && r.path === "/assets/uploads")?.body, { name: "logo-2026.png", mime: "image/png", size: 1500, replace: logo.id }));
   assert.ok(screen.queryByRole("dialog", { name: /내용을 바꿀까요/ }) === null);
+});
+
+test("gallery: several files in one go, in the order picked; files already in the field and the limit are respected", async () => {
+  const s = makeServer({ media: true });
+  const a = await s.addFile("a.png", { alt: "A" });
+  const b = await s.addFile("b.png", { alt: "B" });
+  const c = await s.addFile("c.png", { alt: "C" });
+  const d = await s.addFile("d.png", { alt: "D" });
+  const seen: unknown[] = [];
+  function Harness() {
+    const [v, setV] = React.useState<unknown>([a.id]);
+    seen.push(v);
+    return <GalleryField id="g" label="Photos" value={v} onChange={setV} max={3} accept={["image/*"]} />;
+  }
+  const user = userEvent.setup();
+  renderWith(s, <Harness />);
+  await user.click(await screen.findByRole("button", { name: "Add" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose media" });
+  await within(dialog).findByText("already added");
+  assert.ok(!within(dialog).queryByRole("button", { name: "a.png" }), "a file already in the field cannot be picked again");
+  within(dialog).getByText("2 more can be added");
+  await user.click(await within(dialog).findByRole("button", { name: "c.png" }));
+  await user.click(within(dialog).getByRole("button", { name: "b.png" }));
+  assert.ok(within(dialog).getByRole("button", { name: "c.png, picked 1" }));
+  assert.ok(within(dialog).getByRole("button", { name: "b.png, picked 2" }));
+  // The field takes three: a fourth pick is refused with a note.
+  await user.click(within(dialog).getByRole("button", { name: "d.png" }));
+  within(dialog).getByText("No more room: the field takes 3");
+  assert.equal(within(dialog).getByRole("button", { name: "d.png" }).getAttribute("aria-pressed"), "false");
+  // Un-picking frees the place; picking again puts it last.
+  await user.click(within(dialog).getByRole("button", { name: "c.png, picked 1" }));
+  await user.click(within(dialog).getByRole("button", { name: "c.png" }));
+  await user.click(within(dialog).getByRole("button", { name: "Insert 2" }));
+  await waitFor(() => assert.deepEqual(seen.at(-1), [a.id, b.id, c.id]));
+  void d;
+});
+
+test("gallery: files of a type the field does not take are shown but not pickable, and are not uploaded", async () => {
+  const s = makeServer({ media: true });
+  const a = await s.addFile("a.png", { alt: "A" });
+  const text = new TextEncoder().encode("plain notes");
+  const { asset: notes, upload } = await s.cms.assets.requestUpload(admin, { name: "notes.txt", size: text.length });
+  if (upload.kind === "single") await s.stores.public.send(upload.url, text);
+  await s.cms.assets.completeUpload(admin, notes.id);
+  const seen: unknown[] = [];
+  function Harness() {
+    const [v, setV] = React.useState<unknown>([]);
+    seen.push(v);
+    return <GalleryField id="g" label="Files" value={v} onChange={setV} max={null} accept={["image/png", ".pdf"]} />;
+  }
+  const user = userEvent.setup({ applyAccept: false });
+  renderWith(s, <Harness />);
+  await user.click(await screen.findByRole("button", { name: "Add" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose media" });
+  await within(dialog).findByText("type not allowed here");
+  assert.ok(!within(dialog).queryByRole("button", { name: "notes.txt" }), "a text file cannot be picked for a PNG/PDF field");
+  assert.ok(within(dialog).getByText("notes.txt"), "but it is shown");
+  // An upload of a type the field refuses is not sent; an accepted one is.
+  const input = dialog.querySelector('input[type="file"]') as HTMLInputElement;
+  await user.upload(input, [new File(["hello"], "readme.md", { type: "text/markdown" })]);
+  await within(dialog).findByText("Not uploaded (this field does not take the type): readme.md");
+  assert.equal(s.requests.some((r) => r.method === "POST" && r.path === "/assets/uploads"), false, "nothing was sent");
+  await user.click(within(dialog).getByRole("button", { name: "a.png" }));
+  await user.click(within(dialog).getByRole("button", { name: "Insert 1" }));
+  await waitFor(() => assert.deepEqual(seen.at(-1), [a.id]));
+});
+
+test("gallery: filling the last place puts focus on the last picture; Alt+← → reorder pictures", async () => {
+  const s = makeServer({ media: true });
+  const a = await s.addFile("a.png", { alt: "A" });
+  const b = await s.addFile("b.png", { alt: "B" });
+  const c = await s.addFile("c.png", { alt: "C" });
+  const seen: unknown[] = [];
+  function Harness() {
+    const [v, setV] = React.useState<unknown>([a.id]);
+    seen.push(v);
+    return <GalleryField id="g" label="Photos" value={v} onChange={setV} max={3} accept={["image/*"]} />;
+  }
+  const user = userEvent.setup();
+  renderWith(s, <Harness />);
+  await user.click(await screen.findByRole("button", { name: "Add" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose media" });
+  await user.click(await within(dialog).findByRole("button", { name: "b.png" }));
+  await user.click(within(dialog).getByRole("button", { name: "c.png" }));
+  await user.click(within(dialog).getByRole("button", { name: "Insert 2" }));
+  await waitFor(() => assert.deepEqual(seen.at(-1), [a.id, b.id, c.id]));
+  // The Add tile is gone (the field is full): focus is on the last picture, not lost to the page.
+  await waitFor(() => assert.equal(document.activeElement?.getAttribute("aria-label"), "Picture 3 of 3. Alt+← → to move"));
+  await user.keyboard("{Alt>}{ArrowLeft}{/Alt}");
+  await waitFor(() => assert.deepEqual(seen.at(-1), [a.id, c.id, b.id]));
+});
+
+test("gallery: the new last picture wins over the field that had focus before (generic focus return stands aside)", async () => {
+  const s = makeServer({ media: true });
+  const a = await s.addFile("a.png", { alt: "A" });
+  const b = await s.addFile("b.png", { alt: "B" });
+  const seen: unknown[] = [];
+  function Harness() {
+    const [v, setV] = React.useState<unknown>([a.id]);
+    seen.push(v);
+    return (
+      <>
+        <input aria-label="Other field" />
+        <GalleryField id="g" label="Photos" value={v} onChange={setV} max={2} accept={["image/*"]} />
+      </>
+    );
+  }
+  const user = userEvent.setup();
+  renderWith(s, <Harness />);
+  // Another field had focus last, then the picker opens with one place left.
+  await user.click(screen.getByRole("textbox", { name: "Other field" }));
+  await user.click(await screen.findByRole("button", { name: "Add" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose media" });
+  await user.click(await within(dialog).findByRole("button", { name: "b.png" }));
+  await user.click(within(dialog).getByRole("button", { name: "Insert 1" }));
+  await waitFor(() => assert.deepEqual(seen.at(-1), [a.id, b.id]));
+  await waitFor(() => assert.equal(screen.queryByRole("dialog", { name: "Choose media" }) === null, true));
+  await waitFor(() => assert.equal(document.activeElement?.getAttribute("aria-label"), "Picture 2 of 2. Alt+← → to move"));
+  // And it stays there (the fallback does not move it to "Other field" afterwards).
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(document.activeElement?.getAttribute("aria-label"), "Picture 2 of 2. Alt+← → to move");
 });

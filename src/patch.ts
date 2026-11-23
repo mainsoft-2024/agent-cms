@@ -5,7 +5,7 @@
  */
 
 import { CmsError } from "./errors";
-import { anchorOf, inlineText, parseInline } from "./markdown";
+import { anchorOf, headingParts, inlineText, parseInline } from "./markdown";
 
 export type PatchOp =
   /** Replace the text under the section's heading (the heading stays unless `heading` is given). */
@@ -44,16 +44,20 @@ export function sectionRanges(body: string): SectionRange[] {
     if (h) {
       cur.end = i;
       out.push(cur);
-      const text = inlineText(parseInline(h[1]));
-      const base = anchorOf(text);
+      const parts = headingParts(h[1]);
+      const text = inlineText(parseInline(parts.text));
+      const base = parts.pinned ?? anchorOf(text);
       const n = used.get(base) ?? 0;
       used.set(base, n + 1);
-      cur = { anchor: n ? `${base}-${n}` : base, heading: text, start: i, end: i + 1, hasHeading: true };
+      cur = { anchor: n && !parts.pinned ? `${base}-${n}` : base, heading: text, start: i, end: i + 1, hasHeading: true };
       continue;
     }
-    const h3 = !inFence ? /^###\s+(.+?)\s*#*\s*$/.exec(line) : null;
+    // ### headings take an anchor slot too, so ids match parseMarkdown(); #### ones take theirs after
+    // every ## and ###, so they never change a section's anchor.
+    const h3 = !inFence ? /^#{3}\s+(.+?)\s*#*\s*$/.exec(line) : null;
     if (h3) {
-      const base = anchorOf(inlineText(parseInline(h3[1])));
+      const p3 = headingParts(h3[1]);
+      const base = p3.pinned ?? anchorOf(inlineText(parseInline(p3.text)));
       used.set(base, (used.get(base) ?? 0) + 1);
     }
   }

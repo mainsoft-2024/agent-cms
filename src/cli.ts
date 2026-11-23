@@ -806,6 +806,9 @@ async function storageCheck(media: MediaOptions, origin: string | undefined, io:
     io.out(`store "${name}" (${cfg.visibility})`);
     io.out(`      accepts: ${(cfg.accept ?? media.accept ?? DEFAULT_ACCEPT).join(", ")}`);
     io.out(`      largest file: ${humanSize(cfg.maxFileSize ?? media.maxFileSize ?? DEFAULT_MAX_FILE_SIZE)}`);
+    const origins = cfg.browserOrigins ?? a.browserOrigins;
+    if (origins) io.out(`      browser origins: ${origins.length ? origins.join(" ") : "(none)"}`);
+    else io.out(`warn  browser origins unknown: the bundled admin's Content-Security-Policy will block uploads to this store. Set media.stores.${name}.browserOrigins (or the adapter's browserOrigins)`);
     const step = async (label: string, fn: () => Promise<string | void>, o: { warnOnly?: boolean } = {}) => {
       try {
         const note = await fn();

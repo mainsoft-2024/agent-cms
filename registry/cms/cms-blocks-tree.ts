@@ -59,7 +59,7 @@ export function siblings(list: readonly EBlock[], id: string): EBlock[] {
 export function accepts(parent: EBlock, child: EBlock): boolean {
   if (parent.type === "columns") return child.type === "col";
   if (child.type === "col") return false;
-  return ["col", "toggle", "bullet", "number", "todo"].includes(parent.type);
+  return ["col", "toggle", "bullet", "number", "todo", "steps"].includes(parent.type);
 }
 
 /**

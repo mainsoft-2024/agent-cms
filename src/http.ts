@@ -105,7 +105,7 @@
 
 import { timingSafeEqual } from "./crypto";
 import { z } from "zod";
-import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, type CmsCore, type CmsLike } from "./cms";
+import { BULK_ACTIONS, coreOf, PREVIEW_TTLS, SINGLE_SLUG, type CmsCore, type CmsLike } from "./cms";
 import { CmsError, formatMessage, isCmsError } from "./errors";
 import { keyFromHeader } from "./keys";
 import { clientIp, ipAllowed } from "./limits";
@@ -155,6 +155,8 @@ export interface CmsHandlerOptions {
    * proxy that sets those (a client could send the header itself).
    */
   clientIp?: (req: Request) => string | null;
+  /** The site the sitemap names (0.21.0), e.g. "https://docs.example.com". Default: the address of the request. */
+  publicOrigin?: string;
 }
 
 const DocInput = z
@@ -166,6 +168,11 @@ const DocInput = z
     category: z.string().nullable().optional(),
     keywords: z.array(z.string()).optional(),
     fields: z.record(z.unknown()).optional(),
+    seo: z
+      .object({ title: z.string().max(300).nullable().optional(), description: z.string().max(1000).nullable().optional(), image: z.string().max(2000).nullable().optional(), canonical: z.string().max(2000).nullable().optional(), noindex: z.boolean().optional() })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -174,7 +181,12 @@ const WriteBody = z.object({
   expectedVersion: z.number().int().positive().optional(),
   publish: z.boolean().optional(),
   note: z.string().max(300).nullable().optional(),
+  template: z.string().max(100).optional(),
 });
+const TemplateBody = z.object({ label: z.string().max(80).optional(), description: z.string().max(200).optional(), title: z.string().max(300).optional(), summary: z.string().max(1000).optional(), body: z.string().max(500_000).optional(), fields: z.record(z.unknown()).optional() });
+const RedirectBody = z.object({ from: z.string().max(500).optional(), to: z.string().max(2000).optional(), toDocumentId: z.string().max(64).nullable().optional(), status: z.union([z.literal(301), z.literal(302)]).optional() });
+/** `?expand=author,related` (0.21.0). */
+const expandOf = (q: URLSearchParams) => (q.get("expand") ?? "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 20);
 
 const Expected = z.object({ expectedVersion: z.number().int().positive().optional() });
 
@@ -336,12 +348,20 @@ async function body<T>(req: Request, schema: z.ZodType<T>, optional = false): Pr
 /** `If-Match: "v12"` (or W/"v12", or 12) → 12. */
 export function versionFromIfMatch(h: string | null): number | undefined {
   if (!h) return undefined;
-  const m = /^(?:W\/)?"?v?(\d+)"?$/.exec(h.trim());
+  const m = /^(?:W\/)?"?v?(\d+)(?:-[a-z0-9]+)?"?$/.exec(h.trim());
   if (!m) throw new CmsError("invalid_version", {}, { status: 400 });
   return Number(m[1]);
 }
 
 const etag = (d: { version: number }) => `"v${d.version}"`;
+/** 0.21.0: when snippets or `?expand` change what is sent, the tag also follows the content (FNV-1a). */
+function contentTag(raw: CmsDoc, sent: CmsDoc, dynamic: boolean): string {
+  if (!dynamic) return etag(raw);
+  const text = JSON.stringify([sent.body, sent.fields]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return `W/"v${raw.version}-${(h >>> 0).toString(36)}"`;
+}
 
 /** A doc on the wire: editors see the autosave, nobody else does. */
 const wire = (d: CmsDoc) => d;
@@ -456,7 +476,10 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           collections: core
             .collections()
             .filter((c) => core.can(actor, c.slug, "read"))
-            .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish") })),
+            .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish"), ...(c.single ? { single: true } : {}), ...(c.tree ? { tree: true } : {}), ...(c.snippets ? { snippets: true } : {}) })),
+          /** 0.21.0: redirects are on and this caller manages them; hosts `:::video` may embed. */
+          redirects: core.redirects.enabled() && core.isAdmin(actor),
+          videoHosts: core.videoHosts,
         });
       }
 
@@ -745,6 +768,16 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             canHtmlScripts: core.canHtml(actor, col, "html_scripts"),
             agentEdits: cfg.agentEdits ?? "apply",
             publishChecks: (cfg.publishChecks?.length ?? 0) > 0,
+            // 0.21.0 content model
+            tree: cfg.tree ? { maxDepth: (typeof cfg.tree === "object" ? cfg.tree.maxDepth : undefined) ?? 3 } : null,
+            single: !!cfg.single,
+            snippets: !!cfg.snippets,
+            seo: cfg.seo ? { titleMax: (typeof cfg.seo === "object" ? cfg.seo.titleMax : undefined) ?? 60, descriptionMax: (typeof cfg.seo === "object" ? cfg.seo.descriptionMax : undefined) ?? 160 } : null,
+            hideBody: !!cfg.admin?.hideBody,
+            relations: core.collectionRelations(col),
+            templates: (cfg.templates?.length ?? 0) > 0,
+            redirects: core.redirects.enabled(),
+            snippetCollections: core.collections().filter((c) => c.snippets).map((c) => c.slug),
           });
         }
         if (seg.length === 3 && seg[2] === "_diagnose" && m === "POST") {
@@ -761,6 +794,23 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           if (seg.length === 3 && m === "POST") return json({ filter: await core.filters.save(actor, col, await body(req, z.object({ name: z.string().max(200), query: z.record(z.unknown()), shared: z.boolean().optional() }))) }, 201);
           if (seg.length === 4 && m === "DELETE") {
             await core.filters.remove(actor, seg[3]);
+            return json({ ok: true });
+          }
+        }
+        // 0.21.0: tree, templates, slug suggestions
+        if (seg.length === 3 && seg[2] === "_tree" && m === "GET") return json({ tree: await core.tree(actor, col, { draft: q.get("draft") === "1" }) });
+        if (seg.length === 3 && seg[2] === "_move" && m === "POST") {
+          const b = await body(req, z.object({ id: z.string().max(60).optional(), slug: z.string().max(200).optional(), parentId: z.string().max(60).nullable().optional(), before: z.string().max(60).nullable().optional() }));
+          if (!b.id && !b.slug) throw new CmsError("invalid", { detail: "id or slug" }, { messages: core.messages });
+          return json({ doc: wire(await core.move(actor, col, (b.id ?? b.slug)!, { parentId: b.parentId ?? null, before: b.before ?? null })) });
+        }
+        if (seg.length === 3 && seg[2] === "_suggest-slug" && m === "GET") return json({ slug: await core.suggestSlug(actor, col, q.get("title") ?? "") });
+        if (seg[2] === "_templates") {
+          if (seg.length === 3 && m === "GET") return json({ templates: await core.templates(actor, col) });
+          if (seg.length === 3 && m === "POST") return json({ template: await core.saveTemplate(actor, col, await body(req, TemplateBody)) }, 201);
+          if (seg.length === 4 && m === "PATCH") return json({ template: await core.updateTemplate(actor, col, seg[3], await body(req, TemplateBody)) });
+          if (seg.length === 4 && m === "DELETE") {
+            await core.deleteTemplate(actor, col, seg[3]);
             return json({ ok: true });
           }
         }
@@ -799,8 +849,9 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const slug = seg[2];
         if (slug && seg.length === 3) {
           if (m === "GET" || m === "HEAD") {
-            const doc = await core.get(actor, col, slug, { draft: q.get("draft") === "1" });
-            const tag = etag(doc);
+            const raw = await core.get(actor, col, slug, { draft: q.get("draft") === "1", snippets: q.get("snippets") === "raw" ? "raw" : undefined });
+            const doc = await core.expand(actor, raw, expandOf(q), q.get("draft") === "1");
+            const tag = contentTag(raw, doc, expandOf(q).length > 0 || (q.get("draft") !== "1" && q.get("snippets") !== "raw" && core.collections().some((c) => c.snippets)));
             if (req.headers.get("if-none-match") === tag) return new Response(null, { status: 304, headers: { etag: tag } });
             // Editors also learn which open release the document is in.
             const release = q.get("draft") === "1" && core.can(actor, col, "write", doc) ? await core.releases.of(doc.id) : undefined;
@@ -812,7 +863,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json({ doc: wire(doc) }, 200, { etag: etag(doc) });
           }
           if (m === "DELETE") {
-            await core.remove(actor, col, slug, { expectedVersion: needMatch(expected(Number(q.get("expectedVersion")) || undefined)) });
+            await core.remove(actor, col, slug, { expectedVersion: needMatch(expected(Number(q.get("expectedVersion")) || undefined)), force: q.get("force") === "1" });
             return json({ ok: true });
           }
         }
@@ -832,6 +883,10 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json(await core.patch(actor, col, slug, b.ops as never, { ...b, expectedVersion: expected(b.expectedVersion) }));
           }
           if (action === "sections" && m === "GET") return json({ sections: await core.sections(actor, col, slug) });
+          if (action === "_refs" && m === "GET") return json({ referencedBy: await core.referencedBy(actor, col, slug) });
+          if (action === "_seo" && m === "GET") return json({ seo: await core.seoFor(actor, col, slug, { draft: q.get("draft") === "1" }) });
+          if (action === "_ancestors" && m === "GET") return json({ ancestors: await core.ancestors(actor, col, slug, { draft: q.get("draft") === "1" }) });
+          if (action === "_snippet-uses" && m === "GET") return json({ docs: await core.snippetUses(actor, col, slug) });
           if (action === "read" && m === "GET") {
             const n = (k: string) => (q.get(k) ? Number(q.get(k)) : undefined);
             return json(await core.ax.read(actor, col, slug, { offset: n("offset"), limit: n("limit"), outline: q.get("outline") === "1" }));
@@ -908,13 +963,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json(await core.diff(actor, col, slug, a, b));
           }
           if (m === "POST" && ["publish", "archive", "unarchive", "unpublish"].includes(action)) {
-            const b = await body(req, z.object({ version: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), documentId: z.string().max(64).optional() }), true);
+            const b = await body(req, z.object({ version: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), documentId: z.string().max(64).optional(), force: z.boolean().optional() }), true);
             const o = { expectedVersion: expected(b.expectedVersion) };
             const doc =
               action === "publish"
                 ? await core.publish(actor, col, slug, { ...o, version: b.version, documentId: b.documentId })
                 : action === "archive"
-                  ? await core.archive(actor, col, slug, o)
+                  ? await core.archive(actor, col, slug, { ...o, force: b.force === true || q.get("force") === "1" })
                   : action === "unarchive"
                     ? await core.unarchive(actor, col, slug, o)
                     : await core.unpublish(actor, col, slug, o);
@@ -959,6 +1014,45 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             return json({ doc: wire(doc) }, 200, { etag: etag(doc) });
           }
         }
+      }
+
+      // ── 0.21.0: singles, redirects, the sitemap ──
+      if (seg[0] === "singles" && seg[1]) {
+        const sl = seg[1];
+        if (seg.length === 2 && (m === "GET" || m === "HEAD")) {
+          const doc = await core.single(actor, sl, { draft: q.get("draft") === "1" });
+          return json({ doc: wire(await core.expand(actor, doc, expandOf(q), q.get("draft") === "1")) });
+        }
+        if (seg.length === 2 && m === "PUT") {
+          // expectedVersion 0: what GET says before the first save ("create it").
+          const b = await body(req, WriteBody.extend({ expectedVersion: z.number().int().nonnegative().optional() }));
+          return json({ doc: wire(await core.updateSingle(actor, sl, b.doc, { ...b, expectedVersion: needMatch(expected(b.expectedVersion)) })) });
+        }
+        if (seg.length === 3 && seg[2] === "_publish" && m === "POST") {
+          const b = await body(req, Expected, true);
+          return json({ doc: wire(await core.publish(actor, sl, SINGLE_SLUG, { expectedVersion: expected(b?.expectedVersion) })) });
+        }
+      }
+      if (seg[0] === "redirects") {
+        const rd = core.redirects;
+        if (seg.length === 1 && m === "GET") return json({ redirects: await rd.list(actor) });
+        if (seg.length === 1 && m === "POST") {
+          const b = await body(req, RedirectBody);
+          return json({ redirect: await rd.create(actor, { from: b.from ?? "", to: b.to ?? "", toDocumentId: b.toDocumentId ?? null, status: b.status }) }, 201);
+        }
+        if (seg.length === 2 && seg[1] === "_resolve" && m === "GET") return json({ redirect: await rd.resolve(q.get("path") ?? "") });
+        if (seg.length === 3 && seg[2] === "hits" && m === "GET") return json(await rd.hits(actor, seg[1], { days: Number(q.get("days")) || undefined }));
+        if (seg.length === 2 && m === "PATCH") return json({ redirect: await rd.update(actor, seg[1], await body(req, RedirectBody)) });
+        if (seg.length === 2 && m === "DELETE") {
+          await rd.remove(actor, seg[1]);
+          return json({ ok: true });
+        }
+      }
+      if (seg[0] === "sitemap.xml" && seg.length === 1 && (m === "GET" || m === "HEAD")) {
+        const origin = opts.publicOrigin ?? url.origin;
+        const page = q.get("page");
+        const xml = await core.sitemap(origin, { page: page ? Math.max(1, Number(page) || 1) : null, self: `${origin}${url.pathname}` });
+        return new Response(m === "HEAD" ? null : xml, { status: 200, headers: { "content-type": "application/xml; charset=utf-8", "cache-control": "public, max-age=300" } });
       }
 
       if (seg[0] === "_stats" && seg.length === 1 && m === "GET") {

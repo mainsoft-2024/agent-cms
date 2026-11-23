@@ -393,3 +393,42 @@ test("storage: names, types and what the bytes say", () => {
   assert.deepEqual(imageSize(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 11, 8, 0x01, 0xe0, 0x02, 0x80, 3, 1, 0x22, 0])), { width: 640, height: 480 });
   assert.equal(imageSize(new Uint8Array([1, 2, 3])), null);
 });
+
+test("media: an uploaded video in a :::video block (also in columns, toggles, steps) counts as in use; delete asks first", async () => {
+  const { cms, repo } = setup();
+  const vid = (id: string) =>
+    repo.insertAsset({ id, store: "public", key: `${id}.mp4`, folder: "", name: `${id}.mp4`, kind: "video", mime: "video/mp4", size: 10, width: null, height: null, duration: null, alt: "", tags: [], thumbKey: null, status: "ready", uploadId: null, createdBy: null, createdByKind: null, createdByAgent: null });
+  await vid("vidvidvid001");
+  await vid("vidvidvid002");
+  await vid("vidvidvid003");
+  const body = [
+    ":::video",
+    "asset:vidvidvid001/clip.mp4",
+    "A caption",
+    ":::",
+    "",
+    ":::columns",
+    ":::col",
+    ":::video",
+    "asset:vidvidvid002/b.mp4",
+    ":::",
+    ":::col",
+    ":::toggle More",
+    ":::video",
+    "asset:vidvidvid003",
+    ":::",
+    ":::",
+    ":::",
+    "",
+    "```",
+    ":::video",
+    "asset:vidvidvid009",
+    "```",
+  ].join("\n");
+  assert.deepEqual(assetUses(body).map((u) => [u.id, u.as, u.line]), [["vidvidvid001", "media", 2], ["vidvidvid002", "media", 9], ["vidvidvid003", "media", 14]]);
+  await cms.create(admin, "blog", { slug: "watch", title: "Watch", body }, { publish: true });
+  const got = await cms.assets.get(admin, "vidvidvid002");
+  assert.deepEqual(got.usage.map((u) => u.slug), ["watch"]);
+  await assert.rejects(cms.assets.remove(admin, "vidvidvid001"), (e) => isCmsError(e) && e.code === "asset_in_use" && e.params.count === 1);
+  await assert.rejects(cms.assets.remove(admin, "vidvidvid003"), code("asset_in_use"));
+});

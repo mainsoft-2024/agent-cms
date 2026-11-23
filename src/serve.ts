@@ -66,6 +66,12 @@ export interface ServeOptions {
    * (at least 16 characters). Default: no `/metrics`.
    */
   metricsToken?: string;
+  /**
+   * More origins the admin may connect to (its Content-Security-Policy `connect-src`), e.g.
+   * `["https://uploads.example.com"]`. Storage origins come from each store (`browserOrigins`); this is
+   * for anything else, or `["https:"]` to allow every https address on purpose.
+   */
+  connectSrc?: readonly string[];
 }
 
 export interface RunningServer {
@@ -122,6 +128,12 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
         .replace(/<title>[^<]*<\/title>/, `<title>${appName.replace(/[<&]/g, "")}</title>`)
         .replace(/(href|src)="\.\//g, `$1="${adminPath}/`)
     : "";
+  // Uploads go from the browser straight to the storage (signed URLs): the origins each store names,
+  // plus `connectSrc`. A store that names none is not guessed at (no blanket `https:`): it is reported.
+  const connect = [...new Set([...o.cms.assets.browserOrigins(), ...(o.connectSrc ?? [])])].filter((x) => /^[\w*.:/[\]-]+$/.test(x));
+  const unknown = o.cms.assets.storesWithoutOrigins();
+  if (hasAdmin && unknown.length && !o.connectSrc?.length)
+    log(`[agent-cms] warning: storage ${unknown.map((n) => `"${n}"`).join(", ")} does not say which origins browsers upload to, so the admin's Content-Security-Policy blocks those uploads. Set media.stores.<name>.browserOrigins or server.connectSrc`);
   const inline = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => `'sha256-${createHash("sha256").update(m[1]).digest("base64")}'`);
   const csp = [
     "default-src 'self'",
@@ -131,7 +143,7 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
     "img-src 'self' data: blob: https: http:",
     "media-src 'self' blob: https: http:",
     "font-src 'self' data:",
-    "connect-src 'self'",
+    `connect-src 'self' ${connect.join(" ")}`.trim(),
     // The preview of HTML blocks runs in a sandboxed frame; embeds the HTML policy allows.
     "frame-src 'self' blob: https:",
     "frame-ancestors 'none'",

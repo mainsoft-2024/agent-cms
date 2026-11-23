@@ -14,7 +14,7 @@ WORK="${WORK:-$(mktemp -d)}"
 PORT="${PORT:-4199}"
 # shadcn's component library: base (Base UI, the shadcn default) or radix.
 BASE="${BASE:-base}"
-ITEMS="${ITEMS:-cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command}"
+ITEMS="${ITEMS:-cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command cms-redirects}"
 SERVER_PID=""
 cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; [ -z "${KEEP:-}" ] && rm -rf "$WORK"; [ -n "${TARBALL:-}" ] && rm -f "$TARBALL"; }
 trap cleanup EXIT

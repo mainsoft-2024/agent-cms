@@ -7,7 +7,7 @@
 // unchanged writes its original markdown, byte for byte.
 //
 // The schema is small and strict, the same blocks the markdown dialect has:
-//   paragraph, heading (2, 3), quote, callout, listItem (bullet, number, todo:
+//   paragraph, heading (2, 3, 4), quote, callout, listItem (bullet, number, todo:
 //   a line of text and the blocks inside it), toggle (the same, can be closed),
 //   codeBlock, rule, media (picture or file with alt text and caption), table,
 //   columns (two or more columns of blocks), source (markdown kept as text).
@@ -52,19 +52,24 @@ const Paragraph = Node.create({
   renderHTML: ({ node, HTMLAttributes }) => ["p", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "p", class: "cms-b cms-p" }), 0],
 });
 
+/** A heading node's level as the markdown has it: 2, 3 or 4. */
+export const headingLevel = (level: unknown): 2 | 3 | 4 => (level === 3 ? 3 : level === 4 ? 4 : 2);
+
 const Heading = Node.create({
   name: "heading",
   group: "block",
   content: "inline*",
   defining: true,
-  addAttributes: () => ({ ...bid, level: { default: 2, rendered: false } }),
+  addAttributes: () => ({ ...bid, level: { default: 2, rendered: false }, anchor: { default: null as string | null, keepOnSplit: false, rendered: false } }),
   parseHTML: () => [
     { tag: "h1", attrs: { level: 2 } },
     { tag: "h2", attrs: { level: 2 } },
     { tag: "h3", attrs: { level: 3 } },
-    { tag: "h4", attrs: { level: 3 } },
+    { tag: "h4", attrs: { level: 4 } },
+    { tag: "h5", attrs: { level: 4 } },
+    { tag: "h6", attrs: { level: 4 } },
   ],
-  renderHTML: ({ node, HTMLAttributes }) => [node.attrs.level === 3 ? "h3" : "h2", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": `h${node.attrs.level}`, class: `cms-b cms-h${node.attrs.level}` }), 0],
+  renderHTML: ({ node, HTMLAttributes }) => [`h${headingLevel(node.attrs.level)}`, mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": `h${headingLevel(node.attrs.level)}`, class: `cms-b cms-h${headingLevel(node.attrs.level)}` }), 0],
 });
 
 const Quote = Node.create({
@@ -215,6 +220,97 @@ const Source = Node.create({
   renderHTML: ({ node, HTMLAttributes }) => ["div", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "source", "data-source": node.attrs.md, "data-kind": node.attrs.kind, class: "cms-b cms-source" })],
 });
 
+/** Numbered steps (`:::steps`): blocks inside, numbered by the screen. */
+const Steps = Node.create({
+  name: "steps",
+  group: "block",
+  content: "block+",
+  defining: true,
+  addAttributes: () => ({ ...bid }),
+  parseHTML: () => [{ tag: "div[data-steps]" }],
+  renderHTML: ({ node, HTMLAttributes }) => ["div", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "steps", "data-steps": "", class: "cms-b cms-steps" }), 0],
+});
+
+/** A link shown as a card (`:::card`). */
+const Card = Node.create({
+  name: "card",
+  group: "block",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes: () => ({
+    ...bid,
+    href: { default: "", rendered: false },
+    label: { default: "", rendered: false },
+    description: { default: "", rendered: false },
+    image: { default: "", rendered: false },
+    alt: { default: "", rendered: false },
+  }),
+  parseHTML: () => [
+    {
+      tag: "div[data-card]",
+      getAttrs: (el) => {
+        const d = (el as HTMLElement).dataset;
+        return { href: d.href ?? "", label: d.label ?? "", description: d.description ?? "", image: d.image ?? "", alt: d.alt ?? "" };
+      },
+    },
+  ],
+  renderHTML: ({ node, HTMLAttributes }) => [
+    "div",
+    mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), {
+      "data-block-type": "card",
+      "data-card": "",
+      "data-href": node.attrs.href,
+      "data-label": node.attrs.label,
+      "data-description": node.attrs.description,
+      "data-image": node.attrs.image,
+      "data-alt": node.attrs.alt,
+      class: "cms-b cms-card",
+    }),
+  ],
+});
+
+/** A video (`:::video`): an address on an allowed site or a media library file. */
+const Video = Node.create({
+  name: "video",
+  group: "block",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes: () => ({ ...bid, src: { default: "", rendered: false }, caption: { default: "", rendered: false } }),
+  parseHTML: () => [{ tag: "div[data-video]", getAttrs: (el) => ({ src: (el as HTMLElement).dataset.src ?? "", caption: (el as HTMLElement).dataset.caption ?? "" }) }],
+  renderHTML: ({ node, HTMLAttributes }) => ["div", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "video", "data-video": "", "data-src": node.attrs.src, "data-caption": node.attrs.caption, class: "cms-b cms-video" })],
+});
+
+/** A snippet on a line of its own (`[[snippet:key]]`). */
+const Snippet = Node.create({
+  name: "snippet",
+  group: "block",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes: () => ({ ...bid, key: { default: "", rendered: false } }),
+  parseHTML: () => [{ tag: "div[data-snippet]", getAttrs: (el) => ({ key: (el as HTMLElement).dataset.snippet ?? "" }) }],
+  renderHTML: ({ node, HTMLAttributes }) => ["div", mergeAttributes(HTMLAttributes, blockAttrs(node.attrs.bid), { "data-block-type": "snippet", "data-snippet": node.attrs.key, class: "cms-b cms-snippet" })],
+});
+
+/** A snippet inside a line of text (`[[snippet:key]]` among other words): one uneditable piece. */
+const SnippetRef = Node.create({
+  name: "snippetRef",
+  inline: true,
+  group: "inline",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes: () => ({ key: { default: "", rendered: false } }),
+  parseHTML: () => [{ tag: "span[data-snippet-ref]", getAttrs: (el) => ({ key: (el as HTMLElement).dataset.snippetRef ?? "" }) }],
+  renderHTML: ({ node, HTMLAttributes }) => ["span", mergeAttributes(HTMLAttributes, { "data-snippet-ref": node.attrs.key, class: "cms-snippet-ref" }), `[[snippet:${node.attrs.key}]]`],
+  renderText: ({ node }) => (node.attrs.key ? `[[snippet:${node.attrs.key}]]` : ""),
+});
+
+/** A snippet token inside text, as the server reads it. */
+export const SNIPPET_IN_TEXT = /\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]/gi;
+
 const Columns = Node.create({
   name: "columns",
   group: "block",
@@ -349,6 +445,11 @@ export const schemaExtensions: Extensions = [
   Rule,
   Media,
   Source,
+  Steps,
+  Card,
+  Video,
+  Snippet,
+  SnippetRef,
   Columns,
   Column,
   CmsTable,
@@ -380,10 +481,20 @@ export function spansToContent(spans: Span[]): JSONContent[] {
     if (s.s) marks.push({ type: "strike" });
     if (s.code) marks.push({ type: "code" });
     if (s.href) marks.push({ type: "link", attrs: { href: s.href } });
+    const withMarks = (n: JSONContent): JSONContent => (marks.length ? { ...n, marks } : n);
     s.text.split(/(\n)/).forEach((part) => {
       if (!part) return;
-      if (part === "\n") out.push({ type: "hardBreak" });
-      else out.push(marks.length ? { type: "text", text: part, marks } : { type: "text", text: part });
+      if (part === "\n") return void out.push({ type: "hardBreak" });
+      // A snippet token (a `ref` span: not escaped, not in code or a link) is a chip; the same text
+      // written escaped (`\[[snippet:x]]`) stays text.
+      if (s.code || s.href || !s.ref) return void out.push(withMarks({ type: "text", text: part }));
+      let last = 0;
+      for (const m of part.matchAll(SNIPPET_IN_TEXT)) {
+        if (m.index! > last) out.push(withMarks({ type: "text", text: part.slice(last, m.index) }));
+        out.push(withMarks({ type: "snippetRef", attrs: { key: m[1] } }));
+        last = m.index! + m[0].length;
+      }
+      if (last < part.length) out.push(withMarks({ type: "text", text: part.slice(last) }));
     });
   }
   return out;
@@ -397,8 +508,11 @@ export function nodeSpans(node: PMNode): Span[] {
       out.push({ text: "\n" });
       return;
     }
-    if (!child.isText) return;
-    const s: Span = { text: child.text ?? "" };
+    const ref = child.type.name === "snippetRef";
+    if (!child.isText && !ref) return;
+    // A chip without a key (being picked) writes nothing.
+    if (ref && !child.attrs.key) return;
+    const s: Span = ref ? { text: `[[snippet:${child.attrs.key as string}]]`, ref: true } : { text: child.text ?? "" };
     for (const m of child.marks) {
       if (m.type.name === "bold") s.b = true;
       else if (m.type.name === "italic") s.i = true;
@@ -426,7 +540,8 @@ export function blocksToDoc(blocks: readonly EBlock[], o: { open?: ReadonlySet<s
         return { type: "paragraph", attrs: id, content: spansToContent(b.spans) };
       case "h2":
       case "h3":
-        return { type: "heading", attrs: { ...id, level: b.type === "h3" ? 3 : 2 }, content: spansToContent(b.spans) };
+      case "h4":
+        return { type: "heading", attrs: { ...id, level: Number(b.type[1]), anchor: b.anchor ?? null }, content: spansToContent(b.spans) };
       case "quote":
         return { type: "quote", attrs: id, content: spansToContent(b.spans) };
       case "callout":
@@ -449,6 +564,14 @@ export function blocksToDoc(blocks: readonly EBlock[], o: { open?: ReadonlySet<s
         return { type: "media", attrs: { ...id, target: b.target, alt: b.alt, caption: b.caption ?? "" } };
       case "source":
         return { type: "source", attrs: { ...id, md: b.md, kind: b.kind } };
+      case "steps":
+        return { type: "steps", attrs: id, content: inside.length ? inside : [{ type: "paragraph", attrs: { bid: newId() } }] };
+      case "card":
+        return { type: "card", attrs: { ...id, href: b.href, label: b.label, description: b.description, image: b.image, alt: b.alt } };
+      case "video":
+        return { type: "video", attrs: { ...id, src: b.src, caption: b.caption } };
+      case "snippet":
+        return { type: "snippet", attrs: { ...id, key: b.key } };
       case "table": {
         const width = Math.max(1, b.head.length, ...b.rows.map((r) => r.length));
         const fill = (r: Span[][]) => [...r, ...emptyCells(width - r.length)].slice(0, width);
@@ -484,8 +607,32 @@ export function docToBlocks(doc: PMNode): EBlock[] {
       case "paragraph":
         out.push({ ...base, type: "p", spans: nodeSpans(n) } as TextBlock);
         return;
-      case "heading":
-        out.push({ ...base, type: n.attrs.level === 3 ? "h3" : "h2", spans: nodeSpans(n) } as TextBlock);
+      case "heading": {
+        const h = { ...base, type: `h${headingLevel(n.attrs.level)}`, spans: nodeSpans(n) } as TextBlock;
+        if (n.attrs.anchor) h.anchor = n.attrs.anchor as string;
+        out.push(h);
+        return;
+      }
+      case "steps":
+        out.push({ ...base, type: "steps" });
+        n.forEach((c) => walk(c, id));
+        return;
+      case "card":
+        out.push({
+          ...base,
+          type: "card",
+          href: (n.attrs.href as string) ?? "",
+          label: (n.attrs.label as string) ?? "",
+          description: (n.attrs.description as string) ?? "",
+          image: (n.attrs.image as string) ?? "",
+          alt: (n.attrs.alt as string) ?? "",
+        });
+        return;
+      case "video":
+        out.push({ ...base, type: "video", src: (n.attrs.src as string) ?? "", caption: (n.attrs.caption as string) ?? "" });
+        return;
+      case "snippet":
+        out.push({ ...base, type: "snippet", key: (n.attrs.key as string) ?? "" });
         return;
       case "quote":
         out.push({ ...base, type: "quote", spans: nodeSpans(n) } as TextBlock);

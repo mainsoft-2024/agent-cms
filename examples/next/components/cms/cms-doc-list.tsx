@@ -8,7 +8,7 @@
 "use client";
 
 import * as React from "react";
-import { Bookmark, ChevronRight, CircleAlert, CircleCheck, EyeOff, Eye, MoreHorizontal, Plus, Search, Trash2, Undo2, Upload, Users, X, type LucideIcon } from "lucide-react";
+import { Bookmark, ChevronRight, CircleAlert, CircleCheck, EyeOff, Eye, List, ListTree, MoreHorizontal, Plus, Search, Trash2, Undo2, Upload, Users, X, type LucideIcon } from "lucide-react";
 import type { RestClient } from "@mainsoft/agent-cms/client";
 import type { DocSummary, Presence } from "@mainsoft/agent-cms/types";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -24,7 +24,8 @@ import type { MessageKey } from "./cms-messages";
 import { errorMessage } from "./cms-messages";
 import { CmsEmpty } from "./cms-empty";
 import { ConfirmDialog, flowState, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, Who, DIALOG } from "./cms-parts";
-import { formatZoned, relativeTime, useAsync, useCms, trashChanged, useDebounced, useIsMobile, useShortcut } from "./use-cms";
+import { formatZoned, relativeTime, useAsync, useCms, trashChanged, useDebounced, useIsMobile, useLocalStorage, useShortcut } from "./use-cms";
+import { chooseTemplate, CmsTreeView, ReferencedDialog, TemplatePicker } from "./cms-structure";
 
 type BulkAction = Parameters<RestClient["bulk"]>[1];
 type BulkResult = Awaited<ReturnType<RestClient["bulk"]>>[number];
@@ -84,6 +85,19 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   const [running, setRunning] = React.useState(false);
   const [runError, setRunError] = React.useState<string | null>(null);
   const [results, setResults] = React.useState<{ action: BulkAction; results: BulkResult[]; titles: Record<string, string> } | null>(null);
+  // 0.21.0: list or tree, the template picker, and deleting a document others point at.
+  const [view, setView] = useLocalStorage<"list" | "tree">(`cms-list-view:${collection}`, "list");
+  const [picking, setPicking] = React.useState(false);
+  // Documents other documents point at, asked one by one (delete or archive anyway).
+  const [referenced, setReferenced] = React.useState<{ slug: string; title: string; action: "delete" | "archive"; version?: number }[]>([]);
+  /** "New document": with templates, choose one first; without, straight to the editor. */
+  const startNew = async () => {
+    if (!onNewDocument) return;
+    chooseTemplate(collection, null);
+    const list = await client.templates(collection).catch(() => []);
+    if (list.length) setPicking(true);
+    else onNewDocument(collection);
+  };
 
   // ── saved filters ──
   const [savedFilters, setSavedFilters] = React.useState<SavedFilters>([]);
@@ -206,7 +220,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   // ── keyboard: "/" finds, "n" starts a new document, mod+A selects what is shown, Esc clears ──
   const searchRef = React.useRef<HTMLInputElement>(null);
   useShortcut("/", () => searchRef.current?.focus());
-  useShortcut(!!onNewDocument && "n", () => schema.data?.canWrite && onNewDocument?.(collection));
+  useShortcut(!!onNewDocument && "n", () => schema.data?.canWrite && void startNew());
   useShortcut(
     docs.length > 0 && "mod+a",
     () => {
@@ -229,6 +243,11 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
         confirm.slugs.map((slug) => ({ slug, expectedVersion: bySlug.get(slug)?.version }))
       );
       const action = confirm.action;
+      const blocked = action === "delete" || action === "archive" ? res.filter((r) => !r.ok && r.error?.code === "doc_referenced") : [];
+      if (blocked.length) {
+        setReferenced(blocked.map((r) => ({ slug: r.slug, title: bySlug.get(r.slug)?.title || r.slug, action: action as "delete" | "archive", version: bySlug.get(r.slug)?.version })));
+        res.splice(0, res.length, ...res.filter((r) => !blocked.includes(r)));
+      }
       const done = res.filter((r) => r.ok);
       if (done.length === res.length) {
         // Everything went through: a message with Undo instead of a dialog.
@@ -246,7 +265,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
           trashChanged();
         };
         if (action === "delete") trashChanged();
-        toast(t(`bulk_done_${action}` as MessageKey, { n: done.length }), { tone: "ok", action: undoable ? { label: t("undo"), run: undo } : undefined });
+        if (done.length) toast(t(`bulk_done_${action}` as MessageKey, { n: done.length }), { tone: "ok", action: undoable ? { label: t("undo"), run: undo } : undefined });
       } else setResults({ action, results: res, titles: Object.fromEntries(confirm.slugs.map((s) => [s, bySlug.get(s)?.title ?? s])) });
       setConfirm(null);
       clearSelection();
@@ -263,6 +282,12 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   const sch = schema.data;
   const canWrite = sch?.canWrite ?? false;
   const canPublish = sch?.canPublish ?? false;
+  // A single (one document) has no list: hosts that route every collection here go to its editor.
+  const single = !!sch?.single;
+  React.useEffect(() => {
+    if (single) onOpenDocument?.(collection, "_single");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [single, collection]);
   const filtered = tab !== "all" || !!q || category !== "__all" || by !== "__all";
   const isEmpty = !loading && !loadError && c?.all === 0 && !filtered;
 
@@ -473,8 +498,36 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
           <Search aria-hidden className="h-4 w-4" />
         </Button>
       ) : null}
+      {sch?.tree ? (
+        <Segmented
+          label={t("view_as")}
+          value={view}
+          onChange={setView}
+          options={[
+            {
+              value: "list",
+              label: (
+                <>
+                  <List aria-hidden className="h-3.5 w-3.5" />
+                  {t("view_list")}
+                </>
+              ),
+            },
+            {
+              value: "tree",
+              label: (
+                <>
+                  <ListTree aria-hidden className="h-3.5 w-3.5" />
+                  {t("view_tree")}
+                </>
+              ),
+            },
+          ]}
+          itemClassName="h-7 gap-1.5 px-2.5 text-xs"
+        />
+      ) : null}
       {onNewDocument && canWrite ? (
-        <Button type="button" size={mobile ? "sm" : "default"} className="gap-1.5" onClick={() => onNewDocument(collection)}>
+        <Button type="button" size={mobile ? "sm" : "default"} className="gap-1.5" onClick={() => void startNew()}>
           <Plus aria-hidden className="h-4 w-4" />
           {t("new_document")}
         </Button>
@@ -485,8 +538,10 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       {header}
-      {isEmpty ? (
-        <CmsEmpty collection={collection} onNewDocument={onNewDocument} keysHref={keysHref} />
+      {sch?.tree && view === "tree" && !isEmpty ? (
+        <CmsTreeView collection={collection} canWrite={canWrite} maxDepth={sch.tree.maxDepth} onOpen={open} hrefFor={hrefFor ? (s) => hrefFor(collection, s) : undefined} />
+      ) : isEmpty ? (
+        <CmsEmpty collection={collection} onNewDocument={onNewDocument ? () => void startNew() : undefined} keysHref={keysHref} />
       ) : mobile ? (
         <>
           {!selectMode ? (
@@ -627,7 +682,7 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
           </Table>
         </div>
       )}
-      {!isEmpty ? (
+      {!isEmpty && !(sch?.tree && view === "tree") ? (
         <div className={cn("flex items-center justify-between gap-2 py-3 text-xs text-muted-foreground", mobile ? "px-4" : "px-6")}>
           <StatusText className="text-xs" tone={loadError || moreError ? "error" : "muted"}>
             {loadError ? errorMessage(loadError, t) : moreError ? `${t("shown_of", { shown: docs.length, total })} · ${errorMessage(moreError, t)}` : loading ? t("loading") : docs.length === 0 ? t("no_results") : t("shown_of", { shown: docs.length, total })}
@@ -690,6 +745,36 @@ export function CmsDocList({ collection, onOpenDocument, hrefFor, onNewDocument,
         />
       ) : null}
 
+      {picking ? (
+        <TemplatePicker
+          collection={collection}
+          onClose={() => setPicking(false)}
+          onPick={(tpl) => {
+            setPicking(false);
+            chooseTemplate(collection, tpl);
+            onNewDocument?.(collection);
+          }}
+        />
+      ) : null}
+      {referenced[0] ? (
+        <ReferencedDialog
+          collection={collection}
+          key={`${referenced[0].action}:${referenced[0].slug}`}
+          slug={referenced[0].slug}
+          title={referenced[0].title}
+          action={referenced[0].action}
+          expectedVersion={referenced[0].version}
+          onClose={() => setReferenced((r) => r.slice(1))}
+          onDone={() => {
+            const action = referenced[0].action;
+            toast(t(action === "archive" ? "bulk_done_archive" : "bulk_done_delete", { n: 1 }), { tone: "ok" });
+            setReferenced((r) => r.slice(1));
+            setReloadTick((n) => n + 1);
+            counts.reload();
+            if (action === "delete") trashChanged();
+          }}
+        />
+      ) : null}
       <Dialog open={!!results} onOpenChange={(o) => !o && setResults(null)}>
         <DialogContent className={DIALOG.md}>
           {results ? <BulkResults {...results} onOpen={(slug) => (setResults(null), open(slug))} canOpen={!!onOpenDocument} onClose={() => setResults(null)} /> : null}

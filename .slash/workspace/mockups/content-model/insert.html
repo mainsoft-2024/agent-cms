@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>블록 넣기</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="../media-library/app.css">
+<link rel="stylesheet" href="../publish-flow/x.css">
+<link rel="stylesheet" href="v2.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <div class="nav"><span data-icon="layout-dashboard"></span><span>대시보드</span></div>
+    <h2>컬렉션</h2>
+    <div class="nav"><span data-icon="book-open"></span><span>Blog</span><span class="n">5</span></div>
+    <div class="nav on"><span data-icon="book-open"></span><span>Guide</span><span class="n">6</span></div>
+    <div class="nav"><span data-icon="puzzle"></span><span>Snippets</span><span class="n">3</span></div>
+    <div class="nav"><span data-icon="settings"></span><span>사이트 설정</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav"><span data-icon="image"></span><span>미디어</span></div>
+    <div class="nav"><span data-icon="clipboard-list"></span><span>폼</span></div>
+    <div class="nav"><span data-icon="layers"></span><span>릴리스</span></div>
+    <div class="nav"><span data-icon="trash-2"></span><span>휴지통</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="ed-top">
+      <span class="crumbs">Guide <span>/</span></span>
+      <h1>Connect Slack</h1>
+      <span class="badge"><i class="dot draft"></i>초안</span>
+      <span class="grow"></span>
+      <span class="b out sm">저장</span>
+      <span class="b sm">게시<span data-icon="chevron-down" class="i14"></span></span>
+    </header>
+
+    <div class="tb" role="toolbar">
+      <div class="tmini"><span class="on">블록</span><span>마크다운</span></div>
+      <span class="tsep"></span>
+      <div class="grp"><span class="tbtn" data-icon="undo-2"></span><span class="tbtn" data-icon="redo-2"></span></div>
+      <span class="tsep"></span>
+      <span class="tbtn wide">본문<span data-icon="chevron-down" class="car"></span></span>
+      <span class="tsep"></span>
+      <div class="grp"><span class="tbtn" data-icon="bold"></span><span class="tbtn" data-icon="italic"></span><span class="tbtn" data-icon="strikethrough"></span><span class="tbtn" data-icon="code"></span><span class="tbtn" data-icon="link"></span></div>
+      <span class="tsep"></span>
+      <div class="grp"><span class="tbtn" data-icon="list"></span><span class="tbtn" data-icon="list-ordered"></span><span class="tbtn" data-icon="list-checks"></span><span class="tbtn" data-icon="text-quote"></span><span class="tbtn" data-icon="message-square-warning"></span><span class="tbtn" data-icon="table"></span><span class="tbtn" data-icon="square-code"></span><span class="tbtn" data-icon="minus"></span></div>
+      <span class="tsep"></span>
+      <span class="tbtn wide"><span data-icon="image-plus" class="i14"></span><span data-icon="chevron-down" class="car"></span></span>
+      <span class="tbtn wide"><span data-icon="plus" class="i14"></span>넣기<span data-icon="chevron-down" class="car"></span></span>
+      <span class="grow"></span>
+      <div class="grp"><span class="tbtn" data-icon="search"></span><span class="tbtn" data-icon="list-tree"></span><span class="tbtn" data-icon="panel-right"></span><span class="tbtn" data-icon="app-window"></span><span class="tbtn" data-icon="maximize-2"></span></div>
+      <span class="tsep"></span>
+      <span class="tstat">96단어 · 1분</span>
+    </div>
+
+    <div class="paper">
+      <div class="colw">
+        <div class="blk"><h2 style="margin-top:0">Connect</h2></div>
+        <div class="blk"><p>Link your Slack workspace in two steps.</p></div>
+        <div class="blk"><div class="hand"><span data-icon="plus" class="i14 on"></span><span data-icon="grip-vertical" class="i14"></span></div><p class="ph-line">글을 쓰거나 /를 눌러 블록 넣기</p></div>
+
+        <div class="bmenu" style="left:0;top:118px" data-label="+ 메뉴">
+          <div class="quick" data-label="미디어 빠른 줄">
+            <span class="on"><span data-icon="upload"></span>올리기</span>
+            <span><span data-icon="images"></span>라이브러리</span>
+            <span><span data-icon="youtube"></span>영상 링크</span>
+          </div>
+          <h4>기본 블록</h4>
+          <div class="mi"><span class="bx"><span data-icon="pilcrow" class="i14"></span></span><span><b>텍스트</b><small>보통 문단</small></span></div>
+          <div class="mi"><span class="bx" style="font-weight:600;font-size:13px">H2</span><span><b>제목</b><small>구역 제목</small></span><kbd>##</kbd></div>
+          <div class="mi"><span class="bx"><span data-icon="list" class="i14"></span></span><span><b>글머리 목록</b><small>순서 없는 목록</small></span><kbd>-</kbd></div>
+          <h4>새 블록</h4>
+          <div class="mi"><span class="bx"><span data-icon="footprints" class="i14"></span></span><span><b>단계</b><small>번호가 붙은 따라 하기</small></span><kbd>:::steps</kbd></div>
+          <div class="mi"><span class="bx"><span data-icon="link-2" class="i14"></span></span><span><b>링크 카드</b><small>제목과 그림이 붙은 링크</small></span><kbd>:::card</kbd></div>
+          <div class="mi"><span class="bx"><span data-icon="clapperboard" class="i14"></span></span><span><b>영상</b><small>YouTube, Vimeo, 올린 영상</small></span><kbd>:::video</kbd></div>
+          <div class="mi"><span class="bx"><span data-icon="puzzle" class="i14"></span></span><span><b>스니펫</b><small>다른 곳에서 고치는 공통 글</small></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="estat"><span>문제 없음</span><span class="grow"></span><span>저장하지 않은 수정</span></div>
+  </main>
+</div>
+</body>
+</html>

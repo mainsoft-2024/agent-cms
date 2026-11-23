@@ -13,7 +13,7 @@
  */
 
 import { bigint, bigserial, boolean, date, index, integer, jsonb, pgSchema, pgTable, primaryKey, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import type { AuditEntry, AutosaveState, DocContent, KeyScope, Presence, ReleaseItem, ReviewMark, ReviewRequest, Schedule, VersionChange } from "./types";
+import type { AuditEntry, AutosaveState, DocContent, DocSeo, KeyScope, Presence, ReleaseItem, ReviewMark, ReviewRequest, Schedule, VersionChange } from "./types";
 
 import { SCHEMA_VERSION } from "./schema-version";
 
@@ -68,6 +68,11 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       schedule: jsonb("schedule").$type<Schedule | null>(),
       dueAt: timestamp("due_at", { withTimezone: true }),
       review: jsonb("review").$type<ReviewRequest | null>(),
+      /** Tree collections (0.21.0, schema 10): the parent and the place among siblings. */
+      parentId: uuid("parent_id"),
+      position: text("position"),
+      /** Search engine details of the working copy (0.21.0). */
+      seo: jsonb("seo").$type<DocSeo | null>(),
       createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
       updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     },
@@ -379,7 +384,68 @@ export function cmsTables(o: CmsTablesOptions = {}) {
     (t) => ({ atIdx: index(n("changes_at_idx")).on(t.at), docIdx: index(n("changes_doc_idx")).on(t.collection, t.slug, t.seq) })
   );
 
-  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, records, changes, options: { prefix, schema: o.schema ?? null } };
+  /** Which documents point at which through relation fields (0.21.0, schema 10). Recomputed on every save. */
+  const docRefs = table(
+    n("doc_refs"),
+    {
+      fromId: uuid("from_document_id")
+        .notNull()
+        .references(() => documents.id, { onDelete: "cascade" }),
+      toId: uuid("to_document_id").notNull(),
+      field: text("field").notNull(),
+      inDraft: boolean("in_draft").notNull().default(false),
+      inPublished: boolean("in_published").notNull().default(false),
+    },
+    (t) => ({ pk: primaryKey({ columns: [t.fromId, t.toId, t.field] }), toIdx: index(n("doc_refs_to_idx")).on(t.toId) })
+  );
+
+  /** Old heading anchors that still lead to the heading (0.21.0). */
+  const anchorAliases = table(
+    n("anchor_aliases"),
+    {
+      documentId: uuid("document_id")
+        .notNull()
+        .references(() => documents.id, { onDelete: "cascade" }),
+      old: text("old").notNull(),
+      current: text("current").notNull(),
+      createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => ({ pk: primaryKey({ columns: [t.documentId, t.old] }) })
+  );
+
+  /** Old addresses and where they lead (0.21.0). */
+  const redirects = table(
+    n("redirects"),
+    {
+      id: uuid("id").primaryKey().defaultRandom(),
+      fromPath: text("from_path").notNull(),
+      toPath: text("to_path").notNull(),
+      toDocumentId: uuid("to_document_id"),
+      status: integer("status").notNull().default(301),
+      source: text("source").notNull().default("manual"),
+      hits: integer("hits").notNull().default(0),
+      lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
+      createdBy: text("created_by"),
+      createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+      updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => ({ fromIdx: uniqueIndex(n("redirects_from_idx")).on(t.fromPath) })
+  );
+
+  /** Visits of a redirect per calendar day (0.21.0); the redirects screen shows the last 30 days. */
+  const redirectHits = table(
+    n("redirect_hits"),
+    {
+      redirectId: uuid("redirect_id")
+        .notNull()
+        .references(() => redirects.id, { onDelete: "cascade" }),
+      day: date("day").notNull(),
+      n: integer("n").notNull().default(0),
+    },
+    (t) => ({ pk: primaryKey({ columns: [t.redirectId, t.day] }), dayIdx: index(n("redirect_hits_day_idx")).on(t.day) })
+  );
+
+  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, records, changes, docRefs, anchorAliases, redirects, redirectHits, options: { prefix, schema: o.schema ?? null } };
 }
 
 export type CmsTables = ReturnType<typeof cmsTables>;
@@ -403,6 +469,10 @@ export const cmsWebhooks = defaultTables.webhooks;
 export const cmsWebhookDeliveries = defaultTables.webhookDeliveries;
 export const cmsRecords = defaultTables.records;
 export const cmsChanges = defaultTables.changes;
+export const cmsDocRefs = defaultTables.docRefs;
+export const cmsAnchorAliases = defaultTables.anchorAliases;
+export const cmsRedirects = defaultTables.redirects;
+export const cmsRedirectHits = defaultTables.redirectHits;
 
 function names(t?: CmsTables | CmsTablesOptions) {
   const o = t && "options" in t ? t.options : ((t as CmsTablesOptions | undefined) ?? {});
@@ -673,6 +743,52 @@ CREATE INDEX IF NOT EXISTS ${idx("audit_doc_idx")} ON ${tbl("audit")} ("collecti
 CREATE INDEX IF NOT EXISTS ${idx("jobs_done_idx")} ON ${tbl("jobs")} ("done_at") WHERE "done_at" IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ${idx("assets_trash_idx")} ON ${tbl("assets")} ("deleted_at") WHERE "deleted_at" IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ${idx("comments_thread_idx")} ON ${tbl("comments")} ("thread_id") WHERE "thread_id" IS NOT NULL;`.trim(),
+    },
+    {
+      version: 10,
+      name: "agent-cms 0.21.0: relations, document trees, SEO, heading anchor aliases, redirects",
+      sql: `
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "parent_id" uuid;
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "position" text;
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "seo" jsonb;
+CREATE INDEX IF NOT EXISTS ${idx("documents_tree_idx")} ON ${tbl("documents")} ("collection", "parent_id", "position");
+CREATE TABLE IF NOT EXISTS ${tbl("doc_refs")} (
+  "from_document_id" uuid NOT NULL REFERENCES ${tbl("documents")}("id") ON DELETE CASCADE,
+  "to_document_id" uuid NOT NULL,
+  "field" text NOT NULL,
+  "in_draft" boolean NOT NULL DEFAULT false,
+  "in_published" boolean NOT NULL DEFAULT false,
+  PRIMARY KEY ("from_document_id", "to_document_id", "field")
+);
+CREATE INDEX IF NOT EXISTS ${idx("doc_refs_to_idx")} ON ${tbl("doc_refs")} ("to_document_id");
+CREATE TABLE IF NOT EXISTS ${tbl("anchor_aliases")} (
+  "document_id" uuid NOT NULL REFERENCES ${tbl("documents")}("id") ON DELETE CASCADE,
+  "old" text NOT NULL,
+  "current" text NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("document_id", "old")
+);
+CREATE TABLE IF NOT EXISTS ${tbl("redirects")} (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "from_path" text NOT NULL,
+  "to_path" text NOT NULL,
+  "to_document_id" uuid,
+  "status" integer NOT NULL DEFAULT 301,
+  "source" text NOT NULL DEFAULT 'manual',
+  "hits" integer NOT NULL DEFAULT 0,
+  "last_hit_at" timestamptz,
+  "created_by" text,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ${idx("redirects_from_idx")} ON ${tbl("redirects")} ("from_path");
+CREATE TABLE IF NOT EXISTS ${tbl("redirect_hits")} (
+  "redirect_id" uuid NOT NULL REFERENCES ${tbl("redirects")}("id") ON DELETE CASCADE,
+  "day" date NOT NULL,
+  "n" integer NOT NULL DEFAULT 0,
+  PRIMARY KEY ("redirect_id", "day")
+);
+CREATE INDEX IF NOT EXISTS ${idx("redirect_hits_day_idx")} ON ${tbl("redirect_hits")} ("day");`.trim(),
     },
   ];
 }

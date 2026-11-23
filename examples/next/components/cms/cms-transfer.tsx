@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { errorMessage } from "./cms-messages";
+import { errorMessage, serverText } from "./cms-messages";
 import { ConfirmDialog, PageHeader, Segmented, StatusText, NativeSelect } from "./cms-parts";
 import { fileSize } from "./cms-upload";
 import { useCms } from "./use-cms";
@@ -337,7 +337,7 @@ export function CmsTransfer({ className }: { className?: string }) {
                         {i.reason && i.change !== "error" ? <li>{i.reason}</li> : null}
                         {i.diagnostics.map((d, n) => (
                           <li key={n}>
-                            <span className="font-mono text-muted-foreground">{d.path}</span> {d.message}
+                            <span className="font-mono text-muted-foreground">{d.path}</span> {serverText(d, t)}
                           </li>
                         ))}
                       </ul>

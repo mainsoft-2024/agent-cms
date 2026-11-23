@@ -51,6 +51,12 @@ export interface StorageAdapter {
    * instead of carrying on. Leave out when parts work (S3-compatible storage).
    */
   readonly multipart?: boolean;
+  /**
+   * The origins the browser sends files to itself (the signed upload URLs), e.g. `["https://bucket.s3.eu-west-1.amazonaws.com"]`.
+   * The bundled admin (`serve`, `dev`) lists them in its Content-Security-Policy (`connect-src`). When left out,
+   * nothing is added (the server warns at start): set `media.stores.<name>.browserOrigins` or `server.connectSrc`.
+   */
+  readonly browserOrigins?: readonly string[];
   /** A URL the browser can PUT the whole file to. `size`: the size the uploader declared, for storage that can hold it to that. */
   presignPut(key: string, o: PutOptions & { expires: number; size?: number }): Promise<SignedRequest>;
   /** Server-side upload (small files: thumbnails, imports, folder markers). */
@@ -411,6 +417,8 @@ export class MemoryStorage implements StorageAdapter {
   uploads = new Map<string, { key: string; o: PutOptions; parts: Map<number, Uint8Array> }>();
   private pending = new Map<string, PutOptions>();
   private n = 0;
+  /** Nothing outside the server: its addresses are `memory://…`. */
+  readonly browserOrigins: readonly string[] = [];
   constructor(private o: { name?: string; publicUrl?: string | null } = {}) {}
 
   private base() {

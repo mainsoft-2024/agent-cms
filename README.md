@@ -79,7 +79,11 @@ one before it.
 them, or put the SQL in a migration:
 
 ```ts
-export { cmsDocuments, cmsVersions, cmsApiKeys, cmsHits, cmsMeta, cmsAudit, cmsAssets, cmsAssetRefs } from "@mainsoft/agent-cms/tables";
+export {
+  cmsDocuments, cmsVersions, cmsApiKeys, cmsHits, cmsMeta, cmsAudit, cmsAssets, cmsAssetRefs, cmsComments, cmsReleases,
+  cmsSavedFilters, cmsPresence, cmsJobs, cmsWebhooks, cmsWebhookDeliveries, cmsRecords, cmsChanges,
+  cmsDocRefs, cmsAnchorAliases, cmsRedirects, // 0.21
+} from "@mainsoft/agent-cms/tables";
 ```
 
 ```
@@ -140,6 +144,44 @@ the same (skip revalidating pages then).
 `managed: true` makes a collection writable only by your app code (the
 `system` actor): users and keys can read it but not change it. Use it when the
 app wraps saves in rules of its own.
+
+**Content model (0.21).** Documents can point at each other, nest, be the one
+document of a collection, start from templates and share snippets:
+
+```ts
+import { assetIds, defineSingle, relation } from "@mainsoft/agent-cms";
+
+export const guides = defineCollection({
+  slug: "guides", label: "Guides", visibility: "public",
+  tree: { maxDepth: 3 },                    // parent and order; cms.move(), cms.tree()
+  seo: true,                                // search title, description, share image, noindex
+  templates: [{ key: "howto", label: "How-to", body: "## Before you start\n\n## Steps" }],
+  fields: z.object({
+    author: relation("people").optional(),                       // a document id
+    related: relation(["guides", "faq"], { many: true, max: 5 }).optional(),
+    photos: assetIds({ max: 12 }).optional(),                    // a gallery
+  }),
+  url: (d) => `/guides/${d.slug}`,
+});
+export const snippets = defineCollection({ slug: "snippets", label: "Snippets", visibility: "public", snippets: true });
+export const site = defineSingle({ slug: "site", label: "Site", visibility: "public", fields: z.object({ name: z.string().default("Docs") }) });
+
+createCms({ ..., redirects: true });        // published addresses may change; the old one redirects
+```
+
+`?expand=author` fills in related documents; deleting or hiding (archiving) a
+document others point at answers `409 doc_referenced` until you pass `force`.
+`[[snippet:key]]` in a body shows the published snippet to readers, on a line
+of its own or, for a one-paragraph snippet, inside a sentence.
+`cms.single(actor, "site")` returns the defaults until the first save.
+`cms.seoFor(doc)` fills a page's head (and warns about a share image under
+1200×630). `GET /sitemap.xml` lists published public documents (`noindex` left
+out). New blocks: `:::steps`, `:::card`, `:::video` (YouTube and Vimeo, more
+with `video: { hosts }`, only yours with `video: { hosts, defaults: false }`);
+`## Title {#id}` pins an anchor. With redirects on, `cms.resolveRedirect(path)` answers your 404 page;
+admins add redirects to an address or to a document (it follows the document's
+current address) and see visits per day for 30 days. Details in
+`UPGRADE-0.21.md`.
 
 **3. The route** (`app/api/cms/[...path]/route.ts`):
 

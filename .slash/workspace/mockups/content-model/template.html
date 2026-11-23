@@ -46,11 +46,17 @@
   <div class="veil">
     <div class="dlg" style="width:600px" data-label="새 문서 창">
       <h2>새 문서</h2>
-      <div class="cols" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:10px" data-label="템플릿 목록">
+      <div class="lbl">기본 템플릿</div>
+      <div class="cols" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:-8px" data-label="템플릿 목록">
         <div class="tpl"><span data-icon="file" class="muted"></span><b>빈 문서</b></div>
         <div class="tpl on" data-label="고른 템플릿"><span data-icon="list-ordered" class="muted"></span><b>사용 설명</b><span class="xs muted">Overview, Steps, Troubleshooting</span></div>
         <div class="tpl"><span data-icon="megaphone" class="muted"></span><b>출시 안내</b><span class="xs muted">What's new, Upgrade</span></div>
         <div class="tpl"><span data-icon="circle-help" class="muted"></span><b>FAQ</b><span class="xs muted">Questions</span></div>
+      </div>
+      <div class="row"><span class="lbl grow">편집자가 만든 템플릿</span><span class="xs muted" data-label="템플릿 관리 링크">관리</span></div>
+      <div class="cols" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:-8px" data-label="편집자 템플릿">
+        <div class="tpl"><span data-icon="plug" class="muted"></span><b>연동 안내</b><span class="xs muted">김하늘 · 3일 전 · Connect, Steps</span></div>
+        <div class="tpl"><span data-icon="wrench" class="muted"></span><b>문제 해결</b><span class="xs muted">Paul · 지난주 · Symptoms, Fix</span></div>
       </div>
       <div class="field"><label>제목</label><div class="inp ph-text">제목</div></div>
       <div class="btns"><span class="b out">취소</span><span class="b">만들기</span></div>
