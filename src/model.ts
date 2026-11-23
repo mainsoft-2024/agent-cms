@@ -29,6 +29,10 @@ export interface ModelContext {
   publicReadable: (col: string, slug: string) => Promise<boolean>;
   /** The published copy of `doc` an anonymous reader may see under the collection's rules, or null. */
   publicCopy?: (doc: CmsDoc) => CmsDoc | null;
+  /** 0.22.0: the collection is translated (`localized` and the app has `locales`). */
+  localized?: (col: string) => boolean;
+  /** 0.22.0: the language translations are made from. */
+  defaultLocale?: string;
 }
 
 /** What `?expand=` puts in place of an id. Null: gone, or not for this reader. */
@@ -430,7 +434,7 @@ export function createModel(ctx: ModelContext) {
   async function placeIn(r: CmsRepo, col: string, doc: CmsDoc, parentId: string | null, beforeId: string | null): Promise<{ parentId: string | null; position: string }> {
     const tree = treeOf(col);
     if (!tree) throw fail("tree_off", { collection: col });
-    const all = await r.listDocs({ collection: col });
+    const all = await r.listDocs({ collection: col, sources: true });
     const byId = new Map(all.map((d) => [d.id, d]));
     if (parentId) {
       const p = byId.get(parentId);
@@ -568,7 +572,9 @@ export function createModel(ctx: ModelContext) {
       rows.set(id, d);
     }
     const pub = d && !d.deletedAt ? (ctx.publicCopy ? ctx.publicCopy(d) : d.published && d.publishedVersion !== null && d.status !== "archived" ? d : null) : null;
-    const slug = pub ? (pub.published?.slug ?? pub.slug) : null;
+    const bare = pub ? (pub.published?.slug ?? pub.slug) : null;
+    // 0.22.0 review: a translation's address names its language (`slug@en`).
+    const slug = bare && d && d.groupId && d.groupId !== d.id && d.locale ? `${bare}@${d.locale}` : bare;
     const c = d && slug && ctx.collections.has(d.collection) ? ctx.collection(d.collection) : null;
     const url = c && slug && c.visibility === "public" ? ctx.urlOf(d!.collection, slug) : null;
     return url && slug ? { col: d!.collection, slug, url } : null;
@@ -742,11 +748,33 @@ export function createModel(ctx: ModelContext) {
   async function sitemap(origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string } = {}): Promise<string> {
     const base = origin.replace(/\/+$/, "");
     const abs = (u: string) => (/^https?:\/\//i.test(u) ? u : `${base}${u.startsWith("/") ? "" : "/"}${u}`);
-    const urls: { loc: string; lastmod: string }[] = [];
+    const urls: { loc: string; lastmod: string; alternates?: { hreflang: string; href: string }[] }[] = [];
     for (const c of ctx.collections.values()) {
       if (o.collections && !o.collections.includes(c.slug)) continue;
       if (!c.url || c.visibility !== "public" || c.access?.read || c.single || c.snippets) continue;
-      for (const d of await repo.listDocs({ collection: c.slug, published: true })) {
+      if (ctx.localized?.(c.slug)) {
+        // 0.22.0: every published language of a document, each naming the others (hreflang) and the default (x-default).
+        const groups = new Map<string, { locale: string; loc: string; lastmod: string }[]>();
+        for (const d of await repo.listDocs({ collection: c.slug, published: true })) {
+          const pub = d.published;
+          if (!pub || (pub as DocContent).seo?.noindex) continue;
+          const locale = d.locale || ctx.defaultLocale || "";
+          const translation = !!d.groupId && d.groupId !== d.id;
+          const address = translation ? `${d.slug}@${locale}` : d.slug;
+          if (!(await ctx.publicReadable(c.slug, address))) continue;
+          const u = ctx.urlOf(c.slug, address);
+          if (!u) continue;
+          const key = translation ? d.groupId! : d.id;
+          groups.set(key, [...(groups.get(key) ?? []), { locale, loc: abs((pub as DocContent).seo?.canonical || u), lastmod: d.republishedAt ?? d.publishedAt ?? d.updatedAt }]);
+        }
+        for (const members of groups.values()) {
+          const def = members.find((m) => m.locale === ctx.defaultLocale);
+          const alternates = members.length > 1 ? [...members.map((m) => ({ hreflang: m.locale, href: m.loc })).sort((a, b) => a.hreflang.localeCompare(b.hreflang)), ...(def ? [{ hreflang: "x-default", href: def.loc }] : [])] : undefined;
+          for (const m of members) urls.push({ loc: m.loc, lastmod: m.lastmod, ...(alternates ? { alternates } : {}) });
+        }
+        continue;
+      }
+      for (const d of await repo.listDocs({ collection: c.slug, published: true, sources: true })) {
         const pub = d.published;
         if (!pub || (pub as DocContent).seo?.noindex) continue;
         if (!(await ctx.publicReadable(c.slug, pub.slug ?? d.slug))) continue;
@@ -762,7 +790,9 @@ export function createModel(ctx: ModelContext) {
       return `${head}<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${Array.from({ length: n }, (_, i) => `  <sitemap><loc>${xmlEsc(`${o.self ?? `${base}/sitemap.xml`}?page=${i + 1}`)}</loc></sitemap>`).join("\n")}\n</sitemapindex>\n`;
     }
     const page = urls.length > PER ? urls.slice(((o.page ?? 1) - 1) * PER, (o.page ?? 1) * PER) : urls;
-    return `${head}<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${page.map((u) => `  <url><loc>${xmlEsc(u.loc)}</loc><lastmod>${xmlEsc(u.lastmod.slice(0, 10))}</lastmod></url>`).join("\n")}\n</urlset>\n`;
+    const xhtml = page.some((u) => u.alternates) ? ` xmlns:xhtml="http://www.w3.org/1999/xhtml"` : "";
+    const alt = (u: (typeof urls)[number]) => (u.alternates ?? []).map((a) => `<xhtml:link rel="alternate" hreflang="${xmlEsc(a.hreflang)}" href="${xmlEsc(a.href)}"/>`).join("");
+    return `${head}<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"${xhtml}>\n${page.map((u) => `  <url><loc>${xmlEsc(u.loc)}</loc><lastmod>${xmlEsc(u.lastmod.slice(0, 10))}</lastmod>${alt(u)}</url>`).join("\n")}\n</urlset>\n`;
   }
 
   return {

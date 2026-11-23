@@ -7,7 +7,7 @@
 
 import { DIALOG, PersonMark } from "./cms-parts";
 import * as React from "react";
-import { ArrowLeftRight, BookOpen, ChevronsUpDown, CornerDownRight, Settings2, Keyboard, LogIn, LogOut, Monitor, Moon, Sun, UserCog, Users, FileText, LayoutGrid, Shield, Workflow, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
+import { ArrowLeftRight, BookOpen, ChevronsUpDown, ClipboardList, CornerDownRight, Settings2, Keyboard, LogIn, LogOut, Monitor, Moon, Sun, UserCog, Users, FileText, LayoutGrid, Shield, Workflow, HardDrive, Image as ImageIcon, KeyRound, Layers, Puzzle, ScrollText, Search, Trash2, Webhook } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -35,7 +35,7 @@ export interface CmsLinkProps {
   onClick?: () => void;
 }
 
-export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" } | { kind: "redirects" } | { kind: "dashboard" } | { kind: "automations" } | { kind: "roles" } | { kind: "transfer" } | { kind: "people" } | { kind: "account" } | { kind: "login" };
+export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" } | { kind: "redirects" } | { kind: "forms" } | { kind: "dashboard" } | { kind: "automations" } | { kind: "roles" } | { kind: "transfer" } | { kind: "people" } | { kind: "account" } | { kind: "login" };
 
 export interface CmsShellProps {
   children?: React.ReactNode;
@@ -263,13 +263,14 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
           {(
             [
               { kind: "releases", label: t("nav_releases"), Icon: Layers, n: null, show: true },
+              { kind: "forms", label: t("nav_forms"), Icon: ClipboardList, n: null, show: !!me?.forms },
               { kind: "trash", label: t("nav_trash"), Icon: Trash2, n: inTrash, show: hasTrash },
             ] as const
           )
             .filter((x) => x.show)
             .map(({ kind, label, Icon, n }) => {
               const h = href({ kind });
-              const active = activeHref === h || (kind === "releases" && !!activeHref?.startsWith(`${h}/`));
+              const active = activeHref === h || ((kind === "releases" || kind === "forms") && !!activeHref?.startsWith(`${h}/`));
               return (
                 <li key={kind}>
                   {link({

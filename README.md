@@ -761,6 +761,69 @@ createCms({
 
 Every change goes to a numbered change log (`cms_changes`); each server follows it, so the events stream, a read cache (`cache: memoryCache()`) and search hear what any server did. Lists are paged in the database. `@mainsoft/agent-cms/db` connects pg, postgres.js, Neon or PGlite; `@mainsoft/agent-cms/tenants` gives each site its own Postgres schema; the core runs on Edge runtimes; `/metrics` speaks Prometheus. Single fields can be hidden or locked per reader (`fieldAccess`). See the [guide](https://agent-cms-docs.vercel.app/docs/scaling) and [UPGRADE-0.17.md](UPGRADE-0.17.md).
 
+## Languages (0.22)
+
+```ts
+import { createCms, defineCollection, MemoryRepo, type Actor } from "@mainsoft/agent-cms";
+import { z } from "zod";
+
+const user: Actor = { kind: "user", id: "u1", label: "Kim", isAdmin: true };
+const anon: Actor = { kind: "anonymous" };
+const cms = createCms({
+  repo: new MemoryRepo(),               // your DrizzleRepo in production
+  locales: ["ko", "en", "ja"],          // off when left out
+  defaultLocale: "ko",                  // translations are made from this one (default: the first)
+  collections: [
+    defineCollection({
+      slug: "guide",
+      label: "Guide",
+      visibility: "public",
+      localized: true,
+      url: (d) => `/${d.locale}/guide/${d.slug}`,
+      fields: z.object({ subtitle: z.string().optional(), sku: z.string().optional(), order: z.number().optional() }),  // text is translated, order is shared
+      admin: { fields: { sku: { localized: false } } },                                                                // override either way
+    }),
+  ],
+});
+
+await cms.create(user, "guide", { slug: "start", title: "시작하기", body: "## 설치\n" }, { publish: true });  // the Korean source
+await cms.create(user, "guide", { slug: "start", title: "Getting started" }, { locale: "en" });  // starts from the Korean text
+await cms.get(anon, "guide", "start", { locale: "en", fallback: true });  // Korean, with requestedLocale "en", until English is published
+await cms.translations(user, "guide", "start");   // ko: source, en: current | outdated, ja: missing
+await cms.sourceDiff(user, "guide", "start", "en"); // what changed in Korean since the English was aligned
+await cms.markAligned(user, "guide", "start", "en"); // "matches the current Korean version"
+```
+
+A translation is a document of its own, with the source's address: its own versions, drafts, publishing, schedule and review. Title, summary, body, keywords, SEO and text fields are translated; everything else follows the source and is filled in when read (a different value sent to a translation answers `locale_field_shared`). Publishing the source again makes its translations `outdated` until they are updated and aligned.
+
+REST: `?locale=` on every document route (and `&fallback=1` on reads), `GET|POST /collections/<c>/<slug>/_translations`, `POST …/_align`, `GET …/_source-diff?locale=`, `GET /search?locale=`. Agents: `locale` on the document tools and `list_translations`. The sitemap names every language with `hreflang`. Search takes one language at a time; Korean 2-grams only for Korean. Upgrading a big table: [UPGRADE-0.22.md](UPGRADE-0.22.md).
+
+**In the admin** (`cms-doc-editor`, `cms-doc-list`): a tab per language with its status (source, none, needs update, up to date). A translation shows which source version it follows, "Show changes" (what the source changed since) and "Mark as matching v7"; the source sits beside the text with the changed lines marked. Fields every language shares, the address and the category are read only there, with a link to the source. A language not started yet says readers may get the source instead, and "Start translation" copies the source. The list filters by language and marks each row's translations. Hosts open another language through `onOpenDocument(collection, "start@en")`. A plugin can add its own button (say, a translation draft from your own service) with `slots.localeAction`.
+
+Export and import carry translations as `start@en.md` files with their `locale` and source version. In the trash, a source takes its translations with it, and restoring or purging the source restores or purges them too.
+
+## Forms (0.22)
+
+Contact forms, sign-ups, bug reports: built by admins on the Forms screen, shown on your page with one component, kept in your database.
+
+```ts
+createCms({ forms: true, media: { stores: { private: { visibility: "private", adapter } } } });
+```
+
+```tsx
+// npx @mainsoft/agent-cms add cms-form
+import { CmsForm } from "@/components/cms/cms-form";
+<CmsForm slug="contact" />
+```
+
+- **Fields**: short and long text, e-mail, number, choice, several choices, checkbox, date and file; required, help, limits, a pattern; steps with a progress bar; `showIf` on an earlier field (is, is not, one of, has, empty, filled). The browser and the server run the same checks (`checkSubmission` from `@mainsoft/agent-cms/client`), and the server drops the values of fields a condition hides.
+- **Files** go through a one-time upload grant (claimed once, in the database) into a private store; admins open them with a five-minute link. Without a private store the admin answers say `uploads: false`, and a form with a required file field cannot be turned on (`form_uploads_unavailable`).
+- **Spam**: a hidden field sends bots to Spam without telling them; 5 submissions a minute per address, then 429; `forms.verify(req, { values, raw })` for a captcha (`raw` has every field sent, the captcha token too).
+- **The sender's address** (for the limit): `forms.clientIp`, else the handler's `clientIp`, else the first `X-Forwarded-For` entry. Behind a load balancer that appends to `X-Forwarded-For` the first entry is whatever the sender wrote, so set `clientIp: clientIpBehind(1)` (one proxy). The Node adapter without `trustProxy` uses the socket's address.
+- **Submissions**: received, spam and archived, search, bulk actions and CSV export (formulas made harmless; `?status=&q=` exports the view shown) on the admin screen and over REST (`/forms/:slug/submissions`, `/forms/:slug/export.csv`).
+- **After a submission**: the `form.submitted` event (webhooks, automations) carries ids and field names, not values; `forms.notify` is where your app sends an e-mail.
+- **Privacy**: addresses are kept as a hash, `retention.submissionsDays` (365 by default) deletes old submissions with their files, and agents get no tools for submissions. See [UPGRADE-0.22.md](UPGRADE-0.22.md).
+
 ## Export, import, OpenAPI
 
 ```

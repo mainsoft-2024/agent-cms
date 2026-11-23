@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
-import { CopyButton, DIALOG, StateBadge } from "./cms-parts";
+import { CopyButton, DIALOG, LocaleTag, StateBadge } from "./cms-parts";
 import { useAsync, useCms, type DocContent } from "./use-cms";
 
 // ── tree ─────────────────────────────────────────────────────────────────────
@@ -634,10 +634,13 @@ export function ReferencedDialog({ collection, slug, title, action = "delete", e
             {refs
               .filter((r) => r.id)
               .map((r) => (
-                <li key={`${r.collection}/${r.slug}`} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                <li key={`${r.collection}/${r.slug}@${r.locale ?? ""}`} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
                   <Link2 aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate">{r.title || r.slug}</span>
+                    <span className="block truncate">
+                      {r.title || r.slug}
+                      {r.locale ? <LocaleTag locale={r.locale} className="ml-1.5 align-middle" /> : null}
+                    </span>
                     <span className="block truncate text-xs text-muted-foreground">
                       {me?.collections.find((c) => c.slug === r.collection)?.label ?? r.collection} · {r.fields.join(", ")}
                     </span>
@@ -710,9 +713,10 @@ export function SnippetUses({ collection, slug, onOpen }: { collection: string; 
       <ul className="grid gap-1">
         {docs.map((d) => (
           <li key={d.id}>
-            <button type="button" onClick={() => onOpen?.(d.collection, d.slug)} className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <button type="button" onClick={() => onOpen?.(d.collection, d.locale ? `${d.slug}@${d.locale}` : d.slug)} className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               <FileText aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1 truncate">{d.title || d.slug}</span>
+              {d.locale ? <LocaleTag locale={d.locale} /> : null}
               <span className="shrink-0 text-xs text-muted-foreground">{me?.collections.find((c) => c.slug === d.collection)?.label ?? d.collection}</span>
             </button>
           </li>

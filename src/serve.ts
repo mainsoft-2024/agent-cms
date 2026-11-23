@@ -115,7 +115,8 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
   const host = o.host ?? "0.0.0.0";
   const auth = o.auth === false ? undefined : createAuth({ ...(o.auth || {}), cms: o.cms, adminPath, basePath, appName, log });
   const handler = createCmsHandler({ cms: o.cms, basePath, ...(auth ? { auth } : { resolveUser: o.resolveUser }) });
-  const api = toNodeHandler(handler, { maxBodyBytes: o.maxBodyBytes ?? 8 * 1024 * 1024, trustProxy: o.trustProxy });
+  // Review 0.22 (3rd round): the adapter knows the mount, so the 64 KB form limit holds on any basePath.
+  const api = toNodeHandler(handler, { maxBodyBytes: o.maxBodyBytes ?? 8 * 1024 * 1024, trustProxy: o.trustProxy, basePath });
 
   // The admin: index.html with the settings and the hash of its one inline script in the policy.
   const dir = o.adminDir ?? defaultAdminDir();

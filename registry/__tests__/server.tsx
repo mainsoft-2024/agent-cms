@@ -25,7 +25,7 @@ function tinyPng(): Uint8Array {
 
 export const editor2: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u2", label: "Park", isAdmin: true };
 
-export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean; webhooks?: boolean; plugins?: Parameters<typeof createCms>[0]["plugins"]; users?: boolean; codedWrite?: boolean; model?: boolean } = {}) {
+export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean; webhooks?: boolean; plugins?: Parameters<typeof createCms>[0]["plugins"]; users?: boolean; codedWrite?: boolean; model?: boolean; forms?: Parameters<typeof createCms>[0]["forms"]; locales?: boolean } = {}) {
   /** Who the browser is signed in as (tests switch it). */
   const session = { user: admin };
   /** What the outside address answers to a webhook (tests change it), and what it was sent. */
@@ -36,8 +36,10 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     label: "Guide",
     visibility: "public",
     categories: ["start", "integrations"],
-    url: (d) => `/guide/${d.slug}`,
+    url: (d) => (o.locales ? `/${d.locale}/guide/${d.slug}` : `/guide/${d.slug}`),
     review: o.review,
+    // 0.22.0 (only with `locales: true`): guide is translated; `order` is shared, `note` is translated.
+    ...(o.locales ? { localized: true } : {}),
     fields: z.object({
       plans: z.array(z.enum(["free", "pro", "team"])).optional(),
       featured: z.boolean().optional(),
@@ -45,6 +47,7 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
       audience: z.enum(["everyone", "admins"]).optional(),
       tags: z.array(z.string()).optional(),
       ...(o.media ? { cover: z.string().optional() } : {}),
+      ...(o.locales ? { note: z.string().optional() } : {}),
     }),
     admin: { fields: { plans: { label: "Plans", help: "Who sees this" }, order: { label: "Order", help: "0 to 100" }, ...(o.media ? { cover: { label: "Cover", widget: "image" as const } } : {}) } },
   });
@@ -70,6 +73,8 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     repo: new MemoryRepo(),
     collections: o.model ? ([guide, notices, team, docs, site] as const) : ([guide, notices] as const),
     redirects: o.model ? true : undefined,
+    ...(o.locales ? { locales: ["en", "ko", "ja"], defaultLocale: "en" } : {}),
+    forms: o.forms,
     previewSecret: o.previewSecret === null ? undefined : (o.previewSecret ?? "x".repeat(40)),
     warn: () => {},
     schemaCheck: false,

@@ -73,11 +73,20 @@ export function cmsTables(o: CmsTablesOptions = {}) {
       position: text("position"),
       /** Search engine details of the working copy (0.21.0). */
       seo: jsonb("seo").$type<DocSeo | null>(),
+      /**
+       * Multilingual documents (0.22.0, schema 11). `locale`: "" when the app has no locales or the
+       * collection is not localized. `groupId`: links the translations of one document (the source's
+       * id). `sourceVersion`: the source version a translation was last aligned to (null: a source).
+       */
+      locale: text("locale").notNull().default(""),
+      groupId: uuid("group_id"),
+      sourceVersion: integer("source_version"),
       createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
       updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     },
     (t) => ({
-      slugIdx: uniqueIndex(n("documents_collection_slug_idx")).on(t.collection, t.slug),
+      slugIdx: uniqueIndex(n("documents_collection_slug_locale_idx")).on(t.collection, t.slug, t.locale),
+      groupIdx: index(n("documents_group_idx")).on(t.groupId),
       statusIdx: index(n("documents_collection_status_idx")).on(t.collection, t.status),
       dueIdx: index(n("documents_due_idx")).on(t.dueAt),
     })
@@ -445,7 +454,29 @@ export function cmsTables(o: CmsTablesOptions = {}) {
     (t) => ({ pk: primaryKey({ columns: [t.redirectId, t.day] }), dayIdx: index(n("redirect_hits_day_idx")).on(t.day) })
   );
 
-  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, records, changes, docRefs, anchorAliases, redirects, redirectHits, options: { prefix, schema: o.schema ?? null } };
+  /**
+   * Form submissions (0.22.0). The form itself is a record (`cms_records`, kind `form`). The
+   * sender's address is kept as a keyed hash only; files stay in private storage (`files` holds
+   * their keys).
+   */
+  const formSubmissions = table(
+    n("form_submissions"),
+    {
+      id: uuid("id").primaryKey().defaultRandom(),
+      formId: text("form_id").notNull(),
+      formVersion: integer("form_version").notNull().default(1),
+      data: jsonb("data").$type<Record<string, unknown>>().notNull().default({}),
+      files: jsonb("files").$type<{ field: string; id: string; key: string; name: string; size: number; mime: string }[]>().notNull().default([]),
+      status: text("status").notNull().default("new"),
+      ipHash: text("ip_hash"),
+      userAgent: text("user_agent"),
+      createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+      updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => ({ listIdx: index(n("form_submissions_list_idx")).on(t.formId, t.status, t.createdAt), createdIdx: index(n("form_submissions_created_idx")).on(t.createdAt) })
+  );
+
+  return { documents, versions, apiKeys, hits, meta, audit, assets, assetRefs, comments, releases, savedFilters, presence, jobs, webhooks, webhookDeliveries, records, changes, docRefs, anchorAliases, redirects, redirectHits, formSubmissions, options: { prefix, schema: o.schema ?? null } };
 }
 
 export type CmsTables = ReturnType<typeof cmsTables>;
@@ -473,6 +504,7 @@ export const cmsDocRefs = defaultTables.docRefs;
 export const cmsAnchorAliases = defaultTables.anchorAliases;
 export const cmsRedirects = defaultTables.redirects;
 export const cmsRedirectHits = defaultTables.redirectHits;
+export const cmsFormSubmissions = defaultTables.formSubmissions;
 
 function names(t?: CmsTables | CmsTablesOptions) {
   const o = t && "options" in t ? t.options : ((t as CmsTablesOptions | undefined) ?? {});
@@ -485,8 +517,22 @@ function names(t?: CmsTables | CmsTablesOptions) {
 }
 
 /** Columns added after the first release, by schema version: `ALTER … ADD COLUMN IF NOT EXISTS`. */
+/**
+ * Review 0.22: stop before the old unique index goes when the new one is INVALID (a
+ * `CREATE UNIQUE INDEX CONCURRENTLY` that failed leaves it in place but unused): `IF NOT EXISTS`
+ * would skip it and slugs would be left unguarded.
+ */
+export function invalidIndexGuard(name: string, schema: string | null): string {
+  const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
+  return `DO $agent_cms$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = ${lit(name)} AND n.nspname = ${schema ? lit(schema) : "current_schema()"} AND NOT i.indisvalid) THEN
+    RAISE EXCEPTION 'agent-cms: index % is INVALID (a CREATE UNIQUE INDEX CONCURRENTLY that failed). Drop it, build it again (UPGRADE-0.22.md), then run the migration again. The old index was kept.', ${lit(name)};
+  END IF;
+END $agent_cms$;`;
+}
+
 export function upgradeSteps(t?: CmsTables | CmsTablesOptions): { version: number; name: string; sql: string }[] {
-  const { tbl, idx } = names(t);
+  const { tbl, idx, schema, q } = names(t);
   return [
     {
       version: 2,
@@ -790,7 +836,56 @@ CREATE TABLE IF NOT EXISTS ${tbl("redirect_hits")} (
 );
 CREATE INDEX IF NOT EXISTS ${idx("redirect_hits_day_idx")} ON ${tbl("redirect_hits")} ("day");`.trim(),
     },
+    {
+      version: 11,
+      name: "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale), form submissions",
+      // The unique index swap: the new one is built before the old one goes, so a slug is never
+      // unguarded. On a big table build it by hand first with CREATE UNIQUE INDEX CONCURRENTLY
+      // (UPGRADE-0.22.md); then this step finds it and only drops the old one.
+      sql: `
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "locale" text NOT NULL DEFAULT '';
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "group_id" uuid;
+ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "source_version" integer;
+CREATE UNIQUE INDEX IF NOT EXISTS ${idx("documents_collection_slug_locale_idx")} ON ${tbl("documents")} ("collection", "slug", "locale");
+${invalidIndexGuard(names(t).prefix + "documents_collection_slug_locale_idx", schema)}
+DROP INDEX IF EXISTS ${schema ? `${q(schema)}.` : ""}${idx("documents_collection_slug_idx")};
+CREATE INDEX IF NOT EXISTS ${idx("documents_group_idx")} ON ${tbl("documents")} ("group_id");
+CREATE TABLE IF NOT EXISTS ${tbl("form_submissions")} (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "form_id" text NOT NULL,
+  "form_version" integer NOT NULL DEFAULT 1,
+  "data" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "files" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "status" text NOT NULL DEFAULT 'new',
+  "ip_hash" text,
+  "user_agent" text,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ${idx("form_submissions_list_idx")} ON ${tbl("form_submissions")} ("form_id", "status", "created_at");
+CREATE INDEX IF NOT EXISTS ${idx("form_submissions_created_idx")} ON ${tbl("form_submissions")} ("created_at");`.trim(),
+    },
   ];
+}
+
+/**
+ * Turning locales on (0.22.0): documents of localized collections written before have locale ""
+ * (the CMS reads them as the default language). This gives them the default language for good, in
+ * batches of `batch` rows so a big table is never locked for long. Run it until it changes 0 rows
+ * (`npx @mainsoft/agent-cms migrate locales` does).
+ */
+export function fillLocaleSql(t: CmsTables | CmsTablesOptions | undefined, o: { collections: readonly string[]; defaultLocale: string; batch?: number }): string {
+  const { tbl } = names(t);
+  const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
+  if (!o.collections.length) return "SELECT 0";
+  const batch = Math.max(1, Math.floor(o.batch ?? 1000));
+  return `UPDATE ${tbl("documents")} SET "locale" = ${lit(o.defaultLocale)} WHERE "id" IN (SELECT "id" FROM ${tbl("documents")} WHERE "locale" = '' AND "collection" IN (${o.collections.map(lit).join(", ")}) LIMIT ${batch}) RETURNING "id"`;
+}
+
+/** Rows that would break the new unique index (collection, slug, locale): run before building it by hand. */
+export function localeDuplicatesSql(t?: CmsTables | CmsTablesOptions): string {
+  const { tbl } = names(t);
+  return `SELECT "collection", "slug", "locale", count(*) AS "n" FROM ${tbl("documents")} GROUP BY "collection", "slug", "locale" HAVING count(*) > 1`;
 }
 
 /** Records the schema version (run after the DDL or upgrade steps). */
@@ -826,7 +921,6 @@ ${schema ? `CREATE SCHEMA IF NOT EXISTS ${q(schema)};\n` : ""}CREATE TABLE IF NO
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ${idx("documents_collection_slug_idx")} ON ${tbl("documents")} ("collection", "slug");
 CREATE INDEX IF NOT EXISTS ${idx("documents_collection_status_idx")} ON ${tbl("documents")} ("collection", "status");
 
 CREATE TABLE IF NOT EXISTS ${tbl("versions")} (

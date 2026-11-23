@@ -36,7 +36,12 @@ export interface CmsToolDef {
   needs?: "write" | "publish";
   /** A media library tool: hidden when there is no library or the actor may not do this in any store. */
   media?: "read" | "write" | "delete";
+  /** 0.22.0: only in apps with `locales`. */
+  locales?: boolean;
 }
+
+/** 0.22.0: the `locale` argument of document tools. */
+const localeArg = z.string().optional().describe("Language of the document (apps with locales, localized collections; see list_collections). Default: the default language. A translation has the same slug as its source");
 
 const col = z.string().describe("Collection slug (see list_collections)");
 const slug = z.string().describe("Document slug");
@@ -44,6 +49,8 @@ const expectedVersion = z.number().int().positive().optional().describe("The ver
 
 const summaryOf = (d: Awaited<ReturnType<CmsCore["get"]>>) => ({
   slug: d.slug,
+  ...(d.locale ? { locale: d.locale } : {}),
+  ...(d.requestedLocale ? { requestedLocale: d.requestedLocale } : {}),
   title: d.title,
   summary: d.summary,
   category: d.category,
@@ -111,6 +118,8 @@ export const CMS_TOOLS: CmsToolDef[] = [
           ...(c.snippets ? { snippets: true } : {}),
           ...(c.seo ? { seo: true } : {}),
           ...(c.templates?.length ? { templates: c.templates.map((t) => t.key) } : {}),
+          // 0.22.0: translated collections, with the fields that follow the source (not translated)
+          ...(cms.localized(c.slug) ? { localized: true, locales: cms.locales, defaultLocale: cms.defaultLocale, sharedFields: Object.entries(cms.translatableFields(c.slug)).filter(([, t]) => !t).map(([k]) => k) } : {}),
           ...(() => {
             const rel = cms.collectionRelations(c.slug);
             return rel.length ? { relations: rel } : {};
@@ -120,12 +129,12 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "search_documents",
     description: "Keyword search over published documents; returns matching sections. Search before creating, to avoid duplicates.",
-    input: z.object({ collections: z.array(z.string()).optional(), query: z.string(), limit: z.number().int().min(1).max(20).optional() }),
+    input: z.object({ collections: z.array(z.string()).optional(), query: z.string(), limit: z.number().int().min(1).max(20).optional(), locale: localeArg }),
     run: async (cms, actor, a) => {
       const cols = (a.collections as string[] | undefined)?.length ? (a.collections as string[]) : cms.collections().map((c) => c.slug).filter((c) => cms.can(actor, c, "read"));
       // A duplicate check, not a question: never reported as a miss.
-      const r = await cms.search(actor, cols, a.query as string, { limit: (a.limit as number) ?? 8 });
-      return r.hits.map((h) => ({ collection: h.unit.collection, slug: h.unit.slug, title: h.unit.title, heading: h.unit.heading, anchor: h.unit.anchor, score: Number(h.score.toFixed(3)) }));
+      const r = await cms.search(actor, cols, a.query as string, { limit: (a.limit as number) ?? 8, ...(a.locale ? { locale: a.locale as string } : {}) });
+      return r.hits.map((h) => ({ collection: h.unit.collection, slug: h.unit.slug, ...(h.unit.locale ? { locale: h.unit.locale } : {}), title: h.unit.title, heading: h.unit.heading, anchor: h.unit.anchor, score: Number(h.score.toFixed(3)) }));
     },
   },
   {
@@ -141,16 +150,16 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "list_documents",
     description: "List documents of a collection. drafts=true (needs write access) also lists drafts and archived ones.",
-    input: z.object({ collection: col, drafts: z.boolean().optional(), status: z.enum(DOC_STATUSES).optional(), category: z.string().optional(), q: z.string().optional() }),
+    input: z.object({ collection: col, drafts: z.boolean().optional(), status: z.enum(DOC_STATUSES).optional(), category: z.string().optional(), q: z.string().optional(), locale: localeArg }),
     run: async (cms, actor, a) =>
-      (await cms.list(actor, a.collection as string, { drafts: !!a.drafts, status: a.status as never, category: a.category as string | undefined, q: a.q as string | undefined })).map(summaryOf),
+      (await cms.list(actor, a.collection as string, { drafts: !!a.drafts, status: a.status as never, category: a.category as string | undefined, q: a.q as string | undefined, locale: a.locale as string | undefined })).map(summaryOf),
   },
   {
     name: "get_document",
     description: "Read one document. draft=true returns the latest working copy (needs write access); use its version as expectedVersion when updating. expand lists relation fields to fill in with the documents they point at. Snippets ([[snippet:key]]) are kept as tokens.",
-    input: z.object({ collection: col, slug, draft: z.boolean().optional(), expand: z.array(z.string()).max(20).optional().describe("Relation fields to fill in (one level), e.g. [\"author\"]") }),
+    input: z.object({ collection: col, slug, draft: z.boolean().optional(), expand: z.array(z.string()).max(20).optional().describe("Relation fields to fill in (one level), e.g. [\"author\"]"), locale: localeArg, fallback: z.boolean().optional().describe("With locale: when that language has nothing published, the default language's document (requestedLocale says so)") }),
     run: async (cms, actor, a) => {
-      const got = await cms.get(actor, a.collection as string, a.slug as string, { draft: !!a.draft, snippets: "raw" });
+      const got = await cms.get(actor, a.collection as string, a.slug as string, { draft: !!a.draft, snippets: "raw", locale: a.locale as string | undefined, fallback: !!a.fallback });
       const { autosave: _a, ...doc } = await cms.expand(actor, got, (a.expand as string[] | undefined) ?? [], !!a.draft);
       return doc;
     },
@@ -165,9 +174,10 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "create_document",
     needs: "write",
-    description: "Create a document. It stays a draft unless publish=true (needs publish access). template starts from one of list_templates (what you pass wins over it). In a single collection use update_single instead.",
-    input: z.object({ collection: col, doc: z.object(docInput), publish: z.boolean().optional(), note: z.string().optional().describe("Why, shown in the version history"), template: z.string().optional().describe("A template key or id from list_templates") }),
-    run: async (cms, actor, a) => cms.create(actor, a.collection as string, a.doc as never, { publish: a.publish as boolean | undefined, note: a.note as string | undefined, template: a.template as string | undefined }),
+    description:
+      "Create a document. It stays a draft unless publish=true (needs publish access). template starts from one of list_templates (what you pass wins over it). In a single collection use update_single instead. To translate a document, pass locale (another language than the default) with doc.slug = the source's slug: the text starts as a copy of the source unless you pass your own title, summary, body; fields shared by every language (sharedFields in list_collections) cannot be set on a translation (locale_field_shared).",
+    input: z.object({ collection: col, doc: z.object(docInput), publish: z.boolean().optional(), note: z.string().optional().describe("Why, shown in the version history"), template: z.string().optional().describe("A template key or id from list_templates"), locale: localeArg }),
+    run: async (cms, actor, a) => cms.create(actor, a.collection as string, a.doc as never, { publish: a.publish as boolean | undefined, note: a.note as string | undefined, template: a.template as string | undefined, ...(a.locale ? { locale: a.locale as string } : {}) }),
   },
   {
     name: "update_document",
@@ -329,9 +339,15 @@ export const CMS_TOOLS: CmsToolDef[] = [
   {
     name: "bulk_documents",
     needs: "publish",
-    description: "Publish, unpublish, archive, unarchive or delete several documents. Each one succeeds or fails on its own; the result lists both.",
-    input: z.object({ collection: col, action: z.enum(BULK_ACTIONS), slugs: z.array(z.string()).min(1).max(100) }),
-    run: async (cms, actor, a) => ({ results: await cms.bulk(actor, a.collection as string, a.action as never, (a.slugs as string[]).map((s) => ({ slug: s }))) }),
+    description: "Publish, unpublish, archive, unarchive or delete several documents. Each one succeeds or fails on its own; the result lists both. With locale, the translations in that language (the sources stay as they are).",
+    input: z.object({ collection: col, action: z.enum(BULK_ACTIONS), slugs: z.array(z.string()).min(1).max(100), locale: localeArg }),
+    run: async (cms, actor, a) => {
+      const c = a.collection as string;
+      const at = (s: string) => (a.locale ? cms.address(c, s, a.locale as string, { write: true }) : s);
+      const results = await cms.bulk(actor, c, a.action as never, (a.slugs as string[]).map((s) => ({ slug: at(s) })));
+      // Answered with the slug that was asked for (and the language), not the internal address.
+      return { results: results.map((r, i) => ({ ...r, slug: (a.slugs as string[])[i] ?? r.slug, ...(a.locale ? { locale: a.locale as string } : {}) })) };
+    },
   },
   {
     name: "list_versions",
@@ -417,7 +433,7 @@ export const CMS_TOOLS: CmsToolDef[] = [
     needs: "write",
     description: "Documents waiting for a review, and their notes. A document whose review says changes_requested was sent back: read its note (get_document draft=true), fix it and request a review again.",
     input: z.object({ collection: z.string().optional() }),
-    run: async (cms, actor, a) => (await cms.reviewRequests(actor, { collection: a.collection as string | undefined })).map((d) => ({ collection: d.collection, slug: d.slug, title: d.title, version: d.version, review: d.review, updatedAt: d.updatedAt })),
+    run: async (cms, actor, a) => (await cms.reviewRequests(actor, { collection: a.collection as string | undefined })).map((d) => ({ collection: d.collection, slug: d.slug, ...(d.locale ? { locale: d.locale } : {}), title: d.title, version: d.version, review: d.review, updatedAt: d.updatedAt })),
   },
   {
     name: "list_comments",
@@ -490,10 +506,12 @@ export const CMS_TOOLS: CmsToolDef[] = [
     name: "add_to_release",
     needs: "write",
     description: "Put documents in a release. Each is pinned at its latest version now; add it again after more edits to move the pin. action unpublish takes the document down when the release goes out. A document can be in one open release only.",
-    input: z.object({ id: z.string().describe("Release id (list_releases)"), items: z.array(z.object({ collection: col, slug, action: z.enum(["publish", "unpublish"]).optional() })).min(1).max(50) }),
+    input: z.object({ id: z.string().describe("Release id (list_releases)"), items: z.array(z.object({ collection: col, slug, action: z.enum(["publish", "unpublish"]).optional(), locale: localeArg })).min(1).max(50) }),
     run: async (cms, actor, a) => {
-      const r = await cms.releases.add(actor, a.id as string, a.items as { collection: string; slug: string; action?: "publish" | "unpublish" }[]);
-      return { id: r.id, name: r.name, items: r.items.map((i) => ({ collection: i.collection, slug: i.slug, action: i.action, version: i.version })) };
+      // Each item may name its language: that translation goes in the release, not its source.
+      const items = (a.items as { collection: string; slug: string; action?: "publish" | "unpublish"; locale?: string }[]).map(({ locale, ...it }) => ({ ...it, slug: locale ? cms.address(it.collection, it.slug, locale, { write: true }) : it.slug }));
+      const r = await cms.releases.add(actor, a.id as string, items);
+      return { id: r.id, name: r.name, items: r.items.map((i) => ({ collection: i.collection, slug: i.slug, ...(i.locale ? { locale: i.locale } : {}), action: i.action, version: i.version })) };
     },
   },
   {
@@ -505,6 +523,14 @@ export const CMS_TOOLS: CmsToolDef[] = [
       const r = await cms.releases.publish(actor, a.id as string);
       return { id: r.id, name: r.name, state: r.state, documents: r.items.length };
     },
+  },
+  {
+    name: "list_translations",
+    locales: true,
+    description:
+      "Every language of a document with its translation status: source (the default language), missing (start one with create_document locale=…), outdated (the source was published again since the translation was last aligned: compare and update it), current. Editors of the source get every language with its working state; anyone else only the languages whose published copy they may read (published version numbers, no draft details).",
+    input: z.object({ collection: col, slug }),
+    run: async (cms, actor, a) => cms.translations(actor, a.collection as string, a.slug as string),
   },
   {
     name: "list_assets",
@@ -588,6 +614,31 @@ export const CMS_TOOLS: CmsToolDef[] = [
   },
 ];
 
+/**
+ * 0.22.0: every tool that works on one document (`collection` + `slug`) also takes `locale`: the
+ * translation in that language is the document it works on. Tools that read `locale` themselves
+ * (get_document, list and search tools, create_document) are left alone.
+ */
+for (const [i, t] of CMS_TOOLS.entries()) {
+  const shape = t.input.shape as Record<string, unknown>;
+  if (!("collection" in shape) || !("slug" in shape) || "locale" in shape || t.locales) continue;
+  const run = t.run;
+  CMS_TOOLS[i] = {
+    ...t,
+    input: t.input.extend({ locale: localeArg }),
+    run: async (cms, actor, a) => {
+      if (!a.locale) return run(cms, actor, a);
+      const { locale, ...rest } = a;
+      const address = cms.address(rest.collection as string, rest.slug as string, locale as string, { write: true });
+      // A whole-file write never starts a translation: that is create_document's.
+      if (t.name === "write_document" && address !== rest.slug) await cms.get(actor, rest.collection as string, rest.slug as string, { draft: true, locale: locale as string }).catch((e) => {
+        throw isCmsError(e) && e.code === "not_found" ? cms.fail("translation_not_found", { slug: rest.slug as string, locale: locale as string }) : e;
+      });
+      return run(cms, actor, { ...rest, slug: address });
+    },
+  };
+}
+
 export const CMS_TOOL_NAMES = CMS_TOOLS.map((t) => t.name);
 
 /** The tools this actor can use (read-only tools for readers, and so on). */
@@ -595,7 +646,7 @@ export function toolsFor(cms: CmsLike, actor: Actor, only?: readonly string[]): 
   const core = coreOf(cms);
   const cols = core.collections().map((c) => c.slug);
   const stores = core.assets.enabled ? core.assets.stores().map((s) => s.name) : [];
-  const own = CMS_TOOLS.filter((t) => (!only || only.includes(t.name)) && (!t.needs || cols.some((c) => core.can(actor, c, t.needs!))) && (!t.media || stores.some((s) => core.assets.can(actor, s, t.media!))));
+  const own = CMS_TOOLS.filter((t) => (!only || only.includes(t.name)) && (!t.locales || core.locales.length > 0) && (!t.needs || cols.some((c) => core.can(actor, c, t.needs!))) && (!t.media || stores.some((s) => core.assets.can(actor, s, t.media!))));
   // Tools plugins add. `read` is open to whoever may read something; the others follow the same rule as ours; `admin` is for admins.
   const added = core.plugins.tools
     .filter((t) => !only || only.includes(t.name))

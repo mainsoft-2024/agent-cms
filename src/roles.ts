@@ -68,7 +68,8 @@ export interface RolesContext {
   /** Admin by the app's word, a key's scope or the system (not through a role). */
   baseAdmin: (actor: Actor) => boolean;
   ready: () => Promise<void> | void;
-  targets: () => { slug: string; label: string; coded: RoleOp[]; media?: boolean }[];
+  /** `ops`: the only operations that apply to this target (0.22.0 forms: read, write, delete). */
+  targets: () => { slug: string; label: string; coded: RoleOp[]; media?: boolean; ops?: RoleOp[] }[];
   users?: UsersOptions;
 }
 
@@ -156,13 +157,15 @@ export function createRoles(ctx: RolesContext) {
   function clean(i: RoleInput, cur?: CmsRole): RoleData {
     const name = (i.name ?? cur?.name ?? "").trim();
     if (!name || name.length > 60) throw fail("name_invalid", { max: 60 });
-    const known = new Set(ctx.targets().map((t) => t.slug));
+    const all = ctx.targets();
+    const known = new Set(all.map((t) => t.slug));
     const permissions: RolePermissions = {};
     for (const [target, ops] of Object.entries(i.permissions ?? cur?.permissions ?? {})) {
       if (!known.has(target)) throw fail("unknown_collection", { collection: target });
       const row: Partial<Record<RoleOp, boolean>> = {};
       // A media store target takes `write` (upload, edit) and `delete` (move, delete) only.
-      for (const op of ROLE_OPS) if (ops?.[op] && (!target.startsWith("media:") || op === "write" || op === "delete")) row[op] = true;
+      const only = all.find((t) => t.slug === target)?.ops;
+      for (const op of ROLE_OPS) if (ops?.[op] && (!target.startsWith("media:") || op === "write" || op === "delete") && (!only || only.includes(op))) row[op] = true;
       // Writing, publishing and deleting make no sense without reading.
       if (Object.keys(row).length) permissions[target] = { ...row, read: true };
     }
@@ -198,7 +201,7 @@ export function createRoles(ctx: RolesContext) {
       if (!mine.length) return undefined;
       return mine.some((r) => r.admin || !!r.permissions[target]?.[op]);
     },
-    async list(actor: Actor): Promise<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[]; media?: boolean }[]; users: boolean }> {
+    async list(actor: Actor): Promise<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[]; media?: boolean; ops?: RoleOp[] }[]; users: boolean }> {
       admin(actor);
       await ctx.ready();
       await load(true);

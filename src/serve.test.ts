@@ -115,3 +115,42 @@ test("serve: Vercel Blob names its origins; a custom store without origins is no
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("serve (review 0.22, 3rd): a form submission past 64 KB on a custom basePath answers 413 over real HTTP, by Content-Length and chunked", async () => {
+  const http = await import("node:http");
+  const { createCms } = await import("./cms");
+  const { MemoryRepo } = await import("./repo");
+  const cms = createCms({ repo: new MemoryRepo(), collections: [], forms: true, warn: () => {} });
+  const s = await startServer({ cms, port: 0, host: "127.0.0.1", basePath: "/cms/", adminDir: join(tmpdir(), "no-admin-here"), auth: false, resolveUser: async () => null, cron: false, log: () => {} });
+  const port = Number(new URL(s.url).port);
+  const send = (headers: Record<string, string | number>, chunks: Buffer[]) =>
+    new Promise<{ status: number; connection: string | undefined; body: string }>((ok, no) => {
+      const req = http.request({ host: "127.0.0.1", port, method: "POST", path: "/cms/forms/contact", headers: { "content-type": "application/json", ...headers } }, (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => (body += c));
+        res.on("end", () => ok({ status: res.statusCode ?? 0, connection: res.headers.connection, body }));
+      });
+      req.on("error", no);
+      for (const c of chunks) req.write(c);
+      req.end();
+    });
+  try {
+    const big = Buffer.alloc(80 * 1024, 120);
+    const declared = await send({ "content-length": big.length }, [big]);
+    assert.equal(declared.status, 413);
+    assert.equal(JSON.parse(declared.body).error, "body_too_large");
+    assert.equal(declared.connection, "close");
+    // Chunked: no length to check first; reading stops at the limit and the answer still arrives.
+    const piece = Buffer.alloc(16 * 1024, 120);
+    const chunked = await send({ "transfer-encoding": "chunked" }, Array.from({ length: 6 }, () => piece));
+    assert.equal(chunked.status, 413);
+    assert.equal(JSON.parse(chunked.body).error, "body_too_large");
+    assert.equal(chunked.connection, "close");
+    // A small submission reaches the handler (no such form here: not a 413).
+    const small = await send({}, [Buffer.from("{}")]);
+    assert.notEqual(small.status, 413);
+  } finally {
+    await s.stop();
+  }
+});

@@ -34,7 +34,7 @@ export interface ApiRoute {
   /** Success status. Default 200. */
   status?: number;
   /** Only present when this part of the CMS is switched on. */
-  needs?: "media" | "cron" | "preview" | "auth" | "redirects";
+  needs?: "media" | "cron" | "preview" | "auth" | "redirects" | "locales" | "forms";
   /** The answer is a `text/event-stream` that stays open. */
   stream?: boolean;
 }
@@ -56,8 +56,27 @@ const docInput = z
     seo: seoInput,
   })
   .strict();
+const formBody = z
+  .object({
+    slug: z.string().optional(),
+    title: z.string().optional(),
+    enabled: z.boolean().optional(),
+    steps: z.array(z.object({ title: z.string(), fields: z.array(z.record(z.unknown())) })).optional().describe("Fields: key, label, kind (text, textarea, email, number, select, multiselect, checkbox, date, file), required, help, options, nextOption, min, max, pattern, accept, maxSize, maxFiles, showIf { field, op: eq|neq|in|contains|empty|filled, value }."),
+    settings: z.object({ successMessage: z.string().optional(), notify: z.array(z.string()).optional(), keepDays: z.number().int().nullable().optional(), redirectUrl: z.string().nullable().optional() }).optional(),
+    expectedUpdatedAt: z.string().optional(),
+  })
+  .strict();
 const expectedVersion = z.number().int().positive().optional().describe("The version you read. A mismatch answers 409 with the current copy. `If-Match: \"v<n>\"` does the same.");
-const writeBody = z.object({ doc: docInput, expectedVersion, publish: z.boolean().optional(), note: z.string().max(300).nullable().optional(), template: z.string().max(100).optional().describe("Start from a template (its key or id; 0.21.0)") });
+const writeBody = z.object({
+  doc: docInput,
+  expectedVersion,
+  publish: z.boolean().optional(),
+  note: z.string().max(300).nullable().optional(),
+  template: z.string().max(100).optional().describe("Start from a template (its key or id; 0.21.0)"),
+  locale: z.string().max(35).optional().describe("0.22.0: the language of a new document; another than the default starts a translation of `from` (or doc.slug)"),
+  from: z.string().max(200).optional().describe("0.22.0: the source document a translation starts from"),
+});
+const LOCALE_Q = "0.22.0: the language (localized collections). Default: the default language";
 const templateBody = z.object({ label: z.string().max(80).optional(), description: z.string().max(200).optional(), title: z.string().optional(), summary: z.string().optional(), body: z.string().optional(), fields: z.record(z.unknown()).optional() });
 const redirectBody = z.object({ from: z.string().max(500).optional(), to: z.string().max(2000).optional(), toDocumentId: z.string().max(64).nullable().optional().describe("Follow this document's current public address (0.21.0)"), status: z.union([z.literal(301), z.literal(302)]).optional() });
 const expected = z.object({ expectedVersion });
@@ -88,13 +107,13 @@ const D = `${C}/{slug}`;
 const BASE_ROUTES: readonly ApiRoute[] = [
   { method: "get", path: "/_me", summary: "Who am I, and what may I do", tag: "session", auth: "public", returns: any },
   { method: "get", path: "/openapi.json", summary: "This document", tag: "session", auth: "public", returns: any },
-  { method: "get", path: "/search", summary: "Search published documents", tag: "search", auth: "public", query: { q: "The question or words", collections: "Comma-separated collections. Default: all you may read", limit: "1 to 20, default 8", miss: "1: tell the app when nothing is found (onSearchMiss)" }, returns: obj({ empty: { type: "boolean" }, hits: arr(ref("SearchHit")) }) },
+  { method: "get", path: "/search", summary: "Search published documents", tag: "search", auth: "public", query: { q: "The question or words", collections: "Comma-separated collections. Default: all you may read", limit: "1 to 20, default 8", miss: "1: tell the app when nothing is found (onSearchMiss)", locale: LOCALE_Q }, returns: obj({ empty: { type: "boolean" }, hits: arr(ref("SearchHit")) }) },
   { method: "post", path: "/mcp", summary: "MCP endpoint (streamable HTTP, stateless)", tag: "agents", auth: "read", body: z.record(z.unknown()), returns: any },
 
   // documents
-  { method: "get", path: C, summary: "List documents", tag: "documents", auth: "public", query: { fields: "summary: a page without bodies, with limit and cursor", drafts: "1: working copies (needs write)", state: "draft | published | modified | archived | scheduled | review", status: DOC_STATUSES.join(" | "), category: "", q: "Filter by title or address", by: "user | key | system: who wrote the latest version", limit: "", cursor: "", hits: "1: add hits7d (needs write)" }, returns: obj({ docs: arr(ref("Doc")) }) },
+  { method: "get", path: C, summary: "List documents", tag: "documents", auth: "public", query: { fields: "summary: a page without bodies, with limit and cursor", drafts: "1: working copies (needs write)", state: "draft | published | modified | archived | scheduled | review", status: DOC_STATUSES.join(" | "), category: "", q: "Filter by title or address", by: "user | key | system: who wrote the latest version", limit: "", cursor: "", hits: "1: add hits7d (needs write)", locale: LOCALE_Q, fallback: "1 (readers, with locale): documents without a published translation come in the default language, with requestedLocale", translations: "1 (editors, fields=summary, source rows): add translations, each other language's status (missing, outdated, current)" }, returns: obj({ docs: arr(ref("Doc")) }) },
   { method: "post", path: C, summary: "Create a document", tag: "documents", auth: "write", body: writeBody, returns: obj({ doc: ref("Doc") }), status: 201 },
-  { method: "get", path: `${C}/_counts`, summary: "How many documents are in each state", tag: "documents", auth: "write", returns: obj({ counts: any }) },
+  { method: "get", path: `${C}/_counts`, summary: "How many documents are in each state", tag: "documents", auth: "write", query: { locale: "0.22.0: the documents of this language (localized collections)" }, returns: obj({ counts: any }) },
   { method: "get", path: `${C}/_schema`, summary: "The collection's fields as JSON Schema, with admin hints", tag: "documents", auth: "public", returns: any },
   { method: "post", path: `${C}/_diagnose`, summary: "Every problem a save would report; nothing is saved", tag: "documents", auth: "write", body: z.object({ doc: docInput, slug: z.string().optional() }), returns: obj({ diagnostics: arr(ref("Diagnostic")) }) },
   { method: "post", path: `${C}/_preview`, summary: "Blocks, table of contents, problems and diff of unsaved content", tag: "documents", auth: "write", body: z.object({ doc: docInput, slug: z.string().optional() }), returns: any },
@@ -103,7 +122,11 @@ const BASE_ROUTES: readonly ApiRoute[] = [
   { method: "get", path: `${C}/_filters`, summary: "Saved filters", tag: "documents", auth: "write", returns: obj({ filters: arr(any) }) },
   { method: "post", path: `${C}/_filters`, summary: "Save a filter", tag: "documents", auth: "write", body: z.object({ name: z.string().max(200), query: z.record(z.unknown()), shared: z.boolean().optional() }), returns: obj({ filter: any }), status: 201 },
   { method: "delete", path: `${C}/_filters/{id}`, summary: "Delete a saved filter", tag: "documents", auth: "write", returns: OK },
-  { method: "get", path: D, summary: "Read a document", tag: "documents", auth: "public", query: { draft: "1: the working copy (needs write). Default: the public copy", expand: "Relation fields to fill in with the documents they point at, comma-separated (one level)", snippets: "raw: keep [[snippet:…]] tokens instead of filling them in" }, returns: obj({ doc: ref("Doc") }, ["doc"]) },
+  { method: "get", path: D, summary: "Read a document", tag: "documents", auth: "public", query: { draft: "1: the working copy (needs write). Default: the public copy", expand: "Relation fields to fill in with the documents they point at, comma-separated (one level)", snippets: "raw: keep [[snippet:…]] tokens instead of filling them in", locale: `${LOCALE_Q}. Also on every route under this document`, fallback: "1: when the translation is missing or not published, the default language's document with requestedLocale" }, returns: obj({ doc: ref("Doc") }, ["doc"]) },
+  { method: "get", path: `${D}/_translations`, summary: "Every language of a document with its status (source, missing, outdated, current)", tag: "translations", auth: "write", returns: any, needs: "locales" },
+  { method: "post", path: `${D}/_translations`, summary: "Start a translation: a new document in another language, its text copied from the source unless sent", tag: "translations", auth: "write", body: z.object({ locale: z.string(), doc: docInput.optional(), publish: z.boolean().optional(), note: z.string().max(300).nullable().optional() }), returns: obj({ doc: ref("Doc") }), status: 201, needs: "locales" },
+  { method: "post", path: `${D}/_align`, summary: "Say a translation matches a source version (default: the source's published one); no new version", tag: "translations", auth: "write", body: z.object({ locale: z.string(), version: z.number().int().positive().optional() }), returns: obj({ doc: ref("Doc") }), needs: "locales" },
+  { method: "get", path: `${D}/_source-diff`, summary: "What changed in the source since the translation in locale was aligned", tag: "translations", auth: "write", query: { locale: "The translation's language", context: "" }, returns: any, needs: "locales" },
   { method: "get", path: `${D}/_refs`, summary: "Documents that point at this one through relation fields", tag: "content model", auth: "public", returns: obj({ referencedBy: arr(any) }) },
   { method: "get", path: `${D}/_seo`, summary: "Search engine details with fallbacks (title, description, image, canonical, noindex)", tag: "content model", auth: "public", query: { draft: "1: the working copy" }, returns: obj({ seo: any }) },
   { method: "get", path: `${D}/_ancestors`, summary: "Parents of a document in a tree, top first", tag: "content model", auth: "public", query: { draft: "1: working copies" }, returns: obj({ ancestors: arr(any) }) },
@@ -124,6 +147,23 @@ const BASE_ROUTES: readonly ApiRoute[] = [
   { method: "get", path: "/redirects/_resolve", summary: "Where an old address goes now", tag: "redirects", auth: "public", query: { path: "" }, returns: obj({ redirect: any }), needs: "redirects" },
   { method: "patch", path: "/redirects/{id}", summary: "Change a redirect", tag: "redirects", auth: "admin", body: redirectBody, returns: obj({ redirect: any }), needs: "redirects" },
   { method: "delete", path: "/redirects/{id}", summary: "Delete a redirect", tag: "redirects", auth: "admin", returns: OK, needs: "redirects" },
+  // 0.22.0 forms. Managing them: admins or a role with the "forms" target. No agent tools: submissions are personal data.
+  { method: "get", path: "/forms", summary: "Forms with their submission counts (people who manage forms)", tag: "forms", auth: "admin", returns: obj({ forms: arr(any) }), needs: "forms" },
+  { method: "post", path: "/forms", summary: "Make a form (fields in steps; showIf conditions)", tag: "forms", auth: "admin", body: formBody, returns: obj({ form: any }), status: 201, needs: "forms" },
+  { method: "get", path: "/forms/{slug}", summary: "A form as a page draws it (forms that are on; people who manage forms also see those that are off)", tag: "forms", auth: "public", returns: obj({ form: any }), needs: "forms" },
+  { method: "post", path: "/forms/{slug}", summary: "Send a form: JSON, urlencoded or multipart without files. Hidden fields' values are dropped; 429 after 5 a minute from one address; body at most 64 KB", tag: "forms", auth: "public", body: z.record(z.unknown()), returns: obj({ ok: { type: "boolean" }, message: { type: "string" } }), status: 201, needs: "forms" },
+  { method: "post", path: "/forms/{slug}/uploads", summary: "A one-time grant (10 minutes) to upload one file for a file field; put the token in the field's value", tag: "forms", auth: "public", body: z.object({ field: z.string(), name: z.string(), size: z.number().int(), mime: z.string().optional() }), returns: obj({ token: { type: "string" }, put: any, expiresAt: { type: "string" } }), status: 201, needs: "forms" },
+  { method: "put", path: "/forms/{slug}/uploads/{token}", summary: "Upload the file's bytes through the CMS (when the grant has no direct address)", tag: "forms", auth: "public", body: "binary", returns: OK, needs: "forms" },
+  { method: "patch", path: "/forms/{slug}", summary: "Change a form (expectedUpdatedAt refuses a stale save)", tag: "forms", auth: "admin", body: formBody, returns: obj({ form: any }), needs: "forms" },
+  { method: "delete", path: "/forms/{slug}", summary: "Delete a form with its submissions and their files", tag: "forms", auth: "admin", returns: obj({ submissions: { type: "integer" } }), needs: "forms" },
+  { method: "get", path: "/forms/{slug}/definition", summary: "A form with its settings, and `uploads`: can file fields take files on this server", tag: "forms", auth: "admin", returns: obj({ form: any }), needs: "forms" },
+  { method: "get", path: "/forms/{slug}/submissions", summary: "Submissions, newest first", tag: "forms", auth: "admin", query: { status: "new,read,spam,archived (default new,read)", q: "Search the values", limit: "1 to 200 (50)", offset: "" }, returns: obj({ items: arr(any), total: { type: "integer" }, counts: any }), needs: "forms" },
+  { method: "post", path: "/forms/{slug}/submissions/_bulk", summary: "Mark many as new, read, spam or archived, or delete them", tag: "forms", auth: "admin", body: z.object({ ids: z.array(z.string()), action: z.enum(["new", "read", "spam", "archived", "delete"]) }), returns: any, needs: "forms" },
+  { method: "get", path: "/forms/{slug}/submissions/{id}", summary: "One submission", tag: "forms", auth: "admin", returns: obj({ submission: any }), needs: "forms" },
+  { method: "patch", path: "/forms/{slug}/submissions/{id}", summary: "Mark a submission", tag: "forms", auth: "admin", body: z.object({ status: z.enum(["new", "read", "spam", "archived"]) }), returns: obj({ submission: any }), needs: "forms" },
+  { method: "delete", path: "/forms/{slug}/submissions/{id}", summary: "Delete a submission and its files", tag: "forms", auth: "admin", returns: OK, needs: "forms" },
+  { method: "get", path: "/forms/{slug}/submissions/{id}/files/{fileId}", summary: "A five-minute link to download a file of a submission", tag: "forms", auth: "admin", returns: obj({ url: { type: "string" }, name: { type: "string" }, expiresAt: { type: "string" } }), needs: "forms" },
+  { method: "get", path: "/forms/{slug}/export.csv", summary: "Submissions as CSV (formulas made harmless)", tag: "forms", auth: "admin", query: { status: "new,read,spam,archived (default: everything but spam)", q: "Search the values, as the submissions list does" }, returns: { type: "string" }, needs: "forms" },
   { method: "get", path: "/sitemap.xml", summary: "sitemap.xml of published public documents (noindex left out)", tag: "content model", auth: "public", query: { page: "Part of a sitemap with more than 50 000 addresses" }, returns: { type: "string" } },
   { method: "patch", path: D, summary: "Update a document (a new version)", tag: "documents", auth: "write", body: writeBody, returns: obj({ doc: ref("Doc") }) },
   { method: "delete", path: D, summary: "Move a document to the trash (409 doc_referenced when other documents point at it)", tag: "documents", auth: "write", query: { expectedVersion: "", force: "1: delete although documents point at it" }, returns: OK },
@@ -365,7 +405,7 @@ export function openApiDocument(cms: CmsLike, o: OpenApiOptions = {}): Json {
   const actor: Actor = o.actor ?? { kind: "anonymous" };
   const base = (o.basePath ?? "/api/cms").replace(/\/$/, "");
   const cols = core.collections().filter((c) => core.can(actor, c.slug, "read"));
-  const on = { media: core.assets.describe(actor) !== null, cron: !!core.cronSecret, preview: core.previewEnabled(), auth: !!o.auth, redirects: core.redirects.enabled() };
+  const on = { media: core.assets.describe(actor) !== null, cron: !!core.cronSecret, preview: core.previewEnabled(), auth: !!o.auth, redirects: core.redirects.enabled(), locales: core.locales.length > 0, forms: core.forms.enabled() };
   const schemas: Json = { ...SCHEMAS };
   const paths: Record<string, Json> = {};
   const param = (name: string, values?: string[]): Json => ({ name, in: "path", required: true, schema: values ? { type: "string", enum: values } : name === "n" ? { type: "integer", minimum: 1 } : { type: "string" } });

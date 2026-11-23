@@ -25,6 +25,11 @@ export interface RetentionOptions {
    * total on each redirect stays either way.
    */
   redirectHitsDays?: number;
+  /**
+   * Days form submissions are kept (with `forms` on), with their files. Default 365. 0 keeps
+   * them forever.
+   */
+  submissionsDays?: number;
 }
 
 export interface RetentionReport {
@@ -43,6 +48,10 @@ export interface RetentionContext {
   audit: (actor: Actor, detail: Record<string, unknown>) => void;
   /** Redirects are on (their daily visits get the 90-day default). */
   redirects?: boolean;
+  /** Forms are on (submissions get the 365-day default). */
+  forms?: boolean;
+  /** Deletes submissions sent before `before` with their files (they live in private storage); returns how many. */
+  purgeSubmissions?: (before: string) => Promise<number>;
 }
 
 const DAY = 86_400_000;
@@ -57,6 +66,7 @@ export function createRetention(ctx: RetentionContext) {
       { what: "keys", days: o.revokedKeysDays },
       { what: "deliveries", days: o.deliveriesDays },
       { what: "redirect_hits", days: ctx.redirects ? (o.redirectHitsDays ?? 90) : o.redirectHitsDays },
+      { what: "form_submissions", days: ctx.forms ? (o.submissionsDays ?? 365) : o.submissionsDays },
     ];
     return out.filter((r): r is { what: PruneTarget; days: number } => typeof r.days === "number" && Number.isFinite(r.days) && r.days > 0);
   };
@@ -68,7 +78,8 @@ export function createRetention(ctx: RetentionContext) {
       const cut = new Date(now.getTime() - r.days * DAY);
       // Hit counts (and redirect visits) are per calendar day in the CMS's time zone.
       const before = r.what === "hits" || r.what === "redirect_hits" ? ctx.dayIn(ctx.timeZone, cut) : cut.toISOString();
-      items.push({ ...r, before, rows: await ctx.repo.prune(r.what, before, dryRun) });
+      const rows = r.what === "form_submissions" && !dryRun && ctx.purgeSubmissions ? await ctx.purgeSubmissions(before) : await ctx.repo.prune(r.what, before, dryRun);
+      items.push({ ...r, before, rows });
     }
     return { dryRun, at: now.toISOString(), items };
   }

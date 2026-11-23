@@ -76,6 +76,26 @@ export function clientIp(req: Request): string | null {
   return fwd || req.headers.get("x-real-ip")?.trim() || null;
 }
 
+/**
+ * For servers behind `proxies` proxies that each APPEND the address they saw to
+ * `X-Forwarded-For` (most load balancers, Vercel, Cloudflare in front of one more): the entry that
+ * many places from the end, which the sender cannot forge. `X-Real-IP` and the first entry are not
+ * used. Null when the header has fewer entries.
+ *
+ *   createCmsHandler({ cms, clientIp: clientIpBehind(1) })
+ *   createCms({ forms: { clientIp: clientIpBehind(1) } })
+ */
+export function clientIpBehind(proxies: number): (req: Request) => string | null {
+  const n = Math.max(1, Math.floor(proxies));
+  return (req) => {
+    const list = (req.headers.get("x-forwarded-for") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return list.length >= n ? list[list.length - n] : null;
+  };
+}
+
 /** "203.0.113.7", "203.0.113.0/24", "2001:db8::/32". Null when it is not an address or range. */
 function parseRange(s: string): { bytes: number[]; bits: number } | null {
   const [addr, prefix] = s.trim().split("/");

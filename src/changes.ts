@@ -40,6 +40,8 @@ export interface ChangeEvent {
   url: string | null;
   actor: { kind: string; id: string | null; label: string; agent: string | null } | null;
   detail?: Record<string, unknown>;
+  /** 0.22.0: the document's language (localized collections only). */
+  locale?: string;
 }
 
 /**

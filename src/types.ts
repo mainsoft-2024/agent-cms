@@ -127,6 +127,26 @@ export interface CmsRedirect {
   updatedAt: string;
 }
 
+/** 0.22.0: where a form submission stands. `spam`: the honeypot was filled, or a person marked it. */
+export type FormSubmissionStatus = "new" | "read" | "spam" | "archived";
+
+/** One submission of a form (`cms_form_submissions`, 0.22.0). The address is kept as a hash only. */
+export interface FormSubmission {
+  id: string;
+  formId: string;
+  /** The form's version when it was sent (the fields then may differ from now). */
+  formVersion: number;
+  data: Record<string, unknown>;
+  /** Files sent with it: their storage keys, in private storage. */
+  files: { field: string; id: string; key: string; name: string; size: number; mime: string }[];
+  status: FormSubmissionStatus;
+  /** HMAC of the sender's address (never the address itself). */
+  ipHash: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** A redirect as the admin list shows it (0.21.0). */
 export interface RedirectListItem extends CmsRedirect {
   /** Visits over the last 30 days. */
@@ -207,6 +227,17 @@ export interface CmsDoc extends DocContent {
   parentId?: string | null;
   /** Order among siblings (a sortable string, 0.21.0). */
   position?: string | null;
+  /**
+   * The language of this document (0.22.0, collections with `localized`). Absent in apps without
+   * `locales` and in collections that are not translated.
+   */
+  locale?: string;
+  /** On a translation: the id of its source document (0.22.0). Absent on sources. */
+  groupId?: string | null;
+  /** On a translation: the source version it was last aligned to (0.22.0). */
+  sourceVersion?: number | null;
+  /** Set on a read with `fallback` (0.22.0) when the asked language had nothing to show: the language asked for. */
+  requestedLocale?: string;
 }
 
 /** What `commit()` records about a version: changed fields and body hunks. */
@@ -445,6 +476,16 @@ export const AUDIT_ACTIONS = [
   "template.create",
   "template.update",
   "template.delete",
+  // 0.22.0
+  "doc.translate",
+  "doc.align",
+  "form.create",
+  "form.update",
+  "form.delete",
+  "form.submission_update",
+  "form.submission_delete",
+  "form.export",
+  "form.file_open",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -505,6 +546,12 @@ export interface FieldAdmin {
   maxFileSize?: number;
   /** For `image` and `file`: the only store the field picks from and uploads to. */
   store?: string;
+  /**
+   * 0.22.0, collections with `localized`: whether translations have their own value of this field.
+   * Default: true for text (`z.string()` without a format, and lists of them), false for everything
+   * else (numbers, dates, switches, choices, relations, files, nested objects), which follows the source.
+   */
+  localized?: boolean;
 }
 
 export const ASSET_KINDS = ["image", "video", "audio", "document", "other", "folder"] as const;
@@ -611,8 +658,16 @@ export interface CollectionConfig<F extends ZodTypeAny | undefined = ZodTypeAny 
   };
   /** `[[link:key|label]]` keys: return the URL, or null when the key is unknown. */
   links?: { resolve: (key: string) => string | null };
-  /** Public URL of a document (agent results, the editor's public link, preview links). */
-  url?: (doc: { slug: string }) => string;
+  /**
+   * Public URL of a document (agent results, the editor's public link, preview links). In a localized
+   * collection (0.22.0) it also gets the `locale`, so each translation has its own address (sitemap `hreflang`).
+   */
+  url?: (doc: { slug: string; locale?: string }) => string;
+  /**
+   * Documents of this collection are translated (0.22.0): needs `createCms({ locales, defaultLocale })`.
+   * Each translation is a document of its own (versions, drafts, publishing) with the same slug.
+   */
+  localized?: boolean;
   access?: {
     /** Read published documents. Default for "public": everyone. Required for "internal". */
     read?: (a: AccessArgs) => boolean;
@@ -747,6 +802,15 @@ export interface DocSummary {
   updatedByKind: CmsDoc["updatedByKind"];
   updatedByAgent: string | null;
   hits7d?: number;
+  /** 0.22.0: the language (localized collections only). */
+  locale?: string;
+  /** 0.22.0, lists with `fallback`: the language asked for when this row is the default language's. */
+  requestedLocale?: string;
+  /**
+   * 0.22.0, editors' lists with `translations` (source rows of a localized collection): how each other
+   * language stands against this document: `missing`, `outdated` or `current`.
+   */
+  translations?: Record<string, "missing" | "outdated" | "current">;
   schedule: Pick<Schedule, "publishAt" | "unpublishAt" | "version" | "by"> | null;
   review: Pick<ReviewRequest, "state" | "version" | "by" | "note"> | null;
 }
@@ -795,6 +859,7 @@ export const WEBHOOK_EVENTS = [
   "release.published",
   "comment.created",
   "doc.moved",
+  "form.submitted",
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 

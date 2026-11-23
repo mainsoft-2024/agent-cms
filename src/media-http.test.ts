@@ -144,6 +144,9 @@ test("tools: six file tools, offered by what the key may do", async () => {
   assert.equal(toolsFor(cms, publisher).length, 51, "42 document tools (5 file-style since 0.15.0, 6 content model tools since 0.21.0), 6 for the library, 3 for the bucket");
   const plain = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "g", label: "G", visibility: "public" })] });
   assert.equal(toolsFor(plain, { kind: "system", label: "s" }).length, 42, "no media tools without a media library");
+  // 0.22.0: list_translations only in apps with locales.
+  const multi = createCms({ repo: new MemoryRepo(), locales: ["ko", "en"], collections: [defineCollection({ slug: "g", label: "G", visibility: "public", localized: true })] });
+  assert.equal(toolsFor(multi, { kind: "system", label: "s" }).length, 43, "list_translations with locales");
 
   const writer = await key(["read", "write"]);
   const got = (await callTool(cms, writer, "import_asset", { url: "https://example.com/pics/team.png", folder: "blog", alt: "The team" })) as { id: string; markdown: string; width: number; url: string };

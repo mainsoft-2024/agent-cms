@@ -18,6 +18,8 @@ import type { AssetListOptions, AssetUsage, AssetView, UploadInstructions, Uploa
 import type { AgentChange, BulkAction, BulkResult, DocDiff, PreviewLink, PreviewTtl } from "./cms";
 import type { Diagnostic, ErrorParams } from "./errors";
 import type { PatchOp } from "./patch";
+import type { FormCounts, FormInput, FormListItem, FormSubmissionView, FormView, PublicForm, UploadGrant } from "./forms";
+import type { FormSubmissionStatus } from "./types";
 import type { CommentThread, ReleaseView, ScheduledRun, TrashItem, TrashRef } from "./flow";
 import type { Block, TocItem } from "./markdown";
 import type { AuditEntry, AutosaveState, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocCounts, DocInputWire, DocSummary, KeyScope, Presence, SavedFilter, VersionSummary } from "./wire";
@@ -207,9 +209,14 @@ export interface Me {
   timeZone?: string;
   /** The media library, when the app has one and this actor may see it. */
   media?: MediaInfo | null;
-  collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean; single?: boolean; tree?: boolean; snippets?: boolean }[];
+  collections: { slug: string; label: string; visibility: "public" | "internal"; canWrite: boolean; canPublish: boolean; single?: boolean; tree?: boolean; snippets?: boolean; localized?: boolean }[];
+  /** 0.22.0: languages documents are written in (empty: off) and the one translations are made from. */
+  locales?: string[];
+  defaultLocale?: string | null;
   /** 0.21.0: redirects are on and this caller manages them. */
   redirects?: boolean;
+  /** 0.22.0: forms are on and this caller may see them (`write`: build forms, `delete`: delete submissions). */
+  forms?: { read: boolean; write: boolean; delete: boolean; /** File fields can take files on this server (0.22.0). */ uploads?: boolean } | null;
   /** 0.21.0: hosts `:::video` blocks may embed. */
   videoHosts?: string[];
   /** The CMS's own sign-in, when the app uses it (`createAuth`). */
@@ -385,6 +392,12 @@ export interface CollectionSchema {
   redirects?: boolean;
   /** 0.21.0: collections whose documents are snippets. */
   snippetCollections?: string[];
+  /** 0.22.0: languages (empty: off), the one translations are made from, and whether this collection is translated. */
+  locales?: string[];
+  defaultLocale?: string | null;
+  localized?: boolean;
+  /** 0.22.0: per top-level field, whether a translation has its own value (false: it shows the source's, read-only). */
+  translatable?: Record<string, boolean> | null;
 }
 
 /** 0.21.0 content model shapes. */
@@ -434,6 +447,8 @@ export interface DocRefView {
   id: string | null;
   collection: string;
   slug: string;
+  /** 0.22.0: a translation that points here: its language (`slug` is the source's). */
+  locale?: string;
   title: string;
   status: string | null;
   fields: string[];
@@ -455,6 +470,47 @@ export interface ListQuery {
   limit?: number;
   cursor?: string | null;
   hits?: boolean;
+  /** 0.22.0: documents in this language (localized collections). */
+  locale?: string;
+  /** 0.22.0: with each source row, how its translations stand (`translations` on each item; editors). */
+  translations?: boolean;
+}
+
+/** 0.22.0: one language of a document, as `GET …/_translations` lists it. */
+export interface TranslationView {
+  locale: string;
+  status: "source" | "missing" | "outdated" | "current";
+  version: number | null;
+  sourceVersion: number | null;
+  publishedVersion: number | null;
+  updatedAt: string | null;
+  docStatus: "draft" | "published" | "archived" | null;
+  /** Where the site shows this language of the document (the collection's `url()`), or null. */
+  url: string | null;
+}
+export interface TranslationsView {
+  collection: string;
+  slug: string;
+  defaultLocale: string;
+  /** The source version translations are compared with (published, else latest); null when you may not read the source. */
+  sourceVersion: number | null;
+  translations: TranslationView[];
+}
+
+/**
+ * 0.22.0: name a document in a language for any client method that takes a slug (`publish`,
+ * `versions`, `autosave`…): `slug@en`. The default language is the slug itself.
+ */
+export const localeSlug = (slug: string, locale?: string | null, defaultLocale?: string | null): string => (locale && locale !== defaultLocale ? `${slug}@${locale}` : slug);
+
+/**
+ * The `If-Match` tag for a version. A translation (`slug@locale`, 0.22.0) names its language,
+ * as its ETag does, so the server can tell it from the source's tag at the same version.
+ */
+function versionTag(path: string, version: number): string {
+  const m = /^\/collections\/[^/]+\/[^/]*?%40([^/]+)/.exec(path);
+  const locale = m ? decodeURIComponent(m[1]).toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+  return `"v${version}${locale ? `-${locale}` : ""}"`;
 }
 
 export function createRestClient(opts: RestClientOptions) {
@@ -477,7 +533,7 @@ export function createRestClient(opts: RestClientOptions) {
         headers: {
           accept: "application/json",
           ...(o.body !== undefined ? { "content-type": "application/json" } : {}),
-          ...(o.ifMatch !== undefined ? { "if-match": `"v${o.ifMatch}"` } : {}),
+          ...(o.ifMatch !== undefined ? { "if-match": versionTag(path, o.ifMatch) } : {}),
           ...opts.headers,
         },
         body: o.body !== undefined ? JSON.stringify(o.body) : undefined,
@@ -550,7 +606,7 @@ export function createRestClient(opts: RestClientOptions) {
     ancestors: (c: string, s: string, o: { draft?: boolean } = {}) => req<{ ancestors: { id: string; slug: string; title: string }[] }>("GET", `${doc(c, s)}/_ancestors${o.draft ? "?draft=1" : ""}`).then((r) => r.ancestors),
     referencedBy: (c: string, s: string) => req<{ referencedBy: DocRefView[] }>("GET", `${doc(c, s)}/_refs`).then((r) => r.referencedBy),
     seo: (c: string, s: string, o: { draft?: boolean } = {}) => req<{ seo: SeoView }>("GET", `${doc(c, s)}/_seo${o.draft ? "?draft=1" : ""}`).then((r) => r.seo),
-    snippetUses: (c: string, s: string) => req<{ docs: { id: string; collection: string; slug: string; title: string; status: string }[] }>("GET", `${doc(c, s)}/_snippet-uses`).then((r) => r.docs),
+    snippetUses: (c: string, s: string) => req<{ docs: { id: string; collection: string; slug: string; locale?: string; title: string; status: string }[] }>("GET", `${doc(c, s)}/_snippet-uses`).then((r) => r.docs),
     suggestSlug: (c: string, title: string) => req<{ slug: string }>("GET", `/collections/${enc(c)}/_suggest-slug?title=${enc(title)}`).then((r) => r.slug),
     templates: (c: string) => req<{ templates: TemplateView[] }>("GET", `/collections/${enc(c)}/_templates`).then((r) => r.templates),
     saveTemplate: (c: string, t: Partial<TemplateView>) => req<{ template: TemplateView }>("POST", `/collections/${enc(c)}/_templates`, { body: t }).then((r) => r.template),
@@ -564,11 +620,79 @@ export function createRestClient(opts: RestClientOptions) {
     /** Visits of a redirect per day (default 30 days, oldest first). */
     redirectHits: (id: string, days?: number) => req<{ days: { day: string; n: number }[]; total: number }>("GET", `/redirects/${enc(id)}/hits`, { query: days ? { days: String(days) } : undefined }),
     removeRedirect: (id: string) => req<{ ok: true }>("DELETE", `/redirects/${enc(id)}`),
+    // 0.22.0 forms
+    forms: () => req<{ forms: FormListItem[] }>("GET", "/forms").then((r) => r.forms),
+    form: (slug: string) => req<{ form: FormView }>("GET", `/forms/${enc(slug)}/definition`).then((r) => r.form),
+    createForm: (f: FormInput) => req<{ form: FormView }>("POST", "/forms", { body: f }).then((r) => r.form),
+    /** `expectedUpdatedAt`: the `updatedAt` you read; someone else's save in between answers 409 `form_conflict`. */
+    updateForm: (slug: string, f: FormInput & { expectedUpdatedAt?: string }) => req<{ form: FormView }>("PATCH", `/forms/${enc(slug)}`, { body: f }).then((r) => r.form),
+    removeForm: (slug: string) => req<{ submissions: number }>("DELETE", `/forms/${enc(slug)}`),
+    /** The form as a page draws it (what `<CmsForm>` loads). */
+    publicForm: (slug: string) => req<{ form: PublicForm }>("GET", `/forms/${enc(slug)}`).then((r) => r.form),
+    /** Send a form. Values of file fields are the tokens from `formUploadGrant`. */
+    submitForm: (slug: string, values: Record<string, unknown>) => req<{ ok: true; message: string; redirectUrl: string | null }>("POST", `/forms/${enc(slug)}`, { body: values }),
+    formUploadGrant: (slug: string, f: { field: string; name: string; size: number; mime?: string }) => req<UploadGrant>("POST", `/forms/${enc(slug)}/uploads`, { body: f }),
+    /** Upload a file's bytes for a grant (directly to storage when the grant says so, else through the CMS). */
+    async formUpload(slug: string, grant: UploadGrant, file: Blob): Promise<void> {
+      const url = grant.put ? grant.put.url : `${base}/forms/${enc(slug)}/uploads/${enc(grant.token)}`;
+      let res: Response;
+      try {
+        res = await doFetch(url, { method: "PUT", body: file, headers: grant.put ? grant.put.headers : { "content-type": "application/octet-stream", ...opts.headers }, ...(grant.put ? {} : { credentials: "same-origin" as const }) });
+      } catch (e) {
+        throw new CmsRemoteError(e instanceof Error ? e.message : String(e), "network");
+      }
+      if (!res.ok) {
+        const e = ((await res.json().catch(() => null)) ?? {}) as { error?: string; message?: string; params?: ErrorParams };
+        throw new CmsRemoteError(e.message ?? `HTTP ${res.status}`, e.error ?? "http", { status: res.status, params: e.params, retryAfter: retryAfterOf(res.headers.get("retry-after")) });
+      }
+    },
+    formSubmissions: (slug: string, q: { status?: readonly FormSubmissionStatus[]; q?: string; limit?: number; offset?: number } = {}) =>
+      req<{ items: FormSubmissionView[]; total: number; counts: FormCounts }>("GET", `/forms/${enc(slug)}/submissions`, { query: { status: q.status?.join(","), q: q.q, limit: q.limit, offset: q.offset } }),
+    formSubmission: (slug: string, id: string) => req<{ submission: FormSubmissionView }>("GET", `/forms/${enc(slug)}/submissions/${enc(id)}`).then((r) => r.submission),
+    markSubmission: (slug: string, id: string, status: FormSubmissionStatus) => req<{ submission: FormSubmissionView }>("PATCH", `/forms/${enc(slug)}/submissions/${enc(id)}`, { body: { status } }).then((r) => r.submission),
+    bulkSubmissions: (slug: string, ids: string[], action: FormSubmissionStatus | "delete") => req<{ changed?: number; deleted?: number }>("POST", `/forms/${enc(slug)}/submissions/_bulk`, { body: { ids, action } }),
+    removeSubmission: (slug: string, id: string) => req<{ ok: true }>("DELETE", `/forms/${enc(slug)}/submissions/${enc(id)}`),
+    /** A five-minute download link for a file of a submission. */
+    submissionFileLink: (slug: string, id: string, fileId: string) => req<{ url: string; name: string; expiresAt: string }>("GET", `/forms/${enc(slug)}/submissions/${enc(id)}/files/${enc(fileId)}`),
+    /**
+     * Submissions as CSV text (default: all but spam). Give the list's filters to export the view
+     * shown: `{ status: ["spam"], q: "acme" }` (a bare status list still works).
+     */
+    async exportSubmissions(slug: string, filter?: readonly FormSubmissionStatus[] | { status?: readonly FormSubmissionStatus[]; q?: string }): Promise<{ csv: string; filename: string }> {
+      const f = Array.isArray(filter) ? { status: filter as readonly FormSubmissionStatus[] } : ((filter ?? {}) as { status?: readonly FormSubmissionStatus[]; q?: string });
+      const qs = new URLSearchParams();
+      if (f.status?.length) qs.set("status", f.status.join(","));
+      if (f.q?.trim()) qs.set("q", f.q.trim());
+      let res: Response;
+      try {
+        res = await doFetch(`${base}/forms/${enc(slug)}/export.csv${qs.toString() ? `?${qs}` : ""}`, { method: "GET", credentials: "same-origin", headers: { accept: "text/csv", ...opts.headers } });
+      } catch (e) {
+        throw new CmsRemoteError(e instanceof Error ? e.message : String(e), "network");
+      }
+      if (!res.ok) {
+        const e = ((await res.json().catch(() => null)) ?? {}) as { error?: string; message?: string; params?: ErrorParams };
+        throw new CmsRemoteError(e.message ?? `HTTP ${res.status}`, e.error ?? "http", { status: res.status, params: e.params });
+      }
+      const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? `${slug}.csv`;
+      return { csv: await res.text(), filename: name };
+    },
     schema: (c: string, o: { slug?: string | null } = {}) => req<CollectionSchema>("GET", `/collections/${enc(c)}/_schema${o.slug ? `?slug=${enc(o.slug)}` : ""}`),
     list: (c: string, q: ListQuery = {}) => req<{ docs: DocSummary[]; total: number; nextCursor: string | null }>("GET", `/collections/${enc(c)}`, { query: { fields: "summary", ...q } }),
-    counts: (c: string) => req<{ counts: DocCounts }>("GET", `/collections/${enc(c)}/_counts`).then((r) => r.counts),
-    get: (c: string, s: string, o: { draft?: boolean; expand?: string[] } = { draft: true }) => req<{ doc: CmsDoc }>("GET", doc(c, s), { query: { draft: o.draft, ...(o.expand?.length ? { expand: o.expand.join(",") } : {}) } }).then((r) => r.doc),
-    create: (c: string, d: DocInputWire, o: { publish?: boolean; note?: string; template?: string } = {}) => req<{ doc: CmsDoc }>("POST", `/collections/${enc(c)}`, { body: { doc: d, ...o } }).then((r) => r.doc),
+    counts: (c: string, o: { locale?: string } = {}) => req<{ counts: DocCounts }>("GET", `/collections/${enc(c)}/_counts`, { query: o }).then((r) => r.counts),
+    /** 0.22.0: `locale` reads that language; `fallback` gives the default language's document when it has none (with `requestedLocale`). */
+    get: (c: string, s: string, o: { draft?: boolean; expand?: string[]; locale?: string; fallback?: boolean } = { draft: true }) =>
+      req<{ doc: CmsDoc }>("GET", doc(c, s), { query: { draft: o.draft, ...(o.expand?.length ? { expand: o.expand.join(",") } : {}), locale: o.locale, fallback: o.fallback } }).then((r) => r.doc),
+    /** 0.22.0: `locale` other than the default starts a translation of `from` (or `d.slug`). */
+    create: (c: string, d: DocInputWire, o: { publish?: boolean; note?: string; template?: string; locale?: string; from?: string } = {}) => req<{ doc: CmsDoc }>("POST", `/collections/${enc(c)}`, { body: { doc: d, ...o } }).then((r) => r.doc),
+    // 0.22.0 translations
+    /** Every language of a document with its status (source, missing, outdated, current). */
+    translations: (c: string, s: string) => req<TranslationsView>("GET", `${doc(c, s)}/_translations`),
+    /** Start a translation in `locale`: its text starts as a copy of the source unless `d` brings its own. */
+    startTranslation: (c: string, s: string, locale: string, d: DocInputWire = {}, o: { publish?: boolean; note?: string } = {}) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/_translations`, { body: { locale, doc: d, ...o } }).then((r) => r.doc),
+    /** Say the translation in `locale` matches source version `version` (default: the source's published one). */
+    markAligned: (c: string, s: string, locale: string, version?: number) => req<{ doc: CmsDoc }>("POST", `${doc(c, s)}/_align`, { body: { locale, version } }).then((r) => r.doc),
+    /** What changed in the source since the translation in `locale` was aligned. */
+    sourceDiff: (c: string, s: string, locale: string) => req<DocDiff & { collection: string; slug: string; locale: string; status: TranslationView["status"] }>("GET", `${doc(c, s)}/_source-diff`, { query: { locale } }),
     update: (c: string, s: string, d: DocInputWire, o: { expectedVersion: number; publish?: boolean; note?: string }) =>
       req<{ doc: CmsDoc }>("PATCH", doc(c, s), { body: { doc: d, publish: o.publish, note: o.note }, ifMatch: o.expectedVersion }).then((r) => r.doc),
     remove: (c: string, s: string, expectedVersion?: number, o: { force?: boolean } = {}) => req<{ ok: true }>("DELETE", doc(c, s), { ifMatch: expectedVersion, query: o.force ? { force: "1" } : undefined }),
@@ -653,7 +777,7 @@ export function createRestClient(opts: RestClientOptions) {
     /** Checks the conditions against one document and lists what would be done; nothing changes. */
     testAutomation: (id: string, target: { collection: string; slug: string }) =>
       req<{ matches: boolean; title: string; conditions: (AutomationCondition & { ok: boolean })[]; actions: { type: string; would: string }[] }>("POST", `/automations/${enc(id)}/test`, { body: target }),
-    roles: () => req<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[]; media?: boolean }[]; users: boolean }>("GET", "/roles"),
+    roles: () => req<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[]; media?: boolean; ops?: RoleOp[] }[]; users: boolean }>("GET", "/roles"),
     createRole: (r: RoleInput) => req<{ role: CmsRole }>("POST", "/roles", { body: r }).then((x) => x.role),
     updateRole: (id: string, r: RoleInput) => req<{ role: CmsRole }>("PATCH", `/roles/${enc(id)}`, { body: r }).then((x) => x.role),
     removeRole: (id: string) => req<{ ok: true }>("DELETE", `/roles/${enc(id)}`),
@@ -662,7 +786,8 @@ export function createRestClient(opts: RestClientOptions) {
     searchUsers: (q: string) => req<{ users: PersonMatch[] }>("GET", "/roles/_users", { query: { q } }).then((r) => r.users),
     jobs: (q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number } = {}) => req<{ waiting: number; failed: number; jobs: CmsJob[] }>("GET", "/jobs", { query: q }),
     retryJob: (id: string) => req<{ ok: true }>("POST", `/jobs/${enc(id)}/retry`),
-    search: (q: string, collections?: string[]) => req<{ empty: boolean; hits: { collection: string; slug: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(",") } }),
+    search: (q: string, collections?: string[], o: { locale?: string } = {}) =>
+      req<{ empty: boolean; hits: { collection: string; slug: string; locale?: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(","), locale: o.locale } }),
     keys: () => req<{ keys: CmsKey[] }>("GET", "/keys").then((r) => r.keys),
     createKey: (k: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null; rateLimit?: number | null; allowedIps?: string[] | null }) => req<{ key: CmsKey; secret: string }>("POST", "/keys", { body: k }),
     revokeKey: (id: string, o: { reason?: string } = {}) => req<{ ok: true }>("DELETE", `/keys/${enc(id)}${o.reason ? `?reason=${encodeURIComponent(o.reason)}` : ""}`),
@@ -723,4 +848,7 @@ export type RestClient = ReturnType<typeof createRestClient>;
 
 // 0.17.0: reading zips and Notion exports in the browser (the admin's import tab).
 export { unzip } from "./zip";
+export * from "./form-rules";
+export type { FormCounts, FormInput, FormListItem, FormSettings, FormSubmissionView, FormView, PublicForm, UploadGrant } from "./forms";
+export type { FormSubmissionStatus } from "./types";
 export { docsFromNotion, filesFromDocs, type NotionAsset } from "./import-sources";

@@ -18,6 +18,7 @@ import { CmsMedia } from "@/components/cms/cms-media";
 import { en, ko } from "@/components/cms/cms-messages";
 import { CmsPeople } from "@/components/cms/cms-people";
 import { CmsRedirects } from "@/components/cms/cms-redirects";
+import { CmsForms, CmsFormEditor, type CmsFormTab } from "@/components/cms/cms-forms";
 import { CmsRelease, CmsReleases } from "@/components/cms/cms-releases";
 import { CmsRoles } from "@/components/cms/cms-roles";
 import { CmsShell } from "@/components/cms/cms-shell";
@@ -26,6 +27,7 @@ import { CmsTrash } from "@/components/cms/cms-trash";
 import { CmsVersions } from "@/components/cms/cms-versions";
 import { CmsWebhooks } from "@/components/cms/cms-webhooks";
 import { CmsProvider, useCms } from "@/components/cms/use-cms";
+import { usePath as useHistoryPath, type Go } from "./history";
 
 const CmsBlockEditor = React.lazy(() => import("@/components/cms/cms-block-editor"));
 const slots = { blockEditor: CmsBlockEditor };
@@ -47,24 +49,18 @@ const S: Settings = (() => {
   return { basePath: "/api/cms", adminPath: "/admin", appName: "agent-cms", ...given };
 })();
 
-function usePath(): [string, (to: string, replace?: boolean) => void] {
-  const [path, setPath] = React.useState(() => window.location.pathname + window.location.search);
-  React.useEffect(() => {
-    const on = () => setPath(window.location.pathname + window.location.search);
-    window.addEventListener("popstate", on);
-    return () => window.removeEventListener("popstate", on);
-  }, []);
-  const go = React.useCallback((to: string, replace = false) => {
-    if (/^https?:/.test(to)) return window.location.assign(to);
-    // Leaving a page with unsaved edits asks first, as a full page load would.
-    const guard = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(guard);
-    if (guard.defaultPrevented && !window.confirm(document.documentElement.lang === "ko" ? "저장하지 않은 변경이 있음. 나갈지 확인" : "You have unsaved changes. Leave anyway?")) return;
-    window.history[replace ? "replaceState" : "pushState"](null, "", to);
-    setPath(to.split("#")[0]);
-    if (!to.includes("#")) window.scrollTo(0, 0);
-  }, []);
-  return [path, go];
+/**
+ * May the page change? A screen with unsaved edits says no to a `beforeunload` event (as for a full
+ * page load); then the person is asked. A screen that already asked (its own dialog) lets it through.
+ */
+function mayLeave(): boolean {
+  const guard = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(guard);
+  return !guard.defaultPrevented || window.confirm(document.documentElement.lang === "ko" ? "저장하지 않은 변경이 있음. 나갈지 확인" : "You have unsaved changes. Leave anyway?");
+}
+
+function usePath() {
+  return useHistoryPath(mayLeave);
 }
 
 /** Links inside the admin move without reloading the page. */
@@ -95,7 +91,7 @@ function Home({ go }: { go: (to: string, replace?: boolean) => void }) {
   return null;
 }
 
-function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boolean) => void }) {
+function Screen({ rest, go }: { rest: string[]; go: Go }) {
   const { me } = useCms();
   const a = S.adminPath;
   const [p0, p1, p2] = rest.map(decodeURIComponent);
@@ -110,7 +106,7 @@ function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boole
     case "files":
       return <CmsFiles />;
     case "releases":
-      return p1 ? <CmsRelease id={p1} onBack={() => go(`${a}/releases`)} onOpenDocument={(c, s) => go(`${a}/${c}/${s}`)} /> : <CmsReleases hrefFor={(id) => `${a}/releases/${id}`} onOpenRelease={(id) => go(`${a}/releases/${id}`)} />;
+      return p1 ? <CmsRelease id={p1} onBack={() => go(`${a}/releases`)} onOpenDocument={(c, s) => go(`${a}/${c}/${encodeURIComponent(s)}`)} /> : <CmsReleases hrefFor={(id) => `${a}/releases/${id}`} onOpenRelease={(id) => go(`${a}/releases/${id}`)} />;
     case "trash":
       return <CmsTrash />;
     case "keys":
@@ -129,6 +125,12 @@ function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boole
       return <CmsPeople />;
     case "redirects":
       return <CmsRedirects />;
+    case "forms":
+      return p1 ? (
+        <CmsFormEditor key={p1} slug={p1} tab={(p2 as CmsFormTab) || "fields"} onTab={(x) => go(`${a}/forms/${encodeURIComponent(p1)}${x === "fields" ? "" : `/${x}`}`, true, { guard: false })} onBack={() => go(`${a}/forms`)} onSlugChange={(s) => go(`${a}/forms/${encodeURIComponent(s)}/settings`, true, { guard: false })} />
+      ) : (
+        <CmsForms hrefFor={(s) => `${a}/forms/${encodeURIComponent(s)}`} onOpenForm={(s) => go(`${a}/forms/${encodeURIComponent(s)}`)} />
+      );
     case "account":
       return <CmsAccount onLocale={() => window.location.reload()} />;
   }
@@ -203,7 +205,7 @@ function App() {
       </CmsProvider>
     );
 
-  const active = rest[0] && !["dashboard", "media", "files", "releases", "trash", "keys", "audit", "webhooks", "automations", "roles", "transfer", "people", "redirects", "account"].includes(rest[0]) ? rest[0] : undefined;
+  const active = rest[0] && !["dashboard", "media", "files", "releases", "trash", "keys", "audit", "webhooks", "automations", "roles", "transfer", "people", "redirects", "forms", "account"].includes(rest[0]) ? rest[0] : undefined;
   return (
     // A provider of its own: what the person may do is read again after signing in.
     <CmsProvider key="admin" baseUrl={S.basePath} messages={messages} slots={slots}>

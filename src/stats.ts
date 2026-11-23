@@ -53,7 +53,7 @@ export function createStats(ctx: StatsContext) {
     const editable = new Set<string>();
     for (const col of readable) {
       const editor = ctx.can(actor, col, "write");
-      const list = await ctx.repo.listDocs({ collection: col });
+      const list = await ctx.repo.listDocs({ collection: col, sources: true });
       for (const d of list) {
         if (d.deletedAt) continue;
         if (editor && ctx.can(actor, col, "write", d)) {

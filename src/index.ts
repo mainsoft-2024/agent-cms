@@ -79,7 +79,11 @@ export {
   schemaVersionSql,
   splitSql,
   upgradeSteps,
+  fillLocaleSql,
+  localeDuplicatesSql,
 } from "./tables";
+export { localeAddress, splitAddress, translatableFields, LOCALE_RE } from "./locale";
+export type { TranslationInfo, TranslationList, TranslationStatus } from "./locale";
 export type { CmsTables, CmsTablesOptions } from "./tables";
 export { citationId, envelope, ENVELOPE_PREAMBLE, lookupForAgent, verifyCitations } from "./agent";
 export type { AgentLink, AgentLookup, AgentSection, Citation, LookupOptions } from "./agent";
@@ -95,7 +99,8 @@ export type { AssetInfo, AssetListOptions, AssetUsage, AssetView, CmsAssets, Med
 export { DEFAULT_ACCEPT, MemoryStorage } from "./storage";
 export type { StorageAdapter } from "./storage";
 export type { CallToolOptions, CmsToolDef, ToolErrorResult, ToolOutcome } from "./tools";
-export { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError } from "./client";
+export { createCmsClient, createRestClient, CmsRemoteError, isCmsRemoteError, localeSlug } from "./client";
+export type { TranslationView, TranslationsView } from "./client";
 export type { CmsClient, CmsClientOptions, RestClient, RestClientOptions } from "./client";
 export { docFromMarkdown, parseFrontmatter } from "./frontmatter";
 export { VERSION } from "./version";
@@ -115,8 +120,12 @@ export { API_ROUTES, openApiDocument, type ApiRoute, type OpenApiOptions } from 
 export { docsFromCsv, docsFromJson, docsFromWordpress, filesFromDocs, filesFromSource, htmlToMarkdown, IMPORT_SOURCES, parseCsv, slugify, type ImportSource, type SourceDoc } from "./import-sources";
 
 // 0.14.0: request limits, retention, the events stream
-export { clientIp, createLimiter, ipAllowed, MemoryRateLimitStore, type RateLimitOptions, type RateLimitStore, type RateVerdict } from "./limits";
+export { clientIp, clientIpBehind, createLimiter, ipAllowed, MemoryRateLimitStore, type RateLimitOptions, type RateLimitStore, type RateVerdict } from "./limits";
 export { type RetentionOptions, type RetentionReport } from "./retention";
+// 0.22.0: forms
+export { FORM_HONEYPOT, FORM_MAX_BODY, toCsv, type CmsForms, type FormCounts, type FormInput, type FormListItem, type FormNotice, type FormSettings, type FormsOptions, type FormSubmissionView, type FormView, type PublicForm, type UploadGrant } from "./forms";
+export * from "./form-rules";
+export type { FormSubmission, FormSubmissionStatus } from "./types";
 export { eventStream, type EventStreamOptions } from "./events";
 
 // 0.17.0: across servers, caching, metrics, tenants (also as their own entries)

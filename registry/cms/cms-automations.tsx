@@ -155,13 +155,13 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
         <legend className="px-1 text-xs font-medium text-muted-foreground">{t("automation_when")}</legend>
         <div className="flex flex-wrap gap-2">
           <NativeSelect aria-label={t("automation_when")} className={SELECT} value={event} onChange={(e) => setEvent(e.target.value)}>
-            {lists.triggers.map((x) => (
+            {lists.triggers.filter((x) => x !== "form.submitted" || !!me?.forms || event === x).map((x) => (
               <option key={x} value={x}>
                 {t(`trigger.${x}` as never)}
               </option>
             ))}
           </NativeSelect>
-          {event.startsWith("schedule.") || event === "asset.uploaded" ? null : (
+          {event.startsWith("schedule.") || event === "asset.uploaded" || event === "form.submitted" ? null : (
             <NativeSelect aria-label={t("automation_collection")} className={SELECT} value={collection} onChange={(e) => setCollection(e.target.value)}>
               <option value="">{t("automation_any_collection")}</option>
               {cols.map((c) => (
@@ -241,12 +241,12 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
         <h2 id="cms-auto-test" className="text-xs font-medium text-muted-foreground">
           {t("automation_test")}
         </h2>
-        <p className="text-xs text-muted-foreground">{t(event.startsWith("schedule.") ? "automation_test_schedule" : "automation_test_text")}</p>
+        <p className="text-xs text-muted-foreground">{t(event === "form.submitted" ? "automation_test_form" : event.startsWith("schedule.") ? "automation_test_schedule" : "automation_test_text")}</p>
         {/* The test runs the saved rule: with unsaved changes it would test something else than what is shown. */}
         {unsaved ? (
           <p className="text-xs text-amber-700 dark:text-amber-400">{t("automation_test_save_first")}</p>
         ) : null}
-        <div className={cn("flex max-w-md flex-wrap items-center gap-2", event.startsWith("schedule.") && "hidden")}>
+        <div className={cn("flex max-w-md flex-wrap items-center gap-2", (event.startsWith("schedule.") || event === "form.submitted") && "hidden")}>
           {!collection && cols.length > 1 ? (
             <NativeSelect aria-label={t("automation_test_collection")} className="h-9 rounded-md border bg-background px-2 text-sm" value={testCol} onChange={(e) => setTestCol(e.target.value)}>
               <option value="">{t("automation_test_collection")}</option>

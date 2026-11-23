@@ -12,6 +12,7 @@ import { base64url, randomBytes } from "./crypto";
 import type { CmsErrorCode, CmsErrorOptions, ErrorParams } from "./errors";
 import { isCmsError } from "./errors";
 import type { CmsRepo } from "./repo";
+import { docAddress } from "./locale";
 import type { Actor, AuditAction, CmsDoc, CollectionConfig, Diagnostic } from "./types";
 import type { ZodTypeAny } from "zod";
 import {
@@ -190,7 +191,7 @@ export function createAx(ctx: AxContext) {
     const authorHidden = ctx.hidden?.(actor, stored.collection, stored) ?? [];
     const data = { docId: stored.id, baseVersion: doc.version, edits, note, by: { kind: who.kind, label: who.label, agent: who.agent }, lines, authorHidden };
     const r = await ctx.repo.insertRecord({ kind: "suggestion", scope: `${doc.collection}/${doc.slug}`, data, at });
-    ctx.audit(actor, "doc.suggest", { collection: doc.collection, slug: doc.slug, version: doc.version, detail: { id: r.id, edits: edits.length } });
+    ctx.audit(actor, "doc.suggest", { collection: doc.collection, slug: docAddress(doc), version: doc.version, detail: { id: r.id, edits: edits.length } });
     return { id: r.id, collection: doc.collection, slug: doc.slug, at, ...data } as Suggestion;
   }
 
@@ -255,7 +256,7 @@ export function createAx(ctx: AxContext) {
       let bytes = 0;
       outer: for (const col of cols) {
         const writer = o.drafts !== false && ctx.can(actor, col, "write");
-        const rows = writer ? await ctx.repo.listDocs({ collection: col }) : await ctx.repo.listDocs({ collection: col, published: true });
+        const rows = writer ? await ctx.repo.listDocs({ collection: col, sources: true }) : await ctx.repo.listDocs({ collection: col, published: true, sources: true });
         for (const row of rows.sort((a, b) => a.slug.localeCompare(b.slug))) {
           if (o.slugs?.length && !o.slugs.includes(row.slug)) continue;
           if (o.glob && !globMatch(o.glob, `${col}/${row.slug}`)) continue;

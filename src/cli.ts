@@ -9,6 +9,8 @@
  *   agent-cms migrate check | print | apply
  *       check: what is missing and the SQL to add it (exit 1 when behind)
  *       print: the full idempotent DDL; apply: run it
+ *   agent-cms migrate locales --default ko --collections a,b [--batch 1000]
+ *       0.22.0: documents of collections made localized get the default language (in batches)
  *   agent-cms add <item...> [--diff | --update] [--yes] [--overwrite] [--dir path]
  *       copy admin screens into the app (see `agent-cms add --list`)
  *   agent-cms storage check [--origin https://your-site]
@@ -74,7 +76,7 @@ import { unzip } from "./zip";
 import { imageSize } from "./net-guard";
 import { DEFAULT_ACCEPT, DEFAULT_MAX_FILE_SIZE } from "./storage";
 import { addItems, buildPublicRegistry, findRegistryDir, installCommand, loadRegistry, type Registry } from "./registry";
-import { cmsDdl, cmsTables, SCHEMA_VERSION, schemaVersionSql, splitSql, upgradeSteps } from "./tables";
+import { cmsDdl, cmsTables, fillLocaleSql, SCHEMA_VERSION, schemaVersionSql, splitSql, upgradeSteps } from "./tables";
 import { VERSION } from "./version";
 
 export interface CliIo {
@@ -100,7 +102,7 @@ export interface CliIo {
   run?: (cmd: string, args: string[], cwd: string) => number;
 }
 
-const WITH_VALUE = new Set(["--base-url", "--out", "--name", "--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--port", "--host", "--offset", "--limit", "--context", "--glob", "--args-file"]);
+const WITH_VALUE = new Set(["--base-url", "--out", "--name", "--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--port", "--host", "--offset", "--limit", "--context", "--glob", "--args-file", "--default", "--batch"]);
 /** Switches without a value. Anything else that starts with "--" is refused before any request. */
 const SWITCHES = new Set(["--admin", "--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--fix", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--memory", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
 
@@ -647,6 +649,9 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
     }
     if (sub === "check") {
       const r = await repo.inspect();
+      // Review 0.22 preflight: what the 0.22 upgrade would trip over.
+      if (r.invalidIndexes?.length) io.err(`[agent-cms] index ${r.invalidIndexes.join(", ")} is INVALID (a CREATE INDEX CONCURRENTLY that failed): drop it and build it again before migrating (UPGRADE-0.22.md).`);
+      if (r.atSlugs?.length) io.err(`[agent-cms] slug(s) ending in @<language>: ${r.atSlugs.join(", ")}. With locales on these read as a translation's address: rename them before turning locales on.`);
       let pending = migrationSql(r, tables);
       let changed = false;
       // Plugin tables: a plugin whose `CREATE TABLE` names a table the database lacks needs its SQL.
@@ -677,11 +682,36 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
       }
       if (flag(argv, "format") === "step") for (const s of pending.steps) io.out(`- ${s}`);
       else io.out(pending.sql);
-      const what = (r.schemaVersion ?? 0) >= SCHEMA_VERSION && !r.missingTables.length && !r.missingColumns.length && !r.missingIndexes?.length ? "plugin tables are missing" : `the database needs a migration (v${r.schemaVersion ?? "none"} -> v${SCHEMA_VERSION})`;
+      const what = (r.schemaVersion ?? 0) >= SCHEMA_VERSION && !r.missingTables.length && !r.missingColumns.length && !r.missingIndexes?.length && !r.staleIndexes?.length ? "plugin tables are missing" : `the database needs a migration (v${r.schemaVersion ?? "none"} -> v${SCHEMA_VERSION})`;
       io.err(`[agent-cms] ${what}. Put the SQL above in a migration, or run \`npx @mainsoft/agent-cms migrate apply\`.`);
       return 1;
     }
-    io.err(`unknown: migrate ${sub} (check | print | apply)`);
+    if (sub === "locales") {
+      // 0.22.0: after turning locales on, give documents of localized collections written before the default language for good.
+      const def = flag(argv, "default");
+      const cols = (flag(argv, "collections") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+      if (!def || !/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(def) || !cols.length) {
+        io.err("[agent-cms] usage: npx @mainsoft/agent-cms migrate locales --default ko --collections guide,blog [--batch 1000]");
+        return 1;
+      }
+      const r = await repo.inspect();
+      if ((r.schemaVersion ?? 0) < 11 || r.missingColumns.length) {
+        io.err("[agent-cms] the database is not at schema 11 yet: run npx @mainsoft/agent-cms migrate check first");
+        return 1;
+      }
+      const { sql: q } = await import("drizzle-orm");
+      const batch = Math.max(1, Math.min(Number(flag(argv, "batch") ?? 1000) || 1000, 100_000));
+      let total = 0;
+      for (;;) {
+        const res = (await db.execute(q.raw(fillLocaleSql(tables, { collections: cols, defaultLocale: def, batch })))) as unknown as { rows?: unknown[] } | unknown[];
+        const n = (Array.isArray(res) ? res : (res.rows ?? [])).length;
+        total += n;
+        if (n < batch) break;
+      }
+      io.out(`[agent-cms] ${total} document(s) in ${cols.join(", ")} now have locale ${def}.`);
+      return 0;
+    }
+    io.err(`unknown: migrate ${sub} (check | print | apply | locales)`);
     return 1;
   }
   return 1;
@@ -690,13 +720,17 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
 /** SQL that brings this database to the current schema, or null when it is current. */
 export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTables>): { sql: string; steps: string[] } | null {
   const current = r.schemaVersion ?? 0;
-  if (!r.missingTables.length && !r.missingColumns.length && current >= SCHEMA_VERSION && !r.missingIndexes?.length) return null;
+  if (!r.missingTables.length && !r.missingColumns.length && current >= SCHEMA_VERSION && !r.missingIndexes?.length && !r.staleIndexes?.length) return null;
   // Missing tables: the whole idempotent DDL (creates only what is missing).
   if (r.missingTables.some((t) => !/(audit|meta|assets|asset_refs|comments|releases|saved_filters|presence|jobs|webhooks|webhook_deliveries|records|changes)$/.test(t))) return { sql: cmsDdl(tables), steps: ["create the agent-cms tables"] };
   // Steps are idempotent: re-run them all when columns are missing, else only the newer ones.
   // A missing change log (0.17.0) alone needs only its own step, like a missing index.
   const onlyLog = r.missingTables.length > 0 && r.missingTables.every((t) => t.endsWith("changes"));
-  const steps = upgradeSteps(tables).filter((s) => s.version > current || r.missingColumns.length > 0 || (r.missingTables.length > 0 && !onlyLog) || ((onlyLog || !!r.missingIndexes?.length) && s.version === 9));
+  // A missing index (or one an upgrade drops, 0.22.0) re-runs the step that makes (or drops) it.
+  const touches = (s: { sql: string }, names: readonly string[] | undefined) => !!names?.some((n) => s.sql.includes(`"${n}"`));
+  const steps = upgradeSteps(tables).filter(
+    (s) => s.version > current || r.missingColumns.length > 0 || (r.missingTables.length > 0 && !onlyLog) || ((onlyLog || !!r.missingIndexes?.length) && s.version === 9) || touches(s, r.missingIndexes) || touches(s, r.staleIndexes)
+  );
   const meta = r.missingTables.some((t) => t.endsWith("meta"))
     ? `CREATE TABLE IF NOT EXISTS ${tables.options.schema ? `"${tables.options.schema}".` : ""}"${tables.options.prefix}meta" ("key" text PRIMARY KEY, "value" jsonb, "updated_at" timestamptz NOT NULL DEFAULT now());\n`
     : "";
@@ -725,6 +759,9 @@ function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, i
   if (r.orphanComments) warn(`${r.orphanComments} comment(s) belong to a document that is gone (npx @mainsoft/agent-cms doctor --fix)`);
   if (r.missingIndexes?.length) warn(`missing indexes: ${r.missingIndexes.join(", ")}. Lists and pruning get slow on big tables (npx @mainsoft/agent-cms migrate check prints the SQL)`);
   else if (r.missingIndexes && !r.missingTables.length) ok("all indexes exist");
+  if (r.staleIndexes?.length) fail(`old index ${r.staleIndexes.join(", ")} still there: a translation cannot have its source's slug (npx @mainsoft/agent-cms migrate check prints the SQL; UPGRADE-0.22.md)`);
+  if (r.invalidIndexes?.length) fail(`index ${r.invalidIndexes.join(", ")} is INVALID (a CREATE INDEX CONCURRENTLY that failed): drop it and build it again (UPGRADE-0.22.md)`);
+  if (r.atSlugs?.length) warn(`slug(s) ending in @<language>: ${r.atSlugs.join(", ")}. With locales on these read as a translation's address: rename them first (UPGRADE-0.22.md)`);
   if (r.changeRows != null && r.changeRows > 1_000_000) warn(`the change log has ${r.changeRows} rows: is the cron call running? It prunes rows older than changes.keepDays`);
   if (staleUploads) warn(`${staleUploads === 500 ? "500+" : staleUploads} upload(s) started more than a day ago and never finished (npx @mainsoft/agent-cms storage cleanup)`);
   if (failedJobs) warn(`${failedJobs} background job(s) failed for good (GET /api/cms/jobs?state=failed shows why; POST /api/cms/jobs/<id>/retry tries again)`);

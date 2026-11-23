@@ -213,7 +213,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_anchor_aliases", "blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_changes", "blog_comments", "blog_doc_refs", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_redirect_hits", "blog_redirects", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
+      ["blog_anchor_aliases", "blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_changes", "blog_comments", "blog_doc_refs", "blog_documents", "blog_form_submissions", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_redirect_hits", "blog_redirects", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -248,12 +248,13 @@ test("db: schema 2 → 3 adds the agent columns and the asset tables; files and 
     assert.deepEqual(before.missingTables.sort(), ["cms_asset_refs", "cms_assets", "cms_comments", "cms_jobs", "cms_presence", "cms_releases", "cms_saved_filters", "cms_webhook_deliveries", "cms_webhooks"]);
     const pending = migrationSql(before, cmsTables())!;
     // Not the whole DDL: the upgrade steps (all of them are safe to run again).
-    assert.match(pending.steps[pending.steps.length - 8], /0\.8\.0/);
-    assert.match(pending.steps[pending.steps.length - 7], /0\.10\.0/);
-    assert.match(pending.steps[pending.steps.length - 6], /0\.11\.0/);
-    assert.match(pending.steps[pending.steps.length - 5], /0\.12\.0/);
-    assert.match(pending.steps[pending.steps.length - 4], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.15\.0/);
+    assert.match(pending.steps[pending.steps.length - 9], /0\.8\.0/);
+    assert.match(pending.steps[pending.steps.length - 8], /0\.10\.0/);
+    assert.match(pending.steps[pending.steps.length - 7], /0\.11\.0/);
+    assert.match(pending.steps[pending.steps.length - 6], /0\.12\.0/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.15\.0/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.22\.0/);
     assert.doesNotMatch(pending.sql, /CREATE TABLE IF NOT EXISTS "cms_documents"/);
     await run(db, pending.sql);
     await run(db, pending.sql);
@@ -433,10 +434,11 @@ test("db: schema 6 → 7 adds cms_records; automations, runs and roles work on a
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [6, ["cms_records"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.match(pending.steps[pending.steps.length - 4], /0\.13\.0/);
-    assert.match(pending.steps[pending.steps.length - 3], /0\.15\.0: body format/);
-    assert.match(pending.steps[pending.steps.length - 2], /0\.17\.0: change log/);
-    assert.match(pending.steps[pending.steps.length - 1], /0\.21\.0: relations/);
+    assert.match(pending.steps[pending.steps.length - 5], /0\.13\.0/);
+    assert.match(pending.steps[pending.steps.length - 4], /0\.15\.0: body format/);
+    assert.match(pending.steps[pending.steps.length - 3], /0\.17\.0: change log/);
+    assert.match(pending.steps[pending.steps.length - 2], /0\.21\.0: relations/);
+    assert.match(pending.steps[pending.steps.length - 1], /0\.22\.0: multilingual/);
     await run(db, pending.sql);
     await run(db, pending.sql); // safe to run again
     assert.deepEqual([(await repo.inspect()).schemaVersion, (await repo.inspect()).missingTables], [SCHEMA_VERSION, []]);
@@ -519,7 +521,7 @@ test("db: schema 8 → 9 adds the change log and indexes; paging, the log and do
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [8, ["cms_changes"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs", "agent-cms 0.21.0: relations, document trees, SEO, heading anchor aliases, redirects"]);
+    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs", "agent-cms 0.21.0: relations, document trees, SEO, heading anchor aliases, redirects", "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale), form submissions"]);
     await run(db, pending.sql);
     const after = await repo.inspect();
     assert.deepEqual([after.schemaVersion, after.missingTables, after.missingIndexes], [SCHEMA_VERSION, [], []]);
@@ -813,6 +815,282 @@ test("drizzle: 0.21 second pass on Postgres (opposite tree moves from two server
     await assert.rejects(one.archive(admin, "people", "kim-minji"), (e: unknown) => isCmsError(e) && e.code === "doc_referenced");
     await one.archive(admin, "people", "kim-minji", { force: true });
     assert.equal(await one.redirects.resolve("/team/kim"), null, "hidden: nowhere to go");
+  } finally {
+    await close();
+  }
+});
+
+test("db: schema 10 → 11 swaps the unique index for one slug per language; translations on Postgres; migrate locales fills the default", async () => {
+  const { z } = await import("zod");
+  const { fillLocaleSql, localeDuplicatesSql } = await import("../tables");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    // A 0.21.0 database: no locale columns, the old unique index, one document already there.
+    await run(
+      db,
+      `DROP INDEX cms_documents_collection_slug_locale_idx; DROP INDEX cms_documents_group_idx;
+       ALTER TABLE cms_documents DROP COLUMN "locale"; ALTER TABLE cms_documents DROP COLUMN "group_id"; ALTER TABLE cms_documents DROP COLUMN "source_version";
+       CREATE UNIQUE INDEX cms_documents_collection_slug_idx ON cms_documents ("collection", "slug");
+       UPDATE cms_meta SET value = '10'::jsonb WHERE key = 'schema_version';`
+    );
+    const repo = new DrizzleRepo(db);
+    // A document written by 0.21.0 (the row as it had it).
+    await run(db, `INSERT INTO cms_documents ("collection", "slug", "title", "body", "status", "version", "published_version", "published", "published_at") VALUES ('guide', 'old', '예전 문서', 'x', 'published', 1, 1, '{"slug":"old","title":"예전 문서","summary":"","body":"x","category":null,"keywords":[],"fields":{}}'::jsonb, now());
+       INSERT INTO cms_versions ("document_id", "version", "snapshot", "author_kind", "author_label") SELECT "id", 1, "published", 'system', 'seed' FROM cms_documents WHERE "slug" = 'old';`);
+    const before = await repo.inspect();
+    assert.equal(before.schemaVersion, 10);
+    assert.deepEqual(before.missingColumns.sort(), ["cms_documents.group_id", "cms_documents.locale", "cms_documents.source_version"]);
+    const pending = migrationSql(before, cmsTables())!;
+    assert.equal(pending.steps.at(-1), "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale), form submissions");
+    // The safe order for big tables (UPGRADE-0.22.md): columns first, check, then the index by hand.
+    await run(db, `ALTER TABLE cms_documents ADD COLUMN IF NOT EXISTS "locale" text NOT NULL DEFAULT '';`);
+    assert.deepEqual(await rows(db, localeDuplicatesSql()), [], "nothing would break the new index");
+    await run(db, `CREATE UNIQUE INDEX IF NOT EXISTS cms_documents_collection_slug_locale_idx ON cms_documents ("collection", "slug", "locale");`);
+    await run(db, pending.sql);
+    const after = await repo.inspect();
+    assert.deepEqual([after.schemaVersion, after.missingColumns, after.missingIndexes, after.staleIndexes], [SCHEMA_VERSION, [], [], []]);
+    // The old index left behind (built the new one by hand, forgot the drop): check still offers the step.
+    await run(db, `CREATE UNIQUE INDEX cms_documents_collection_slug_idx ON cms_documents ("collection", "slug");`);
+    const stale = await repo.inspect();
+    assert.deepEqual(stale.staleIndexes, ["cms_documents_collection_slug_idx"]);
+    await run(db, migrationSql(stale, cmsTables())!.sql);
+    assert.deepEqual((await repo.inspect()).staleIndexes, []);
+
+    // Locales on: the old document (locale "") reads as the default language.
+    const localized = defineCollection({ slug: "guide", label: "Guide", visibility: "public", localized: true, url: (d) => `/${d.locale}/guide/${d.slug}`, fields: z.object({ order: z.number().optional() }) });
+    const cms = createCms({ repo, collections: [localized], locales: ["ko", "en"], searchRefreshMs: 0 });
+    assert.equal((await cms.get(anon, "guide", "old")).locale, "ko");
+    const en = await cms.create(admin, "guide", { slug: "old", title: "Old page" }, { locale: "en", publish: true });
+    assert.deepEqual([en.slug, en.locale, en.sourceVersion], ["old", "en", 1]);
+    assert.equal((await cms.get(anon, "guide", "old", { locale: "en" })).title, "Old page");
+    assert.equal((await cms.get(anon, "guide", "old")).title, "예전 문서");
+    // The database itself refuses a second English row for the slug.
+    await assert.rejects(repo.insertDoc({ collection: "guide", slug: "old", locale: "en", groupId: en.groupId, title: "x", summary: "", body: "", category: null, keywords: [], fields: {}, status: "draft", version: 1, publishedVersion: null, published: null, publishedAt: null, updatedBy: null, updatedByKind: null } as never), (e: unknown) => isCmsError(e) && e.code === "slug_taken");
+    await cms.update(admin, "guide", "old", { fields: { order: 2 } }, { publish: true });
+    assert.equal((await cms.translations(admin, "guide", "old")).translations[1].status, "outdated");
+    assert.equal((await cms.get(anon, "guide", "old", { locale: "en" })).fields.order, 2, "shared fields from the source");
+    assert.deepEqual((await cms.list(anon, "guide", { locale: "en" })).map((d) => d.slug), ["old"]);
+    assert.deepEqual((await cms.page(anon, "guide", { locale: "en" })).docs.map((d) => [d.slug, d.locale]), [["old", "en"]]);
+    assert.deepEqual((await cms.page(anon, "guide", {})).docs.map((d) => [d.slug, d.locale]), [["old", "ko"]]);
+    // Filling the default language for good: in batches, until nothing is left.
+    assert.equal((await rows<{ locale: string }>(db, `select locale from cms_documents where slug = 'old' and group_id is null`))[0].locale, "", "rows written before keep \"\" until filled");
+    const io = { db, cwd: mkdtempSync(join(tmpdir(), "acms-loc-")), out: (_l: string) => {}, err: (_l: string) => {} };
+    const said: string[] = [];
+    io.out = (l: string) => void said.push(l);
+    io.err = (l: string) => void said.push(l);
+    assert.equal(await runCli(["migrate", "locales", "--default", "ko", "--collections", "guide", "--batch", "1"], io), 0, said.join("\n") + JSON.stringify(await rows(db, "select slug, locale, group_id, collection from cms_documents")));
+    assert.match(said.join("\n"), /1 document\(s\) in guide now have locale ko/);
+    assert.equal((await rows<{ n: number }>(db, `select count(*)::int as n from cms_documents where locale = ''`))[0].n, 0);
+    assert.match(fillLocaleSql(undefined, { collections: ["guide"], defaultLocale: "ko" }), /LIMIT 1000/);
+  } finally {
+    await close();
+  }
+});
+
+test("db: 0.22 forms review on Postgres: two saves of one form, one wins; one upload token, one submission; retention keeps a row whose file failed", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const repo = new DrizzleRepo(db);
+    const store = new MemoryStorage({ name: "private" });
+    let t = Date.parse("2026-11-23T00:00:00Z");
+    const cms = createCms({ repo, collections: [guide], forms: true, now: () => new Date(t), retention: {}, media: { stores: { private: { visibility: "private", adapter: store } } } });
+    const steps = [{ title: "", fields: [{ key: "name", label: "Name", kind: "text" as const }, { key: "shot", label: "Shot", kind: "file" as const, accept: ["image/*"] }] }];
+    await cms.forms.create(admin, { slug: "contact", title: "Contact", enabled: true, steps });
+    // Compare and swap: both read the same row, then both write.
+    let waiting: (() => void)[] = [];
+    const meet = () => new Promise<void>((ok) => { waiting.push(ok); if (waiting.length === 2) { for (const w of waiting) w(); waiting = []; } });
+    const orig = repo.updateRecord.bind(repo);
+    repo.updateRecord = async (kind, id, patch) => { if (kind === "form") await meet(); return orig(kind, id, patch); };
+    const r = await Promise.allSettled([cms.forms.update(admin, "contact", { title: "A" }), cms.forms.update(admin, "contact", { title: "B" })]);
+    repo.updateRecord = orig;
+    assert.equal(r.filter((x) => x.status === "fulfilled").length, 1);
+    const lost = r.find((x) => x.status === "rejected") as PromiseRejectedResult;
+    assert.equal(isCmsError(lost.reason) && lost.reason.code, "form_conflict");
+    // A stale expectedUpdatedAt is refused; the fresh one goes through.
+    const cur = await cms.forms.get(admin, "contact");
+    t += 1000;
+    await cms.forms.update(admin, "contact", { title: "C", expectedUpdatedAt: cur.updatedAt });
+    await assert.rejects(cms.forms.update(admin, "contact", { title: "D", expectedUpdatedAt: cur.updatedAt }), (e) => isCmsError(e) && e.code === "form_conflict");
+
+    // One token, two submissions at once.
+    const png = new Uint8Array(200);
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const g = await cms.forms.grant("contact", { field: "shot", name: "s.png", size: 200, mime: "image/png" }, { ip: "1.1.1.1" });
+    await cms.forms.upload("contact", g.token, png);
+    const head = store.head.bind(store);
+    store.head = async (k: string) => { const x = await head(k); await meet(); return x; };
+    const subs = await Promise.allSettled([cms.forms.submit("contact", { name: "A", shot: [g.token] }, { ip: "1.0.0.1" }), cms.forms.submit("contact", { name: "B", shot: [g.token] }, { ip: "1.0.0.2" })]);
+    store.head = head;
+    assert.equal(subs.filter((x) => x.status === "fulfilled").length, 1);
+    const page = await cms.forms.submissions(admin, "contact");
+    assert.equal(page.total, 1);
+
+    // Retention: the file cannot be deleted, so the row stays until it can.
+    const key = (await repo.findFormSubmission(page.items[0].id))!.files[0].key;
+    const del = store.delete.bind(store);
+    store.delete = async (k: string) => { if (k === key) throw new Error("down"); return del(k); };
+    t += 400 * 86_400_000;
+    await cms.cron();
+    assert.equal((await cms.forms.submissions(admin, "contact")).total, 1);
+    store.delete = del;
+    t += 86_400_000;
+    await cms.cron();
+    assert.equal((await cms.forms.submissions(admin, "contact")).total, 0);
+    assert.ok(!store.objects.has(key));
+  } finally {
+    await close();
+  }
+});
+
+test("db: 0.22 forms on Postgres (the v11 step adds cms_form_submissions; list, search, counts, status, delete, retention)", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    await run(db, `DROP TABLE cms_form_submissions; UPDATE cms_meta SET value = '10'::jsonb WHERE key = 'schema_version';`);
+    const repo = new DrizzleRepo(db);
+    const before = await repo.inspect();
+    assert.ok(before.missingTables.includes("cms_form_submissions"));
+    await run(db, migrationSql(before, cmsTables())!.sql);
+    const after = await repo.inspect();
+    assert.deepEqual(after.missingTables, []);
+    assert.equal(after.schemaVersion, SCHEMA_VERSION);
+
+    const store = new MemoryStorage({ name: "private" });
+    let t = Date.parse("2026-11-23T00:00:00Z");
+    const cms = createCms({ repo, collections: [guide], forms: true, now: () => new Date(t), retention: {}, media: { stores: { private: { visibility: "private", adapter: store } } } });
+    await cms.forms.create(admin, { slug: "contact", title: "Contact", enabled: true, steps: [{ title: "", fields: [{ key: "name", label: "Name", kind: "text", required: true }, { key: "kind", label: "Kind", kind: "select", options: [{ value: "a", label: "A" }, { value: "b", label: "B" }] }, { key: "more", label: "More", kind: "text", showIf: { field: "kind", op: "eq", value: "b" } }] }] });
+    for (const [i, name] of ["Ann 100%", "Bo_b", "Cy"].entries()) {
+      t += 1000;
+      await cms.forms.submit("contact", { name, kind: "a", more: "dropped" }, { ip: `10.0.0.${i}` });
+    }
+    await cms.forms.submit("contact", { name: "Spam", _website: "x" }, { ip: "10.0.0.9" });
+    const page = await cms.forms.submissions(admin, "contact");
+    assert.equal(page.total, 3);
+    assert.deepEqual(page.items.map((s) => s.data.name), ["Cy", "Bo_b", "Ann 100%"]);
+    assert.ok(page.items.every((s) => !("more" in s.data)));
+    assert.deepEqual(page.counts, { new: 3, read: 0, spam: 1, archived: 0 });
+    // Search: % and _ are literal.
+    assert.deepEqual((await cms.forms.submissions(admin, "contact", { q: "100%" })).items.map((s) => s.data.name), ["Ann 100%"]);
+    assert.equal((await cms.forms.submissions(admin, "contact", { q: "o_b" })).total, 1);
+    assert.equal((await cms.forms.submissions(admin, "contact", { q: "_" })).total, 1);
+    const id = page.items[0].id;
+    assert.deepEqual(await cms.forms.setStatus(admin, "contact", [id, "not-a-uuid"], "archived"), { changed: 1 });
+    assert.equal((await cms.forms.submission(admin, "contact", id)).status, "archived");
+    assert.deepEqual(await cms.forms.removeSubmissions(admin, "contact", [page.items[1].id]), { deleted: 1 });
+    t += 400 * 86_400_000;
+    await cms.cron();
+    assert.equal((await cms.forms.submissions(admin, "contact", { status: ["new", "read", "spam", "archived"] })).total, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("db: review 0.22 (다국어): a language's page filtered by category follows the source; restore is all or nothing; an INVALID new index stops the upgrade", async () => {
+  const { z } = await import("zod");
+  const { invalidIndexGuard, upgradeSteps } = await import("../tables");
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const repo = new DrizzleRepo(db);
+    const localized = defineCollection({ slug: "guide", label: "Guide", visibility: "public", localized: true, categories: ["A", "B"], url: (d) => `/${d.locale}/guide/${d.slug}`, fields: z.object({ order: z.number().optional() }) });
+    const cms = createCms({ repo, collections: [localized], locales: ["ko", "en"], defaultLocale: "ko", searchRefreshMs: 0, trash: { days: 30 }, warn: () => {} });
+    await cms.create(admin, "guide", { slug: "c", title: "원문", category: "A", body: "x\n" }, { publish: true });
+    await cms.create(admin, "guide", { slug: "c", title: "English" }, { locale: "en", publish: true });
+    // The source moves to B; the translation's stored copy still says A.
+    await cms.update(admin, "guide", "c", { category: "B" }, { publish: true });
+    for (const cat of ["A", "B"]) {
+      const listed: string[] = (await cms.list(anon, "guide", { locale: "en", category: cat })).map((d) => d.slug);
+      const paged: string[] = (await cms.page(anon, "guide", { locale: "en", category: cat })).docs.map((d) => d.slug);
+      assert.deepEqual(paged, listed, `category ${cat}`);
+    }
+    assert.deepEqual((await cms.page(anon, "guide", { locale: "en", category: "B" })).docs.map((d) => [d.slug, d.category]), [["c", "B"]]);
+
+    // Restore in one transaction: the second write fails, nothing comes back.
+    await cms.remove(admin, "guide", "c");
+    const src = (await cms.trash.list(admin)).items.find((i) => !i.locale)!;
+    const orig = DrizzleRepo.prototype.updateDoc;
+    let n = 0;
+    DrizzleRepo.prototype.updateDoc = async function (this: DrizzleRepo, id, patch) {
+      if ("deletedAt" in patch && patch.deletedAt === null && ++n === 2) throw new Error("disk full");
+      return orig.call(this, id, patch);
+    };
+    try {
+      await assert.rejects(cms.trash.restore(admin, [{ kind: "document", id: src.id }]), /disk full/);
+    } finally {
+      DrizzleRepo.prototype.updateDoc = orig;
+    }
+    assert.equal((await cms.trash.list(admin)).items.length, 2, "neither came back");
+    await cms.trash.restore(admin, [{ kind: "document", id: src.id }]);
+    assert.equal((await cms.get(anon, "guide", "c", { locale: "en" })).title, "English");
+
+    // A new unique index left INVALID (a CREATE INDEX CONCURRENTLY that failed): the step stops
+    // before the old index goes; inspect reports it.
+    await run(db, `CREATE UNIQUE INDEX cms_documents_collection_slug_idx ON cms_documents ("collection", "slug", "locale", "id");`);
+    await run(db, `UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'cms_documents_collection_slug_locale_idx'::regclass;`);
+    assert.deepEqual((await repo.inspect()).invalidIndexes, ["cms_documents_collection_slug_locale_idx"]);
+    const step = upgradeSteps().find((s) => s.version === 11)!;
+    await assert.rejects(run(db, step.sql), /INVALID/);
+    assert.equal((await rows<{ n: number }>(db, `select count(*)::int as n from pg_indexes where indexname = 'cms_documents_collection_slug_idx'`))[0].n, 1, "the old index was kept");
+    await run(db, `UPDATE pg_index SET indisvalid = true WHERE indexrelid = 'cms_documents_collection_slug_locale_idx'::regclass;`);
+    await run(db, invalidIndexGuard("cms_documents_collection_slug_locale_idx", null));
+    assert.deepEqual((await repo.inspect()).invalidIndexes, []);
+  } finally {
+    await close();
+  }
+});
+
+test("db: review 0.22 (3rd): cascades are bound to the rows checked; a driver without transactions refuses a cascade with translations", async () => {
+  const { z } = await import("zod");
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public", localized: true, url: (d) => `/${d.locale}/guide/${d.slug}`, fields: z.object({}) });
+    const make = (repo: DrizzleRepo) => createCms({ repo, collections: [guide], locales: ["ko", "en"], defaultLocale: "ko", searchRefreshMs: 0, trash: { days: 30 }, warn: () => {} });
+    const repo = new DrizzleRepo(db);
+    const cms = make(repo);
+    await cms.create(admin, "guide", { slug: "k", title: "원문", body: "x\n" }, { publish: true });
+    await cms.create(admin, "guide", { slug: "k", title: "English" }, { locale: "en" });
+
+    // A translation saved after the delete checked it: conflict, nothing in the trash.
+    const orig = DrizzleRepo.prototype.tx;
+    let once = true;
+    DrizzleRepo.prototype.tx = async function <T>(this: DrizzleRepo, fn: (r: never) => Promise<T>, o?: { atomic?: boolean }) {
+      if (once) {
+        once = false;
+        await cms.update(admin, "guide", "k@en", { title: "English (edited)" });
+      }
+      return orig.call(this, fn as never, o) as Promise<T>;
+    } as typeof orig;
+    try {
+      const e = await cms.remove(admin, "guide", "k").then(() => null, (x: unknown) => x);
+      assert.ok(isCmsError(e) && e.code === "conflict_version", String(e));
+    } finally {
+      DrizzleRepo.prototype.tx = orig;
+    }
+    assert.equal((await cms.trash.list(admin)).items.length, 0);
+    assert.equal((await cms.get(admin, "guide", "k", { locale: "en", draft: true })).title, "English (edited)");
+
+    // Restore checks the trashed rows it read (version and moment deleted) in SQL.
+    await cms.remove(admin, "guide", "k");
+    const src = (await cms.trash.list(admin)).items.find((i) => !i.locale)!;
+    const en = (await cms.trash.list(admin)).items.find((i) => i.locale === "en")!;
+    assert.equal(await repo.updateDoc(en.id, { updatedAt: new Date().toISOString() }, undefined, { trashed: { version: 99, deletedAt: new Date().toISOString() } }), null, "a row not as checked is not written");
+    await cms.trash.restore(admin, [{ kind: "document", id: src.id }]);
+    assert.equal((await cms.get(anon, "guide", "k")).title, "원문");
+
+    // No transactions: a group with translations is not deleted row by row.
+    const plain = make(new DrizzleRepo(db, { transactions: false }));
+    const e2 = await plain.remove(admin, "guide", "k").then(() => null, (x: unknown) => x);
+    assert.ok(isCmsError(e2) && e2.code === "transactions_required", String(e2));
+    assert.equal((await plain.trash.list(admin)).items.length, 0, "nothing was deleted");
+    // A document without translations still goes.
+    await plain.create(admin, "guide", { slug: "solo", title: "혼자", body: "x\n" });
+    await plain.remove(admin, "guide", "solo");
+    assert.equal((await plain.trash.list(admin)).items.length, 1);
   } finally {
     await close();
   }

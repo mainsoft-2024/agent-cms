@@ -5,7 +5,7 @@
  */
 
 import { SCHEMA_VERSION } from "./schema-version";
-import type { AnchorAlias, CmsRedirect, DocRef } from "./types";
+import type { AnchorAlias, CmsRedirect, DocRef, FormSubmission, FormSubmissionStatus } from "./types";
 import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter, CmsJob, CmsRecord, CmsWebhook, WebhookDelivery } from "./types";
 
 export type DocPatch = Partial<Omit<CmsDoc, "id" | "collection" | "createdAt">>;
@@ -26,7 +26,7 @@ export type NewVersion = Omit<CmsVersion, "id" | "createdAt" | "published" | "re
   changed?: CmsVersion["changed"];
 };
 
-export type PruneTarget = "audit" | "hits" | "keys" | "deliveries" | "redirect_hits";
+export type PruneTarget = "audit" | "hits" | "keys" | "deliveries" | "redirect_hits" | "form_submissions";
 
 export interface KeyRow extends CmsKey {
   hash: string;
@@ -65,7 +65,19 @@ export type NewFilter = Omit<SavedFilter, "id">;
 /** `trashed`: also find rows that are in the trash. */
 export interface FindOptions {
   trashed?: boolean;
+  /**
+   * 0.22.0: the row in exactly this locale. Left out: the source document (the row that is not a
+   * translation), which is the only row in apps without locales.
+   */
+  locale?: string;
 }
+/** `updateDoc` conditions beyond `expectedVersion` (review 0.22). */
+export interface UpdateDocOptions {
+  /** Write only a row in the trash since exactly `deletedAt`, at `version` (restoring what was checked). */
+  trashed?: { version: number; deletedAt: string };
+}
+/** A translation row (0.22.0): it belongs to the group of another document. */
+export const isTranslation = (d: Pick<CmsDoc, "id"> & { groupId?: string | null }): boolean => !!d.groupId && d.groupId !== d.id;
 export interface DocFilter {
   collection?: string;
   statuses?: DocStatus[];
@@ -74,6 +86,12 @@ export interface DocFilter {
   trashed?: boolean;
   /** Only documents whose schedule is due at or before this time. */
   dueBefore?: string;
+  /** 0.22.0: source documents only, no translations (in apps without locales every row is a source). */
+  sources?: boolean;
+  /** 0.22.0: translations in this language only. */
+  locale?: string;
+  /** 0.22.0: only the rows of one translation group (the source and its translations). */
+  groupId?: string;
 }
 export type AssetPatch = Partial<Omit<CmsAsset, "id" | "store" | "createdAt">>;
 
@@ -126,8 +144,18 @@ export interface CmsRepo {
   insertDoc(doc: NewDoc): Promise<CmsDoc>;
   /** Returns null when `expectedVersion` is given and the row moved on. */
   /** With `expectedVersion`: only if the row is still at that version and not in the trash (else null). */
-  updateDoc(id: string, patch: DocPatch, expectedVersion?: number): Promise<CmsDoc | null>;
+  /**
+   * With `o.trashed` (review 0.22, restoring from the trash): only if the row is in the trash since
+   * exactly `deletedAt` and at `version` (else null). A repo that ignores the option writes as before.
+   */
+  updateDoc(id: string, patch: DocPatch, expectedVersion?: number, o?: UpdateDocOptions): Promise<CmsDoc | null>;
   deleteDoc(id: string): Promise<void>;
+  /**
+   * Serialises changes to one translation group (a cascade delete or restore against adding a
+   * translation) until this transaction ends (review 0.22; Postgres: an advisory transaction lock).
+   * Optional: without it the cascades rely on their conditional writes.
+   */
+  lockGroup?(groupId: string): Promise<void>;
 
   insertVersion(v: NewVersion): Promise<void>;
   listVersions(documentId: string): Promise<StoredVersion[]>;
@@ -302,6 +330,28 @@ export interface CmsRepo {
   lockTree?(collection: string): Promise<void>;
   /** Visits per redirect and day from `sinceDay` on (days without visits have no row). */
   redirectHitDays?(sinceDay: string): Promise<{ redirectId: string; day: string; n: number }[]>;
+
+  // ── 0.22.0 (schema 11): form submissions, optional ──
+  insertFormSubmission?(s: NewFormSubmission): Promise<FormSubmission>;
+  findFormSubmission?(id: string): Promise<FormSubmission | null>;
+  /** Newest first; `q` searches the values as text (case-insensitive). */
+  listFormSubmissions?(q: FormSubmissionQuery): Promise<{ items: FormSubmission[]; total: number }>;
+  /** How many per form and status, and the newest per form (the forms list). */
+  formSubmissionCounts?(): Promise<{ formId: string; status: FormSubmissionStatus; n: number; last: string }[]>;
+  setFormSubmissionStatus?(ids: readonly string[], status: FormSubmissionStatus, at: string): Promise<number>;
+  /** Deletes and returns the rows (their files go next). */
+  deleteFormSubmissions?(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number }): Promise<FormSubmission[]>;
+  /** The rows `deleteFormSubmissions` would take, oldest first, without deleting them: files go first, then the rows (0.22.0). */
+  selectFormSubmissions?(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number; offset?: number }): Promise<FormSubmission[]>;
+}
+
+export type NewFormSubmission = Omit<FormSubmission, "id" | "updatedAt">;
+export interface FormSubmissionQuery {
+  formId: string;
+  statuses?: readonly FormSubmissionStatus[];
+  q?: string;
+  limit: number;
+  offset?: number;
 }
 
 export type NewRedirect = Pick<CmsRedirect, "from" | "to" | "toDocumentId" | "status" | "source" | "createdBy">;
@@ -333,6 +383,8 @@ export interface DocPageQuery {
   /** Title, slug or summary contains (case-insensitive). On the published copy for readers. */
   q?: string;
   by?: "user" | "key" | "system";
+  /** 0.22.0: translations in this locale. Left out: source documents. */
+  locale?: string;
   limit: number;
   after?: { at: string; id: string } | null;
 }
@@ -366,6 +418,12 @@ export interface RecordPatch {
   data?: Record<string, unknown>;
   key?: string | null;
   at: string;
+  /**
+   * Compare and swap (0.22.0): change the row only while its `updatedAt` is still this instant
+   * (to the millisecond), in one statement. Null comes back when it is not, so of two writers that
+   * read the same row exactly one wins. Give an `at` later than the old `updatedAt`.
+   */
+  ifUpdatedAt?: string;
 }
 export interface RecordQuery {
   kind: string;
@@ -410,6 +468,7 @@ export class MemoryRepo implements CmsRepo {
   redirects: CmsRedirect[] = [];
   /** Redirect visits per day: `id|YYYY-MM-DD` → count. */
   redirectHits = new Map<string, number>();
+  formSubmissions: FormSubmission[] = [];
   private seq = 0;
   private id = () => `00000000-0000-4000-8000-${String(++this.seq).padStart(12, "0")}`;
 
@@ -445,7 +504,11 @@ export class MemoryRepo implements CmsRepo {
     }
   }
   async findDoc(collection: string, slug: string, o: FindOptions = {}) {
-    for (const d of this.docs.values()) if (d.collection === collection && d.slug === slug) return d.deletedAt && !o.trashed ? null : structuredClone(d);
+    for (const d of this.docs.values()) {
+      if (d.collection !== collection || d.slug !== slug) continue;
+      if (o.locale !== undefined ? (d.locale ?? "") !== o.locale : isTranslation(d)) continue;
+      return d.deletedAt && !o.trashed ? null : structuredClone(d);
+    }
     return null;
   }
   async findDocById(id: string, o: FindOptions = {}) {
@@ -457,6 +520,9 @@ export class MemoryRepo implements CmsRepo {
       .filter(
         (d) =>
           !!d.deletedAt === !!f.trashed &&
+          (!f.groupId || d.groupId === f.groupId || d.id === f.groupId) &&
+          (!f.sources || !isTranslation(d)) &&
+          (f.locale === undefined || (isTranslation(d) && d.locale === f.locale)) &&
           (!f.dueBefore || (d.dueAt !== null && d.dueAt <= f.dueBefore)) &&
           (!f.collection || d.collection === f.collection) &&
           (!f.statuses || f.statuses.includes(d.status)) &&
@@ -465,18 +531,19 @@ export class MemoryRepo implements CmsRepo {
       .map((d) => structuredClone(d));
   }
   async insertDoc(doc: NewDoc) {
-    for (const d of this.docs.values()) if (d.collection === doc.collection && d.slug === doc.slug) throw new Error("duplicate slug");
+    for (const d of this.docs.values()) if (d.collection === doc.collection && d.slug === doc.slug && (d.locale ?? "") === (doc.locale ?? "")) throw new Error("duplicate slug");
     const now = new Date().toISOString();
     const row: CmsDoc = { republishedAt: null, autosave: null, updatedByAgent: null, deletedAt: null, deletedBy: null, schedule: null, dueAt: null, review: null, ...doc, id: doc.id ?? this.id(), createdAt: doc.createdAt ?? now, updatedAt: doc.updatedAt ?? now };
     this.docs.set(row.id, structuredClone(row));
     return structuredClone(row);
   }
-  async updateDoc(id: string, patch: DocPatch, expectedVersion?: number) {
+  async updateDoc(id: string, patch: DocPatch, expectedVersion?: number, o: UpdateDocOptions = {}) {
     const d = this.docs.get(id);
     if (!d) return null;
     if (expectedVersion !== undefined && (d.version !== expectedVersion || d.deletedAt)) return null;
+    if (o.trashed && (d.version !== o.trashed.version || d.deletedAt !== o.trashed.deletedAt)) return null;
     if (patch.slug && patch.slug !== d.slug) {
-      for (const o of this.docs.values()) if (o.id !== id && o.collection === d.collection && o.slug === patch.slug) throw new Error("duplicate slug");
+      for (const o of this.docs.values()) if (o.id !== id && o.collection === d.collection && o.slug === patch.slug && (o.locale ?? "") === (patch.locale ?? d.locale ?? "")) throw new Error("duplicate slug");
     }
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     Object.assign(d, structuredClone(clean), { updatedAt: patch.updatedAt ?? new Date().toISOString() });
@@ -556,6 +623,55 @@ export class MemoryRepo implements CmsRepo {
     }
     return out;
   }
+  async insertFormSubmission(r: NewFormSubmission) {
+    const row: FormSubmission = { ...structuredClone(r), id: this.id(), updatedAt: r.createdAt };
+    this.formSubmissions.push(row);
+    return structuredClone(row);
+  }
+  async findFormSubmission(id: string) {
+    const r = this.formSubmissions.find((x) => x.id === id);
+    return r ? structuredClone(r) : null;
+  }
+  async listFormSubmissions(q: FormSubmissionQuery) {
+    const needle = q.q?.trim().toLowerCase();
+    const rows = this.formSubmissions
+      .filter((x) => x.formId === q.formId && (!q.statuses?.length || q.statuses.includes(x.status)) && (!needle || JSON.stringify(x.data).toLowerCase().includes(needle)))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    const from = q.offset ?? 0;
+    return { items: rows.slice(from, from + q.limit).map((r) => structuredClone(r)), total: rows.length };
+  }
+  async formSubmissionCounts() {
+    const m = new Map<string, { formId: string; status: FormSubmissionStatus; n: number; last: string }>();
+    for (const r of this.formSubmissions) {
+      const k = `${r.formId}|${r.status}`;
+      const cur = m.get(k) ?? { formId: r.formId, status: r.status, n: 0, last: r.createdAt };
+      cur.n++;
+      if (r.createdAt > cur.last) cur.last = r.createdAt;
+      m.set(k, cur);
+    }
+    return [...m.values()];
+  }
+  async setFormSubmissionStatus(ids: readonly string[], status: FormSubmissionStatus, at: string) {
+    let n = 0;
+    for (const r of this.formSubmissions) if (ids.includes(r.id)) (r.status = status), (r.updatedAt = at), n++;
+    return n;
+  }
+  async selectFormSubmissions(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number; offset?: number }) {
+    if (!q.ids && !q.formId && !q.before) return [];
+    const from = q.offset ?? 0;
+    return this.formSubmissions
+      .filter((r) => (q.ids ? q.ids.includes(r.id) : true) && (q.formId ? r.formId === q.formId : true) && (q.before ? r.createdAt < q.before : true))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+      .slice(from, from + (q.limit ?? Infinity))
+      .map((r) => structuredClone(r));
+  }
+  async deleteFormSubmissions(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number }) {
+    if (!q.ids && !q.formId && !q.before) return [];
+    const gone = this.formSubmissions.filter((r) => (q.ids ? q.ids.includes(r.id) : true) && (q.formId ? r.formId === q.formId : true) && (q.before ? r.createdAt < q.before : true)).slice(0, q.limit ?? Infinity);
+    this.formSubmissions = this.formSubmissions.filter((r) => !gone.includes(r));
+    return gone.map((r) => structuredClone(r));
+  }
+
   async insertVersion(v: NewVersion) {
     if (this.versions.some((x) => x.documentId === v.documentId && x.version === v.version)) throw new Error("duplicate version");
     this.versions.push({ changed: null, authorAgent: null, label: null, pinned: false, approvedBy: null, approvedAt: null, ...structuredClone(v), reviewed: [], id: this.id(), createdAt: v.createdAt ?? new Date().toISOString() });
@@ -608,6 +724,12 @@ export class MemoryRepo implements CmsRepo {
     return true;
   }
   async prune(what: PruneTarget, before: string, dryRun = false) {
+    if (what === "form_submissions") {
+      const keep = this.formSubmissions.filter((r) => r.createdAt >= before);
+      const n = this.formSubmissions.length - keep.length;
+      if (!dryRun) this.formSubmissions = keep;
+      return n;
+    }
     if (what === "audit") {
       const keep = this.audit.filter((e) => e.at >= before);
       const n = this.audit.length - keep.length;
@@ -960,6 +1082,9 @@ export class MemoryRepo implements CmsRepo {
   async updateRecord(kind: string, id: string, patch: RecordPatch) {
     const r = this.records.find((x) => x.kind === kind && x.id === id);
     if (!r) return null;
+    // Compare and swap: checked and written with no await in between, so it is atomic here.
+    if (patch.ifUpdatedAt !== undefined && Date.parse(r.updatedAt) !== Date.parse(patch.ifUpdatedAt)) return null;
+    if (patch.key !== undefined && patch.key !== null && patch.key !== r.key && this.records.some((x) => x !== r && x.kind === kind && x.key === patch.key)) throw new Error(`duplicate record key: ${kind}/${patch.key}`);
     if (patch.data !== undefined) r.data = structuredClone(patch.data);
     if (patch.key !== undefined) r.key = patch.key;
     r.updatedAt = patch.at;
@@ -1007,6 +1132,7 @@ export class MemoryRepo implements CmsRepo {
     const needle = q.q?.trim().toLowerCase();
     const rows = [...this.docs.values()].filter((d) => {
       if (d.deletedAt || d.collection !== q.collection) return false;
+      if (q.locale !== undefined ? !isTranslation(d) || d.locale !== q.locale : isTranslation(d)) return false;
       if (q.published && (d.publishedVersion === null || d.status === "archived" || !d.published)) return false;
       if (q.statuses && !q.statuses.includes(d.status)) return false;
       const view = q.published && d.published ? d.published : d;

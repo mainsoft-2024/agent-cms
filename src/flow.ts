@@ -10,6 +10,7 @@ import type { createAssets } from "./assets";
 import type { AnyCollection } from "./cms";
 import { isCmsError, type CmsErrorCode, type CmsErrorOptions, type Diagnostic, type ErrorParams } from "./errors";
 import { sectionRanges } from "./patch";
+import { docAddress, isTranslationDoc, splitAddress } from "./locale";
 import { docsById, type CmsRepo } from "./repo";
 import { docState, type Actor, type ActorKind, type AuditAction, type AuditEntry, type CmsComment, type CmsDoc, type CmsRelease, type CmsVersion, type DocContent, type DocSummary, type Presence, type ReleaseItem, type ReviewRequest, type SavedFilter, type Schedule } from "./types";
 
@@ -64,6 +65,8 @@ export interface TrashItem extends TrashRef {
   where: string;
   collection: string | null;
   slug: string | null;
+  /** 0.22.0: the language of a translation (`slug` is then its `slug@locale` address). */
+  locale?: string;
   /** What it was before: draft, published, archived; a file's kind for files. */
   state: string;
   deletedAt: string;
@@ -89,6 +92,8 @@ export interface ReleaseView extends CmsRelease {
     stale: boolean;
     state: string | null;
     canPublish: boolean;
+    /** 0.22.0 review: the language of a translation in the release. */
+    locale?: string;
   })[];
   canPublish: boolean;
 }
@@ -207,9 +212,9 @@ export function createFlow(ctx: FlowContext) {
         });
         const what = did as "published" | "unpublished" | null; // assigned inside the transaction
         if (!doc || !what) continue;
-        audit(scheduler, what === "published" ? "doc.publish" : "doc.unpublish", { collection: d.collection, slug: d.slug, version: doc.publishedVersion ?? doc.version, detail: { scheduledBy: d.schedule.by, scheduledAt: d.schedule.at } });
+        audit(scheduler, what === "published" ? "doc.publish" : "doc.unpublish", { collection: d.collection, slug: docAddress(d), version: doc.publishedVersion ?? doc.version, detail: { scheduledBy: d.schedule.by, scheduledAt: d.schedule.at } });
         ctx.changed(prev, doc);
-        out[what].push(`${d.collection}/${d.slug}`);
+        out[what].push(`${d.collection}/${docAddress(d)}`);
       } catch (e) {
         // Nothing went out. The schedule is cleared so it does not fail again every minute, but
         // only if it is still the schedule that failed (not one set again meanwhile).
@@ -219,8 +224,8 @@ export function createFlow(ctx: FlowContext) {
         })().catch((err) => ctx.report(err, "runScheduled"));
         const code = isCmsError(e) ? e.code : "internal";
         if (!isCmsError(e)) ctx.report(e, "runScheduled");
-        audit(scheduler, "doc.schedule", { collection: d.collection, slug: d.slug, version: d.schedule.version, outcome: "failed", detail: { code, scheduledBy: d.schedule.by } });
-        out.failed.push({ collection: d.collection, slug: d.slug, code, message: ctx.message(e) });
+        audit(scheduler, "doc.schedule", { collection: d.collection, slug: docAddress(d), version: d.schedule.version, outcome: "failed", detail: { code, scheduledBy: d.schedule.by } });
+        out.failed.push({ collection: d.collection, slug: docAddress(d), code, message: ctx.message(e) });
       }
     }
     for (const rel of await repo.listReleases()) {
@@ -243,11 +248,13 @@ export function createFlow(ctx: FlowContext) {
     }
     if (ctx.trashDays > 0) {
       const cutoff = new Date(Date.parse(at) - ctx.trashDays * DAY).toISOString();
-      for (const d of await repo.listDocs({ trashed: true })) {
-        if (!d.deletedAt || d.deletedAt > cutoff) continue;
-        await repo.deleteDoc(d.id);
-        audit(scheduler, "doc.purge", { collection: d.collection, slug: d.slug, detail: { auto: true } });
-        out.purged.documents++;
+      const trashed = await repo.listDocs({ trashed: true });
+      const gone = new Set<string>();
+      // Sources first: each takes its translations, which are then skipped.
+      for (const d of [...trashed.filter((x) => !isTranslationDoc(x)), ...trashed.filter((x) => isTranslationDoc(x))]) {
+        if (!d.deletedAt || d.deletedAt > cutoff || gone.has(d.id)) continue;
+        const n = await purgeDoc(scheduler, d, { auto: true }, gone);
+        out.purged.documents += n;
       }
       out.purged.assets = await ctx.assets.purgeOlder(cutoff);
     }
@@ -267,7 +274,9 @@ export function createFlow(ctx: FlowContext) {
     if (o.kind !== "asset") {
       for (const d of await repo.listDocs({ trashed: true })) {
         if (!known(d.collection) || !can(actor, d.collection, "write", d)) continue;
-        items.push({ kind: "document", id: d.id, title: d.title, where: `${ctx.collection(d.collection).label} / ${d.slug}`, collection: d.collection, slug: d.slug, state: docState(d).state, deletedAt: d.deletedAt!, deletedBy: d.deletedBy, purgeAt: purgeAt(d.deletedAt!), canRestore: can(actor, d.collection, "publish", d) });
+        // 0.22.0: a translation says its language ("Guide / start · en"), not its internal address.
+        const t = isTranslationDoc(d) && d.locale ? d.locale : null;
+        items.push({ kind: "document", id: d.id, title: d.title, where: `${ctx.collection(d.collection).label} / ${d.slug}${t ? ` · ${t}` : ""}`, collection: d.collection, slug: docAddress(d), ...(t ? { locale: t } : {}), state: docState(d).state, deletedAt: d.deletedAt!, deletedBy: d.deletedBy, purgeAt: purgeAt(d.deletedAt!), canRestore: can(actor, d.collection, "publish", d) });
       }
     }
     if (o.kind !== "document" && ctx.assets.enabled) {
@@ -289,12 +298,26 @@ export function createFlow(ctx: FlowContext) {
   async function trashRestore(actor: Actor, items: readonly TrashRef[]): Promise<{ restored: number; results: { kind: TrashRef["kind"]; id: string; ok: boolean; error?: { code: string; message: string } }[] }> {
     await ctx.ready();
     let restored = 0;
-    const list = refs(items);
+    const given = refs(items);
+    // 0.22.0: sources before translations, so restoring both at once works; a translation that came
+    // back with its source counts as restored.
+    const isTr = new Set<string>();
+    for (const it of given) if (it.kind === "document") {
+      const d = await repo.findDocById(it.id, { trashed: true });
+      if (d && isTranslationDoc(d)) isTr.add(it.id);
+    }
+    const list = [...given.filter((it) => !isTr.has(it.id)), ...given.filter((it) => isTr.has(it.id))];
+    const back = new Set<string>();
     const results: { kind: TrashRef["kind"]; id: string; ok: boolean; error?: { code: string; message: string } }[] = [];
     // One item: its error is the answer. Several: each is tried and gets its own outcome.
     for (const it of list) {
       try {
-        await restoreOne(actor, it);
+        if (back.has(it.id)) {
+          restored++;
+          results.push({ kind: it.kind, id: it.id, ok: true });
+          continue;
+        }
+        for (const id of await restoreOne(actor, it)) back.add(id);
         restored++;
         results.push({ kind: it.kind, id: it.id, ok: true });
       } catch (e) {
@@ -305,17 +328,48 @@ export function createFlow(ctx: FlowContext) {
     return { restored, results };
   }
 
-  async function restoreOne(actor: Actor, it: TrashRef): Promise<void> {
+  /** The ids of the documents that came back (a source brings its translations). */
+  async function restoreOne(actor: Actor, it: TrashRef): Promise<string[]> {
     {
       if (it.kind === "asset") {
         await ctx.assets.untrash(actor, it.id);
+        return [it.id];
       } else {
         const d = await repo.findDocById(it.id, { trashed: true });
         if (!d?.deletedAt || !known(d.collection)) throw fail("trash_not_found", { id: it.id });
         assert(actor, d.collection, "publish", d);
-        const doc = (await repo.updateDoc(d.id, { deletedAt: null, deletedBy: null, updatedAt: nowIso() }))!;
-        audit(actor, "doc.undelete", { collection: d.collection, slug: d.slug, version: d.version });
-        ctx.changed(null, doc, { quiet: true }); // told as doc.restored, not as a new document
+        // 0.22.0: a translation comes back only with its source; the source brings back the
+        // translations deleted together with it (the same moment), not ones deleted on their own before.
+        if (isTranslationDoc(d)) {
+          const src = (await repo.findDocById(d.groupId!)) ?? (await repo.findDocById(d.groupId!, { trashed: true }));
+          if (src?.deletedAt) throw fail("translation_source_trashed", { slug: splitAddress(src.slug).slug, source: src.locale ?? "" });
+        }
+        const kids = isTranslationDoc(d) ? [] : (await repo.listDocs({ trashed: true, groupId: d.id })).filter((x) => x.id !== d.id && x.deletedAt === d.deletedAt);
+        // Review 0.22: every translation that would come back is checked first (the same right as
+        // restoring it on its own), and all of them come back in one transaction or none does.
+        for (const x of kids) assert(actor, x.collection, "publish", x);
+        // Review 0.22 (3rd round): each write is bound to the row as it was checked (in the trash since
+        // the same moment, same version); a row that left the batch since (restored, purged, deleted
+        // again) refuses the whole restore. Several rows need a real transaction.
+        const back = await repo.tx(async (r) => {
+          if (!isTranslationDoc(d)) await r.lockGroup?.(d.id);
+          if (kids.length || !isTranslationDoc(d)) {
+            const now = (await r.listDocs({ trashed: true, groupId: d.id })).filter((x) => x.id !== d.id && x.deletedAt === d.deletedAt);
+            if (now.length !== kids.length || now.some((x) => !kids.some((k) => k.id === x.id))) throw fail("trash_changed", { id: d.id });
+          }
+          const out: CmsDoc[] = [];
+          for (const x of [d, ...kids]) {
+            const doc = await r.updateDoc(x.id, { deletedAt: null, deletedBy: null, updatedAt: nowIso() }, undefined, { trashed: { version: x.version, deletedAt: x.deletedAt! } });
+            if (!doc) throw fail("trash_changed", { id: x.id });
+            out.push(doc);
+          }
+          return out;
+        }, { atomic: kids.length > 0 });
+        for (const doc of back) {
+          audit(actor, "doc.undelete", { collection: doc.collection, slug: docAddress(doc), version: doc.version });
+          ctx.changed(null, doc, { quiet: true }); // told as doc.restored, not as a new document
+        }
+        return [d.id, ...kids.map((x) => x.id)];
       }
     }
   }
@@ -333,12 +387,22 @@ export function createFlow(ctx: FlowContext) {
       } else {
         const d = await repo.findDocById(it.id, { trashed: true });
         if (!d?.deletedAt) continue;
-        await repo.deleteDoc(d.id);
-        audit(actor, "doc.purge", { collection: d.collection, slug: d.slug, version: d.version });
+        purged += (await purgeDoc(actor, d)) - 1;
       }
       purged++;
     }
     return { purged };
+  }
+
+  /** Delete a trashed document for good; a source takes its trashed translations with it (0.22.0). How many rows went. */
+  async function purgeDoc(actor: Actor, d: CmsDoc, detail?: Record<string, unknown>, gone?: Set<string>): Promise<number> {
+    const kids = isTranslationDoc(d) ? [] : (await repo.listDocs({ trashed: true, groupId: d.id })).filter((x) => x.id !== d.id);
+    for (const x of [...kids, d]) {
+      gone?.add(x.id);
+      await repo.deleteDoc(x.id);
+      audit(actor, "doc.purge", { collection: x.collection, slug: docAddress(x), version: x.version, ...(detail ? { detail } : {}) });
+    }
+    return kids.length + 1;
   }
 
   // ── review requests ───────────────────────────────────────────────────────
@@ -561,7 +625,7 @@ export function createFlow(ctx: FlowContext) {
         hidden++;
         continue;
       }
-      items.push({ ...it, slug: doc?.slug ?? it.slug, title: doc?.title ?? it.title, currentVersion: doc?.version ?? null, stale: !!doc && doc.version !== it.version, state: doc ? docState(doc).state : null, canPublish: !!doc && can(actor, it.collection, "publish", doc) });
+      items.push({ ...it, slug: doc?.slug ?? it.slug, ...(doc && isTranslationDoc(doc) && doc.locale ? { locale: doc.locale } : {}), title: doc?.title ?? it.title, currentVersion: doc?.version ?? null, stale: !!doc && doc.version !== it.version, state: doc ? docState(doc).state : null, canPublish: !!doc && can(actor, it.collection, "publish", doc) });
     }
     return { ...rel, lastError: safeLastError(actor, rel), items, hiddenItems: hidden, canPublish: rel.state !== "published" && items.length > 0 && !hidden && items.every((i) => i.canPublish) };
   }
@@ -730,7 +794,7 @@ export function createFlow(ctx: FlowContext) {
       return saved;
     }, { atomic: true });
     for (const d of done) {
-      audit(actor, d.item.action === "publish" ? "doc.publish" : "doc.unpublish", { collection: d.doc.collection, slug: d.doc.slug, version: d.item.version, detail: { release: rel.name } });
+      audit(actor, d.item.action === "publish" ? "doc.publish" : "doc.unpublish", { collection: d.doc.collection, slug: docAddress(d.doc), version: d.item.version, detail: { release: rel.name } });
       ctx.changed(d.prev, d.doc);
     }
     audit(actor, "release.publish", { detail: { id: rel.id, name: rel.name, documents: done.length } });
@@ -828,7 +892,7 @@ export function createFlow(ctx: FlowContext) {
     await ctx.ready();
     assert(actor, col, "write");
     // Only documents this person may edit: who is in the others is not theirs to know.
-    const docs = (await repo.listDocs({ collection: col })).filter((d) => can(actor, col, "write", d));
+    const docs = (await repo.listDocs({ collection: col, sources: true })).filter((d) => can(actor, col, "write", d));
     const bySlug = new Map(docs.map((d) => [d.id, d.slug]));
     const out = new Map<string, Presence[]>();
     for (const p of await repo.listPresence(since(), docs.map((d) => d.id))) {

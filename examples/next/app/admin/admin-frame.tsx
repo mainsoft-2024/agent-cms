@@ -43,9 +43,9 @@ export function AdminFrame({ children }: { children: ReactNode }) {
         open={open}
         onOpenChange={setOpen}
         collection={collection}
-        onOpenDocument={(c, s) => router.push(`/admin/${c}/${s}`)}
+        onOpenDocument={(c, s) => router.push(`/admin/${c}/${encodeURIComponent(s)}`)}
         onNewDocument={(c) => router.push(`/admin/${c}/new`)}
-        onOpenVersions={(c, s) => router.push(`/admin/${c}/${s}/versions`)}
+        onOpenVersions={(c, s) => router.push(`/admin/${c}/${encodeURIComponent(s)}/versions`)}
       />
     </CmsProvider>
   );

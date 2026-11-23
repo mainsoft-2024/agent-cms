@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { personColor, useAsset, useCms, useShellNav } from "./use-cms";
+import { languageName, personColor, useAsset, useCms, useShellNav } from "./use-cms";
 
 // ── state ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +35,49 @@ export function StateBadge({ state, label, className }: { state: BadgeState; lab
       <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", DOT[state])} />
       {label ?? t(STATE_KEY[state])}
     </Badge>
+  );
+}
+
+// ── languages (0.22.0) ───────────────────────────────────────────────────────
+
+export type TranslationState = "source" | "missing" | "outdated" | "current";
+const LOCALE_DOT: Record<TranslationState, string> = { source: "", missing: "bg-neutral-400", outdated: "bg-amber-500", current: "bg-green-600" };
+const LOCALE_KEY = { source: "locale_status_source", missing: "locale_status_missing", outdated: "locale_status_outdated", current: "locale_status_current" } as const;
+
+/** A translation's status as a small pill: 원문 / 없음 / 번역 필요 / 최신. */
+export function LocaleStatus({ status, className }: { status: TranslationState; className?: string }) {
+  const { t } = useCms();
+  return (
+    <span className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-px text-[11px] font-medium leading-4", status === "outdated" ? "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300" : "text-muted-foreground", className)}>
+      {LOCALE_DOT[status] ? <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", LOCALE_DOT[status])} /> : null}
+      {t(LOCALE_KEY[status])}
+    </span>
+  );
+}
+
+/** A language code beside a title ("en"), for lists that mix languages. */
+export function LocaleTag({ locale, className }: { locale: string; className?: string }) {
+  return <span className={cn("inline-flex shrink-0 items-center rounded border px-1 font-mono text-[10.5px] uppercase leading-4 text-muted-foreground", className)}>{locale}</span>;
+}
+
+/** A source row's translations at a glance: each language's code with a dot (green current, amber outdated, grey none). */
+export function TranslationMarks({ translations, className }: { translations: Record<string, "missing" | "outdated" | "current">; className?: string }) {
+  const { t } = useCms();
+  const entries = Object.entries(translations);
+  if (!entries.length) return null;
+  return (
+    <ul className={cn("flex flex-wrap items-center gap-1", className)} aria-label={t("col_translations")}>
+      {entries.map(([l, s]) => {
+        const label = t("locale_tab_label", { language: languageName(l), status: t(LOCALE_KEY[s]) });
+        return (
+          <li key={l} title={label} className={cn("inline-flex items-center gap-1 rounded border px-1 font-mono text-[10.5px] uppercase leading-4", s === "missing" ? "border-dashed text-muted-foreground" : s === "outdated" ? "border-amber-500/40 text-amber-800 dark:text-amber-300" : "text-foreground")}>
+            <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", LOCALE_DOT[s])} />
+            <span aria-hidden>{l}</span>
+            <span className="sr-only">{label}</span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

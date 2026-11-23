@@ -32,6 +32,11 @@
  *   GET    /collections/:c/:slug/versions[/:n]        (?fields=summary)
  *   GET    /collections/:c/:slug/diff?a=&b=
  *   POST   /collections/:c/:slug/versions/:n/restore  {publish?}
+ *   (0.22.0) ?locale= on every document route picks the language; GET also takes &fallback=1
+ *   GET    /collections/:c/:slug/_translations        every language with its status
+ *   POST   /collections/:c/:slug/_translations        {locale, doc?, publish?, note?} start a translation
+ *   POST   /collections/:c/:slug/_align               {locale, version?} the translation matches that source version
+ *   GET    /collections/:c/:slug/_source-diff?locale= what changed in the source since the translation was aligned
  *   GET    /search?q=&collections=a,b&miss=1          miss=1: call onSearchMiss when nothing is found
  *   GET    /preview?token=                            the version a preview link points at
  *   GET    /keys | POST /keys {name, scopes, collections?, expiresAt?} | DELETE /keys/:id
@@ -111,7 +116,10 @@ import { keyFromHeader } from "./keys";
 import { clientIp, ipAllowed } from "./limits";
 import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
 import { eventStream, hearAs } from "./events";
+import { isTranslationDoc, localeTag, splitAddress } from "./locale";
 import { openApiDocument } from "./openapi";
+import { FORM_MAX_BODY, FORM_STATUSES } from "./forms";
+import type { FormSubmissionStatus } from "./types";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
 /** What the handler needs from the CMS's own sign-in (`createAuth` from `@mainsoft/agent-cms/auth`). */
@@ -182,6 +190,9 @@ const WriteBody = z.object({
   publish: z.boolean().optional(),
   note: z.string().max(300).nullable().optional(),
   template: z.string().max(100).optional(),
+  /** 0.22.0: the language of a new document; another than the default starts a translation of `from` (or `doc.slug`). */
+  locale: z.string().max(35).optional(),
+  from: z.string().max(200).optional(),
 });
 const TemplateBody = z.object({ label: z.string().max(80).optional(), description: z.string().max(200).optional(), title: z.string().max(300).optional(), summary: z.string().max(1000).optional(), body: z.string().max(500_000).optional(), fields: z.record(z.unknown()).optional() });
 const RedirectBody = z.object({ from: z.string().max(500).optional(), to: z.string().max(2000).optional(), toDocumentId: z.string().max(64).nullable().optional(), status: z.union([z.literal(301), z.literal(302)]).optional() });
@@ -286,7 +297,10 @@ function safeProto(u: string): string | null {
 
 /** The path for logs: secrets in it (raw file links) become placeholders. */
 export function redactPath(path: string): string {
-  return path.replace(/^\/raw\/[^/]+/, "/raw/:token").replace(/\/(preview|share)\/[A-Za-z0-9_-]{16,}/g, "/$1/:token");
+  return path
+    .replace(/^\/raw\/[^/]+/, "/raw/:token")
+    .replace(/\/(preview|share)\/[A-Za-z0-9_-]{16,}/g, "/$1/:token")
+    .replace(/^\/forms\/([^/]+)\/uploads\/[^/]+/, "/forms/$1/uploads/:token");
 }
 
 /** A caller's own request id if it looks like one, else a new one. */
@@ -298,9 +312,14 @@ function requestId(req: Request): string {
 
 /** The body as text, refusing more than `max` bytes before it is all read. */
 export async function readLimited(req: Request, max: number): Promise<string> {
+  return new TextDecoder().decode(await readLimitedBytes(req, max));
+}
+
+/** The body as bytes, refused (413) past `max`. */
+export async function readLimitedBytes(req: Request, max: number): Promise<Uint8Array> {
   const declared = Number(req.headers.get("content-length") ?? NaN);
   if (Number.isFinite(declared) && declared > max) throw new CmsError("body_too_large", {}, { status: 413 });
-  if (!req.body) return "";
+  if (!req.body) return new Uint8Array();
   const reader = req.body.getReader();
   const parts: Uint8Array[] = [];
   let n = 0;
@@ -317,8 +336,76 @@ export async function readLimited(req: Request, max: number): Promise<string> {
   const all = new Uint8Array(n);
   let at = 0;
   for (const p of parts) (all.set(p, at), (at += p.byteLength));
-  return new TextDecoder().decode(all);
+  return all;
 }
+
+/** The media type of a Content-Type header, lowercased, without parameters (`multipart/form-data`). */
+export function mediaType(contentType: string | null): string {
+  return (contentType ?? "").split(";")[0].trim().toLowerCase();
+}
+
+/**
+ * A form's fields from JSON, a plain HTML form (urlencoded) or multipart without files (0.22.0),
+ * and the bytes read (at most 64 KB). `contentType` is the header as sent: a multipart boundary
+ * is case-sensitive, so only the media type is lowercased (for choosing the parser).
+ */
+async function formInput(req: Request, contentType: string): Promise<{ input: Record<string, unknown>; bytes: Uint8Array }> {
+  const type = mediaType(contentType);
+  const bytes = await readLimitedBytes(req, FORM_MAX_BODY);
+  if (type === "application/json") {
+    let v: unknown;
+    try {
+      v = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      throw new CmsError("invalid_json");
+    }
+    if (!v || typeof v !== "object" || Array.isArray(v)) throw new CmsError("invalid_json");
+    return { input: v as Record<string, unknown>, bytes };
+  }
+  const out: Record<string, unknown> = {};
+  const add = (k: string, v: unknown) => {
+    const cur = out[k];
+    out[k] = cur === undefined ? v : Array.isArray(cur) ? [...cur, v] : [cur, v];
+  };
+  if (type === "application/x-www-form-urlencoded") {
+    for (const [k, v] of new URLSearchParams(new TextDecoder().decode(bytes))) add(k, v);
+    return { input: out, bytes };
+  }
+  if (type === "multipart/form-data") {
+    let fd: FormData;
+    try {
+      fd = await new Request("http://form.invalid/", { method: "POST", headers: { "content-type": contentType }, body: bytes as BodyInit }).formData();
+    } catch {
+      throw new CmsError("invalid_request", { issues: "multipart body" }, { status: 400 });
+    }
+    const entries: [string, string | Blob][] = [];
+    fd.forEach((v, k) => void entries.push([k, v as string | Blob]));
+    for (const [k, v] of entries) {
+      if (typeof v === "string") add(k, v);
+      // Files come with an upload grant first (POST /forms/:slug/uploads), never inside the form.
+      else if (v.size > 0 || (v as Blob & { name?: string }).name) throw new CmsError("form_upload_invalid", { reason: "multipart" });
+    }
+    return { input: out, bytes };
+  }
+  throw new CmsError("invalid_request", { issues: "content-type: JSON, urlencoded or multipart" }, { status: 415 });
+}
+
+const escHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+/** The answer to a plain HTML form (no script on the page): a short page. */
+function formPage(status: number, title: string, lines: string[], headers: Record<string, string> = {}): Response {
+  const body = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escHtml(title)}</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.25rem">${escHtml(title)}</h1>${lines.map((l) => `<p>${escHtml(l)}</p>`).join("")}<p><a href="javascript:history.back()">&larr;</a></p></body></html>`;
+  return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'", ...headers } });
+}
+
+const FormBody = z.object({
+  slug: z.string().max(80).optional(),
+  title: z.string().max(200).optional(),
+  enabled: z.boolean().optional(),
+  steps: z.array(z.any()).max(20).optional(),
+  settings: z.object({ successMessage: z.string().max(2000).optional(), notify: z.array(z.string().max(300)).max(50).optional(), keepDays: z.number().int().nullable().optional(), redirectUrl: z.string().max(2000).nullable().optional() }).optional(),
+  expectedUpdatedAt: z.string().max(40).optional(),
+});
+const statusList = (v: string | null): FormSubmissionStatus[] | null => (v ? (v.split(",").map((x) => x.trim()).filter((x) => (FORM_STATUSES as readonly string[]).includes(x)) as FormSubmissionStatus[]) : null);
 
 function safeHost(origin: string): string | null {
   try {
@@ -348,19 +435,41 @@ async function body<T>(req: Request, schema: z.ZodType<T>, optional = false): Pr
 /** `If-Match: "v12"` (or W/"v12", or 12) → 12. */
 export function versionFromIfMatch(h: string | null): number | undefined {
   if (!h) return undefined;
-  const m = /^(?:W\/)?"?v?(\d+)(?:-[a-z0-9]+)?"?$/.exec(h.trim());
+  const m = /^(?:W\/)?"?v?(\d+)(?:-[a-z0-9]+){0,2}"?$/.exec(h.trim());
   if (!m) throw new CmsError("invalid_version", {}, { status: 400 });
   return Number(m[1]);
 }
 
-const etag = (d: { version: number }) => `"v${d.version}"`;
+/** 0.22.0: documents of localized collections carry their language in the tag (`"v3-en"`): each language is its own document. */
+const etag = (d: { version: number; locale?: string }) => `"v${d.version}${d.locale ? `-${localeTag(d.locale)}` : ""}"`;
 /** 0.21.0: when snippets or `?expand` change what is sent, the tag also follows the content (FNV-1a). */
 function contentTag(raw: CmsDoc, sent: CmsDoc, dynamic: boolean): string {
-  if (!dynamic) return etag(raw);
-  const text = JSON.stringify([sent.body, sent.fields]);
+  // Review 0.22: a translation shows values its source holds (category, shared fields): its tag
+  // follows what is sent, so a change in the source alone is not answered with 304.
+  const tr = isTranslationDoc(raw);
+  if (!dynamic && !tr) return etag(raw);
+  // Review 0.22 (3rd round): a translation's tag follows the whole answer, also what changes without a
+  // new version of its own (its address after the source is renamed, publishedAt, values filled in).
+  const text = JSON.stringify(tr ? sent : [sent.body, sent.fields]);
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
-  return `W/"v${raw.version}-${(h >>> 0).toString(36)}"`;
+  return `W/"v${raw.version}${raw.locale ? `-${localeTag(raw.locale)}` : ""}-${(h >>> 0).toString(36)}"`;
+}
+
+/**
+ * Review 0.22: in a localized collection an `If-Match` tag names a language (`"v3-en"`). A tag of
+ * another language of the same document is refused, even at the same version. `want` is the tag of
+ * the language written to, `all` the tags of every language, `translation` whether the document is
+ * a translation (a tag without a language, from before 0.22, fits only a source). A bare number
+ * (`3`, documented) names only the version and is accepted.
+ */
+export function localeTagMatches(h: string | null, want: string, all: readonly string[], translation: boolean): boolean {
+  const v = h?.trim();
+  if (!v || /^\d+$/.test(v)) return true;
+  const m = /^(?:W\/)?"?v?\d+((?:-[a-z0-9]+){0,2})"?$/.exec(v);
+  if (!m) return true; // a malformed tag is refused by versionFromIfMatch
+  const first = m[1].split("-").filter(Boolean)[0] ?? "";
+  return all.includes(first) ? first === want : !translation;
 }
 
 /** A doc on the wire: editors see the autosave, nobody else does. */
@@ -433,6 +542,36 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const r = await core.ax.write(link.actor, link.collection, link.slug, text, { expectedVersion: link.version, note: "uploaded file" });
         return json(r);
       }
+      // 0.22.0: sending a form, and its files. No session or key: the form is public, and a
+      // signed-in person sending it from another site is not refused as a cross-site write.
+      if (seg[0] === "forms" && seg.length >= 2 && ((m === "POST" && (seg.length === 2 || (seg.length === 3 && seg[2] === "uploads"))) || (m === "PUT" && seg.length === 4 && seg[2] === "uploads"))) {
+        note({ kind: "anonymous", via: "form" });
+        // The sender's address: forms' own clientIp, else the handler's, else X-Forwarded-For's first entry.
+        const ip = core.forms.clientIp(req) ?? (opts.clientIp ?? clientIp)(req);
+        const meta = { ip, userAgent: req.headers.get("user-agent"), request: null as Request | null };
+        if (m === "PUT") return json(await core.forms.upload(seg[1], seg[3], (max) => readLimitedBytes(req, max)));
+        if (seg.length === 3) {
+          const b = z.object({ field: z.string().max(60), name: z.string().max(400), size: z.number().int(), mime: z.string().max(200).optional() }).parse(await readJson(req, false, 4096));
+          return json(await core.forms.grant(seg[1], b, meta), 201);
+        }
+        const ct = req.headers.get("content-type") ?? "";
+        // A plain HTML form (no script) gets a page back, or goes to the form's address after sending.
+        const page = mediaType(ct) !== "application/json" && !(req.headers.get("accept") ?? "").includes("application/json");
+        try {
+          const { input, bytes } = await formInput(req, ct);
+          // verify gets a request whose body can still be read: the same bytes, at most 64 KB.
+          meta.request = new Request(req.url, { method: "POST", headers: req.headers, body: bytes as BodyInit });
+          const r = await core.forms.submit(seg[1], input, meta);
+          if (!page) return json(r, 201);
+          if (r.redirectUrl) return new Response(null, { status: 303, headers: { location: r.redirectUrl, "cache-control": "no-store" } });
+          return formPage(200, r.message || "✓", []);
+        } catch (e) {
+          if (!page || !isCmsError(e)) throw e;
+          const lines = [core.message(e), ...(e.diagnostics ?? []).map((d) => `${d.path}: ${d.message}`)];
+          const wait = e.status === 429 ? Number(e.params.retryAfter ?? 60) : null;
+          return formPage(e.status, core.message(e), lines.slice(1), wait ? { "retry-after": String(wait) } : {});
+        }
+      }
       if ((seg[0] === "auth" || seg[0] === "users") && opts.auth) {
         // Signing in rides on cookies too: a page elsewhere may not post here (login CSRF).
         if (m !== "GET" && m !== "HEAD" && !sameSite(req, opts.trustedOrigins)) throw new CmsError("cross_site", {}, { messages: core.messages });
@@ -462,6 +601,9 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           previewLinks: core.previewEnabled(),
           trashDays: core.trash.days,
           timeZone: core.timeZone,
+          /** 0.22.0: languages documents are written in (empty: off) and the one translations are made from. */
+          locales: core.locales,
+          defaultLocale: core.defaultLocale || null,
           media: core.assets.describe(actor),
           /** True when webhooks can be made (a `secretsKey` is set) and this caller may manage them. */
           webhooks: core.webhooks.enabled() && core.isAdmin(actor),
@@ -476,9 +618,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           collections: core
             .collections()
             .filter((c) => core.can(actor, c.slug, "read"))
-            .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish"), ...(c.single ? { single: true } : {}), ...(c.tree ? { tree: true } : {}), ...(c.snippets ? { snippets: true } : {}) })),
+            .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish"), ...(c.single ? { single: true } : {}), ...(c.tree ? { tree: true } : {}), ...(c.snippets ? { snippets: true } : {}), ...(core.localized(c.slug) ? { localized: true } : {}) })),
           /** 0.21.0: redirects are on and this caller manages them; hosts `:::video` may embed. */
           redirects: core.redirects.enabled() && core.isAdmin(actor),
+          /** 0.22.0: forms, when on and this person may see them (`write`: build them, `delete`: delete submissions). */
+          forms: core.forms.can(actor),
           videoHosts: core.videoHosts,
         });
       }
@@ -516,10 +660,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const r = await core.search(actor, cols.length ? cols : readable, q.get("q") ?? "", {
           limit: Math.max(1, Math.min(Number(q.get("limit") ?? 8) || 8, 20)),
           reportMiss: q.get("miss") === "1" || q.get("log") === "1",
+          ...(q.get("locale") ? { locale: q.get("locale")! } : {}),
         });
         return json({
           empty: r.empty,
-          hits: r.hits.map((h) => ({ collection: h.unit.collection, slug: h.unit.slug, title: h.unit.title, summary: h.unit.summary, category: h.unit.category, heading: h.unit.heading, anchor: h.unit.anchor, score: Number(h.score.toFixed(3)) })),
+          hits: r.hits.map((h) => ({ collection: h.unit.collection, slug: h.unit.slug, ...(h.unit.locale ? { locale: h.unit.locale } : {}), title: h.unit.title, summary: h.unit.summary, category: h.unit.category, heading: h.unit.heading, anchor: h.unit.anchor, score: Number(h.score.toFixed(3)) })),
         });
       }
 
@@ -741,7 +886,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const col = seg[1];
         const cfg = core.collection(col);
 
-        if (seg.length === 3 && seg[2] === "_counts" && m === "GET") return json({ counts: await core.counts(actor, col) });
+        if (seg.length === 3 && seg[2] === "_counts" && m === "GET") return json({ counts: await core.counts(actor, col, { locale: q.get("locale") }) });
         if (seg.length === 3 && seg[2] === "_schema" && m === "GET") {
           // Field rules depend on the document when `fieldAccess` looks at it (`?slug=`).
           const forSlug = q.get("slug");
@@ -778,6 +923,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             templates: (cfg.templates?.length ?? 0) > 0,
             redirects: core.redirects.enabled(),
             snippetCollections: core.collections().filter((c) => c.snippets).map((c) => c.slug),
+            // 0.22.0: languages; per field, whether a translation has its own value (else it shows the source's, read-only).
+            locales: core.locales,
+            defaultLocale: core.defaultLocale || null,
+            localized: core.localized(col),
+            translatable: core.localized(col) ? core.translatableFields(col) : null,
           });
         }
         if (seg.length === 3 && seg[2] === "_diagnose" && m === "POST") {
@@ -831,6 +981,9 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
               by: (["user", "key", "system"] as const).find((x) => x === by),
               category: q.get("category") ?? undefined,
               q: q.get("q") ?? undefined,
+              locale: q.get("locale") ?? undefined,
+              fallback: q.get("fallback") === "1",
+              translations: q.get("translations") === "1",
             };
             if (q.get("fields") === "summary") {
               return json(await core.page(actor, col, { ...lo, limit: Number(q.get("limit") ?? 50) || 50, cursor: q.get("cursor"), hits: q.get("hits") === "1" }));
@@ -846,10 +999,34 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           }
         }
 
-        const slug = seg[2];
+        // 0.22.0: `?locale=` picks the language of the document (a translation has the same slug as its source).
+        const locale = q.get("locale");
+        const reading = m === "GET" || m === "HEAD";
+        const slug = seg[2] && locale ? core.address(col, seg[2], locale, { write: !reading }) : seg[2];
+        if (slug && !reading && core.locales.length && core.localized(col)) {
+          const own = splitAddress(slug).locale;
+          const h = req.headers.get("if-match");
+          if (!localeTagMatches(h, localeTag(own ?? core.defaultLocale), core.locales.map(localeTag), !!own)) throw new CmsError("locale_etag_mismatch", { tag: h, slug: splitAddress(slug).slug, locale: own ?? core.defaultLocale }, { messages: core.messages });
+        }
+        if (slug && seg.length === 4 && seg[3] === "_translations") {
+          if (m === "GET") return json(await core.translations(actor, col, seg[2]));
+          if (m === "POST") {
+            const b = await body(req, z.object({ locale: z.string().max(35), doc: DocInput.optional(), publish: z.boolean().optional(), note: z.string().max(300).nullable().optional() }));
+            const doc = await core.create(actor, col, { ...(b.doc ?? {}), slug: seg[2] }, { locale: b.locale, from: seg[2], publish: b.publish, note: b.note });
+            return json({ doc: wire(doc) }, 201, { etag: etag(doc) });
+          }
+        }
+        if (slug && seg.length === 4 && seg[3] === "_align" && m === "POST") {
+          const b = await body(req, z.object({ locale: z.string().max(35), version: z.number().int().positive().optional() }));
+          const doc = await core.markAligned(actor, col, seg[2], b.locale, { version: b.version });
+          return json({ doc: wire(doc) }, 200, { etag: etag(doc) });
+        }
+        if (slug && seg.length === 4 && seg[3] === "_source-diff" && m === "GET") {
+          return json(await core.sourceDiff(actor, col, seg[2], locale ?? "", { context: q.get("context") ? Number(q.get("context")) : undefined }));
+        }
         if (slug && seg.length === 3) {
           if (m === "GET" || m === "HEAD") {
-            const raw = await core.get(actor, col, slug, { draft: q.get("draft") === "1", snippets: q.get("snippets") === "raw" ? "raw" : undefined });
+            const raw = await core.get(actor, col, seg[2], { draft: q.get("draft") === "1", snippets: q.get("snippets") === "raw" ? "raw" : undefined, locale, fallback: q.get("fallback") === "1" });
             const doc = await core.expand(actor, raw, expandOf(q), q.get("draft") === "1");
             const tag = contentTag(raw, doc, expandOf(q).length > 0 || (q.get("draft") !== "1" && q.get("snippets") !== "raw" && core.collections().some((c) => c.snippets)));
             if (req.headers.get("if-none-match") === tag) return new Response(null, { status: 304, headers: { etag: tag } });
@@ -1047,6 +1224,36 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           await rd.remove(actor, seg[1]);
           return json({ ok: true });
         }
+      }
+      if (seg[0] === "forms") {
+        const fm = core.forms;
+        if (seg.length === 1 && m === "GET") return json({ forms: await fm.list(actor) });
+        if (seg.length === 1 && m === "POST") return json({ form: await fm.create(actor, await body(req, FormBody)) }, 201);
+        if (seg.length === 2 && m === "GET") return json({ form: await fm.public(seg[1], actor) });
+        if (seg.length === 2 && m === "PATCH") return json({ form: await fm.update(actor, seg[1], await body(req, FormBody)) });
+        if (seg.length === 2 && m === "DELETE") return json(await fm.remove(actor, seg[1]));
+        if (seg.length === 3 && seg[2] === "definition" && m === "GET") return json({ form: await fm.get(actor, seg[1]) });
+        if (seg.length === 3 && seg[2] === "export.csv" && m === "GET") {
+          const r = await fm.exportCsv(actor, seg[1], { status: statusList(q.get("status")), q: q.get("q") ?? undefined });
+          return new Response(r.csv, { status: 200, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${r.filename}"`, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+        }
+        if (seg.length === 3 && seg[2] === "submissions" && m === "GET") return json(await fm.submissions(actor, seg[1], { status: statusList(q.get("status")), q: q.get("q") ?? undefined, limit: Number(q.get("limit")) || undefined, offset: Number(q.get("offset")) || undefined }));
+        if (seg.length === 4 && seg[2] === "submissions" && seg[3] === "_bulk" && m === "POST") {
+          const b = await body(req, z.object({ ids: z.array(z.string().max(64)).min(1).max(500), action: z.enum(["new", "read", "spam", "archived", "delete"]) }));
+          return json(b.action === "delete" ? await fm.removeSubmissions(actor, seg[1], b.ids) : await fm.setStatus(actor, seg[1], b.ids, b.action));
+        }
+        if (seg.length === 4 && seg[2] === "submissions" && m === "GET") return json({ submission: await fm.submission(actor, seg[1], seg[3]) });
+        if (seg.length === 4 && seg[2] === "submissions" && m === "PATCH") {
+          const b = await body(req, z.object({ status: z.enum(["new", "read", "spam", "archived"]) }));
+          await fm.setStatus(actor, seg[1], [seg[3]], b.status);
+          return json({ submission: await fm.submission(actor, seg[1], seg[3]) });
+        }
+        if (seg.length === 4 && seg[2] === "submissions" && m === "DELETE") {
+          const r = await fm.removeSubmissions(actor, seg[1], [seg[3]]);
+          if (!r.deleted) throw new CmsError("submission_not_found", {}, { messages: core.messages });
+          return json({ ok: true });
+        }
+        if (seg.length === 6 && seg[2] === "submissions" && seg[4] === "files" && m === "GET") return json(await fm.fileLink(actor, seg[1], seg[3], seg[5]));
       }
       if (seg[0] === "sitemap.xml" && seg.length === 1 && (m === "GET" || m === "HEAD")) {
         const origin = opts.publicOrigin ?? url.origin;

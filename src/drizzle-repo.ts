@@ -3,8 +3,8 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { getTableConfig, type PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
-import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp, NewChange, ChangeRow, DocPageQuery, DocPage, NewRedirect, RedirectPatch } from "./repo";
-import type { CmsRedirect, DocRef } from "./types";
+import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, UpdateDocOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp, NewChange, ChangeRow, DocPageQuery, DocPage, NewRedirect, RedirectPatch, NewFormSubmission, FormSubmissionQuery } from "./repo";
+import type { CmsRedirect, DocRef, FormSubmission, FormSubmissionStatus } from "./types";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
 import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsJob, CmsRecord, CmsRelease, CmsWebhook, WebhookDelivery, WebhookEvent, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
@@ -12,6 +12,7 @@ import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, Cms
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PgDatabase<any, any, any>;
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const iso = (d: Date | string | null | undefined) => (d == null ? null : typeof d === "string" ? new Date(d).toISOString() : d.toISOString());
 const date = (s: string | null | undefined) => (s == null ? null : new Date(s));
 
@@ -86,7 +87,16 @@ export class DrizzleRepo implements CmsRepo {
       ...(r.parentId != null ? { parentId: r.parentId } : {}),
       ...(r.position != null ? { position: r.position } : {}),
       ...(r.seo != null ? { seo: r.seo } : {}),
+      // 0.22.0: only on documents of localized collections, so apps without locales see the same rows as before.
+      ...(r.locale ? { locale: r.locale } : {}),
+      ...(r.groupId != null ? { groupId: r.groupId } : {}),
+      ...(r.sourceVersion != null ? { sourceVersion: r.sourceVersion } : {}),
     };
+  }
+  /** Not a translation (0.22.0): no group, or the group's own source. */
+  private sourceRow() {
+    const D = this.t.documents;
+    return sql`(${D.groupId} is null or ${D.groupId} = ${D.id})`;
   }
 
   private toRedirect(r: typeof this.t.redirects.$inferSelect): CmsRedirect {
@@ -179,12 +189,95 @@ export class DrizzleRepo implements CmsRepo {
     const H = this.t.redirectHits;
     return (await this.db.select().from(H).where(gte(H.day, sinceDay))).map((r) => ({ redirectId: r.redirectId, day: String(r.day).slice(0, 10), n: r.n }));
   }
+  private toSubmission(r: typeof this.t.formSubmissions.$inferSelect): FormSubmission {
+    return {
+      id: r.id,
+      formId: r.formId,
+      formVersion: r.formVersion,
+      data: (r.data ?? {}) as Record<string, unknown>,
+      files: (r.files ?? []) as FormSubmission["files"],
+      status: r.status as FormSubmissionStatus,
+      ipHash: r.ipHash ?? null,
+      userAgent: r.userAgent ?? null,
+      createdAt: iso(r.createdAt)!,
+      updatedAt: iso(r.updatedAt)!,
+    };
+  }
+  async insertFormSubmission(r: NewFormSubmission) {
+    const at = new Date(r.createdAt);
+    const [row] = await this.db
+      .insert(this.t.formSubmissions)
+      .values({ formId: r.formId, formVersion: r.formVersion, data: r.data, files: r.files, status: r.status, ipHash: r.ipHash, userAgent: r.userAgent, createdAt: at, updatedAt: at })
+      .returning();
+    return this.toSubmission(row);
+  }
+  async findFormSubmission(id: string) {
+    if (!UUID_RE.test(id)) return null;
+    const F = this.t.formSubmissions;
+    const [row] = await this.db.select().from(F).where(eq(F.id, id)).limit(1);
+    return row ? this.toSubmission(row) : null;
+  }
+  async listFormSubmissions(q: FormSubmissionQuery) {
+    const F = this.t.formSubmissions;
+    const conds: SQL[] = [eq(F.formId, q.formId)];
+    if (q.statuses?.length) conds.push(inArray(F.status, [...q.statuses]));
+    const needle = q.q?.trim();
+    if (needle) conds.push(sql`${F.data}::text ilike ${"%" + needle.replace(/[\\%_]/g, (c) => "\\" + c) + "%"}`);
+    const where = and(...conds);
+    const rows = await this.db.select().from(F).where(where).orderBy(desc(F.createdAt), desc(F.id)).limit(q.limit).offset(q.offset ?? 0);
+    const [c] = await this.db.select({ n: sql<number>`count(*)::int` }).from(F).where(where);
+    return { items: rows.map((r) => this.toSubmission(r)), total: c?.n ?? 0 };
+  }
+  async formSubmissionCounts() {
+    const F = this.t.formSubmissions;
+    const rows = await this.db.select({ formId: F.formId, status: F.status, n: sql<number>`count(*)::int`, last: sql<Date | string>`max(${F.createdAt})` }).from(F).groupBy(F.formId, F.status);
+    return rows.map((r) => ({ formId: r.formId, status: r.status as FormSubmissionStatus, n: r.n, last: iso(r.last)! }));
+  }
+  async setFormSubmissionStatus(ids: readonly string[], status: FormSubmissionStatus, at: string) {
+    const ok = ids.filter((id) => UUID_RE.test(id));
+    if (!ok.length) return 0;
+    const F = this.t.formSubmissions;
+    return (await this.db.update(F).set({ status, updatedAt: new Date(at) }).where(inArray(F.id, ok)).returning({ id: F.id })).length;
+  }
+  async selectFormSubmissions(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number; offset?: number }) {
+    const F = this.t.formSubmissions;
+    const conds: SQL[] = [];
+    if (q.before) conds.push(lt(F.createdAt, new Date(q.before)));
+    if (q.ids) {
+      const ok = q.ids.filter((id) => UUID_RE.test(id));
+      if (!ok.length) return [];
+      conds.push(inArray(F.id, ok));
+    }
+    if (q.formId) conds.push(eq(F.formId, q.formId));
+    if (!conds.length) return [];
+    const rows = await this.db.select().from(F).where(and(...conds)).orderBy(asc(F.createdAt), asc(F.id)).limit(q.limit ?? 100_000).offset(q.offset ?? 0);
+    return rows.map((r) => this.toSubmission(r));
+  }
+  async deleteFormSubmissions(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number }) {
+    const F = this.t.formSubmissions;
+    const conds: SQL[] = [];
+    if (q.before) conds.push(lt(F.createdAt, new Date(q.before)));
+    if (q.ids) {
+      const ok = q.ids.filter((id) => UUID_RE.test(id));
+      if (!ok.length) return [];
+      conds.push(inArray(F.id, ok));
+    }
+    if (q.formId) conds.push(eq(F.formId, q.formId));
+    if (!conds.length) return [];
+    const where = q.limit ? inArray(F.id, this.db.select({ id: F.id }).from(F).where(and(...conds)).orderBy(asc(F.createdAt)).limit(q.limit)) : and(...conds);
+    return (await this.db.delete(F).where(where).returning()).map((r) => this.toSubmission(r));
+  }
   /**
    * Serialises tree moves of one collection inside a transaction (Postgres advisory lock, released at commit),
    * so two concurrent moves cannot each pass the cycle check and together make a loop.
    */
   async lockTree(collection: string) {
     await this.db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`agent-cms:tree:${collection}`}))`);
+  }
+  /** Review 0.22: serialises cascades (delete, restore) and new translations of one group until the commit. */
+  async lockGroup(groupId: string) {
+    if (this.txMode === false) return;
+    await this.db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`agent-cms:group:${groupId}`}))`);
   }
 
   private patchRow(p: DocPatch): Partial<typeof this.t.documents.$inferInsert> {
@@ -307,7 +400,11 @@ export class DrizzleRepo implements CmsRepo {
 
   async findDoc(collection: string, slug: string, o: FindOptions = {}) {
     const D = this.t.documents;
-    const [r] = await this.db.select().from(D).where(and(eq(D.collection, collection), eq(D.slug, slug))).limit(1);
+    const [r] = await this.db
+      .select()
+      .from(D)
+      .where(and(eq(D.collection, collection), eq(D.slug, slug), o.locale !== undefined ? eq(D.locale, o.locale) : this.sourceRow()))
+      .limit(1);
     return r && (!r.deletedAt || o.trashed) ? this.toDoc(r) : null;
   }
   async findDocById(id: string, o: FindOptions = {}) {
@@ -318,6 +415,9 @@ export class DrizzleRepo implements CmsRepo {
   async listDocs(f: DocFilter) {
     const D = this.t.documents;
     const conds = [f.trashed ? isNotNull(D.deletedAt) : isNull(D.deletedAt)];
+    if (f.groupId) conds.push(this.uuidLike(f.groupId) ? sql`(${D.groupId} = ${f.groupId} or ${D.id} = ${f.groupId})` : sql`false`);
+    if (f.sources) conds.push(this.sourceRow());
+    if (f.locale !== undefined) conds.push(eq(D.locale, f.locale), sql`not ${this.sourceRow()}`);
     if (f.dueBefore) conds.push(lte(D.dueAt, new Date(f.dueBefore)));
     if (f.collection) conds.push(eq(D.collection, f.collection));
     if (f.statuses) conds.push(inArray(D.status, f.statuses));
@@ -343,11 +443,15 @@ export class DrizzleRepo implements CmsRepo {
     );
     return this.toDoc(r);
   }
-  async updateDoc(id: string, p: DocPatch, expectedVersion?: number) {
+  async updateDoc(id: string, p: DocPatch, expectedVersion?: number, o: UpdateDocOptions = {}) {
     const D = this.t.documents;
     // With an expected version the row must also still be live (not in the trash): a guarded write
     // never lands on a document deleted after it was checked.
-    const where = expectedVersion === undefined ? eq(D.id, id) : and(eq(D.id, id), eq(D.version, expectedVersion), isNull(D.deletedAt));
+    const conds: SQL[] = [eq(D.id, id)];
+    if (expectedVersion !== undefined) conds.push(eq(D.version, expectedVersion), isNull(D.deletedAt));
+    // Review 0.22: a restore writes only the trashed row it checked (same version, same moment deleted).
+    if (o.trashed) conds.push(eq(D.version, o.trashed.version), sql`date_trunc('milliseconds', ${D.deletedAt}) = ${new Date(o.trashed.deletedAt).toISOString()}::timestamptz`);
+    const where = conds.length === 1 ? conds[0] : and(...conds)!;
     const [r] = await uniq(
       this.db
         .update(D)
@@ -450,7 +554,9 @@ export class DrizzleRepo implements CmsRepo {
             ? ([t.apiKeys, lt(t.apiKeys.revokedAt, new Date(before))] as const)
             : what === "redirect_hits"
               ? ([t.redirectHits, lt(t.redirectHits.day, before)] as const)
-              : ([t.hits, lt(t.hits.day, before)] as const);
+              : what === "form_submissions"
+                ? ([t.formSubmissions, lt(t.formSubmissions.createdAt, new Date(before))] as const)
+                : ([t.hits, lt(t.hits.day, before)] as const);
     if (dryRun) {
       const [r] = await this.db.select({ n: sql<number>`count(*)::int` }).from(table).where(where);
       return r?.n ?? 0;
@@ -889,7 +995,9 @@ export class DrizzleRepo implements CmsRepo {
   async updateRecord(kind: string, id: string, patch: RecordPatch) {
     const R = this.t.records;
     if (!this.uuidLike(id)) return null;
-    const [r] = await this.db.update(R).set({ ...(patch.data !== undefined ? { data: patch.data } : {}), ...(patch.key !== undefined ? { key: patch.key } : {}), updatedAt: new Date(patch.at) }).where(and(eq(R.kind, kind), eq(R.id, id))).returning();
+    // Compare and swap in the same statement (0.22.0): to the millisecond, as the CMS writes and reads it.
+    const swap = patch.ifUpdatedAt !== undefined ? [sql`date_trunc('milliseconds', ${R.updatedAt}) = ${new Date(patch.ifUpdatedAt).toISOString()}::timestamptz`] : [];
+    const [r] = await this.db.update(R).set({ ...(patch.data !== undefined ? { data: patch.data } : {}), ...(patch.key !== undefined ? { key: patch.key } : {}), updatedAt: new Date(patch.at) }).where(and(eq(R.kind, kind), eq(R.id, id), ...swap)).returning();
     return r ? this.toRecord(r) : null;
   }
   async deleteRecords(q: { kind: string; id?: string; scope?: string; before?: string }) {
@@ -940,6 +1048,8 @@ export class DrizzleRepo implements CmsRepo {
   async pageDocs(q: DocPageQuery): Promise<DocPage> {
     const D = this.t.documents;
     const conds: SQL[] = [isNull(D.deletedAt), eq(D.collection, q.collection)];
+    if (q.locale !== undefined) conds.push(eq(D.locale, q.locale), sql`not ${this.sourceRow()}`);
+    else conds.push(this.sourceRow());
     if (q.published) conds.push(isNotNull(D.publishedVersion), ne(D.status, "archived"), isNotNull(D.published));
     if (q.statuses?.length) conds.push(inArray(D.status, q.statuses));
     if (q.by) conds.push(eq(D.updatedByKind, q.by));
@@ -979,7 +1089,7 @@ export class DrizzleRepo implements CmsRepo {
       have.get(c.table_name)!.add(c.column_name);
     }
     const expected: Record<string, string[]> = {};
-    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries, records: this.t.records, changes: this.t.changes, doc_refs: this.t.docRefs, anchor_aliases: this.t.anchorAliases, redirects: this.t.redirects, redirect_hits: this.t.redirectHits })) {
+    for (const [key, tbl] of Object.entries({ documents: this.t.documents, versions: this.t.versions, api_keys: this.t.apiKeys, hits: this.t.hits, meta: this.t.meta, audit: this.t.audit, assets: this.t.assets, asset_refs: this.t.assetRefs, comments: this.t.comments, releases: this.t.releases, saved_filters: this.t.savedFilters, presence: this.t.presence, jobs: this.t.jobs, webhooks: this.t.webhooks, webhook_deliveries: this.t.webhookDeliveries, records: this.t.records, changes: this.t.changes, doc_refs: this.t.docRefs, anchor_aliases: this.t.anchorAliases, redirects: this.t.redirects, redirect_hits: this.t.redirectHits, form_submissions: this.t.formSubmissions })) {
       expected[prefix + key] = Object.values(tbl).filter((c) => c && typeof c === "object" && "name" in c && "columnType" in c).map((c) => (c as { name: string }).name);
     }
     const missingTables = Object.keys(expected).filter((t) => !have.has(t));
@@ -1011,6 +1121,9 @@ export class DrizzleRepo implements CmsRepo {
     }
     // 0.17.0: indexes, published pointers without their version, rows left behind.
     let missingIndexes: string[] = [];
+    let staleIndexes: string[] = [];
+    let invalidIndexes: string[] = [];
+    let atSlugs: string[] = [];
     let publishedWithoutVersion = 0;
     let orphanAssetRefs = 0;
     let orphanComments = 0;
@@ -1019,6 +1132,15 @@ export class DrizzleRepo implements CmsRepo {
       const idx = await this.rows<{ indexname: string }>(sql`select indexname from pg_indexes where schemaname = coalesce(${sch}, current_schema()) and indexname like ${prefix.replace(/_/g, "\\_") + "%"}`);
       const haveIdx = new Set(idx.map((r) => r.indexname));
       missingIndexes = EXPECTED_INDEXES.map((n) => prefix + n).filter((n) => !haveIdx.has(n));
+      staleIndexes = STALE_INDEXES.map((n) => prefix + n).filter((n) => haveIdx.has(n));
+      // Review 0.22: an index left INVALID by a failed CREATE INDEX CONCURRENTLY exists but guards nothing.
+      const bad = await this.rows<{ relname: string }>(
+        sql`select c.relname from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname = coalesce(${sch}, current_schema()) and c.relname like ${prefix.replace(/_/g, "\\_") + "%"} and not i.indisvalid`
+      );
+      invalidIndexes = bad.map((r) => r.relname).sort();
+      // Review 0.22: with locales on, `slug@en` names a translation: stored slugs that look like one.
+      const at = await this.rows<{ collection: string; slug: string }>(sql`select collection, slug from ${this.t.documents} where slug ~ '@[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$' order by collection, slug limit 50`);
+      atSlugs = at.map((r) => `${r.collection}/${r.slug}`);
       const D = this.t.documents;
       const V = this.t.versions;
       const [pv] = await this.db
@@ -1053,6 +1175,9 @@ export class DrizzleRepo implements CmsRepo {
       badPublished,
       orphanVersions,
       missingIndexes,
+      staleIndexes,
+      invalidIndexes,
+      atSlugs,
       publishedWithoutVersion,
       orphanAssetRefs,
       orphanComments,
@@ -1089,6 +1214,12 @@ export interface DoctorReport {
   orphanVersions: number;
   /** 0.17.0: indexes the DDL makes that the database does not have. */
   missingIndexes?: string[];
+  /** 0.22.0: indexes an upgrade should have dropped (the old one-slug-per-collection unique index). */
+  staleIndexes?: string[];
+  /** Review 0.22: indexes Postgres marks INVALID (a failed CREATE INDEX CONCURRENTLY). */
+  invalidIndexes?: string[];
+  /** Review 0.22: stored slugs ending in `@<locale>` (read as a translation's address once locales are on); at most 50. */
+  atSlugs?: string[];
   /** Documents whose published version has no row in the version table. */
   publishedWithoutVersion?: number;
   /** File uses whose document or file is gone. */
@@ -1100,4 +1231,6 @@ export interface DoctorReport {
 }
 
 /** Index names (without the prefix) the DDL creates; `doctor` reports the ones missing. */
-export const EXPECTED_INDEXES = ["changes_at_idx", "changes_doc_idx", "documents_list_idx", "documents_public_idx", "documents_trash_idx", "documents_updated_idx", "versions_created_idx", "audit_doc_idx", "jobs_done_idx", "assets_trash_idx", "comments_thread_idx"];
+export const EXPECTED_INDEXES = ["changes_at_idx", "changes_doc_idx", "documents_list_idx", "documents_public_idx", "documents_trash_idx", "documents_updated_idx", "versions_created_idx", "audit_doc_idx", "jobs_done_idx", "assets_trash_idx", "comments_thread_idx", "documents_collection_slug_locale_idx", "documents_group_idx"];
+/** Indexes an upgrade drops (0.22.0: one slug per collection became one slug per collection and language). */
+export const STALE_INDEXES = ["documents_collection_slug_idx"];

@@ -129,8 +129,12 @@ function emit(v: unknown): string {
  * A document as a markdown file that `docFromMarkdown` reads back to the same content.
  * `status` and `updatedAt` are written for `import` (which documents were public, which side is newer).
  */
-export function docToMarkdown(doc: { slug: string; title: string; summary?: string; body?: string; category?: string | null; keywords?: string[]; fields?: Record<string, unknown> }, extra: { status?: string; updatedAt?: string } = {}): string {
+export function docToMarkdown(doc: { slug: string; title: string; summary?: string; body?: string; category?: string | null; keywords?: string[]; fields?: Record<string, unknown> }, extra: { status?: string; updatedAt?: string; locale?: string; sourceVersion?: number | null; translationStatus?: string } = {}): string {
   const lines = [`slug: ${emit(doc.slug)}`, `title: ${emit(doc.title)}`];
+  // 0.22.0: a translation says its language and the source version it was aligned with (`export`).
+  if (extra.locale) lines.push(`locale: ${emit(extra.locale)}`);
+  if (extra.sourceVersion != null) lines.push(`sourceVersion: ${extra.sourceVersion}`);
+  if (extra.translationStatus) lines.push(`translationStatus: ${extra.translationStatus}`);
   if (doc.summary) lines.push(`summary: ${emit(doc.summary)}`);
   if (doc.category != null) lines.push(`category: ${emit(doc.category)}`);
   if (doc.keywords?.length) lines.push(`keywords: ${JSON.stringify(doc.keywords)}`);

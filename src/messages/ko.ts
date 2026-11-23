@@ -2,6 +2,56 @@
 
 import type { Messages } from "../errors";
 
+/** `form_invalid`의 `issue` 코드별 문구 (0.22.0). */
+const formIssue = (p: Record<string, unknown>): string => {
+  const at = `칸 "${String(p.field ?? "")}": `;
+  const v = String(p.value ?? "");
+  const t: Record<string, string> = {
+    steps_list: "단계 목록이 필요함",
+    no_steps: "단계가 하나 이상 있어야 함",
+    too_many_steps: "단계는 20개까지",
+    no_fields: "칸이 하나 이상 있어야 함",
+    too_many_fields: "칸은 100개까지",
+    step_title: `${String(p.step ?? "")}단계: 제목은 120자까지`,
+    key: `${at}키는 영문 소문자로 시작하고 소문자·숫자·_만 씀 (40자까지)`,
+    key_twice: `${at}키가 두 번 쓰임`,
+    kind: `${at}모르는 종류 "${v}"`,
+    label: `${at}이름은 1~200자`,
+    help: `${at}도움말은 500자까지`,
+    options_count: `${at}선택지는 1~100개`,
+    option_incomplete: `${at}선택지마다 값과 이름이 필요함`,
+    option_twice: `${at}선택지 "${v}"가 두 번 있음`,
+    pattern_kind: `${at}패턴은 텍스트 칸에만 쓸 수 있음`,
+    pattern_long: `${at}패턴은 300자까지`,
+    pattern_bad: `${at}패턴이 정규식이 아님`,
+    max_size: `${at}최대 파일 크기는 1바이트~100MB`,
+    max_files: `${at}파일 수는 1~10개`,
+    accept: `${at}받을 파일 형식을 적어야 함`,
+    condition_field: `${at}조건은 앞에 있는 칸만 볼 수 있음 ("${v}" 안 됨)`,
+    condition_op: `${at}모르는 조건 "${v}"`,
+    condition_file: `${at}파일 칸은 비었는지, 채웠는지만 볼 수 있음`,
+    slug: "주소는 영문 소문자, 숫자, -만 씀",
+    title: "이름은 1~120자",
+    success_message: "보낸 뒤 메시지는 1000자까지",
+    notify_email: `이메일 주소가 아님: ${v}`,
+    notify_count: "알림 주소는 20개까지",
+    keep_days: "보관 기간은 1~3650일",
+    redirect: "보낸 뒤 주소는 https:// 또는 /로 시작해야 함",
+    status: "알 수 없는 상태",
+  };
+  return t[String(p.issue)] ?? "정의가 올바르지 않음";
+};
+/** `form_upload_invalid`의 `reason` 코드별 문구. */
+const uploadReason: Record<string, string> = {
+  token: "올바르지 않은 토큰",
+  expired: "만료된 토큰",
+  used: "이미 쓴 토큰",
+  size: "크기가 맞지 않음",
+  field: "다른 칸의 파일",
+  missing: "올린 파일이 없음",
+  multipart: "폼 본문에 파일이 들어 있음",
+};
+
 export const ko: Messages = {
   not_found: "문서를 찾을 수 없음",
   version_not_found: "v{version} 버전이 없음",
@@ -186,5 +236,39 @@ export const ko: Messages = {
   seo_description_long: "설명이 {length}자. 검색 엔진은 {max}자쯤 보여 줌",
   seo_description_missing: "설명 없음. 검색 엔진이 본문에서 아무 글이나 고름",
   seo_image_small: "공유 그림이 {width}×{height}. 1200×630 이상이 보기 좋음",
+  // 0.22.0 다국어 문서
+  locale_unknown: "모르는 언어: {locale}. 이 CMS의 언어: {locales}",
+  locale_not_localized: "{collection} 컬렉션은 번역하지 않음 (localized: true 필요)",
+  translation_exists: "{slug}에 {locale} 번역이 이미 있음",
+  translation_not_found: "{slug}에 {locale} 번역이 아직 없음. 먼저 번역을 시작해야 함",
+  locale_field_shared: "{field}은(는) 모든 언어가 함께 씀: {source} 문서에서 바꿔야 함",
+  locale_source_missing: "{slug}에 번역할 {source} 원문이 없음",
+  locale_is_source: "{locale}은(는) {slug}의 원문 언어라 번역이 아님",
+  translation_source_trashed: "{source} 원문 {slug}이(가) 휴지통에 있음. 원문을 먼저 복원할 것 (번역도 함께 돌아옴)",
+  locale_etag_mismatch: "If-Match {tag}은(는) {slug}의 다른 언어 문서 ETag임. {locale} 문서의 ETag를 보낼 것",
+  trash_changed: "확인한 뒤 휴지통이 바뀜 (다른 사람이 복원·삭제·수정함). 아무것도 복원하지 않음. 다시 시도할 것",
+  // 0.22.0 forms
+  forms_off: "이 서버는 폼이 꺼져 있음 (createCms({ forms: true }))",
+  form_not_found: "폼 없음: {slug}",
+  submission_not_found: "제출 없음",
+  forbidden_forms: "폼을 관리하는 사람만 할 수 있음",
+  form_verify_failed: "폼을 확인하지 못함. 페이지를 새로 고치고 다시 보내야 함",
+  form_invalid: (p) => `폼을 저장할 수 없음: ${formIssue(p)}${Number(p.more) > 0 ? ` 외 ${p.more}건` : ""}`,
+  form_slug_taken: "{slug} 주소의 폼이 이미 있음",
+  form_conflict: "그사이 다른 사람이 {slug}를 바꿈. 새로 고쳐서 확인해야 함",
+  form_rejected: "표시된 칸을 확인해야 함 ({count}개)",
+  form_upload_invalid: (p) => `파일을 받지 못함 (${uploadReason[String(p.reason)] ?? "올바르지 않은 업로드"}). 다시 골라야 함`,
+  form_uploads_off: "이 서버에서는 이 폼이 파일을 받을 수 없음",
+  form_uploads_unavailable: "{field} 칸은 파일이 필수인데 이 서버는 파일을 받을 수 없음 (비공개 미디어 저장소 없음). 폼을 켜기 전에 칸을 선택으로 바꾸거나 비공개 저장소를 추가해야 함",
+  form_file_too_large: "파일이 너무 큼. {max}MB까지",
+  form_file_type: "받지 않는 파일 형식. 가능: {types}",
+  form_required: "필수 항목",
+  form_length: (p) => (Number(p.min) > 0 ? `${p.min}~${p.max}자로 써야 함` : `${p.max}자까지`),
+  form_email: "이메일 주소를 넣어야 함",
+  form_number: (p) => (p.min !== "" && p.min != null && p.max !== "" && p.max != null ? `${p.min}~${p.max} 사이 숫자를 넣어야 함` : p.min !== "" && p.min != null ? `${p.min} 이상 숫자를 넣어야 함` : p.max !== "" && p.max != null ? `${p.max} 이하 숫자를 넣어야 함` : "숫자를 넣어야 함"),
+  form_option: "목록에서 골라야 함",
+  form_date: (p) => (p.min || p.max ? `${p.min ? `${p.min}부터 ` : ""}${p.max ? `${p.max}까지 ` : ""}날짜를 골라야 함` : "날짜를 골라야 함"),
+  form_pattern: (p) => (p.message ? String(p.message) : "형식이 맞지 않음"),
+  form_file: "파일이 너무 많음 ({max}개까지)",
   internal: "처리 중 오류가 났음",
 };
