@@ -122,6 +122,10 @@ export { docsFromCsv, docsFromJson, docsFromWordpress, filesFromDocs, filesFromS
 // 0.14.0: request limits, retention, the events stream
 export { clientIp, createLimiter, ipAllowed, MemoryRateLimitStore, type RateLimitOptions, type RateLimitStore, type RateVerdict } from "./limits";
 export { type RetentionOptions, type RetentionReport } from "./retention";
+// 0.22.0: forms
+export { FORM_HONEYPOT, FORM_MAX_BODY, toCsv, type CmsForms, type FormCounts, type FormInput, type FormListItem, type FormNotice, type FormSettings, type FormsOptions, type FormSubmissionView, type FormView, type PublicForm, type UploadGrant } from "./forms";
+export * from "./form-rules";
+export type { FormSubmission, FormSubmissionStatus } from "./types";
 export { eventStream, type EventStreamOptions } from "./events";
 
 // 0.17.0: across servers, caching, metrics, tenants (also as their own entries)

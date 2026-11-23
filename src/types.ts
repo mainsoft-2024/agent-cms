@@ -127,6 +127,26 @@ export interface CmsRedirect {
   updatedAt: string;
 }
 
+/** 0.22.0: where a form submission stands. `spam`: the honeypot was filled, or a person marked it. */
+export type FormSubmissionStatus = "new" | "read" | "spam" | "archived";
+
+/** One submission of a form (`cms_form_submissions`, 0.22.0). The address is kept as a hash only. */
+export interface FormSubmission {
+  id: string;
+  formId: string;
+  /** The form's version when it was sent (the fields then may differ from now). */
+  formVersion: number;
+  data: Record<string, unknown>;
+  /** Files sent with it: their storage keys, in private storage. */
+  files: { field: string; id: string; key: string; name: string; size: number; mime: string }[];
+  status: FormSubmissionStatus;
+  /** HMAC of the sender's address (never the address itself). */
+  ipHash: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** A redirect as the admin list shows it (0.21.0). */
 export interface RedirectListItem extends CmsRedirect {
   /** Visits over the last 30 days. */
@@ -459,6 +479,13 @@ export const AUDIT_ACTIONS = [
   // 0.22.0
   "doc.translate",
   "doc.align",
+  "form.create",
+  "form.update",
+  "form.delete",
+  "form.submission_update",
+  "form.submission_delete",
+  "form.export",
+  "form.file_open",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -827,6 +854,7 @@ export const WEBHOOK_EVENTS = [
   "release.published",
   "comment.created",
   "doc.moved",
+  "form.submitted",
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 

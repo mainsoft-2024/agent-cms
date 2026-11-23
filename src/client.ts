@@ -18,6 +18,8 @@ import type { AssetListOptions, AssetUsage, AssetView, UploadInstructions, Uploa
 import type { AgentChange, BulkAction, BulkResult, DocDiff, PreviewLink, PreviewTtl } from "./cms";
 import type { Diagnostic, ErrorParams } from "./errors";
 import type { PatchOp } from "./patch";
+import type { FormCounts, FormInput, FormListItem, FormSubmissionView, FormView, PublicForm, UploadGrant } from "./forms";
+import type { FormSubmissionStatus } from "./types";
 import type { CommentThread, ReleaseView, ScheduledRun, TrashItem, TrashRef } from "./flow";
 import type { Block, TocItem } from "./markdown";
 import type { AuditEntry, AutosaveState, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocCounts, DocInputWire, DocSummary, KeyScope, Presence, SavedFilter, VersionSummary } from "./wire";
@@ -213,6 +215,8 @@ export interface Me {
   defaultLocale?: string | null;
   /** 0.21.0: redirects are on and this caller manages them. */
   redirects?: boolean;
+  /** 0.22.0: forms are on and this caller may see them (`write`: build forms, `delete`: delete submissions). */
+  forms?: { read: boolean; write: boolean; delete: boolean } | null;
   /** 0.21.0: hosts `:::video` blocks may embed. */
   videoHosts?: string[];
   /** The CMS's own sign-in, when the app uses it (`createAuth`). */
@@ -600,6 +604,55 @@ export function createRestClient(opts: RestClientOptions) {
     /** Visits of a redirect per day (default 30 days, oldest first). */
     redirectHits: (id: string, days?: number) => req<{ days: { day: string; n: number }[]; total: number }>("GET", `/redirects/${enc(id)}/hits`, { query: days ? { days: String(days) } : undefined }),
     removeRedirect: (id: string) => req<{ ok: true }>("DELETE", `/redirects/${enc(id)}`),
+    // 0.22.0 forms
+    forms: () => req<{ forms: FormListItem[] }>("GET", "/forms").then((r) => r.forms),
+    form: (slug: string) => req<{ form: FormView }>("GET", `/forms/${enc(slug)}/definition`).then((r) => r.form),
+    createForm: (f: FormInput) => req<{ form: FormView }>("POST", "/forms", { body: f }).then((r) => r.form),
+    /** `expectedUpdatedAt`: the `updatedAt` you read; someone else's save in between answers 409 `form_conflict`. */
+    updateForm: (slug: string, f: FormInput & { expectedUpdatedAt?: string }) => req<{ form: FormView }>("PATCH", `/forms/${enc(slug)}`, { body: f }).then((r) => r.form),
+    removeForm: (slug: string) => req<{ submissions: number }>("DELETE", `/forms/${enc(slug)}`),
+    /** The form as a page draws it (what `<CmsForm>` loads). */
+    publicForm: (slug: string) => req<{ form: PublicForm }>("GET", `/forms/${enc(slug)}`).then((r) => r.form),
+    /** Send a form. Values of file fields are the tokens from `formUploadGrant`. */
+    submitForm: (slug: string, values: Record<string, unknown>) => req<{ ok: true; message: string; redirectUrl: string | null }>("POST", `/forms/${enc(slug)}`, { body: values }),
+    formUploadGrant: (slug: string, f: { field: string; name: string; size: number; mime?: string }) => req<UploadGrant>("POST", `/forms/${enc(slug)}/uploads`, { body: f }),
+    /** Upload a file's bytes for a grant (directly to storage when the grant says so, else through the CMS). */
+    async formUpload(slug: string, grant: UploadGrant, file: Blob): Promise<void> {
+      const url = grant.put ? grant.put.url : `${base}/forms/${enc(slug)}/uploads/${enc(grant.token)}`;
+      let res: Response;
+      try {
+        res = await doFetch(url, { method: "PUT", body: file, headers: grant.put ? grant.put.headers : { "content-type": "application/octet-stream", ...opts.headers }, ...(grant.put ? {} : { credentials: "same-origin" as const }) });
+      } catch (e) {
+        throw new CmsRemoteError(e instanceof Error ? e.message : String(e), "network");
+      }
+      if (!res.ok) {
+        const e = ((await res.json().catch(() => null)) ?? {}) as { error?: string; message?: string; params?: ErrorParams };
+        throw new CmsRemoteError(e.message ?? `HTTP ${res.status}`, e.error ?? "http", { status: res.status, params: e.params, retryAfter: retryAfterOf(res.headers.get("retry-after")) });
+      }
+    },
+    formSubmissions: (slug: string, q: { status?: readonly FormSubmissionStatus[]; q?: string; limit?: number; offset?: number } = {}) =>
+      req<{ items: FormSubmissionView[]; total: number; counts: FormCounts }>("GET", `/forms/${enc(slug)}/submissions`, { query: { status: q.status?.join(","), q: q.q, limit: q.limit, offset: q.offset } }),
+    formSubmission: (slug: string, id: string) => req<{ submission: FormSubmissionView }>("GET", `/forms/${enc(slug)}/submissions/${enc(id)}`).then((r) => r.submission),
+    markSubmission: (slug: string, id: string, status: FormSubmissionStatus) => req<{ submission: FormSubmissionView }>("PATCH", `/forms/${enc(slug)}/submissions/${enc(id)}`, { body: { status } }).then((r) => r.submission),
+    bulkSubmissions: (slug: string, ids: string[], action: FormSubmissionStatus | "delete") => req<{ changed?: number; deleted?: number }>("POST", `/forms/${enc(slug)}/submissions/_bulk`, { body: { ids, action } }),
+    removeSubmission: (slug: string, id: string) => req<{ ok: true }>("DELETE", `/forms/${enc(slug)}/submissions/${enc(id)}`),
+    /** A five-minute download link for a file of a submission. */
+    submissionFileLink: (slug: string, id: string, fileId: string) => req<{ url: string; name: string; expiresAt: string }>("GET", `/forms/${enc(slug)}/submissions/${enc(id)}/files/${enc(fileId)}`),
+    /** Submissions as CSV text (default: all but spam). */
+    async exportSubmissions(slug: string, status?: readonly FormSubmissionStatus[]): Promise<{ csv: string; filename: string }> {
+      let res: Response;
+      try {
+        res = await doFetch(`${base}/forms/${enc(slug)}/export.csv${status?.length ? `?status=${enc(status.join(","))}` : ""}`, { method: "GET", credentials: "same-origin", headers: { accept: "text/csv", ...opts.headers } });
+      } catch (e) {
+        throw new CmsRemoteError(e instanceof Error ? e.message : String(e), "network");
+      }
+      if (!res.ok) {
+        const e = ((await res.json().catch(() => null)) ?? {}) as { error?: string; message?: string; params?: ErrorParams };
+        throw new CmsRemoteError(e.message ?? `HTTP ${res.status}`, e.error ?? "http", { status: res.status, params: e.params });
+      }
+      const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? `${slug}.csv`;
+      return { csv: await res.text(), filename: name };
+    },
     schema: (c: string, o: { slug?: string | null } = {}) => req<CollectionSchema>("GET", `/collections/${enc(c)}/_schema${o.slug ? `?slug=${enc(o.slug)}` : ""}`),
     list: (c: string, q: ListQuery = {}) => req<{ docs: DocSummary[]; total: number; nextCursor: string | null }>("GET", `/collections/${enc(c)}`, { query: { fields: "summary", ...q } }),
     counts: (c: string) => req<{ counts: DocCounts }>("GET", `/collections/${enc(c)}/_counts`).then((r) => r.counts),
@@ -701,7 +754,7 @@ export function createRestClient(opts: RestClientOptions) {
     /** Checks the conditions against one document and lists what would be done; nothing changes. */
     testAutomation: (id: string, target: { collection: string; slug: string }) =>
       req<{ matches: boolean; title: string; conditions: (AutomationCondition & { ok: boolean })[]; actions: { type: string; would: string }[] }>("POST", `/automations/${enc(id)}/test`, { body: target }),
-    roles: () => req<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[]; media?: boolean }[]; users: boolean }>("GET", "/roles"),
+    roles: () => req<{ roles: CmsRole[]; targets: { slug: string; label: string; coded: RoleOp[]; media?: boolean; ops?: RoleOp[] }[]; users: boolean }>("GET", "/roles"),
     createRole: (r: RoleInput) => req<{ role: CmsRole }>("POST", "/roles", { body: r }).then((x) => x.role),
     updateRole: (id: string, r: RoleInput) => req<{ role: CmsRole }>("PATCH", `/roles/${enc(id)}`, { body: r }).then((x) => x.role),
     removeRole: (id: string) => req<{ ok: true }>("DELETE", `/roles/${enc(id)}`),
@@ -772,4 +825,7 @@ export type RestClient = ReturnType<typeof createRestClient>;
 
 // 0.17.0: reading zips and Notion exports in the browser (the admin's import tab).
 export { unzip } from "./zip";
+export * from "./form-rules";
+export type { FormCounts, FormInput, FormListItem, FormSettings, FormSubmissionView, FormView, PublicForm, UploadGrant } from "./forms";
+export type { FormSubmissionStatus } from "./types";
 export { docsFromNotion, filesFromDocs, type NotionAsset } from "./import-sources";

@@ -5,7 +5,7 @@
  */
 
 import { SCHEMA_VERSION } from "./schema-version";
-import type { AnchorAlias, CmsRedirect, DocRef } from "./types";
+import type { AnchorAlias, CmsRedirect, DocRef, FormSubmission, FormSubmissionStatus } from "./types";
 import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsKey, CmsRelease, CmsVersion, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter, CmsJob, CmsRecord, CmsWebhook, WebhookDelivery } from "./types";
 
 export type DocPatch = Partial<Omit<CmsDoc, "id" | "collection" | "createdAt">>;
@@ -26,7 +26,7 @@ export type NewVersion = Omit<CmsVersion, "id" | "createdAt" | "published" | "re
   changed?: CmsVersion["changed"];
 };
 
-export type PruneTarget = "audit" | "hits" | "keys" | "deliveries" | "redirect_hits";
+export type PruneTarget = "audit" | "hits" | "keys" | "deliveries" | "redirect_hits" | "form_submissions";
 
 export interface KeyRow extends CmsKey {
   hash: string;
@@ -315,6 +315,26 @@ export interface CmsRepo {
   lockTree?(collection: string): Promise<void>;
   /** Visits per redirect and day from `sinceDay` on (days without visits have no row). */
   redirectHitDays?(sinceDay: string): Promise<{ redirectId: string; day: string; n: number }[]>;
+
+  // ── 0.22.0 (schema 11): form submissions, optional ──
+  insertFormSubmission?(s: NewFormSubmission): Promise<FormSubmission>;
+  findFormSubmission?(id: string): Promise<FormSubmission | null>;
+  /** Newest first; `q` searches the values as text (case-insensitive). */
+  listFormSubmissions?(q: FormSubmissionQuery): Promise<{ items: FormSubmission[]; total: number }>;
+  /** How many per form and status, and the newest per form (the forms list). */
+  formSubmissionCounts?(): Promise<{ formId: string; status: FormSubmissionStatus; n: number; last: string }[]>;
+  setFormSubmissionStatus?(ids: readonly string[], status: FormSubmissionStatus, at: string): Promise<number>;
+  /** Deletes and returns the rows (their files go next). */
+  deleteFormSubmissions?(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number }): Promise<FormSubmission[]>;
+}
+
+export type NewFormSubmission = Omit<FormSubmission, "id" | "updatedAt">;
+export interface FormSubmissionQuery {
+  formId: string;
+  statuses?: readonly FormSubmissionStatus[];
+  q?: string;
+  limit: number;
+  offset?: number;
 }
 
 export type NewRedirect = Pick<CmsRedirect, "from" | "to" | "toDocumentId" | "status" | "source" | "createdBy">;
@@ -425,6 +445,7 @@ export class MemoryRepo implements CmsRepo {
   redirects: CmsRedirect[] = [];
   /** Redirect visits per day: `id|YYYY-MM-DD` → count. */
   redirectHits = new Map<string, number>();
+  formSubmissions: FormSubmission[] = [];
   private seq = 0;
   private id = () => `00000000-0000-4000-8000-${String(++this.seq).padStart(12, "0")}`;
 
@@ -578,6 +599,46 @@ export class MemoryRepo implements CmsRepo {
     }
     return out;
   }
+  async insertFormSubmission(r: NewFormSubmission) {
+    const row: FormSubmission = { ...structuredClone(r), id: this.id(), updatedAt: r.createdAt };
+    this.formSubmissions.push(row);
+    return structuredClone(row);
+  }
+  async findFormSubmission(id: string) {
+    const r = this.formSubmissions.find((x) => x.id === id);
+    return r ? structuredClone(r) : null;
+  }
+  async listFormSubmissions(q: FormSubmissionQuery) {
+    const needle = q.q?.trim().toLowerCase();
+    const rows = this.formSubmissions
+      .filter((x) => x.formId === q.formId && (!q.statuses?.length || q.statuses.includes(x.status)) && (!needle || JSON.stringify(x.data).toLowerCase().includes(needle)))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    const from = q.offset ?? 0;
+    return { items: rows.slice(from, from + q.limit).map((r) => structuredClone(r)), total: rows.length };
+  }
+  async formSubmissionCounts() {
+    const m = new Map<string, { formId: string; status: FormSubmissionStatus; n: number; last: string }>();
+    for (const r of this.formSubmissions) {
+      const k = `${r.formId}|${r.status}`;
+      const cur = m.get(k) ?? { formId: r.formId, status: r.status, n: 0, last: r.createdAt };
+      cur.n++;
+      if (r.createdAt > cur.last) cur.last = r.createdAt;
+      m.set(k, cur);
+    }
+    return [...m.values()];
+  }
+  async setFormSubmissionStatus(ids: readonly string[], status: FormSubmissionStatus, at: string) {
+    let n = 0;
+    for (const r of this.formSubmissions) if (ids.includes(r.id)) (r.status = status), (r.updatedAt = at), n++;
+    return n;
+  }
+  async deleteFormSubmissions(q: { ids?: readonly string[]; formId?: string; before?: string; limit?: number }) {
+    if (!q.ids && !q.formId && !q.before) return [];
+    const gone = this.formSubmissions.filter((r) => (q.ids ? q.ids.includes(r.id) : true) && (q.formId ? r.formId === q.formId : true) && (q.before ? r.createdAt < q.before : true)).slice(0, q.limit ?? Infinity);
+    this.formSubmissions = this.formSubmissions.filter((r) => !gone.includes(r));
+    return gone.map((r) => structuredClone(r));
+  }
+
   async insertVersion(v: NewVersion) {
     if (this.versions.some((x) => x.documentId === v.documentId && x.version === v.version)) throw new Error("duplicate version");
     this.versions.push({ changed: null, authorAgent: null, label: null, pinned: false, approvedBy: null, approvedAt: null, ...structuredClone(v), reviewed: [], id: this.id(), createdAt: v.createdAt ?? new Date().toISOString() });
@@ -630,6 +691,12 @@ export class MemoryRepo implements CmsRepo {
     return true;
   }
   async prune(what: PruneTarget, before: string, dryRun = false) {
+    if (what === "form_submissions") {
+      const keep = this.formSubmissions.filter((r) => r.createdAt >= before);
+      const n = this.formSubmissions.length - keep.length;
+      if (!dryRun) this.formSubmissions = keep;
+      return n;
+    }
     if (what === "audit") {
       const keep = this.audit.filter((e) => e.at >= before);
       const n = this.audit.length - keep.length;

@@ -25,7 +25,7 @@ function tinyPng(): Uint8Array {
 
 export const editor2: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u2", label: "Park", isAdmin: true };
 
-export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean; webhooks?: boolean; plugins?: Parameters<typeof createCms>[0]["plugins"]; users?: boolean; codedWrite?: boolean; model?: boolean } = {}) {
+export function makeServer(o: { previewSecret?: string | null; media?: boolean; review?: { agents?: "required"; everyone?: "required" }; timeZone?: string; trashDays?: number; stripMetadata?: boolean; webhooks?: boolean; plugins?: Parameters<typeof createCms>[0]["plugins"]; users?: boolean; codedWrite?: boolean; model?: boolean; forms?: Parameters<typeof createCms>[0]["forms"] } = {}) {
   /** Who the browser is signed in as (tests switch it). */
   const session = { user: admin };
   /** What the outside address answers to a webhook (tests change it), and what it was sent. */
@@ -70,6 +70,7 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
     repo: new MemoryRepo(),
     collections: o.model ? ([guide, notices, team, docs, site] as const) : ([guide, notices] as const),
     redirects: o.model ? true : undefined,
+    forms: o.forms,
     previewSecret: o.previewSecret === null ? undefined : (o.previewSecret ?? "x".repeat(40)),
     warn: () => {},
     schemaCheck: false,

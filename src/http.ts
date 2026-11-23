@@ -118,6 +118,8 @@ import { handleMcp, toJsonSchema, type McpOptions } from "./mcp";
 import { eventStream, hearAs } from "./events";
 import { localeTag } from "./locale";
 import { openApiDocument } from "./openapi";
+import { FORM_MAX_BODY, FORM_STATUSES } from "./forms";
+import type { FormSubmissionStatus } from "./types";
 import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
 /** What the handler needs from the CMS's own sign-in (`createAuth` from `@mainsoft/agent-cms/auth`). */
@@ -307,9 +309,14 @@ function requestId(req: Request): string {
 
 /** The body as text, refusing more than `max` bytes before it is all read. */
 export async function readLimited(req: Request, max: number): Promise<string> {
+  return new TextDecoder().decode(await readLimitedBytes(req, max));
+}
+
+/** The body as bytes, refused (413) past `max`. */
+export async function readLimitedBytes(req: Request, max: number): Promise<Uint8Array> {
   const declared = Number(req.headers.get("content-length") ?? NaN);
   if (Number.isFinite(declared) && declared > max) throw new CmsError("body_too_large", {}, { status: 413 });
-  if (!req.body) return "";
+  if (!req.body) return new Uint8Array();
   const reader = req.body.getReader();
   const parts: Uint8Array[] = [];
   let n = 0;
@@ -326,8 +333,61 @@ export async function readLimited(req: Request, max: number): Promise<string> {
   const all = new Uint8Array(n);
   let at = 0;
   for (const p of parts) (all.set(p, at), (at += p.byteLength));
-  return new TextDecoder().decode(all);
+  return all;
 }
+
+/** A form's fields from JSON, a plain HTML form (urlencoded) or multipart without files (0.22.0). */
+async function formInput(req: Request, contentType: string): Promise<Record<string, unknown>> {
+  if (contentType.includes("application/json")) {
+    const v = await readJson(req, false, FORM_MAX_BODY);
+    if (!v || typeof v !== "object" || Array.isArray(v)) throw new CmsError("invalid_json");
+    return v as Record<string, unknown>;
+  }
+  const bytes = await readLimitedBytes(req, FORM_MAX_BODY);
+  const out: Record<string, unknown> = {};
+  const add = (k: string, v: unknown) => {
+    const cur = out[k];
+    out[k] = cur === undefined ? v : Array.isArray(cur) ? [...cur, v] : [cur, v];
+  };
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    for (const [k, v] of new URLSearchParams(new TextDecoder().decode(bytes))) add(k, v);
+    return out;
+  }
+  if (contentType.includes("multipart/form-data")) {
+    let fd: FormData;
+    try {
+      fd = await new Request("http://form.invalid/", { method: "POST", headers: { "content-type": contentType }, body: bytes as BodyInit }).formData();
+    } catch {
+      throw new CmsError("invalid_request", { issues: "multipart body" }, { status: 400 });
+    }
+    const entries: [string, string | Blob][] = [];
+    fd.forEach((v, k) => void entries.push([k, v as string | Blob]));
+    for (const [k, v] of entries) {
+      if (typeof v === "string") add(k, v);
+      // Files come with an upload grant first (POST /forms/:slug/uploads), never inside the form.
+      else if (v.size > 0 || (v as Blob & { name?: string }).name) throw new CmsError("form_upload_invalid", { reason: "multipart" });
+    }
+    return out;
+  }
+  throw new CmsError("invalid_request", { issues: "content-type: JSON, urlencoded or multipart" }, { status: 415 });
+}
+
+const escHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+/** The answer to a plain HTML form (no script on the page): a short page. */
+function formPage(status: number, title: string, lines: string[], headers: Record<string, string> = {}): Response {
+  const body = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escHtml(title)}</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.25rem">${escHtml(title)}</h1>${lines.map((l) => `<p>${escHtml(l)}</p>`).join("")}<p><a href="javascript:history.back()">&larr;</a></p></body></html>`;
+  return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'", ...headers } });
+}
+
+const FormBody = z.object({
+  slug: z.string().max(80).optional(),
+  title: z.string().max(200).optional(),
+  enabled: z.boolean().optional(),
+  steps: z.array(z.any()).max(20).optional(),
+  settings: z.object({ successMessage: z.string().max(2000).optional(), notify: z.array(z.string().max(300)).max(50).optional(), keepDays: z.number().int().nullable().optional(), redirectUrl: z.string().max(2000).nullable().optional() }).optional(),
+  expectedUpdatedAt: z.string().max(40).optional(),
+});
+const statusList = (v: string | null): FormSubmissionStatus[] | null => (v ? (v.split(",").map((x) => x.trim()).filter((x) => (FORM_STATUSES as readonly string[]).includes(x)) as FormSubmissionStatus[]) : null);
 
 function safeHost(origin: string): string | null {
   try {
@@ -443,6 +503,31 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const r = await core.ax.write(link.actor, link.collection, link.slug, text, { expectedVersion: link.version, note: "uploaded file" });
         return json(r);
       }
+      // 0.22.0: sending a form, and its files. No session or key: the form is public, and a
+      // signed-in person sending it from another site is not refused as a cross-site write.
+      if (seg[0] === "forms" && seg.length >= 2 && ((m === "POST" && (seg.length === 2 || (seg.length === 3 && seg[2] === "uploads"))) || (m === "PUT" && seg.length === 4 && seg[2] === "uploads"))) {
+        note({ kind: "anonymous", via: "form" });
+        const meta = { ip: (opts.clientIp ?? clientIp)(req), userAgent: req.headers.get("user-agent"), request: req };
+        if (m === "PUT") return json(await core.forms.upload(seg[1], seg[3], (max) => readLimitedBytes(req, max)));
+        if (seg.length === 3) {
+          const b = z.object({ field: z.string().max(60), name: z.string().max(400), size: z.number().int(), mime: z.string().max(200).optional() }).parse(await readJson(req, false, 4096));
+          return json(await core.forms.grant(seg[1], b, meta), 201);
+        }
+        const ct = (req.headers.get("content-type") ?? "").toLowerCase();
+        // A plain HTML form (no script) gets a page back, or goes to the form's address after sending.
+        const page = !ct.includes("application/json") && !(req.headers.get("accept") ?? "").includes("application/json");
+        try {
+          const r = await core.forms.submit(seg[1], await formInput(req, ct), meta);
+          if (!page) return json(r, 201);
+          if (r.redirectUrl) return new Response(null, { status: 303, headers: { location: r.redirectUrl, "cache-control": "no-store" } });
+          return formPage(200, r.message || "✓", []);
+        } catch (e) {
+          if (!page || !isCmsError(e)) throw e;
+          const lines = [core.message(e), ...(e.diagnostics ?? []).map((d) => `${d.path}: ${d.message}`)];
+          const wait = e.status === 429 ? Number(e.params.retryAfter ?? 60) : null;
+          return formPage(e.status, core.message(e), lines.slice(1), wait ? { "retry-after": String(wait) } : {});
+        }
+      }
       if ((seg[0] === "auth" || seg[0] === "users") && opts.auth) {
         // Signing in rides on cookies too: a page elsewhere may not post here (login CSRF).
         if (m !== "GET" && m !== "HEAD" && !sameSite(req, opts.trustedOrigins)) throw new CmsError("cross_site", {}, { messages: core.messages });
@@ -492,6 +577,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             .map((c) => ({ slug: c.slug, label: c.label, visibility: c.visibility, canWrite: core.can(actor, c.slug, "write"), canPublish: core.can(actor, c.slug, "publish"), ...(c.single ? { single: true } : {}), ...(c.tree ? { tree: true } : {}), ...(c.snippets ? { snippets: true } : {}), ...(core.localized(c.slug) ? { localized: true } : {}) })),
           /** 0.21.0: redirects are on and this caller manages them; hosts `:::video` may embed. */
           redirects: core.redirects.enabled() && core.isAdmin(actor),
+          /** 0.22.0: forms, when on and this person may see them (`write`: build them, `delete`: delete submissions). */
+          forms: core.forms.can(actor),
           videoHosts: core.videoHosts,
         });
       }
@@ -1087,6 +1174,36 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           await rd.remove(actor, seg[1]);
           return json({ ok: true });
         }
+      }
+      if (seg[0] === "forms") {
+        const fm = core.forms;
+        if (seg.length === 1 && m === "GET") return json({ forms: await fm.list(actor) });
+        if (seg.length === 1 && m === "POST") return json({ form: await fm.create(actor, await body(req, FormBody)) }, 201);
+        if (seg.length === 2 && m === "GET") return json({ form: await fm.public(seg[1], actor) });
+        if (seg.length === 2 && m === "PATCH") return json({ form: await fm.update(actor, seg[1], await body(req, FormBody)) });
+        if (seg.length === 2 && m === "DELETE") return json(await fm.remove(actor, seg[1]));
+        if (seg.length === 3 && seg[2] === "definition" && m === "GET") return json({ form: await fm.get(actor, seg[1]) });
+        if (seg.length === 3 && seg[2] === "export.csv" && m === "GET") {
+          const r = await fm.exportCsv(actor, seg[1], { status: statusList(q.get("status")) });
+          return new Response(r.csv, { status: 200, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${r.filename}"`, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+        }
+        if (seg.length === 3 && seg[2] === "submissions" && m === "GET") return json(await fm.submissions(actor, seg[1], { status: statusList(q.get("status")), q: q.get("q") ?? undefined, limit: Number(q.get("limit")) || undefined, offset: Number(q.get("offset")) || undefined }));
+        if (seg.length === 4 && seg[2] === "submissions" && seg[3] === "_bulk" && m === "POST") {
+          const b = await body(req, z.object({ ids: z.array(z.string().max(64)).min(1).max(500), action: z.enum(["new", "read", "spam", "archived", "delete"]) }));
+          return json(b.action === "delete" ? await fm.removeSubmissions(actor, seg[1], b.ids) : await fm.setStatus(actor, seg[1], b.ids, b.action));
+        }
+        if (seg.length === 4 && seg[2] === "submissions" && m === "GET") return json({ submission: await fm.submission(actor, seg[1], seg[3]) });
+        if (seg.length === 4 && seg[2] === "submissions" && m === "PATCH") {
+          const b = await body(req, z.object({ status: z.enum(["new", "read", "spam", "archived"]) }));
+          await fm.setStatus(actor, seg[1], [seg[3]], b.status);
+          return json({ submission: await fm.submission(actor, seg[1], seg[3]) });
+        }
+        if (seg.length === 4 && seg[2] === "submissions" && m === "DELETE") {
+          const r = await fm.removeSubmissions(actor, seg[1], [seg[3]]);
+          if (!r.deleted) throw new CmsError("submission_not_found", {}, { messages: core.messages });
+          return json({ ok: true });
+        }
+        if (seg.length === 6 && seg[2] === "submissions" && seg[4] === "files" && m === "GET") return json(await fm.fileLink(actor, seg[1], seg[3], seg[5]));
       }
       if (seg[0] === "sitemap.xml" && seg.length === 1 && (m === "GET" || m === "HEAD")) {
         const origin = opts.publicOrigin ?? url.origin;

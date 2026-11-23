@@ -10,7 +10,7 @@
  */
 
 import { createAutomations, type AutomationOptions } from "./automations";
-import { createRoles, type UsersOptions } from "./roles";
+import { createRoles, type RoleOp, type UsersOptions } from "./roles";
 import { createStats } from "./stats";
 import { createTransfer } from "./transfer";
 import { createAssets, type MediaOptions } from "./assets";
@@ -29,6 +29,7 @@ import { CmsError, formatMessage, isCmsError, type CmsErrorCode, type CmsErrorOp
 import { displayPrefix, generateKey, hashKey } from "./keys";
 import { badRanges, createLimiter, type RateLimitOptions } from "./limits";
 import { createRetention, type RetentionOptions } from "./retention";
+import { createForms, type FormsOptions } from "./forms";
 import { appLinkKeys, extractToc, htmlRegions, parseMarkdown } from "./markdown";
 import { hasScripts, inspectHtml, type HtmlInert } from "./html-inspect";
 import { createAx } from "./ax";
@@ -264,6 +265,12 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
   locales?: readonly string[];
   /** The language translations are made from (0.22.0). Default: the first of `locales`. */
   defaultLocale?: string;
+  /**
+   * Forms (0.22.0): admins build them (fields, steps, conditions), pages show them with the
+   * copied `cms-form` component, submissions land in `cms_form_submissions`. Files need a private
+   * media store. See `FormsOptions` for the captcha hook (`verify`), e-mail (`notify`) and limits.
+   */
+  forms?: boolean | FormsOptions;
 }
 
 /** Second argument of `afterChange` hooks and `onChange` listeners. */
@@ -426,7 +433,7 @@ interface ChangeRowLike {
 }
 
 /** First path segments the CMS uses itself. A plugin cannot take one of these names. */
-export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "grep", "raw", "retention", "_events", "_changes", "auth", "users", "_stats", "_me", "_cron", "singles", "redirects", "sitemap.xml"]);
+export const RESERVED_ROUTES = new Set(["collections", "search", "preview", "audit", "keys", "mcp", "assets", "files", "stores", "reviews", "trash", "releases", "webhooks", "jobs", "plugins", "automations", "roles", "export", "import", "openapi.json", "grep", "raw", "retention", "_events", "_changes", "auth", "users", "_stats", "_me", "_cron", "singles", "redirects", "sitemap.xml", "forms"]);
 
 /** Audit actions that are also events (webhooks, plugin listeners). */
 const EVENT_OF: Partial<Record<AuditAction, WebhookEvent>> = {
@@ -2803,6 +2810,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
       ...[...collections.values()].map((c) => ({ slug: c.slug, label: c.label, coded: [...(c.access?.write ? (["write"] as const) : []), ...(c.access?.publish ? (["publish", "delete"] as const) : []), ...(c.managed ? (["write", "publish", "delete"] as const) : [])] })),
       // 0.17.0: the media library as a target (`write` uploads and edits, `delete` moves and deletes), per store.
       ...Object.entries(opts.media?.stores ?? {}).map(([name, st]) => ({ slug: `media:${name}`, label: Object.keys(opts.media?.stores ?? {}).length > 1 ? `Media · ${name}` : "Media", coded: [...(st.access?.write ? (["write"] as const) : []), ...(st.access?.delete ? (["delete"] as const) : [])], media: true })),
+      // 0.22.0: forms (read = see submissions, write = build forms, delete = delete submissions).
+      ...(opts.forms ? [{ slug: "forms", label: "Forms", coded: [] as RoleOp[], ops: ["read", "write", "delete"] as RoleOp[] }] : []),
     ],
   };
   const roles = createRoles(rolesCtx);
@@ -3083,6 +3092,28 @@ export function createCmsCore(opts: CreateCmsOptions) {
     sendWebhook: (id, e) => outbox.send(id, e),
     options: opts.automations ?? {},
   });
+  const formsOn = opts.forms ? (typeof opts.forms === "object" ? opts.forms : {}) : null;
+  const forms = createForms({
+    repo,
+    now,
+    fail,
+    audit: (actor, action, detail) => audit(actor, action, { detail }),
+    isAdmin,
+    allows: (actor, op) => roles.allows(actor, "forms", op),
+    ready: ensureSchema,
+    report,
+    options: formsOn,
+    storage: () => {
+      const stores = opts.media?.stores ?? {};
+      const name = formsOn?.store ?? Object.keys(stores).find((n) => stores[n].visibility === "private");
+      const st = name ? stores[name] : undefined;
+      return st && st.visibility === "private" ? { name: name!, adapter: st.adapter } : null;
+    },
+    limit: (bucket, perMinute) => limiter.check(bucket, perMinute),
+    emit: (detail) => emitEvent({ event: "form.submitted", actor: null, collection: null, slug: null, version: null, url: null, detail }),
+    message: (code, params) => formatMessage(messages, code, params),
+  });
+  if (formsOn?.store && !forms.uploadsReady()) warnOnce("forms-store", `[agent-cms] forms.store "${formsOn.store}" is not a private media store: file fields will refuse files`);
   const retention = createRetention({
     repo,
     options: opts.retention ?? {},
@@ -3090,6 +3121,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     timeZone,
     dayIn,
     redirects: !!opts.redirects,
+    forms: !!opts.forms,
+    purgeSubmissions: (before) => forms.purgeBefore(before),
     assertAdmin: (actor) => {
       if (!isAdmin(actor)) throw fail(actor.kind === "anonymous" ? "unauthorized" : "forbidden_admin");
     },
@@ -3722,6 +3755,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     deleteTemplate,
     snippetUses,
     redirects: redirectsApi,
+    /** Forms (0.22.0): definitions, the public form and submissions. See `src/forms.ts`. */
+    forms,
     /** Where an old address goes now (the plan's name for `redirects.resolve`; public, counts the visit). */
     resolveRedirect: (path: string) => model.resolveRedirect(path),
     videoHosts: model.videoHosts as readonly string[],
@@ -3903,7 +3938,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const ran = await jobs.run(o);
       const keepDays = Math.max(1, opts.changes?.keepDays ?? 7);
       const pruneChanges = repo.pruneChanges ? repo.pruneChanges(new Date(now().getTime() - keepDays * 86_400_000).toISOString()) : Promise.resolve(0);
-      await Promise.all([jobs.prune(), outbox.prune(), retention.tick(), pruneChanges]).catch((e) => report(e, "cron housekeeping"));
+      await Promise.all([jobs.prune(), outbox.prune(), retention.tick(), pruneChanges, forms.tick()]).catch((e) => report(e, "cron housekeeping"));
       telemetry({ type: "cron", ms: Date.now() - t0, jobs: ran });
       return { ...scheduled, jobs: ran };
     },

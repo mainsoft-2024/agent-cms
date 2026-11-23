@@ -1,6 +1,6 @@
 # Upgrading to 0.22
 
-**Schema 11**: three columns on the documents table (`locale`, `group_id`, `source_version`), one new index on `group_id`, and the unique index on addresses changes from `(collection, slug)` to `(collection, slug, locale)`, so a translation can have the same address as its source.
+**Schema 11**: one new table for form submissions (`cms_form_submissions`, below), and three columns on the documents table (`locale`, `group_id`, `source_version`), one new index on `group_id`, and the unique index on addresses changes from `(collection, slug)` to `(collection, slug, locale)`, so a translation can have the same address as its source.
 
 ```sh
 npx @mainsoft/agent-cms migrate check   # prints the SQL
@@ -68,3 +68,59 @@ Nothing, unless you set `locales`. With `locales` and a `localized` collection:
 - **`url(doc)`** of a localized collection gets `doc.locale` too.
 - **Search** searches the default language unless you pass `locale`; collections that are not translated are searched whatever the language. Korean 2-grams are used for Korean text (and text with no language, as before), not for other languages.
 - **Agent tools**: one new (`list_translations`). Document tools take `locale`; `list_collections` says which collections are translated and which fields every language shares (`sharedFields`).
+
+## Forms
+
+The same schema step adds one table (nothing else changes for apps that do not turn forms on):
+
+```sql
+CREATE TABLE IF NOT EXISTS "cms_form_submissions" (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "form_id" text NOT NULL,
+  "form_version" integer NOT NULL DEFAULT 1,
+  "data" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "files" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "status" text NOT NULL DEFAULT 'new',
+  "ip_hash" text,
+  "user_agent" text,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS "cms_form_submissions_list_idx" ON "cms_form_submissions" ("form_id", "status", "created_at");
+CREATE INDEX IF NOT EXISTS "cms_form_submissions_created_idx" ON "cms_form_submissions" ("created_at");
+```
+
+The forms themselves are rows of `cms_records` (kind `form`), which exists since 0.13.
+
+### Turning forms on
+
+```ts
+createCms({
+  forms: {
+    perMinute: 5,                                   // per address, all forms together (default 5)
+    verify: async (req) => checkCaptcha(req),       // optional: false answers 403
+    notify: async ({ form, to, lines }) => sendMail(to, form.title, lines), // optional: your mailer
+  },
+  media: { stores: { private: { visibility: "private", adapter: s3Storage({ … }) } } }, // for file fields
+  retention: { submissionsDays: 180 },               // default 365 with forms on
+});
+```
+
+Then add the screens and the public component:
+
+```sh
+npx @mainsoft/agent-cms add cms-forms cms-form
+```
+
+Put `<CmsForms>` / `<CmsFormEditor>` on `/admin/forms` and `/admin/forms/[slug]/[tab]` (the example app shows how), and `<CmsForm slug="contact" />` on your page. A new route segment `forms` is reserved: a collection may not be called `forms`.
+
+People other than admins see forms through a role: the `forms` row in Roles (`read` to see submissions, `write` to build forms, `delete` to delete submissions).
+
+### Privacy
+
+- Submissions are personal data. The CMS keeps what the form asks for and nothing more: the sender's address only as a keyed hash (to count and to tell repeat senders apart; the key lives in `cms_meta`), and the user agent.
+- Values of fields hidden by a condition are dropped by the server, whatever the browser sends.
+- Files go to a **private** store; they are opened only through five-minute signed links, each noted in the audit log (`form.file_open`). Without a private store file fields refuse files (`form_uploads_off`).
+- Events and webhooks carry ids, field names and file names, not the values, unless you set `forms.eventValues: true`.
+- There are no agent tools for submissions. Exports (`form.export`) and deletions are audited.
+- Retention deletes submissions and their files after `retention.submissionsDays` (365 by default) or a form's own `keepDays`; `0` keeps them, which you should only do with a reason.

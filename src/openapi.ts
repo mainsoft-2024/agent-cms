@@ -34,7 +34,7 @@ export interface ApiRoute {
   /** Success status. Default 200. */
   status?: number;
   /** Only present when this part of the CMS is switched on. */
-  needs?: "media" | "cron" | "preview" | "auth" | "redirects" | "locales";
+  needs?: "media" | "cron" | "preview" | "auth" | "redirects" | "locales" | "forms";
   /** The answer is a `text/event-stream` that stays open. */
   stream?: boolean;
 }
@@ -54,6 +54,16 @@ const docInput = z
     keywords: z.array(z.string()).optional(),
     fields: z.record(z.unknown()).optional().describe("The collection's own fields. On update this is merged (JSON Merge Patch): null removes a key."),
     seo: seoInput,
+  })
+  .strict();
+const formBody = z
+  .object({
+    slug: z.string().optional(),
+    title: z.string().optional(),
+    enabled: z.boolean().optional(),
+    steps: z.array(z.object({ title: z.string(), fields: z.array(z.record(z.unknown())) })).optional().describe("Fields: key, label, kind (text, textarea, email, number, select, multiselect, checkbox, date, file), required, help, options, min, max, pattern, accept, maxSize, maxFiles, showIf { field, op: eq|neq|in|contains|empty|filled, value }."),
+    settings: z.object({ successMessage: z.string().optional(), notify: z.array(z.string()).optional(), keepDays: z.number().int().nullable().optional(), redirectUrl: z.string().nullable().optional() }).optional(),
+    expectedUpdatedAt: z.string().optional(),
   })
   .strict();
 const expectedVersion = z.number().int().positive().optional().describe("The version you read. A mismatch answers 409 with the current copy. `If-Match: \"v<n>\"` does the same.");
@@ -137,6 +147,23 @@ const BASE_ROUTES: readonly ApiRoute[] = [
   { method: "get", path: "/redirects/_resolve", summary: "Where an old address goes now", tag: "redirects", auth: "public", query: { path: "" }, returns: obj({ redirect: any }), needs: "redirects" },
   { method: "patch", path: "/redirects/{id}", summary: "Change a redirect", tag: "redirects", auth: "admin", body: redirectBody, returns: obj({ redirect: any }), needs: "redirects" },
   { method: "delete", path: "/redirects/{id}", summary: "Delete a redirect", tag: "redirects", auth: "admin", returns: OK, needs: "redirects" },
+  // 0.22.0 forms. Managing them: admins or a role with the "forms" target. No agent tools: submissions are personal data.
+  { method: "get", path: "/forms", summary: "Forms with their submission counts (people who manage forms)", tag: "forms", auth: "admin", returns: obj({ forms: arr(any) }), needs: "forms" },
+  { method: "post", path: "/forms", summary: "Make a form (fields in steps; showIf conditions)", tag: "forms", auth: "admin", body: formBody, returns: obj({ form: any }), status: 201, needs: "forms" },
+  { method: "get", path: "/forms/{slug}", summary: "A form as a page draws it (forms that are on; people who manage forms also see those that are off)", tag: "forms", auth: "public", returns: obj({ form: any }), needs: "forms" },
+  { method: "post", path: "/forms/{slug}", summary: "Send a form: JSON, urlencoded or multipart without files. Hidden fields' values are dropped; 429 after 5 a minute from one address; body at most 64 KB", tag: "forms", auth: "public", body: z.record(z.unknown()), returns: obj({ ok: { type: "boolean" }, message: { type: "string" } }), status: 201, needs: "forms" },
+  { method: "post", path: "/forms/{slug}/uploads", summary: "A one-time grant (10 minutes) to upload one file for a file field; put the token in the field's value", tag: "forms", auth: "public", body: z.object({ field: z.string(), name: z.string(), size: z.number().int(), mime: z.string().optional() }), returns: obj({ token: { type: "string" }, put: any, expiresAt: { type: "string" } }), status: 201, needs: "forms" },
+  { method: "put", path: "/forms/{slug}/uploads/{token}", summary: "Upload the file's bytes through the CMS (when the grant has no direct address)", tag: "forms", auth: "public", body: "binary", returns: OK, needs: "forms" },
+  { method: "patch", path: "/forms/{slug}", summary: "Change a form (expectedUpdatedAt refuses a stale save)", tag: "forms", auth: "admin", body: formBody, returns: obj({ form: any }), needs: "forms" },
+  { method: "delete", path: "/forms/{slug}", summary: "Delete a form with its submissions and their files", tag: "forms", auth: "admin", returns: obj({ submissions: { type: "integer" } }), needs: "forms" },
+  { method: "get", path: "/forms/{slug}/definition", summary: "A form with its settings", tag: "forms", auth: "admin", returns: obj({ form: any }), needs: "forms" },
+  { method: "get", path: "/forms/{slug}/submissions", summary: "Submissions, newest first", tag: "forms", auth: "admin", query: { status: "new,read,spam,archived (default new,read)", q: "Search the values", limit: "1 to 200 (50)", offset: "" }, returns: obj({ items: arr(any), total: { type: "integer" }, counts: any }), needs: "forms" },
+  { method: "post", path: "/forms/{slug}/submissions/_bulk", summary: "Mark many as new, read, spam or archived, or delete them", tag: "forms", auth: "admin", body: z.object({ ids: z.array(z.string()), action: z.enum(["new", "read", "spam", "archived", "delete"]) }), returns: any, needs: "forms" },
+  { method: "get", path: "/forms/{slug}/submissions/{id}", summary: "One submission", tag: "forms", auth: "admin", returns: obj({ submission: any }), needs: "forms" },
+  { method: "patch", path: "/forms/{slug}/submissions/{id}", summary: "Mark a submission", tag: "forms", auth: "admin", body: z.object({ status: z.enum(["new", "read", "spam", "archived"]) }), returns: obj({ submission: any }), needs: "forms" },
+  { method: "delete", path: "/forms/{slug}/submissions/{id}", summary: "Delete a submission and its files", tag: "forms", auth: "admin", returns: OK, needs: "forms" },
+  { method: "get", path: "/forms/{slug}/submissions/{id}/files/{fileId}", summary: "A five-minute link to download a file of a submission", tag: "forms", auth: "admin", returns: obj({ url: { type: "string" }, name: { type: "string" }, expiresAt: { type: "string" } }), needs: "forms" },
+  { method: "get", path: "/forms/{slug}/export.csv", summary: "Submissions as CSV (formulas made harmless)", tag: "forms", auth: "admin", query: { status: "Default: everything but spam" }, returns: { type: "string" }, needs: "forms" },
   { method: "get", path: "/sitemap.xml", summary: "sitemap.xml of published public documents (noindex left out)", tag: "content model", auth: "public", query: { page: "Part of a sitemap with more than 50 000 addresses" }, returns: { type: "string" } },
   { method: "patch", path: D, summary: "Update a document (a new version)", tag: "documents", auth: "write", body: writeBody, returns: obj({ doc: ref("Doc") }) },
   { method: "delete", path: D, summary: "Move a document to the trash (409 doc_referenced when other documents point at it)", tag: "documents", auth: "write", query: { expectedVersion: "", force: "1: delete although documents point at it" }, returns: OK },
@@ -378,7 +405,7 @@ export function openApiDocument(cms: CmsLike, o: OpenApiOptions = {}): Json {
   const actor: Actor = o.actor ?? { kind: "anonymous" };
   const base = (o.basePath ?? "/api/cms").replace(/\/$/, "");
   const cols = core.collections().filter((c) => core.can(actor, c.slug, "read"));
-  const on = { media: core.assets.describe(actor) !== null, cron: !!core.cronSecret, preview: core.previewEnabled(), auth: !!o.auth, redirects: core.redirects.enabled(), locales: core.locales.length > 0 };
+  const on = { media: core.assets.describe(actor) !== null, cron: !!core.cronSecret, preview: core.previewEnabled(), auth: !!o.auth, redirects: core.redirects.enabled(), locales: core.locales.length > 0, forms: core.forms.enabled() };
   const schemas: Json = { ...SCHEMAS };
   const paths: Record<string, Json> = {};
   const param = (name: string, values?: string[]): Json => ({ name, in: "path", required: true, schema: values ? { type: "string", enum: values } : name === "n" ? { type: "integer", minimum: 1 } : { type: "string" } });

@@ -789,6 +789,27 @@ A translation is a document of its own, with the source's address: its own versi
 
 REST: `?locale=` on every document route (and `&fallback=1` on reads), `GET|POST /collections/<c>/<slug>/_translations`, `POST …/_align`, `GET …/_source-diff?locale=`, `GET /search?locale=`. Agents: `locale` on the document tools and `list_translations`. The sitemap names every language with `hreflang`. Search takes one language at a time; Korean 2-grams only for Korean. Upgrading a big table: [UPGRADE-0.22.md](UPGRADE-0.22.md).
 
+## Forms (0.22)
+
+Contact forms, sign-ups, bug reports: built by admins on the Forms screen, shown on your page with one component, kept in your database.
+
+```ts
+createCms({ forms: true, media: { stores: { private: { visibility: "private", adapter } } } });
+```
+
+```tsx
+// npx @mainsoft/agent-cms add cms-form
+import { CmsForm } from "@/components/cms/cms-form";
+<CmsForm slug="contact" />
+```
+
+- **Fields**: short and long text, e-mail, number, choice, several choices, checkbox, date and file; required, help, limits, a pattern; steps with a progress bar; `showIf` on an earlier field (is, is not, one of, has, empty, filled). The browser and the server run the same checks (`checkSubmission` from `@mainsoft/agent-cms/client`), and the server drops the values of fields a condition hides.
+- **Files** go through a one-time upload grant into a private store; admins open them with a five-minute link.
+- **Spam**: a hidden field sends bots to Spam without telling them; 5 submissions a minute per address, then 429; `forms.verify(req)` for a captcha.
+- **Submissions**: received, spam and archived, search, bulk actions and CSV export (formulas made harmless) on the admin screen and over REST (`/forms/:slug/submissions`, `/forms/:slug/export.csv`).
+- **After a submission**: the `form.submitted` event (webhooks, automations) carries ids and field names, not values; `forms.notify` is where your app sends an e-mail.
+- **Privacy**: addresses are kept as a hash, `retention.submissionsDays` (365 by default) deletes old submissions with their files, and agents get no tools for submissions. See [UPGRADE-0.22.md](UPGRADE-0.22.md).
+
 ## Export, import, OpenAPI
 
 ```

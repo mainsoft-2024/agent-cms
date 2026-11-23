@@ -18,6 +18,7 @@ import { CmsMedia } from "@/components/cms/cms-media";
 import { en, ko } from "@/components/cms/cms-messages";
 import { CmsPeople } from "@/components/cms/cms-people";
 import { CmsRedirects } from "@/components/cms/cms-redirects";
+import { CmsForms, CmsFormEditor, type CmsFormTab } from "@/components/cms/cms-forms";
 import { CmsRelease, CmsReleases } from "@/components/cms/cms-releases";
 import { CmsRoles } from "@/components/cms/cms-roles";
 import { CmsShell } from "@/components/cms/cms-shell";
@@ -129,6 +130,12 @@ function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boole
       return <CmsPeople />;
     case "redirects":
       return <CmsRedirects />;
+    case "forms":
+      return p1 ? (
+        <CmsFormEditor key={p1} slug={p1} tab={(p2 as CmsFormTab) || "fields"} onTab={(x) => go(`${a}/forms/${encodeURIComponent(p1)}${x === "fields" ? "" : `/${x}`}`, true)} onBack={() => go(`${a}/forms`)} onSlugChange={(s) => go(`${a}/forms/${encodeURIComponent(s)}/settings`, true)} />
+      ) : (
+        <CmsForms hrefFor={(s) => `${a}/forms/${encodeURIComponent(s)}`} onOpenForm={(s) => go(`${a}/forms/${encodeURIComponent(s)}`)} />
+      );
     case "account":
       return <CmsAccount onLocale={() => window.location.reload()} />;
   }
@@ -203,7 +210,7 @@ function App() {
       </CmsProvider>
     );
 
-  const active = rest[0] && !["dashboard", "media", "files", "releases", "trash", "keys", "audit", "webhooks", "automations", "roles", "transfer", "people", "redirects", "account"].includes(rest[0]) ? rest[0] : undefined;
+  const active = rest[0] && !["dashboard", "media", "files", "releases", "trash", "keys", "audit", "webhooks", "automations", "roles", "transfer", "people", "redirects", "forms", "account"].includes(rest[0]) ? rest[0] : undefined;
   return (
     // A provider of its own: what the person may do is read again after signing in.
     <CmsProvider key="admin" baseUrl={S.basePath} messages={messages} slots={slots}>

@@ -10,7 +10,7 @@ import type { OutEvent } from "./outbox";
 import type { CmsRepo } from "./repo";
 import type { Actor, AuditAction, CmsDoc, CmsRecord, DocContent } from "./types";
 
-export const AUTOMATION_TRIGGERS = ["doc.created", "doc.updated", "doc.published", "doc.unpublished", "doc.deleted", "review.requested", "asset.uploaded", "schedule.daily", "schedule.weekly"] as const;
+export const AUTOMATION_TRIGGERS = ["doc.created", "doc.updated", "doc.published", "doc.unpublished", "doc.deleted", "review.requested", "asset.uploaded", "schedule.daily", "schedule.weekly", "form.submitted"] as const;
 export type AutomationTrigger = (typeof AUTOMATION_TRIGGERS)[number];
 export const AUTOMATION_ACTIONS = ["webhook", "add_keyword", "set_field", "add_to_release", "call"] as const;
 export const AUTOMATION_KEEP_DAYS = 30;

@@ -487,6 +487,62 @@
       ]
     },
     {
+      "name": "cms-form",
+      "type": "registry:component",
+      "title": "Form",
+      "description": "For your public page: a form built on the admin's Forms screen. Steps with progress, fields that show when their condition holds, the same checks as the server, file uploads with progress, a hidden spam trap, success and error states. <CmsForm slug=\"contact\" />, or useCmsForm for your own markup. Needs no provider.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "input",
+        "label",
+        "textarea",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-form.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
+      "name": "cms-forms",
+      "type": "registry:component",
+      "title": "Forms",
+      "description": "Forms for admins: the list (sent, spam, open or closed), one form's fields (steps, conditions, nine kinds, drag or Alt+arrows to reorder, a preview), its submissions (received, spam, archived, search, bulk actions, file downloads, CSV) and settings (message after sending, who is told, how long submissions stay), and the code to put it on a page.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "badge",
+        "button",
+        "checkbox",
+        "dialog",
+        "dropdown-menu",
+        "input",
+        "label",
+        "table",
+        "textarea",
+        "cms-lib",
+        "cms-form"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-forms.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/cms/cms-form-submissions.tsx",
+          "type": "registry:component"
+        }
+      ]
+    },
+    {
       "name": "cms-audit",
       "type": "registry:component",
       "title": "Audit log",

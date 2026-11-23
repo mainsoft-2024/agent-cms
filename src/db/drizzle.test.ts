@@ -213,7 +213,7 @@ test("db: table prefix and Postgres schema options", async () => {
     const names = await rows<{ table_name: string }>(db, "select table_name from information_schema.tables where table_schema = 'content' order by table_name collate \"C\"");
     assert.deepEqual(
       names.map((n) => n.table_name),
-      ["blog_anchor_aliases", "blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_changes", "blog_comments", "blog_doc_refs", "blog_documents", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_redirect_hits", "blog_redirects", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
+      ["blog_anchor_aliases", "blog_api_keys", "blog_asset_refs", "blog_assets", "blog_audit", "blog_changes", "blog_comments", "blog_doc_refs", "blog_documents", "blog_form_submissions", "blog_hits", "blog_jobs", "blog_meta", "blog_presence", "blog_records", "blog_redirect_hits", "blog_redirects", "blog_releases", "blog_saved_filters", "blog_versions", "blog_webhook_deliveries", "blog_webhooks"]
     );
     const repo = new DrizzleRepo(db, { tables });
     const report = await repo.inspect();
@@ -521,7 +521,7 @@ test("db: schema 8 → 9 adds the change log and indexes; paging, the log and do
     const before = await repo.inspect();
     assert.deepEqual([before.schemaVersion, before.missingTables], [8, ["cms_changes"]]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs", "agent-cms 0.21.0: relations, document trees, SEO, heading anchor aliases, redirects", "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale)"]);
+    assert.deepEqual(pending.steps, ["agent-cms 0.17.0: change log (catching up across servers), indexes for lists, trash, history and jobs", "agent-cms 0.21.0: relations, document trees, SEO, heading anchor aliases, redirects", "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale), form submissions"]);
     await run(db, pending.sql);
     const after = await repo.inspect();
     assert.deepEqual([after.schemaVersion, after.missingTables, after.missingIndexes], [SCHEMA_VERSION, [], []]);
@@ -844,7 +844,7 @@ test("db: schema 10 → 11 swaps the unique index for one slug per language; tra
     assert.equal(before.schemaVersion, 10);
     assert.deepEqual(before.missingColumns.sort(), ["cms_documents.group_id", "cms_documents.locale", "cms_documents.source_version"]);
     const pending = migrationSql(before, cmsTables())!;
-    assert.equal(pending.steps.at(-1), "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale)");
+    assert.equal(pending.steps.at(-1), "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale), form submissions");
     // The safe order for big tables (UPGRADE-0.22.md): columns first, check, then the index by hand.
     await run(db, `ALTER TABLE cms_documents ADD COLUMN IF NOT EXISTS "locale" text NOT NULL DEFAULT '';`);
     assert.deepEqual(await rows(db, localeDuplicatesSql()), [], "nothing would break the new index");
@@ -885,6 +885,49 @@ test("db: schema 10 → 11 swaps the unique index for one slug per language; tra
     assert.match(said.join("\n"), /1 document\(s\) in guide now have locale ko/);
     assert.equal((await rows<{ n: number }>(db, `select count(*)::int as n from cms_documents where locale = ''`))[0].n, 0);
     assert.match(fillLocaleSql(undefined, { collections: ["guide"], defaultLocale: "ko" }), /LIMIT 1000/);
+  } finally {
+    await close();
+  }
+});
+
+test("db: 0.22 forms on Postgres (the v11 step adds cms_form_submissions; list, search, counts, status, delete, retention)", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    await run(db, `DROP TABLE cms_form_submissions; UPDATE cms_meta SET value = '10'::jsonb WHERE key = 'schema_version';`);
+    const repo = new DrizzleRepo(db);
+    const before = await repo.inspect();
+    assert.ok(before.missingTables.includes("cms_form_submissions"));
+    await run(db, migrationSql(before, cmsTables())!.sql);
+    const after = await repo.inspect();
+    assert.deepEqual(after.missingTables, []);
+    assert.equal(after.schemaVersion, SCHEMA_VERSION);
+
+    const store = new MemoryStorage({ name: "private" });
+    let t = Date.parse("2026-11-23T00:00:00Z");
+    const cms = createCms({ repo, collections: [guide], forms: true, now: () => new Date(t), retention: {}, media: { stores: { private: { visibility: "private", adapter: store } } } });
+    await cms.forms.create(admin, { slug: "contact", title: "Contact", enabled: true, steps: [{ title: "", fields: [{ key: "name", label: "Name", kind: "text", required: true }, { key: "kind", label: "Kind", kind: "select", options: [{ value: "a", label: "A" }, { value: "b", label: "B" }] }, { key: "more", label: "More", kind: "text", showIf: { field: "kind", op: "eq", value: "b" } }] }] });
+    for (const [i, name] of ["Ann 100%", "Bo_b", "Cy"].entries()) {
+      t += 1000;
+      await cms.forms.submit("contact", { name, kind: "a", more: "dropped" }, { ip: `10.0.0.${i}` });
+    }
+    await cms.forms.submit("contact", { name: "Spam", _website: "x" }, { ip: "10.0.0.9" });
+    const page = await cms.forms.submissions(admin, "contact");
+    assert.equal(page.total, 3);
+    assert.deepEqual(page.items.map((s) => s.data.name), ["Cy", "Bo_b", "Ann 100%"]);
+    assert.ok(page.items.every((s) => !("more" in s.data)));
+    assert.deepEqual(page.counts, { new: 3, read: 0, spam: 1, archived: 0 });
+    // Search: % and _ are literal.
+    assert.deepEqual((await cms.forms.submissions(admin, "contact", { q: "100%" })).items.map((s) => s.data.name), ["Ann 100%"]);
+    assert.equal((await cms.forms.submissions(admin, "contact", { q: "o_b" })).total, 1);
+    assert.equal((await cms.forms.submissions(admin, "contact", { q: "_" })).total, 1);
+    const id = page.items[0].id;
+    assert.deepEqual(await cms.forms.setStatus(admin, "contact", [id, "not-a-uuid"], "archived"), { changed: 1 });
+    assert.equal((await cms.forms.submission(admin, "contact", id)).status, "archived");
+    assert.deepEqual(await cms.forms.removeSubmissions(admin, "contact", [page.items[1].id]), { deleted: 1 });
+    t += 400 * 86_400_000;
+    await cms.cron();
+    assert.equal((await cms.forms.submissions(admin, "contact", { status: ["new", "read", "spam", "archived"] })).total, 0);
   } finally {
     await close();
   }

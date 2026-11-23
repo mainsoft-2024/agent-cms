@@ -78,6 +78,9 @@ function make() {
     webhooks: { allowInsecure: process.env.CMS_WEBHOOKS_INSECURE === "1" },
     // How long what piles up is kept. A cron call applies it once a day.
     retention: { auditDays: 365, hitsDays: 400, revokedKeysDays: 90 },
+    // Forms (0.22.0): built on /admin/forms, shown with <CmsForm slug="…" />. Files go to the private store.
+    // notify: tell people about a submission with your own mailer (no e-mail library ships here).
+    forms: { notify: ({ form, to, lines }) => void (to.length && console.log(`[form] ${form.slug} → ${to.join(", ")}: ${lines.map((l) => `${l.label}: ${l.value}`).join(" · ")}`)) },
     // The people the roles screen can find. Use your own user table here.
     users: {
       search: (q) => demoUsers.filter((u) => u.label.toLowerCase().includes(q.toLowerCase())),

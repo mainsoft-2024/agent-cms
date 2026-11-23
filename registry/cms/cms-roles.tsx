@@ -23,9 +23,9 @@ import { useAsync, useCms } from "./use-cms";
 
 /** The columns, in the order a person grows into them. */
 const OPS: RoleOp[] = ["write", "publish", "delete", "html"];
-type Target = { slug: string; label: string; coded: RoleOp[]; media?: boolean };
-/** A media store takes "upload and edit" (`write`) and "move and delete" (`delete`) only. */
-const applies = (tg: Target, op: RoleOp) => !tg.media || op === "write" || op === "delete";
+type Target = { slug: string; label: string; coded: RoleOp[]; media?: boolean; ops?: RoleOp[] };
+/** A media store takes "upload and edit" (`write`) and "move and delete" (`delete`) only; forms (0.22.0) name theirs in `ops`. */
+const applies = (tg: Target, op: RoleOp) => (tg.ops ? tg.ops.includes(op) : !tg.media || op === "write" || op === "delete");
 type Template = "viewer" | "editor" | "publisher" | "admin" | "empty";
 const TEMPLATES: { id: Template; ops: RoleOp[]; admin?: boolean }[] = [
   { id: "editor", ops: ["write"] },
@@ -392,16 +392,16 @@ function RoleForm({ role, targets, dirtyRef, onChanged, onDeleted }: { role: Cms
                       {OPS.map((op) => (
                         <td key={op} className="px-2 py-2">
                           {!applies(tg, op) ? (
-                            <span className="text-xs text-muted-foreground" title={t("role_not_for_media")}>
+                            <span className="text-xs text-muted-foreground" title={t(tg.ops ? "role_not_for_target" : "role_not_for_media")}>
                               <span aria-hidden>—</span>
-                              <span className="sr-only">{t("role_not_for_media")}</span>
+                              <span className="sr-only">{t(tg.ops ? "role_not_for_target" : "role_not_for_media")}</span>
                             </span>
                           ) : tg.coded.includes(op) ? (
                             <span className="whitespace-nowrap text-xs text-muted-foreground" title={t("role_coded_hint")}>
                               {t("role_coded")}
                             </span>
                           ) : (
-                            <Checkbox aria-label={`${tg.label}: ${tg.media ? t(op === "write" ? "role_media_write" : "role_media_delete") : t(`role_${op}` as never)}`} checked={!!perms[tg.slug]?.[op]} onCheckedChange={(on) => set(tg.slug, op, on === true)} />
+                            <Checkbox aria-label={`${tg.label}: ${tg.media ? t(op === "write" ? "role_media_write" : "role_media_delete") : tg.slug === "forms" ? t(`role_forms_${op}` as never) : t(`role_${op}` as never)}`} checked={!!perms[tg.slug]?.[op]} onCheckedChange={(on) => set(tg.slug, op, on === true)} />
                           )}
                         </td>
                       ))}
