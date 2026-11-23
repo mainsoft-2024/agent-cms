@@ -13,9 +13,10 @@ If you write your own `CmsRepo`, the new methods (`setDocRefs`, `listDocRefsTo`,
 
 ## What changes without you doing anything
 
-- **Readers get snippets filled in.** When a collection has `snippets: true`, a `[[snippet:key]]` in another body is replaced by that snippet's published body in public reads (`cms.get`, `cms.page`, REST) and the search index. If you render a raw body yourself, call `cms.expandSnippets(body)` first. Editors (`draft`) and agent tools still see the token. `?snippets=raw` (REST) or `{ snippets: "raw" }` (`cms.get`) keeps it. Without a snippet collection nothing changes.
+- **Readers get snippets filled in.** When a collection has `snippets: true`, a `[[snippet:key]]` in another body is replaced by that snippet's published body in public reads of a document (`cms.get`, `cms.single`, REST `GET /collections/<c>/<slug>`) and the search index. If you render a raw body yourself, call `cms.expandSnippets(body)` first. Editors (`draft`) and agent tools still see the token. `?snippets=raw` (REST) or `{ snippets: "raw" }` (`cms.get`) keeps it. Without a snippet collection nothing changes.
 - **`## Title {#id}`** pins a heading's anchor; it no longer shows `{#id}` as text. A renamed heading's old anchor is remembered and still leads to it (`cms.anchorAliases()`, `markdownToHtml(body, { anchorAliases })`).
 - **`:::steps`, `:::card` and `:::video`** are blocks now. Text that is not in their exact form stays as it was (a raw block), so old bodies render the same. A `:::video` from a site that is not allowed is refused on save (`video_host_blocked`); YouTube and Vimeo are allowed by default.
+- **A published document's address changes only when you publish** (with redirects on): a draft save with a new address answers `slug_needs_publish`.
 - **Deleting a document that relation fields point at** answers `409 doc_referenced` with the list. `DELETE …?force=1`, `cms.remove(…, { force: true })` or the tool's `force` deletes anyway. Collections without relation fields are not affected.
 - **Agent tools**: six new (`get_tree`, `move_document`, `get_single`, `update_single`, `list_templates`, `list_redirects`). `list_collections` says which collections are trees, singles, snippets, have SEO, templates and relation fields.
 
@@ -39,9 +40,11 @@ If you write your own `CmsRepo`, the new methods (`setDocRefs`, `listDocRefsTo`,
 ### Using redirects in your app
 
 ```ts
-// app/[...path]/not-found.tsx or a middleware
-const hit = await cms.redirects.resolve(pathname);
-if (hit) redirect(hit.to, hit.status === 301 ? RedirectType.replace : RedirectType.push);
+// middleware.ts (Next.js): answer with the stored status (301 or 302)
+export async function middleware(req: NextRequest) {
+  const hit = await cms.redirects.resolve(req.nextUrl.pathname);
+  if (hit) return NextResponse.redirect(new URL(hit.to, req.url), hit.status);
+}
 ```
 
 The table is kept in memory for 30 seconds (`redirects: { ttlMs }`) and refreshed at once on the server that changed it.

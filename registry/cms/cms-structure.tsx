@@ -8,10 +8,11 @@
 "use client";
 
 import * as React from "react";
-import { ChevronDown, ChevronRight, FileText, GripVertical, LayoutTemplate, Link2, Pencil, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, GripVertical, LayoutTemplate, Link2, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import type { DocRefView, TemplateView, TreeNodeView } from "@mainsoft/agent-cms/client";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -99,22 +100,40 @@ export function CmsTreeView({ collection, canWrite, maxDepth, onOpen, hrefFor }:
     void move(id, tf.parent?.id ?? null, before, t("tree_moved", { title: me.node.title, n: (where === "before" ? at : at + 1) + 1, total: sibs.length + 1 }));
   };
 
+  /** The four moves of a row (Alt+arrows and the row menu): null when not possible from where it is. */
+  const movesOf = (r: Flat) => {
+    const n = r.node;
+    return {
+      up: r.index > 0 ? () => void move(n.id, r.parent?.id ?? null, r.siblings[r.index - 1].id, t("tree_moved", { title: n.title, n: r.index, total: r.siblings.length })) : null,
+      down: r.index < r.siblings.length - 1 ? () => void move(n.id, r.parent?.id ?? null, r.siblings[r.index + 2]?.id ?? null, t("tree_moved", { title: n.title, n: r.index + 2, total: r.siblings.length })) : null,
+      in:
+        r.index > 0 && r.depth + 1 < maxDepth
+          ? () => {
+              const p = r.siblings[r.index - 1];
+              void move(n.id, p.id, null, t("tree_moved_inside", { title: n.title, parent: p.title }));
+            }
+          : null,
+      out: r.parent
+        ? () => {
+            const up = findFlat(tree, r.parent!.id)!;
+            void move(n.id, up.parent?.id ?? null, up.siblings[up.index + 1]?.id ?? null, t("tree_moved_out", { title: n.title }));
+          }
+        : null,
+    };
+  };
+
   const onKey = (e: React.KeyboardEvent, r: Flat, i: number) => {
     const n = r.node;
     if (e.altKey && canWrite) {
-      if (e.key === "ArrowUp" && r.index > 0) return e.preventDefault(), void move(n.id, r.parent?.id ?? null, r.siblings[r.index - 1].id, t("tree_moved", { title: n.title, n: r.index, total: r.siblings.length }));
-      if (e.key === "ArrowDown" && r.index < r.siblings.length - 1) return e.preventDefault(), void move(n.id, r.parent?.id ?? null, r.siblings[r.index + 2]?.id ?? null, t("tree_moved", { title: n.title, n: r.index + 2, total: r.siblings.length }));
+      const m = movesOf(r);
+      if (e.key === "ArrowUp" && m.up) return e.preventDefault(), m.up();
+      if (e.key === "ArrowDown" && m.down) return e.preventDefault(), m.down();
       if (e.key === "ArrowRight" && r.index > 0) {
         e.preventDefault();
-        if (r.depth + 1 >= maxDepth) return void setSay(t("tree_too_deep", { max: maxDepth }));
-        const p = r.siblings[r.index - 1];
-        return void move(n.id, p.id, null, t("tree_moved_inside", { title: n.title, parent: p.title }));
+        if (!m.in) return void setSay(t("tree_too_deep", { max: maxDepth }));
+        return m.in();
       }
-      if (e.key === "ArrowLeft" && r.parent) {
-        e.preventDefault();
-        const up = findFlat(tree, r.parent.id)!;
-        return void move(n.id, up.parent?.id ?? null, up.siblings[up.index + 1]?.id ?? null, t("tree_moved_out", { title: n.title }));
-      }
+      if (e.key === "ArrowLeft" && m.out) return e.preventDefault(), m.out();
     }
     if (e.key === "ArrowDown") (e.preventDefault(), rows[i + 1] && setFocusId(rows[i + 1].node.id));
     else if (e.key === "ArrowUp") (e.preventDefault(), rows[i - 1] && setFocusId(rows[i - 1].node.id));
@@ -210,6 +229,7 @@ export function CmsTreeView({ collection, canWrite, maxDepth, onOpen, hrefFor }:
               </a>
               {n.children.length ? <span className="text-xs tabular-nums text-muted-foreground">{n.children.length}</span> : null}
               <span className={cn("ml-2 shrink-0 rounded px-1.5 py-0.5 text-[11px]", n.published ? "text-green-700 dark:text-green-400" : "bg-muted text-muted-foreground")}>{n.published ? t("state_published") : t(`state_${n.status}` as never)}</span>
+              {canWrite ? <TreeRowMenu title={n.title || n.slug} moves={movesOf(r)} disabled={busy} /> : null}
             </div>
           );
         })}
@@ -218,6 +238,45 @@ export function CmsTreeView({ collection, canWrite, maxDepth, onOpen, hrefFor }:
         {say}
       </span>
     </div>
+  );
+}
+
+/**
+ * The moves of a tree row as a menu, for touch screens (no Alt key, dragging is unreliable) and for mouse users.
+ * Always shown without hover; on hover/focus otherwise. Keys inside it stay inside it (the row's arrows would move focus).
+ */
+function TreeRowMenu({ title, moves, disabled }: { title: string; moves: Record<"up" | "down" | "in" | "out", (() => void) | null>; disabled?: boolean }) {
+  const { t } = useCms();
+  const items: [keyof typeof moves, string][] = [
+    ["up", t("tree_move_up")],
+    ["down", t("tree_move_down")],
+    ["in", t("tree_move_in")],
+    ["out", t("tree_move_out")],
+  ];
+  return (
+    <span className="ml-1 shrink-0" onKeyDown={(e) => e.stopPropagation()}>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            tabIndex={-1}
+            draggable={false}
+            aria-label={t("tree_row_menu", { title })}
+            disabled={disabled}
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity duration-150 ease-out hover:bg-accent focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100"
+          >
+            <MoreHorizontal aria-hidden className="h-4 w-4" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {items.map(([k, label]) => (
+            <DropdownMenuItem key={k} disabled={!moves[k]} onSelect={() => moves[k]?.()}>
+              {label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </span>
   );
 }
 
@@ -252,9 +311,25 @@ export function takeTemplate(collection: string): TemplateView | null {
     return null;
   }
 }
-/** A new document's content from a template (fields the schema no longer has are left out by the server's check on save). */
+/** A new document's content from a template (the editor leaves out values the schema no longer takes, see `fitsSchema`). */
 export function contentFromTemplate(tpl: TemplateView): Partial<DocContent> {
   return { title: tpl.title ?? "", summary: tpl.summary ?? "", body: tpl.body ?? "", fields: { ...(tpl.fields ?? {}) } };
+}
+
+/**
+ * Whether a template value still fits a field of the collection's JSON Schema: the field exists, the basic
+ * JSON type matches and, with an `enum`, the value is one of them. Anything more involved (`anyOf`, `$ref`,
+ * formats, lengths) is left to the server's check on save.
+ */
+export function fitsSchema(prop: unknown, value: unknown, exists = prop !== undefined): boolean {
+  if (!exists) return false;
+  if (!prop || typeof prop !== "object") return true;
+  const p = prop as { type?: string | string[]; enum?: unknown[] };
+  if (Array.isArray(p.enum) && !p.enum.some((x) => x === value)) return false;
+  if (p.type === undefined) return true;
+  const kind = (t: string) =>
+    t === "null" ? value === null : t === "string" ? typeof value === "string" : t === "boolean" ? typeof value === "boolean" : t === "integer" ? Number.isInteger(value) : t === "number" ? typeof value === "number" && Number.isFinite(value) : t === "array" ? Array.isArray(value) : t === "object" ? !!value && typeof value === "object" && !Array.isArray(value) : true;
+  return (Array.isArray(p.type) ? p.type : [p.type]).some(kind);
 }
 
 /** "New document": start empty or from a template. Templates made in the admin can be renamed and deleted here. */
@@ -532,16 +607,27 @@ export function ReferencedDialog({ collection, slug, title, onDone, onClose }: {
 export function SnippetUses({ collection, slug, onOpen }: { collection: string; slug: string; onOpen?: (collection: string, slug: string) => void }) {
   const { client, t, me } = useCms();
   const q = useAsync(() => client.snippetUses(collection, slug), [client, collection, slug]);
-  const docs = q.data ?? [];
+  // The count only once the list arrived: "Used in 0 documents" while loading or after a failure would be wrong.
+  const ok = !q.loading && !q.error && !!q.data;
+  const docs = ok ? q.data! : [];
   return (
-    <section aria-labelledby="snippet-uses" className="rounded-md border p-3">
+    <section aria-labelledby="snippet-uses" aria-busy={q.loading || undefined} className="rounded-md border p-3">
       <h3 id="snippet-uses" className="mb-1 text-sm font-medium">
-        {t("snip_uses_title", { n: docs.length })}
+        {ok ? t("snip_uses_title", { n: docs.length }) : t("snip_uses_title_plain")}
       </h3>
       <p className="mb-2 text-xs text-muted-foreground">
         {t("snip_token")} <code className="rounded bg-muted px-1 font-mono">{`[[snippet:${slug}]]`}</code>
       </p>
-      {q.data && !docs.length ? <p className="text-xs text-muted-foreground">{t("snip_uses_none")}</p> : null}
+      {q.loading ? <p className="text-xs text-muted-foreground">{t("loading")}</p> : null}
+      {!q.loading && q.error ? (
+        <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+          <span>{t("snip_uses_failed", { error: errorMessage(q.error, t) })}</span>
+          <Button type="button" variant="outline" size="sm" className="h-7" onClick={q.reload}>
+            {t("retry")}
+          </Button>
+        </div>
+      ) : null}
+      {ok && !docs.length ? <p className="text-xs text-muted-foreground">{t("snip_uses_none")}</p> : null}
       <ul className="grid gap-1">
         {docs.map((d) => (
           <li key={d.id}>
@@ -640,8 +726,11 @@ export function SeoPanel({ value, onChange, fallback, limits, url, disabled, idP
 
 // ── changing a published address ─────────────────────────────────────────────
 
-/** Asked before saving a published document under a new address: the old one will redirect. */
-export function SlugChangeDialog({ from, to, onConfirm, onClose }: { from: string; to: string; onConfirm: () => void; onClose: () => void }) {
+/**
+ * Asked when a published document is saved or published under a new address: the address changes only
+ * when publishing, and the old one will redirect. The button publishes; without the right to publish it is off.
+ */
+export function SlugChangeDialog({ from, to, canPublish = true, onConfirm, onClose }: { from: string; to: string; canPublish?: boolean; onConfirm: () => void; onClose: () => void }) {
   const { t } = useCms();
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -655,11 +744,16 @@ export function SlugChangeDialog({ from, to, onConfirm, onClose }: { from: strin
           <span>→ {to}</span>
         </div>
         <p className="text-xs text-muted-foreground">{t("slug_change_note")}</p>
+        {canPublish ? null : (
+          <p id="cms-slug-change-cannot" className="text-xs text-amber-700 dark:text-amber-400">
+            {t("slug_change_cannot_publish")}
+          </p>
+        )}
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button type="button" variant="outline" autoFocus={!canPublish} onClick={onClose}>
             {t("cancel")}
           </Button>
-          <Button type="button" autoFocus onClick={onConfirm}>
+          <Button type="button" autoFocus={canPublish} disabled={!canPublish} aria-describedby={canPublish ? undefined : "cms-slug-change-cannot"} onClick={onConfirm}>
             {t("slug_change_confirm")}
           </Button>
         </DialogFooter>

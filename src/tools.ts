@@ -311,7 +311,7 @@ export const CMS_TOOLS: CmsToolDef[] = [
     name: "update_single",
     needs: "write",
     description: "Save the one document of a single collection (made on the first save). Pass expectedVersion from get_single(draft=true).",
-    input: z.object({ collection: col, doc: z.object(docInput), expectedVersion, publish: z.boolean().optional(), note: z.string().optional() }),
+    input: z.object({ collection: col, doc: z.object(docInput), expectedVersion: z.number().int().nonnegative().optional().describe("The version from get_single(draft=true); 0 before the first save"), publish: z.boolean().optional(), note: z.string().optional() }),
     run: async (cms, actor, a) => cms.updateSingle(actor, a.collection as string, a.doc as never, { expectedVersion: a.expectedVersion as number | undefined, publish: a.publish as boolean | undefined, note: a.note as string | undefined }),
   },
   {

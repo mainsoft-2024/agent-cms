@@ -584,7 +584,7 @@ export function createModel(ctx: ModelContext) {
    * `sitemap.xml` for published documents of public collections that have `url()`. `noindex`
    * documents stay out. Above 50 000 addresses, `page` picks a part and `page: null` answers the index.
    */
-  async function sitemap(origin: string, o: { collections?: readonly string[]; page?: number | null } = {}): Promise<string> {
+  async function sitemap(origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string } = {}): Promise<string> {
     const base = origin.replace(/\/+$/, "");
     const abs = (u: string) => (/^https?:\/\//i.test(u) ? u : `${base}${u.startsWith("/") ? "" : "/"}${u}`);
     const urls: { loc: string; lastmod: string }[] = [];
@@ -594,6 +594,7 @@ export function createModel(ctx: ModelContext) {
       for (const d of await repo.listDocs({ collection: c.slug, published: true })) {
         const pub = d.published;
         if (!pub || (pub as DocContent).seo?.noindex) continue;
+        if (!(await ctx.publicReadable(c.slug, pub.slug ?? d.slug))) continue;
         const u = ctx.urlOf(c.slug, pub.slug ?? d.slug);
         if (u) urls.push({ loc: abs((pub as DocContent).seo?.canonical || u), lastmod: d.republishedAt ?? d.publishedAt ?? d.updatedAt });
       }
@@ -603,7 +604,7 @@ export function createModel(ctx: ModelContext) {
     const head = `<?xml version="1.0" encoding="UTF-8"?>\n`;
     if (urls.length > PER && (o.page === undefined || o.page === null)) {
       const n = Math.ceil(urls.length / PER);
-      return `${head}<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${Array.from({ length: n }, (_, i) => `  <sitemap><loc>${xmlEsc(`${base}/sitemap.xml?page=${i + 1}`)}</loc></sitemap>`).join("\n")}\n</sitemapindex>\n`;
+      return `${head}<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${Array.from({ length: n }, (_, i) => `  <sitemap><loc>${xmlEsc(`${o.self ?? `${base}/sitemap.xml`}?page=${i + 1}`)}</loc></sitemap>`).join("\n")}\n</sitemapindex>\n`;
     }
     const page = urls.length > PER ? urls.slice(((o.page ?? 1) - 1) * PER, (o.page ?? 1) * PER) : urls;
     return `${head}<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${page.map((u) => `  <url><loc>${xmlEsc(u.loc)}</loc><lastmod>${xmlEsc(u.lastmod.slice(0, 10))}</lastmod></url>`).join("\n")}\n</urlset>\n`;

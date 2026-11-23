@@ -139,7 +139,7 @@ function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boole
   if (!p1 && !me) return null;
   if (!p1 && single)
     return <CmsDocEditor key={`${c}/_single`} collection={c} slug="_single" onOpenVersions={(col, s) => go(`${a}/${col}/${encodeURIComponent(s)}/versions`)} onOpenRelease={(id) => go(`${a}/releases/${id}`)} onOpenDocument={open} />;
-  if (p1 === "new") return <CmsDocEditor key={`${c}/new`} collection={c} onBack={() => go(`${a}/${c}`)} onCreated={(col, s) => go(`${a}/${col}/${s}`, true)} />;
+  if (p1 === "new") return <CmsDocEditor key={`${c}/new`} collection={c} onBack={() => go(`${a}/${c}`)} onCreated={(col, s) => go(`${a}/${col}/${encodeURIComponent(s)}`, true)} />;
   if (p1 && p2 === "versions") return <CmsVersions collection={c} slug={p1} onBack={() => go(`${a}/${c}/${encodeURIComponent(p1)}`)} />;
   if (p1)
     return (
@@ -148,6 +148,8 @@ function Screen({ rest, go }: { rest: string[]; go: (to: string, replace?: boole
         collection={c}
         slug={p1}
         onBack={single ? undefined : () => go(`${a}/${c}`)}
+        // Published under a new address: the URL follows, replacing the old one in the history.
+        onRenamed={(col, s) => go(`${a}/${col}/${encodeURIComponent(s)}`, true)}
         onOpenVersions={(col, s) => go(`${a}/${col}/${encodeURIComponent(s)}/versions`)}
         onOpenRelease={(id) => go(`${a}/releases/${id}`)}
         onOpenDocument={open}

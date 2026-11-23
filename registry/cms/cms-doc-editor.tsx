@@ -18,7 +18,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { RelatedLabels, type RelatedLabel } from "./cms-fields-more";
-import { contentFromTemplate, SaveTemplateDialog, SeoPanel, SlugChangeDialog, SnippetUses, takeTemplate } from "./cms-structure";
+import { contentFromTemplate, fitsSchema, SaveTemplateDialog, SeoPanel, SlugChangeDialog, SnippetUses, takeTemplate } from "./cms-structure";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -49,6 +49,11 @@ export interface CmsDocEditorProps {
   onCreated?: (collection: string, slug: string) => void;
   /** After every save or publish. */
   onSaved?: (doc: CmsDoc) => void;
+  /**
+   * The document got a new address (published under a changed slug): replace the page's address with
+   * the new one, so reloading or going back does not open the old slug. Falls back to `onCreated`.
+   */
+  onRenamed?: (collection: string, slug: string) => void;
   /** Open the version history. */
   onOpenVersions?: (collection: string, slug: string) => void;
   /** The public page of a published document (shown as "Public page" when the collection has a URL). */
@@ -137,7 +142,7 @@ function takeStatus(collection: string, slug: string): string | null {
   }
 }
 
-export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className, onOpenDocument }: CmsDocEditorProps) {
+export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onRenamed, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className, onOpenDocument }: CmsDocEditorProps) {
   const { client, t, locale, me, baseUrl, slots, toast } = useCms();
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
   /** Where the cursor last was in the body (null: the person never put it there). */
@@ -339,15 +344,35 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   }, [client, collection, slug, applyDoc]);
 
   // A new document may start from the template picked in the list ("New document").
+  const [tplFit, setTplFit] = React.useState<{ label: string; fields: Record<string, unknown> } | null>(null);
   React.useEffect(() => {
     if (slug) return;
     const tpl = takeTemplate(collection);
     if (!tpl) return;
     const c = { ...EMPTY, ...contentFromTemplate(tpl) };
     setContentRaw(c);
+    setTplFit({ label: tpl.label, fields: { ...(c.fields ?? {}) } });
     setStatus({ text: t("tpl_applied", { name: tpl.label }), tone: "muted" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collection, slug]);
+  // Once the schema is here: template values the fields no longer take (renamed, removed, another type) are left out.
+  React.useEffect(() => {
+    const props = ((schemaQ.data?.fields ?? null) as { properties?: Record<string, unknown> } | null)?.properties;
+    if (!tplFit || !props) return;
+    setTplFit(null);
+    const dropped = Object.entries(tplFit.fields)
+      .filter(([k, v]) => !fitsSchema(props[k], v, k in props))
+      .map(([k]) => k);
+    if (!dropped.length) return;
+    setContentRaw((c) => {
+      const fields = { ...(c.fields ?? {}) };
+      // Only values still as the template left them (not something the person typed meanwhile).
+      for (const k of dropped) if (fields[k] === tplFit.fields[k]) delete fields[k];
+      return { ...c, fields };
+    });
+    setStatus({ text: `${t("tpl_applied", { name: tplFit.label })}. ${t("tpl_dropped", { fields: dropped.join(", ") })}`, tone: "muted" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tplFit, schemaQ.data]);
 
   // Relation fields show the titles of what they point at (one read with ?expand=).
   const relPaths = schemaQ.data?.relations?.map((r) => r.path) ?? [];
@@ -507,9 +532,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const unparsedRef = React.useRef(unparsed);
   unparsedRef.current = unparsed;
 
+  /** A published document under a new address: it changes only together with publishing (the server refuses it in a draft). */
+  const slugMoved = !!doc && doc.publishedVersion !== null && content.slug !== doc.slug && !!schema?.redirects;
   const save = async (publish: boolean, confirmed = false): Promise<CmsDoc | null> => {
     setTried(true);
-    if (!confirmed && doc && doc.publishedVersion !== null && content.slug !== doc.slug && schema?.redirects) {
+    // Saving a draft never publishes by itself: the dialog explains, and its button goes through Publish.
+    if (slugMoved && !(publish && confirmed)) {
       setSlugAsk({ publish });
       return null;
     }
@@ -556,12 +584,14 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
       setAuto({ state: "idle" });
       setReviewed((r) => Object.fromEntries(Object.entries(r).filter(([, x]) => x.action === "accepted")));
       await loadChanges(d.slug);
-      setStatus({ text: publish ? t("published_v", { version: d.publishedVersion ?? d.version }) : t("saved", { version: d.version }), tone: "ok" });
+      const doneText = publish ? t("published_v", { version: d.publishedVersion ?? d.version }) : t("saved", { version: d.version });
+      setStatus({ text: doneText, tone: "ok" });
       onSaved?.(d);
-      // A new address: the page follows the document.
-      if (d.slug !== doc.slug && onCreated) {
-        keepStatus(collection, d.slug, t("saved", { version: d.version }));
-        onCreated(collection, d.slug);
+      // A new address: the page follows the document (replacing the old address in the history).
+      const follow = onRenamed ?? onCreated;
+      if (d.slug !== doc.slug && follow) {
+        keepStatus(collection, d.slug, doneText);
+        follow(collection, d.slug);
       }
       return d;
     } catch (e) {
@@ -576,6 +606,11 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         } catch (e2) {
           setStatus({ text: errorMessage(e2, t), tone: "error" });
         }
+        return null;
+      }
+      // The server knows better (the document was published meanwhile): explain as the dialog does.
+      if (isCmsRemoteError(e) && e.code === "slug_needs_publish" && schema?.redirects) {
+        setSlugAsk({ publish });
         return null;
       }
       if (isCmsRemoteError(e) && e.diagnostics?.length) setProblems(e.diagnostics as Diagnostic[]);
@@ -753,17 +788,23 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   }, [mobileTab, sync]);
 
   // Publishing first asks the collection's checks; findings open a dialog (errors block, warnings may be accepted).
-  const publish = async () => {
-    if (isNew || !doc || !schema?.publishChecks) return void save(true);
+  // `confirmed`: the person already agreed to publish under a changed address (the slug dialog).
+  const checksConfirmed = React.useRef(false);
+  const publish = async (confirmed = false) => {
+    if (slugMoved && !confirmed) return void setSlugAsk({ publish: true });
+    if (isNew || !doc || !schema?.publishChecks) return void save(true, confirmed);
     setBusy(true);
     try {
       const r = await client.publishChecks(collection, doc.slug, toInput(content, doc.fields));
       setBusy(false);
-      if (r.checks.length || r.blocking) return setChecks(r);
+      if (r.checks.length || r.blocking) {
+        checksConfirmed.current = confirmed;
+        return setChecks(r);
+      }
     } catch {
       setBusy(false);
     }
-    void save(true);
+    void save(true, confirmed);
   };
   // ── keyboard ──
   const publishRef = React.useRef(publish);
@@ -800,7 +841,9 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
   const focusRef = React.useRef(focus);
   focusRef.current = focus;
   useShortcut(mode.kind === "edit" && !mobile && "mod+shift+f", () => setFocus(!focusRef.current), { inFields: true });
-  // Esc leaves full screen, but never while typing, and never when it closes a menu or a dialog first.
+  // Esc leaves full screen, but never while typing (inside the body Esc first clears the block selection,
+  // closes the block menus and the find bar), and never when it closes a menu or a dialog first.
+  // The hint says so: Mod+Shift+F works everywhere, Esc outside the text.
   useShortcut(focus && "escape", () => {
     if (document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return;
     setFocus(false);
@@ -1290,7 +1333,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         onConfirm={() => {
           const go = checks && !checks.blocking;
           setChecks(null);
-          if (go) void save(true);
+          if (go) void save(true, checksConfirmed.current);
         }}
       >
         <ul className="grid max-h-72 gap-1.5 overflow-y-auto text-sm" aria-label={t("checks_list")}>
@@ -1516,11 +1559,12 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
         <SlugChangeDialog
           from={publicUrlFor ? publicUrlFor(collection, doc.slug) : `${slugPrefix ?? ""}${doc.slug}`}
           to={publicUrlFor ? publicUrlFor(collection, content.slug) : `${slugPrefix ?? ""}${content.slug}`}
+          canPublish={!!schema?.canPublish && !schema?.needsReview}
           onClose={() => setSlugAsk(null)}
           onConfirm={() => {
             setSlugAsk(null);
-            // The address changes together with publishing (the server refuses it in a draft).
-            void save(true, true);
+            // The address changes together with publishing: the normal Publish path (checks first).
+            void publish(true);
           }}
         />
       ) : null}
@@ -1646,7 +1690,7 @@ export function CmsDocEditor({ collection, slug, onBack, onCreated, onSaved, onO
               barQuiet && "opacity-0",
             )}
           >
-            <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={() => setFocus(false)} title={`${t("focus_exit")} (Esc)`}>
+            <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={() => setFocus(false)} title={`${t("focus_exit")} (${modLabel()}+Shift+F)`}>
               <Minimize2 aria-hidden className="h-4 w-4" />
               <span className="hidden md:inline">{t("focus_exit")}</span>
             </Button>

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>도구 줄 상태</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="../media-library/app.css">
+<link rel="stylesheet" href="../publish-flow/x.css">
+<link rel="stylesheet" href="v2.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+<style>
+  body { background: hsl(0 0% 98%); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .frame .tb { border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+</style>
+</head>
+<body>
+<div class="sheet2">
+  <section data-label="툴팁">
+    <h3>아이콘만 두고, 올리면 이름과 단축키</h3>
+    <div class="frame" style="height:92px">
+      <div class="tb" style="border-bottom:0">
+        <div class="tmini"><span class="on">블록</span><span>마크다운</span></div>
+        <span class="tsep"></span>
+        <div class="grp"><span class="tbtn" data-icon="undo-2"></span><span class="tbtn" data-icon="redo-2"></span></div>
+        <span class="tsep"></span>
+        <span class="tbtn wide">본문<span data-icon="chevron-down" class="car"></span></span>
+        <span class="tsep"></span>
+        <div class="grp"><span class="tbtn hov"><span data-icon="bold"></span><span class="tip">굵게<kbd>⌘B</kbd></span></span><span class="tbtn" data-icon="italic"></span><span class="tbtn" data-icon="strikethrough"></span><span class="tbtn" data-icon="code"></span><span class="tbtn" data-icon="link"></span></div>
+        <span class="tsep"></span>
+        <div class="grp"><span class="tbtn" data-icon="list"></span><span class="tbtn" data-icon="list-ordered"></span><span class="tbtn" data-icon="list-checks"></span><span class="tbtn" data-icon="text-quote"></span><span class="tbtn" data-icon="message-square-warning"></span><span class="tbtn" data-icon="table"></span><span class="tbtn" data-icon="square-code"></span><span class="tbtn" data-icon="minus"></span></div>
+        <span class="tsep"></span>
+        <span class="tbtn wide"><span data-icon="image-plus" class="i14"></span><span data-icon="chevron-down" class="car"></span></span>
+        <span class="tbtn wide"><span data-icon="plus" class="i14"></span>넣기<span data-icon="chevron-down" class="car"></span></span>
+        <span class="grow"></span>
+        <div class="grp"><span class="tbtn" data-icon="search"></span><span class="tbtn" data-icon="list-tree"></span><span class="tbtn" data-icon="panel-right"></span><span class="tbtn" data-icon="app-window"></span><span class="tbtn" data-icon="maximize-2"></span></div>
+        <span class="tsep"></span>
+        <span class="tstat">312단어 · 2분</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="two">
+    <section data-label="좁은 폭">
+      <h3>좁은 폭: 넘치는 버튼은 더보기로</h3>
+      <div class="frame" style="height:250px">
+        <div class="tb">
+          <div class="tmini"><span class="on">블록</span><span>MD</span></div>
+          <span class="tsep"></span>
+          <div class="grp"><span class="tbtn" data-icon="undo-2"></span><span class="tbtn" data-icon="redo-2"></span></div>
+          <span class="tsep"></span>
+          <div class="grp"><span class="tbtn" data-icon="bold"></span><span class="tbtn" data-icon="italic"></span><span class="tbtn" data-icon="link"></span></div>
+          <span class="tsep"></span>
+          <span class="tbtn" data-icon="image-plus"></span>
+          <span class="grow"></span>
+          <span class="tbtn" data-icon="maximize-2"></span>
+          <span class="tbtn on" data-icon="ellipsis"></span>
+        </div>
+        <div class="pop menu" style="right:8px;top:48px;width:230px" data-label="더보기 메뉴">
+          <div><span data-icon="heading" class="i14"></span><span class="grow">글 모양</span><span data-icon="chevron-right" class="i14 muted"></span></div>
+          <div><span data-icon="list" class="i14"></span><span class="grow">목록과 블록</span><span data-icon="chevron-right" class="i14 muted"></span></div>
+          <div class="on"><span data-icon="plus" class="i14"></span><span class="grow">넣기</span><span data-icon="chevron-right" class="i14 muted"></span></div>
+          <hr>
+          <div><span data-icon="search" class="i14"></span><span class="grow">찾기·바꾸기</span><span class="xs muted mono">⌘F</span></div>
+          <div><span data-icon="list-tree" class="i14"></span><span class="grow">섹션 순서</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section data-label="찾기·바꾸기">
+      <h3>찾기·바꾸기 (⌘F, ⌘⇧H)</h3>
+      <div class="frame" style="height:250px">
+        <div class="tb"><span class="grow"></span><span class="tbtn on" data-icon="search"></span><span class="tbtn" data-icon="list-tree"></span><span class="tbtn" data-icon="maximize-2"></span></div>
+        <div class="findbar" style="top:52px;right:12px;width:360px">
+          <div class="row"><div class="inp grow">Slack</div><span class="xs muted num">2/5</span><span class="tbtn" data-icon="chevron-up"></span><span class="tbtn" data-icon="chevron-down"></span><span class="tbtn" data-icon="x"></span></div>
+          <div class="row"><div class="inp grow">Slack app</div><span class="b out sm">바꾸기</span><span class="b out sm">모두</span></div>
+          <div class="row xs muted"><span class="check"></span>대소문자 구분<span class="check" style="margin-left:10px"></span>단어 단위</div>
+        </div>
+        <div style="position:absolute;left:24px;top:178px;font-size:14px;width:300px">Link your <mark class="hit">Slack</mark> workspace. Pick the <mark class="hit cur">Slack</mark> channel.</div>
+      </div>
+    </section>
+  </div>
+
+  <div class="two">
+    <section data-label="제목 손잡이 메뉴">
+      <h3>제목 손잡이 메뉴: 앵커 복사와 고정</h3>
+      <div class="frame" style="height:220px">
+        <div style="position:absolute;left:70px;top:18px" class="blk"><div class="hand" style="left:-52px"><span data-icon="plus" class="i14"></span><span data-icon="grip-vertical" class="i14 on"></span></div><h2 style="margin:0">Connect<span class="anchor">#connect</span></h2></div>
+        <div class="pop menu" style="left:40px;top:56px;width:240px" data-label="손잡이 메뉴">
+          <div class="on"><span data-icon="link" class="i14"></span><span class="grow">앵커 복사</span><span class="xs muted mono">#connect</span></div>
+          <div><span data-icon="pin" class="i14"></span><span class="grow">앵커 고정</span><span class="xs muted">제목을 고쳐도 유지</span></div>
+          <hr>
+          <div><span data-icon="repeat" class="i14"></span><span class="grow">바꾸기</span><span data-icon="chevron-right" class="i14 muted"></span></div>
+          <div><span data-icon="copy" class="i14"></span><span class="grow">복제</span></div>
+          <div><span data-icon="trash-2" class="i14"></span><span class="grow">삭제</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section data-label="빈 줄 아이콘과 끌어 놓기">
+      <h3>빈 줄 아이콘(커서가 빈 줄에 있을 때) · 파일 끌어 놓는 자리</h3>
+      <div class="frame" style="height:220px;padding:18px 24px">
+        <div class="blk" style="margin-bottom:6px"><p>Link your Slack workspace in two steps.</p></div>
+        <div class="blk" style="margin-bottom:18px" data-label="빈 줄 아이콘"><p class="ph-line">글을 쓰거나 /를 눌러 블록 넣기</p>
+          <div class="empty-ic"><span class="hov"><span data-icon="image-plus" class="i14"></span></span><span><span data-icon="clapperboard" class="i14"></span></span><span><span data-icon="table" class="i14"></span></span></div>
+        </div>
+        <div class="blk" style="margin-bottom:2px"><p>Pick the channel and press Allow.</p></div>
+        <div class="dropline" data-label="끌어 놓는 자리"></div>
+        <div class="blk"><p class="muted">Messages arrive within a minute.</p></div>
+        <span class="ghostfile" style="left:280px;top:150px"><span data-icon="image" class="i14"></span>slack-step2.png</span>
+      </div>
+    </section>
+  </div>
+</div>
+</body>
+</html>

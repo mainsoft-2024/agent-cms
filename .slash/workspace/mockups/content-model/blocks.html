@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>블록 본문</title>
+<title>새 도구 줄과 새 블록</title>
 <link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
 <link rel="stylesheet" href="../media-library/app.css">
-<link rel="stylesheet" href="../media-library/editor.css">
 <link rel="stylesheet" href="../publish-flow/x.css">
+<link rel="stylesheet" href="v2.css">
 <script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
 </head>
 <body>
@@ -19,79 +19,98 @@
     <h2>컬렉션</h2>
     <div class="nav"><span data-icon="book-open"></span><span>Blog</span><span class="n">5</span></div>
     <div class="nav on"><span data-icon="book-open"></span><span>Guide</span><span class="n">6</span></div>
+    <div class="nav"><span data-icon="puzzle"></span><span>Snippets</span><span class="n">3</span></div>
     <div class="nav"><span data-icon="settings"></span><span>사이트 설정</span></div>
     <div class="nav-gap"></div>
     <div class="nav"><span data-icon="image"></span><span>미디어</span></div>
-    <div class="nav"><span data-icon="hard-drive"></span><span>파일</span></div>
     <div class="nav"><span data-icon="clipboard-list"></span><span>폼</span></div>
-    <div class="nav"><span data-icon="package"></span><span>릴리스</span></div>
+    <div class="nav"><span data-icon="layers"></span><span>릴리스</span></div>
     <div class="nav"><span data-icon="trash-2"></span><span>휴지통</span></div>
     <h2>운영</h2>
     <div class="nav"><span data-icon="key-round"></span><span>API 키</span></div>
     <div class="nav"><span data-icon="scroll-text"></span><span>감사 로그</span></div>
-    <div class="nav"><span data-icon="webhook"></span><span>웹훅</span></div>
-    <div class="nav"><span data-icon="workflow"></span><span>자동화</span></div>
-    <div class="nav"><span data-icon="shield"></span><span>역할</span></div>
     <div class="nav"><span data-icon="corner-down-right"></span><span>리다이렉트</span></div>
-    <div class="nav"><span data-icon="replace"></span><span>동의어</span></div>
-    <div class="nav"><span data-icon="arrow-left-right"></span><span>가져오기와 내보내기</span></div>
   </aside>
 
-  <main class="main" style="position:relative">
-    <header class="phd">
+  <main class="main">
+    <header class="ed-top">
       <span class="crumbs">Guide <span>/</span></span>
       <h1>Connect Slack</h1>
       <span class="badge"><i class="dot"></i>게시됨</span>
       <span class="grow"></span>
-      <div class="acts">
-        <span class="b ghost"><span data-icon="history"></span>버전 기록</span>
-        <span class="b out">저장</span>
-        <span class="b">게시</span>
-      </div>
+      <span class="b ghost sm"><span data-icon="history" class="i14"></span>버전 기록</span>
+      <span class="b out sm">저장</span>
+      <span class="b sm">게시<span data-icon="chevron-down" class="i14"></span></span>
     </header>
 
-    <div class="split">
-      <section>
-        <div class="bar2">
-          <div class="seg" style="padding:2px" data-label="본문 방식 전환"><span style="height:24px;font-size:12px">마크다운</span><span class="on" style="height:24px;font-size:12px">블록</span></div>
-          <span class="grow"></span>
-          <span class="num">블록 5개</span>
-        </div>
-        <div class="pad" style="padding:12px;gap:8px" data-label="블록 목록">
-          <div class="step" style="padding:8px 12px"><span data-icon="grip-vertical" class="i14 muted"></span><span class="k" style="width:52px">제목</span><span class="grow trunc" style="font-weight:600">Connect</span></div>
-          <div class="step" style="padding:8px 12px"><span data-icon="grip-vertical" class="i14 muted"></span><span class="k" style="width:52px">문단</span><span class="grow trunc">Link your Slack workspace in two steps.</span></div>
-          <div class="step" style="padding:8px 12px;outline:2px solid var(--ring);outline-offset:2px" data-label="고른 블록"><span data-icon="grip-vertical" class="i14 muted"></span><span class="k" style="width:52px">콜아웃</span><span class="grow trunc">You need admin rights in Slack.</span><span data-icon="trash-2" class="i14 muted"></span></div>
-          <div class="step" style="padding:8px 12px"><span data-icon="grip-vertical" class="i14 muted"></span><span class="k" style="width:52px">단계</span><span class="grow trunc">Open settings, Choose Slack, Approve</span><span class="xs muted num">3단계</span></div>
-          <div class="step" style="padding:8px 12px"><span data-icon="grip-vertical" class="i14 muted"></span><span class="k" style="width:52px">이미지</span><span class="g p3" style="width:44px;height:28px;border-radius:4px;border:1px solid var(--border-c)"></span><span class="grow trunc">slack-connect-step1.png</span></div>
-          <div class="row"><span class="b out sm" data-label="블록 추가 버튼"><span data-icon="plus" class="i14"></span>블록 추가</span></div>
-        </div>
-      </section>
-      <section>
-        <div class="bar2"><span data-icon="eye" class="i14"></span><b>미리보기</b><span class="grow"></span><div class="seg" style="padding:2px"><span style="height:24px;font-size:12px">375</span><span style="height:24px;font-size:12px">768</span><span class="on" style="height:24px;font-size:12px">전체</span></div></div>
-        <div class="pv">
-          <h1>Connect Slack</h1>
-          <h2>Connect</h2>
-          <p>Link your Slack workspace in two steps.</p>
-          <div class="banner" style="border:1px solid var(--border-c);border-radius:var(--radius-lg);padding:10px 12px;margin-bottom:12px"><span data-icon="info" class="muted"></span><span>You need admin rights in Slack.</span></div>
-          <p><b>1.</b> Open settings</p>
-          <p><b>2.</b> Choose Slack</p>
-          <p><b>3.</b> Approve</p>
-        </div>
-      </section>
+    <div class="fgrid" data-label="필드">
+      <div class="field"><label>제목</label><div class="inp">Connect Slack</div></div>
+      <div class="field"><label>주소</label><div class="inp mono" style="font-size:13px">connect-slack</div></div>
+      <div class="field"><label>문서 정보</label><div class="inp ph-text"><span class="grow">요약, 분류, SEO 외 4개</span><span data-icon="chevron-down" class="i14"></span></div></div>
     </div>
 
-    <div class="pop menu" style="left:12px;top:378px;width:200px" data-label="블록 종류 메뉴">
-      <div class="sub">블록 추가</div>
-      <div class="row" style="height:32px;padding:0 8px"><span data-icon="heading" class="i14 muted"></span>제목</div>
-      <div class="row" style="height:32px;padding:0 8px"><span data-icon="pilcrow" class="i14 muted"></span>문단</div>
-      <div class="row" style="height:32px;padding:0 8px"><span data-icon="image" class="i14 muted"></span>이미지</div>
-      <div class="row" style="height:32px;padding:0 8px"><span data-icon="info" class="i14 muted"></span>콜아웃</div>
-      <div class="row" style="height:32px;padding:0 8px"><span data-icon="list-ordered" class="i14 muted"></span>단계</div>
-      <div class="row" style="height:32px;padding:0 8px"><span data-icon="table" class="i14 muted"></span>표</div>
-      <div class="row" style="height:32px;padding:0 8px"><span data-icon="film" class="i14 muted"></span>영상</div>
-      <div class="row" style="height:32px;padding:0 8px"><span data-icon="link" class="i14 muted"></span>링크 카드</div>
+    <div class="tb" role="toolbar" data-label="본문 도구 줄">
+      <div class="tmini" data-label="보기 전환"><span class="on">블록</span><span>마크다운</span></div>
+      <span class="tsep"></span>
+      <div class="grp" data-label="되돌리기">
+        <span class="tbtn" data-icon="undo-2"></span>
+        <span class="tbtn dis" data-icon="redo-2"></span>
+      </div>
+      <span class="tsep"></span>
+      <span class="tbtn wide" data-label="글 모양 고르기">제목 2<span data-icon="chevron-down" class="car"></span></span>
+      <span class="tsep"></span>
+      <div class="grp" data-label="글자 꾸미기">
+        <span class="tbtn" data-icon="bold"></span>
+        <span class="tbtn" data-icon="italic"></span>
+        <span class="tbtn" data-icon="strikethrough"></span>
+        <span class="tbtn" data-icon="code"></span>
+        <span class="tbtn" data-icon="link"></span>
+      </div>
+      <span class="tsep"></span>
+      <div class="grp" data-label="블록 넣기">
+        <span class="tbtn" data-icon="list"></span>
+        <span class="tbtn" data-icon="list-ordered"></span>
+        <span class="tbtn" data-icon="list-checks"></span>
+        <span class="tbtn" data-icon="text-quote"></span>
+        <span class="tbtn" data-icon="message-square-warning"></span>
+        <span class="tbtn" data-icon="table"></span>
+        <span class="tbtn" data-icon="square-code"></span>
+        <span class="tbtn" data-icon="minus"></span>
+      </div>
+      <span class="tsep"></span>
+      <span class="tbtn wide" data-label="미디어 넣기"><span data-icon="image-plus" class="i14"></span><span data-icon="chevron-down" class="car"></span></span>
+      <span class="tbtn wide" data-label="더 넣기"><span data-icon="plus" class="i14"></span>넣기<span data-icon="chevron-down" class="car"></span></span>
+      <span class="grow"></span>
+      <div class="grp" data-label="보기 도구">
+        <span class="tbtn" data-icon="search"></span>
+        <span class="tbtn" data-icon="list-tree"></span>
+        <span class="tbtn" data-icon="panel-right"></span>
+        <span class="tbtn" data-icon="app-window"></span>
+        <span class="tbtn" data-icon="maximize-2"></span>
+      </div>
+      <span class="tsep"></span>
+      <span class="tstat" data-label="글자 수와 읽는 시간">312단어 · 2분</span>
     </div>
-    <div class="footb"><span>문제 없음</span><span class="grow"></span><span>자동 저장됨 오후 9:42</span></div>
+
+    <div class="paper">
+      <div class="colw" data-label="본문">
+        <div class="blk"><div class="hand"><span data-icon="plus" class="i14"></span><span data-icon="grip-vertical" class="i14"></span></div><h2 style="margin-top:0">Connect<span class="anchor">#connect</span></h2></div>
+        <div class="blk"><p>Link your Slack workspace in two steps. Messages from agent-cms arrive in the channel you pick.</p></div>
+        <div class="blk callout" data-label="콜아웃"><span data-icon="info" class="i20" style="color:#2563eb"></span><span>You need admin rights in Slack.</span></div>
+        <div class="blk" data-label="단계 블록">
+          <div class="steps">
+            <div class="s" data-n="1"><b>Open settings</b><span>Go to Settings → Integrations.</span></div>
+            <div class="s" data-n="2"><b>Choose Slack</b><span>Pick the workspace and the channel.</span></div>
+            <div class="s" data-n="3"><b>Approve</b><span>Slack asks once. Press Allow.</span></div>
+          </div>
+        </div>
+        <div class="blk lcard" data-label="링크 카드"><span class="th p2"></span><span class="grow"><b style="font-weight:500">Slack API: OAuth scopes</b><span class="u" style="display:block">api.slack.com/scopes</span></span><span data-icon="external-link" class="i14 muted"></span></div>
+        <div class="blk" style="width:200px" data-label="영상 블록"><div class="vid p5"><span class="play"><span data-icon="play" class="i20"></span></span><span class="src">YouTube · 2:14</span></div></div>
+        <div class="blk snip" data-label="스니펫 블록"><span class="tag"><span data-icon="puzzle" class="i12"></span>스니펫 · support-contact</span>Still stuck? Write to support@example.com.</div>
+      </div>
+    </div>
+
+    <div class="estat"><span>문제 없음</span><span class="grow"></span><span>자동 저장됨 오후 2:12</span></div>
   </main>
 </div>
 </body>

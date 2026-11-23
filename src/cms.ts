@@ -2942,7 +2942,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await ensureSchema();
     if (!model.treeOf(col)) throw fail("tree_off", { collection: col });
     const out = await loggedTx(async (r, log) => {
-      const cur = await r.findDoc(col, slug);
+      const byId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slug) ? await r.findDocById(slug) : null;
+      const cur = byId && byId.collection === col && !byId.deletedAt ? byId : await r.findDoc(col, slug);
       if (!cur) throw fail("not_found", { collection: col, slug });
       assert(actor, col, "write", cur);
       const place = await model.placeIn(r, col, cur, to.parentId ?? null, to.before ?? null);
@@ -3252,7 +3253,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     videoHosts: model.videoHosts as readonly string[],
     seoFor,
     seoOf: (doc: Pick<CmsDoc, "collection" | "slug" | "title" | "summary" | "body"> & { seo?: DocSeo | null }) => model.seoFor(doc),
-    sitemap: (origin: string, o: { collections?: readonly string[]; page?: number | null } = {}) => Promise.resolve(ensureSchema()).then(() => model.sitemap(origin, o)),
+    sitemap: (origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string } = {}) => Promise.resolve(ensureSchema()).then(() => model.sitemap(origin, o)),
     suggestSlug,
     /** Old heading anchors by current anchor (public renders keep old links working). */
     anchorAliases: (documentId: string) => model.aliasMap(documentId),

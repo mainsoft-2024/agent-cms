@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>확인 창</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="../media-library/app.css">
+<link rel="stylesheet" href="../publish-flow/x.css">
+<link rel="stylesheet" href="v2.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+<style>
+  body { background: hsl(0 0% 40%); }
+  .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; padding: 24px; align-items: start; }
+  .dlg { width: auto; }
+</style>
+</head>
+<body>
+<div class="three">
+  <div class="dlg" data-label="주소 변경 확인 창">
+    <div><h2>주소 바꾸기</h2><p>게시된 문서임. 예전 주소로 오는 사람은 새 주소로 넘어감.</p></div>
+    <div class="rows">
+      <div><span class="xs muted" style="width:44px">예전</span><span class="mono" style="font-size:13px;text-decoration:line-through;color:var(--muted-foreground)">/guide/conect-slack</span></div>
+      <div><span class="xs muted" style="width:44px">새</span><span class="mono" style="font-size:13px">/guide/connect-slack</span></div>
+    </div>
+    <div class="row" style="font-size:14px"><span class="check on"><span data-icon="check" class="i12"></span></span>예전 주소에서 301로 넘기기</div>
+    <div class="btns"><span class="b out">취소</span><span class="b">주소 바꾸기</span></div>
+  </div>
+
+  <div class="dlg" data-label="새 리다이렉트 창">
+    <div><h2>새 리다이렉트</h2><p>앱의 미들웨어가 30초 안에 읽어 감.</p></div>
+    <div class="field"><label>옛 주소</label><div class="inp mono" style="font-size:13px">/docs/slack</div></div>
+    <div class="field"><label>새 주소</label><div class="inp mono" style="font-size:13px"><span class="grow">/guide/connect-slack</span><span data-icon="file-text" class="i14 muted"></span></div><span class="xs muted">문서를 고르면 주소가 바뀌어도 따라감</span></div>
+    <div class="field"><label>종류</label>
+      <div class="seg"><span class="on">301 영구</span><span>302 임시</span></div>
+    </div>
+    <div class="row xs err"><span data-icon="circle-alert" class="i14"></span>/guide/connect-slack은 다시 /docs/slack으로 넘어감. 고리라 만들 수 없음</div>
+    <div class="btns"><span class="b out">취소</span><span class="b" style="opacity:.5">만들기</span></div>
+  </div>
+
+  <div class="dlg" data-label="가리켜지는 문서 삭제 확인">
+    <div><h2>Paul Park 삭제</h2><p>이 문서를 가리키는 문서 3개. 지우면 그 문서들에 ‘없는 문서’ 문제가 뜸.</p></div>
+    <div class="rows">
+      <div><span data-icon="file-text" class="i14 muted"></span><span class="grow trunc">Release 0.21</span><span class="chip">Blog · 글쓴이</span></div>
+      <div><span data-icon="file-text" class="i14 muted"></span><span class="grow trunc">Connect Slack</span><span class="chip">Guide · 관련 문서</span></div>
+      <div><span data-icon="file-text" class="i14 muted"></span><span class="grow trunc">Team page</span><span class="chip">사이트 설정 · 사람</span></div>
+    </div>
+    <div class="btns"><span class="b out">취소</span><span class="b del">그래도 삭제</span></div>
+  </div>
+</div>
+</body>
+</html>

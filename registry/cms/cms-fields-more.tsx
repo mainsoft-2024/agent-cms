@@ -7,7 +7,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, GripVertical, Link2, Plus, Search, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronDown, ChevronRight, GripVertical, Link2, Plus, Search, X } from "lucide-react";
 import type { RestClient } from "@mainsoft/agent-cms/client";
 
 type DocSummary = Awaited<ReturnType<RestClient["list"]>>["docs"][number];
@@ -127,7 +127,7 @@ export function RelationField({ spec, id, value, onChange, invalid, describedBy 
                   ) : null}
                 </span>
                 {spec.many ? (
-                  <span className="flex shrink-0 opacity-0 transition-opacity duration-150 ease-out group-focus-within:opacity-100 group-hover:opacity-100">
+                  <span className="flex shrink-0 opacity-0 transition-opacity duration-150 ease-out group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
                     <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={t("rel_move_up")} disabled={i === 0} onClick={() => move(i, i - 1)}>
                       <ArrowUp aria-hidden className="h-3.5 w-3.5" />
                     </Button>
@@ -176,19 +176,39 @@ export function RelationPicker({ title, collections, exclude = [], onPick, onClo
   const { client, t, me } = useCms();
   const [q, setQ] = React.useState("");
   const [col, setCol] = React.useState(collections[0]);
-  const [rows, setRows] = React.useState<DocSummary[] | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  // Results belong to the search that asked for them (collection + text): an answer for an older search
+  // is dropped, and while the current one is on its way nothing can be picked (Enter would pick a stale row).
+  const [result, setResult] = React.useState<{ key: string; col: string; rows: DocSummary[]; error: string | null } | null>(null);
   const [active, setActive] = React.useState(0);
   const listId = React.useId();
-  const load = useDebounced((c: string, text: string) => {
+  const seq = React.useRef(0);
+  const searchKey = `${col}\n${q}`;
+  const load = useDebounced((c: string, text: string, key: string) => {
+    const mine = ++seq.current;
     client.list(c, { q: text || undefined, limit: 30 }).then(
-      (r) => (setRows(r.docs), setError(null), setActive(0)),
-      (e) => (setRows([]), setError(errorMessage(e, t)))
+      (r) => {
+        if (mine !== seq.current) return;
+        setResult({ key, col: c, rows: r.docs, error: null });
+        setActive(0);
+      },
+      (e) => {
+        if (mine !== seq.current) return;
+        setResult({ key, col: c, rows: [], error: errorMessage(e, t) });
+      }
     );
   }, 150);
-  React.useEffect(() => load(col, q), [col, q, load]);
+  React.useEffect(() => {
+    // A new search: anything still on its way for the old one no longer counts.
+    seq.current++;
+    load(col, q, `${col}\n${q}`);
+  }, [col, q, load]);
+  const pending = result?.key !== searchKey;
+  // While the next answer is on its way the last rows of the same collection stay (dimmed, not pickable).
+  const kept = result && result.col === col ? result : null;
+  const rows = kept ? kept.rows : null;
+  const error = kept && !pending ? kept.error : null;
   const shown = (rows ?? []).filter((d) => !exclude.includes(d.id));
-  const pick = (d: DocSummary | undefined) => d && onPick(d);
+  const pick = (d: DocSummary | undefined) => !pending && d && onPick(d);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className={cn(DIALOG.md, "gap-3")}>
@@ -219,26 +239,29 @@ export function RelationPicker({ title, collections, exclude = [], onPick, onClo
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
+              // A Korean (or other IME) word still being composed: its Enter and arrows belong to the IME.
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === "ArrowDown") (e.preventDefault(), setActive((a) => Math.min(a + 1, shown.length - 1)));
               else if (e.key === "ArrowUp") (e.preventDefault(), setActive((a) => Math.max(a - 1, 0)));
               else if (e.key === "Enter") (e.preventDefault(), pick(shown[active]));
             }}
           />
         </div>
-        <ul id={listId} role="listbox" aria-label={t("rel_results")} className="max-h-72 min-h-24 overflow-y-auto rounded-md border">
+        <ul id={listId} role="listbox" aria-label={t("rel_results")} aria-busy={pending || undefined} className="max-h-72 min-h-24 overflow-y-auto rounded-md border">
           {rows === null ? <li className="p-3 text-sm text-muted-foreground">{t("loading")}</li> : null}
           {error ? <li className="p-3 text-sm text-destructive">{error}</li> : null}
-          {rows !== null && !error && !shown.length ? <li className="p-3 text-sm text-muted-foreground">{t("rel_none")}</li> : null}
+          {rows !== null && !pending && !error && !shown.length ? <li className="p-3 text-sm text-muted-foreground">{t("rel_none")}</li> : null}
           {shown.map((d, i) => (
             <li
               key={d.id}
               id={`${listId}-${d.id}`}
               role="option"
               aria-selected={i === active}
+              aria-disabled={pending || undefined}
               onMouseEnter={() => setActive(i)}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => pick(d)}
-              className={cn("flex cursor-pointer items-center gap-2 px-3 py-2 text-sm", i === active && "bg-accent")}
+              className={cn("flex items-center gap-2 px-3 py-2 text-sm transition-opacity duration-150 ease-out", pending ? "cursor-default opacity-60" : "cursor-pointer", i === active && "bg-accent")}
             >
               <span className="min-w-0 flex-1">
                 <span className="block truncate">{d.title || d.slug}</span>
@@ -281,9 +304,20 @@ export function GalleryField({ id, label, value, onChange, max, accept, store, f
           <li key={aid} {...drag.rowProps(i)} tabIndex={0} onKeyDown={moveKeys(i, ids.length, move)} aria-label={t("gallery_item", { n: i + 1, total: ids.length })} className="group relative rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring data-[drop-target]:ring-2 data-[drop-target]:ring-primary">
             <GalleryThumb id={aid} />
             <span className="absolute left-1 top-1 rounded bg-background/80 px-1 text-[11px] tabular-nums">{i + 1}</span>
-            <button type="button" aria-label={t("gallery_remove", { n: i + 1 })} onClick={() => set(ids.filter((x) => x !== aid))} className="absolute right-1 top-1 rounded bg-background/80 p-0.5 opacity-0 transition-opacity duration-150 ease-out focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100">
+            {/* Buttons show on hover and focus; on touch screens (no hover) they are always there. */}
+            <button type="button" aria-label={t("gallery_remove", { n: i + 1 })} onClick={() => set(ids.filter((x) => x !== aid))} className="absolute right-1 top-1 rounded bg-background/80 p-1 opacity-0 transition-opacity duration-150 ease-out focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
               <X aria-hidden className="h-3.5 w-3.5" />
             </button>
+            {ids.length > 1 ? (
+              <span className="absolute inset-x-1 bottom-1 flex justify-between opacity-0 transition-opacity duration-150 ease-out group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+                <button type="button" aria-label={t("gallery_move_left", { n: i + 1 })} disabled={i === 0} onClick={() => move(i, i - 1)} className="rounded bg-background/80 p-1 disabled:invisible">
+                  <ArrowLeft aria-hidden className="h-3.5 w-3.5" />
+                </button>
+                <button type="button" aria-label={t("gallery_move_right", { n: i + 1 })} disabled={i === ids.length - 1} onClick={() => move(i, i + 1)} className="rounded bg-background/80 p-1 disabled:invisible">
+                  <ArrowRight aria-hidden className="h-3.5 w-3.5" />
+                </button>
+              </span>
+            ) : null}
           </li>
         ))}
         {!full ? (

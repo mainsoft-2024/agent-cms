@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>폼 제출</title>
+<link rel="stylesheet" href="https://slash.ai.kr/mockup-kit/v1/kit.css">
+<link rel="stylesheet" href="../media-library/app.css">
+<link rel="stylesheet" href="../publish-flow/x.css">
+<link rel="stylesheet" href="v2.css">
+<script src="https://slash.ai.kr/mockup-kit/v1/kit.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Example</div>
+    <div class="sbtn"><span data-icon="search"></span><span class="grow">검색</span><kbd>⌘K</kbd></div>
+    <div class="nav"><span data-icon="layout-dashboard"></span><span>대시보드</span></div>
+    <h2>컬렉션</h2>
+    <div class="nav"><span data-icon="book-open"></span><span>Blog</span><span class="n">5</span></div>
+    <div class="nav"><span data-icon="book-open"></span><span>Guide</span><span class="n">6</span></div>
+    <div class="nav"><span data-icon="settings"></span><span>사이트 설정</span></div>
+    <div class="nav-gap"></div>
+    <div class="nav"><span data-icon="image"></span><span>미디어</span></div>
+    <div class="nav on"><span data-icon="clipboard-list"></span><span>폼</span></div>
+    <div class="nav"><span data-icon="layers"></span><span>릴리스</span></div>
+  </aside>
+  <main class="main">
+    <header class="phd">
+      <span class="crumbs">폼 <span>/</span></span><h1>문의하기</h1><span class="sw on"></span>
+      <span class="grow"></span>
+      <div class="acts"><span class="b ghost"><span data-icon="code"></span>넣는 코드</span><span class="b out"><span data-icon="download"></span>CSV 내려받기</span></div>
+    </header>
+    <div class="tabs2"><span>필드</span><span class="on">제출 12</span><span>설정</span></div>
+    <div class="content">
+      <div class="pane" data-label="제출 표">
+        <div class="tools"><div class="seg"><span class="on">받은 것 12</span><span>스팸 3</span></div><span class="grow"></span><span class="xs muted">폼 v3 · 이전 버전 제출은 그때의 필드로 보임</span></div>
+        <table>
+          <colgroup><col style="width:18%"><col style="width:26%"><col style="width:14%"><col style="width:30%"><col style="width:12%"></colgroup>
+          <thead><tr><th>이름</th><th>이메일</th><th>문의 종류</th><th>내용</th><th>받은 날</th></tr></thead>
+          <tbody>
+            <tr class="picked"><td>김하늘</td><td class="mono" style="font-size:13px">sky@example.com</td><td>버그</td><td>저장 버튼이 두 번 눌려요…</td><td class="muted">11:04</td></tr>
+            <tr><td>Alex Kim</td><td class="mono" style="font-size:13px">alex@acme.io</td><td>가격</td><td>Team plan for 40 seats?</td><td class="muted">09:12</td></tr>
+            <tr><td>박지수</td><td class="mono" style="font-size:13px">jisu@corp.kr</td><td>기타</td><td>세금계산서 발행 문의</td><td class="muted">어제</td></tr>
+            <tr><td>Mina Lee</td><td class="mono" style="font-size:13px">mina@studio.dev</td><td>버그</td><td>Upload stalls at 90%</td><td class="muted">11. 20.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <aside class="detail" data-label="제출 내용">
+        <div class="row"><b>김하늘</b><span class="grow"></span><span class="xs muted">오늘 오전 11:04 · v3</span></div>
+        <dl class="kv">
+          <dt>이메일</dt><dd class="mono" style="font-size:13px">sky@example.com</dd>
+          <dt>문의 종류</dt><dd>버그</dd>
+          <dt>내용</dt><dd>저장 버튼이 두 번 눌려요. 크롬 최신 버전.</dd>
+          <dt>스크린샷</dt><dd><span class="chip"><span data-icon="paperclip" class="i12"></span>save-twice.png · 412 KB</span></dd>
+        </dl>
+        <span class="grow"></span>
+        <div class="row"><span class="b out sm">스팸으로 표시</span><span class="b out sm danger-text">삭제</span></div>
+      </aside>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -348,12 +348,20 @@ async function body<T>(req: Request, schema: z.ZodType<T>, optional = false): Pr
 /** `If-Match: "v12"` (or W/"v12", or 12) → 12. */
 export function versionFromIfMatch(h: string | null): number | undefined {
   if (!h) return undefined;
-  const m = /^(?:W\/)?"?v?(\d+)"?$/.exec(h.trim());
+  const m = /^(?:W\/)?"?v?(\d+)(?:-[a-z0-9]+)?"?$/.exec(h.trim());
   if (!m) throw new CmsError("invalid_version", {}, { status: 400 });
   return Number(m[1]);
 }
 
 const etag = (d: { version: number }) => `"v${d.version}"`;
+/** 0.21.0: when snippets or `?expand` change what is sent, the tag also follows the content (FNV-1a). */
+function contentTag(raw: CmsDoc, sent: CmsDoc, dynamic: boolean): string {
+  if (!dynamic) return etag(raw);
+  const text = JSON.stringify([sent.body, sent.fields]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return `W/"v${raw.version}-${(h >>> 0).toString(36)}"`;
+}
 
 /** A doc on the wire: editors see the autosave, nobody else does. */
 const wire = (d: CmsDoc) => d;
@@ -792,8 +800,9 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         // 0.21.0: tree, templates, slug suggestions
         if (seg.length === 3 && seg[2] === "_tree" && m === "GET") return json({ tree: await core.tree(actor, col, { draft: q.get("draft") === "1" }) });
         if (seg.length === 3 && seg[2] === "_move" && m === "POST") {
-          const b = await body(req, z.object({ slug: z.string().max(200), parentId: z.string().max(60).nullable().optional(), before: z.string().max(60).nullable().optional() }));
-          return json({ doc: wire(await core.move(actor, col, b.slug, { parentId: b.parentId ?? null, before: b.before ?? null })) });
+          const b = await body(req, z.object({ id: z.string().max(60).optional(), slug: z.string().max(200).optional(), parentId: z.string().max(60).nullable().optional(), before: z.string().max(60).nullable().optional() }));
+          if (!b.id && !b.slug) throw new CmsError("invalid", { detail: "id or slug" }, { messages: core.messages });
+          return json({ doc: wire(await core.move(actor, col, (b.id ?? b.slug)!, { parentId: b.parentId ?? null, before: b.before ?? null })) });
         }
         if (seg.length === 3 && seg[2] === "_suggest-slug" && m === "GET") return json({ slug: await core.suggestSlug(actor, col, q.get("title") ?? "") });
         if (seg[2] === "_templates") {
@@ -842,7 +851,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           if (m === "GET" || m === "HEAD") {
             const raw = await core.get(actor, col, slug, { draft: q.get("draft") === "1", snippets: q.get("snippets") === "raw" ? "raw" : undefined });
             const doc = await core.expand(actor, raw, expandOf(q), q.get("draft") === "1");
-            const tag = etag(raw);
+            const tag = contentTag(raw, doc, expandOf(q).length > 0 || core.collections().some((c) => c.snippets));
             if (req.headers.get("if-none-match") === tag) return new Response(null, { status: 304, headers: { etag: tag } });
             // Editors also learn which open release the document is in.
             const release = q.get("draft") === "1" && core.can(actor, col, "write", doc) ? await core.releases.of(doc.id) : undefined;
@@ -1015,8 +1024,10 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           return json({ doc: wire(await core.expand(actor, doc, expandOf(q), q.get("draft") === "1")) });
         }
         if (seg.length === 2 && m === "PUT") {
-          const b = await body(req, WriteBody);
-          return json({ doc: wire(await core.updateSingle(actor, sl, b.doc, { ...b, expectedVersion: expected(b.expectedVersion) })) });
+          // expectedVersion 0: what GET says before the first save ("create it").
+          const b = await body(req, WriteBody.extend({ expectedVersion: z.number().int().nonnegative().optional() }));
+          const ifMatch = req.headers.get("if-match");
+          return json({ doc: wire(await core.updateSingle(actor, sl, b.doc, { ...b, expectedVersion: b.expectedVersion ?? versionFromIfMatch(ifMatch) })) });
         }
         if (seg.length === 3 && seg[2] === "_publish" && m === "POST") {
           const b = await body(req, Expected, true);
@@ -1040,7 +1051,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       if (seg[0] === "sitemap.xml" && seg.length === 1 && (m === "GET" || m === "HEAD")) {
         const origin = opts.publicOrigin ?? url.origin;
         const page = q.get("page");
-        const xml = await core.sitemap(origin, { page: page ? Math.max(1, Number(page) || 1) : null });
+        const xml = await core.sitemap(origin, { page: page ? Math.max(1, Number(page) || 1) : null, self: `${origin}${url.pathname}` });
         return new Response(m === "HEAD" ? null : xml, { status: 200, headers: { "content-type": "application/xml; charset=utf-8", "cache-control": "public, max-age=300" } });
       }
 

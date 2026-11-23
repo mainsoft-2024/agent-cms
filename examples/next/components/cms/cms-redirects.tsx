@@ -244,7 +244,8 @@ function RedirectDialog({ target, onClose, onSaved }: { target: RedirectView | "
   const [status, setStatus] = React.useState<"301" | "302">(cur?.status === 302 ? "302" : "301");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<{ text: string; field: "from" | "to" | null } | null>(null);
-  const ready = from.trim().length > 1 && to.trim().length > 1;
+  // Any non-empty value: "/" is a fine target (the home page). The server says what is wrong (a loop, a bad address).
+  const ready = from.trim().length > 0 && to.trim().length > 0;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();

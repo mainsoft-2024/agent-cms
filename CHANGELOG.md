@@ -14,14 +14,15 @@ The content model, first half: documents point at each other, nest, hold one doc
 - **Snippets** (`snippets: true`): `[[snippet:key]]` shows the published snippet; filled in on public reads and in the search index, kept as a token for editors and agents. A missing snippet is a warning, a loop an error. The snippet's editor lists the documents that use it.
 - **Blocks**: `:::steps` (numbered steps), `:::card` (a link card with picture and description) and `:::video` (YouTube, Vimeo, more with `video.hosts`, or a file from the media library). Text not in their exact form stays as it was.
 - **Pinned anchors** (`## Title {#id}`) and **anchor aliases**: renaming a heading remembers its old anchor, so old links still land (`cms.anchorAliases()`, `markdownToHtml(…, { anchorAliases })`).
-- **Redirects** (`createCms({ redirects: true })`): a published document's address may change (the admin asks first); the old address redirects with 301. Chains are shortened, loops refused. Admins manage redirects on a new screen (`cms-redirects`) and `/redirects`; `cms.redirects.resolve(path)` answers your 404 page, from memory (30 s, refreshed at once on the server that changed it).
+- **Redirects** (`createCms({ redirects: true })`): a published document's address may change (the admin asks first); the old address redirects with 301. Chains are shortened, loops refused. Admins manage redirects on a new screen (`cms-redirects`) and `/redirects`; `cms.redirects.resolve(path)` answers your 404 page from a table kept in memory (30 s, refreshed at once on the server that changed it).
 - **Address suggestions**: a new document's address follows its title; Korean titles are romanized (`es-hangul`), or kept (`slugs: { hangul: "keep" }`), or not suggested (`"off"`). `GET …/_suggest-slug`, `cms.suggestSlug()`.
 - **SEO** (`seo: true`): search title, description, share image, canonical and noindex per document with search-result and share-card previews and length warnings; `cms.seoFor()`, `GET …/_seo`; `GET /sitemap.xml` (`handler({ publicOrigin })`, `cms.sitemap()`), noindex left out, split above 50 000 addresses.
 - **Body editor top bar**: icons with tooltips and shortcuts (undo, redo, heading level, bold, italic, code, link, lists, to-do, quote, callout, table, code block, divider, steps, link card, video, snippet), grouped, folding into "More" when narrow; find and replace (⌘F, ⌘H) in both modes; word count and reading time. The `+` menu starts with Upload, Library and Video link.
 
 ### Changed
 - `list_collections` says which collections are trees, singles, snippets, have SEO, templates and relation fields; `get_document` keeps snippet tokens.
-- The address of a published document is no longer locked when redirects are on.
+- The address of a published document is no longer locked when redirects are on; it changes when you publish (a draft save with a new address answers `slug_needs_publish`).
+- A document GET whose body or fields depend on other documents (snippets, `?expand`) sends an ETag that follows the content.
 
 ## 0.20.0
 

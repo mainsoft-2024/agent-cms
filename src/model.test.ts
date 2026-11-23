@@ -257,3 +257,25 @@ test("review fixes: draft links stay private, snippets obey beforeRead, draft re
   const k = setup();
   void k;
 });
+
+test("REST: snippet changes change the ETag, _move takes an id, a single's first PUT takes version 0", async () => {
+  const { createCmsHandler } = await import("./http");
+  const { cms } = setup();
+  const h = createCmsHandler({ cms, basePath: "/api", resolveUser: async () => admin });
+  const call = (m: string, p: string, body?: unknown, headers: Record<string, string> = {}) =>
+    h(new Request(`http://x/api${p}`, { method: m, headers: { "content-type": "application/json", origin: "http://x", ...headers }, body: body ? JSON.stringify(body) : undefined }));
+  await cms.create(admin, "snippets", { slug: "n", title: "N", body: "one" }, { publish: true });
+  await cms.create(admin, "guides", { slug: "g", title: "G", body: "[[snippet:n]]" }, { publish: true });
+  const r1 = await call("GET", "/collections/guides/g");
+  const tag = r1.headers.get("etag")!;
+  await cms.update(admin, "snippets", "n", { body: "two" }, { publish: true });
+  const r2 = await call("GET", "/collections/guides/g", undefined, { "if-none-match": tag });
+  assert.equal(r2.status, 200);
+  assert.match(((await r2.json()) as { doc: { body: string } }).doc.body, /two/);
+  const a = await cms.create(admin, "guides", { slug: "ta", title: "TA" });
+  const b = await cms.create(admin, "guides", { slug: "tb", title: "TB" });
+  assert.equal((await call("POST", "/collections/guides/_move", { id: b.id, parentId: a.id })).status, 200);
+  const put = await call("PUT", "/singles/site", { doc: { fields: { name: "X" } }, expectedVersion: 0 });
+  assert.equal(put.status, 200);
+  assert.equal((await call("PUT", "/singles/site", { doc: { fields: { name: "Y" } }, expectedVersion: 0 })).status, 409);
+});

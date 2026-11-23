@@ -10,6 +10,9 @@ import { CmsDocEditor } from "../cms/cms-doc-editor";
 import { CmsDocList } from "../cms/cms-doc-list";
 import { CmsRedirects } from "../cms/cms-redirects";
 import { CmsShell } from "../cms/cms-shell";
+import { RelationPicker } from "../cms/cms-fields-more";
+import { chooseTemplate } from "../cms/cms-structure";
+import type { TemplateView } from "@mainsoft/agent-cms/client";
 import { setMobile } from "./setup";
 import { admin, axeViolations, makeServer, renderWith } from "./server";
 
@@ -230,4 +233,125 @@ test("single: the nav marks it; the editor opens with the defaults and saving cr
   await user.type(name, "Example");
   await user.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(async () => assert.equal(((await s.cms.single(admin, "site", { draft: true })).fields as { name: string }).name, "Example"));
+});
+
+test("rename: Save with a changed published address explains and does not publish; the dialog's button publishes", async () => {
+  const s = makeServer({ model: true });
+  await s.cms.create(admin, "docs", { slug: "intro", title: "Intro", body: "x" }, { publish: true });
+  let renamed = "";
+  renderWith(s, <CmsDocEditor collection="docs" slug="intro" onRenamed={(c, slug) => (renamed = `${c}/${slug}`)} />);
+  await screen.findByLabelText(/^Title/);
+  fireEvent.change(screen.getByLabelText(/^Slug/), { target: { value: "welcome" } });
+  const user = userEvent.setup();
+  const before = s.requests.length;
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  const dlg = await screen.findByRole("alertdialog", { name: "The address changes only when you publish" });
+  // Nothing went to the server: a draft save would be refused, and Save must never publish by itself.
+  assert.deepEqual(
+    s.requests.slice(before).filter((r) => r.method !== "GET" && !/\/(presence|_diagnose)$/.test(r.path)),
+    []
+  );
+  assert.equal((await s.cms.get(admin, "docs", "intro")).slug, "intro");
+  await user.click(within(dlg).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => assert.ok(!screen.queryByRole("alertdialog")));
+
+  // Publish with the changed address asks the same; confirming publishes at the new one.
+  await user.click(screen.getByRole("button", { name: "Publish" }));
+  const again = await screen.findByRole("alertdialog", { name: "The address changes only when you publish" });
+  await user.click(within(again).getByRole("button", { name: "Publish at the new address" }));
+  await waitFor(async () => assert.equal((await s.cms.get(admin, "docs", "welcome")).slug, "welcome"));
+  await waitFor(() => assert.equal(renamed, "docs/welcome"));
+});
+
+test("rename: without the right to publish the dialog's button is off, with a note", async () => {
+  const s = makeServer({ model: true });
+  await s.cms.create(admin, "docs", { slug: "intro", title: "Intro", body: "x" }, { publish: true });
+  // Someone who may edit but not publish: the schema says so.
+  const realFetch = s.fetch;
+  const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const res = await realFetch(input, init);
+    if (!String(input).includes("/_schema")) return res;
+    const body = (await res.json()) as Record<string, unknown>;
+    return new Response(JSON.stringify({ ...body, canPublish: false }), { status: res.status, headers: res.headers });
+  }) as typeof fetch;
+  renderWith({ ...s, fetch: fetchFn }, <CmsDocEditor collection="docs" slug="intro" />);
+  await screen.findByLabelText(/^Title/);
+  fireEvent.change(screen.getByLabelText(/^Slug/), { target: { value: "welcome" } });
+  fireEvent.keyDown(screen.getByLabelText(/^Slug/), { key: "s", ctrlKey: true });
+  const dlg = await screen.findByRole("alertdialog", { name: "The address changes only when you publish" });
+  assert.equal((within(dlg).getByRole("button", { name: "Publish at the new address" }) as HTMLButtonElement).disabled, true);
+  assert.ok(within(dlg).getByText(/cannot publish this document yourself/));
+});
+
+test("relation picker: an answer for an older search is dropped; Enter waits for the current one", async () => {
+  const s = makeServer({ model: true });
+  await s.cms.create(admin, "team", { slug: "paul", title: "Paul Park", body: "x" }, { publish: true });
+  await s.cms.create(admin, "team", { slug: "lee", title: "Lee Minho", body: "x" }, { publish: true });
+  // Searches are held until the test lets them through, by their text.
+  const held = new Map<string, () => void>();
+  const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (!url.pathname.endsWith("/team") || (init?.method ?? "GET") !== "GET") return s.fetch(input, init);
+    const q = url.searchParams.get("q") ?? "";
+    await new Promise<void>((go) => held.set(q, go));
+    return s.fetch(input, init);
+  }) as typeof fetch;
+  const picked: string[] = [];
+  renderWith({ ...s, fetch: fetchFn }, <RelationPicker title="Author" collections={["team"]} onPick={(d) => picked.push(d.slug)} onClose={() => {}} />);
+  const box = await screen.findByRole("combobox", { name: "Search by title or address" });
+  await waitFor(() => assert.ok(held.has("")));
+  const user = userEvent.setup();
+  await user.type(box, "lee");
+  await waitFor(() => assert.ok(held.has("lee")));
+  held.get("lee")!();
+  await screen.findByText("Lee Minho");
+  // The first search (everyone) answers late: it must not replace the results for "lee".
+  held.get("")!();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(!screen.queryByText("Paul Park"));
+
+  // A new search on its way: the old rows stay but Enter picks nothing.
+  await user.clear(box);
+  await user.type(box, "paul");
+  await waitFor(() => assert.ok(held.has("paul")));
+  await user.keyboard("{Enter}");
+  assert.deepEqual(picked, []);
+  held.get("paul")!();
+  await screen.findByText("Paul Park");
+  await user.keyboard("{Enter}");
+  assert.deepEqual(picked, ["paul"]);
+  // Anything else still held is let go so the test ends cleanly.
+  for (const go of held.values()) go();
+});
+
+test("redirects: the home page / is a valid new address", async () => {
+  const s = makeServer({ model: true });
+  renderWith(s, <CmsRedirects />);
+  await screen.findByText("No redirects yet");
+  const user = userEvent.setup();
+  await user.click(screen.getAllByRole("button", { name: "New redirect" })[0]);
+  const dlg = await screen.findByRole("dialog", { name: "New redirect" });
+  await user.clear(within(dlg).getByLabelText("Old address"));
+  await user.type(within(dlg).getByLabelText("Old address"), "/old-home");
+  assert.equal((within(dlg).getByLabelText("New address") as HTMLInputElement).value, "/");
+  const create = within(dlg).getByRole("button", { name: "Create" }) as HTMLButtonElement;
+  assert.equal(create.disabled, false);
+  await user.click(create);
+  await waitFor(() => assert.ok(!screen.queryByRole("dialog")));
+  const [saved] = await s.cms.redirects.list(admin);
+  assert.equal(saved.from, "/old-home");
+  assert.equal(saved.to, "/");
+});
+
+test("templates: values the schema no longer takes are left out, and the editor says which", async () => {
+  const s = makeServer({ model: true });
+  chooseTemplate("guide", { key: "old", label: "Old one", title: "From an old template", body: "x", fields: { featured: true, plans: ["pro"], order: "high", audience: "nobody", removed: 1 } } as TemplateView);
+  renderWith(s, <CmsDocEditor collection="guide" />);
+  await waitFor(() => assert.equal((screen.getByLabelText(/^Title/) as HTMLInputElement).value, "From an old template"));
+  assert.ok(await screen.findByText(/Started from “Old one”/));
+  const status = await screen.findByText(/order, audience, removed/);
+  assert.match(status.textContent ?? "", /Started from “Old one”/);
+  fireEvent.change(screen.getByLabelText(/^Slug/), { target: { value: "from-old" } });
+  await userEvent.setup().click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(async () => assert.deepEqual((await s.cms.get(admin, "guide", "from-old", { draft: true })).fields, { featured: true, plans: ["pro"] }));
 });
