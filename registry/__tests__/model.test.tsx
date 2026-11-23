@@ -573,9 +573,11 @@ test("relation picker: with several collections typing goes to the search box, a
   const user = userEvent.setup();
   const docsTab = screen.getByRole("tab", { name: "Docs" });
   await user.click(docsTab);
+  // On a slow runner the click can land before the dialog's own focus settles: wait until the tab has it.
+  await waitFor(() => assert.ok(document.activeElement === docsTab, `focus on ${document.activeElement?.tagName}`));
   await user.keyboard("{ArrowRight}");
   const teamTab = screen.getByRole("tab", { name: "Team" });
-  assert.equal(teamTab.getAttribute("aria-selected"), "true");
+  await waitFor(() => assert.equal(teamTab.getAttribute("aria-selected"), "true"));
   assert.ok(document.activeElement === teamTab, `focus on ${document.activeElement?.tagName} ${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.slice(0, 40)}`);
   assert.equal(docsTab.tabIndex, -1);
   assert.ok(await screen.findByRole("option", { name: /Paul Park/ }));

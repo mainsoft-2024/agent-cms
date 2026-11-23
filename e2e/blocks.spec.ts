@@ -213,6 +213,10 @@ test("blocks: full screen covers the admin, keeps the fields one click away, and
   await line(page, "p", "First line.").click();
   await page.keyboard.press("Escape");
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  // A tooltip left open under the pointer takes the first Esc (it closes first, as a menu does):
+  // move the pointer onto the text and wait until no tooltip shows.
+  await line(page, "p", "Second line.").hover();
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(region).toHaveCount(0);
   await expect(nav).toBeVisible();
