@@ -129,6 +129,33 @@ export function buildPublicRegistry(src: string | { dir: string; built: boolean 
   return written;
 }
 
+/** npm packages the items need (other than this package) that the app's package.json does not list. */
+export function missingPackages(cwd: string, items: RegistryItem[]): string[] {
+  let have: Record<string, string> = {};
+  try {
+    const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as Record<string, Record<string, string> | undefined>;
+    have = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies };
+  } catch {
+    /* no package.json: everything is missing */
+  }
+  const out = new Set<string>();
+  for (const it of items)
+    for (const dep of it.dependencies ?? []) {
+      const name = dep.replace(/(?!^)@[^@/]*$/, "");
+      if (name === "@mainsoft/agent-cms" || name in have) continue;
+      out.add(dep);
+    }
+  return [...out];
+}
+
+/** The command that adds npm packages with the app's package manager. */
+export function installCommand(cwd: string, pkgs: string[]): [string, string[]] {
+  if (existsSync(join(cwd, "pnpm-lock.yaml"))) return ["pnpm", ["add", ...pkgs]];
+  if (existsSync(join(cwd, "yarn.lock"))) return ["yarn", ["add", ...pkgs]];
+  if (existsSync(join(cwd, "bun.lockb")) || existsSync(join(cwd, "bun.lock"))) return ["bun", ["add", ...pkgs]];
+  return ["npm", ["install", ...pkgs]];
+}
+
 /** Items in install order (dependencies first) for the names asked. */
 export function resolveItems(reg: Registry, names: string[]): RegistryItem[] {
   const byName = new Map(reg.items.map((i) => [i.name, i]));
@@ -215,6 +242,8 @@ export function readLock(cwd: string): LockFile {
 }
 
 export interface AddResult {
+  /** npm packages the copied files import that the app does not list yet (`name@range`). */
+  missingPackages: string[];
   written: string[];
   skipped: { file: string; reason: string }[];
   updated: string[];
@@ -242,7 +271,7 @@ export function addItems(o: AddOptions): AddResult {
   const names = o.items.length ? o.items : o.mode === "add" ? [] : [...new Set(Object.values(lock.files).map((f) => f.item))];
   if (!names.length) throw new Error(`[agent-cms] name the items to add: ${reg.items.map((i) => i.name).join(", ")}`);
   const items = resolveItems(reg, names);
-  const res: AddResult = { written: [], skipped: [], updated: [], conflicts: [], unchanged: [], missingParts: [], diff: "" };
+  const res: AddResult = { missingPackages: [], written: [], skipped: [], updated: [], conflicts: [], unchanged: [], missingParts: [], diff: "" };
   const diffs: string[] = [];
 
   for (const it of items) {
@@ -294,6 +323,7 @@ export function addItems(o: AddOptions): AddResult {
 
   const parts = shadcnParts(reg, items);
   res.missingParts = parts.filter((p) => !existsSync(join(layout.uiDir, `${p}.tsx`)) && !existsSync(join(layout.uiDir, `${p}.jsx`)));
+  res.missingPackages = missingPackages(o.cwd, items);
   res.diff = diffs.filter(Boolean).join("\n\n");
   if (o.mode !== "diff") writeFileSync(join(o.cwd, LOCK_FILE), JSON.stringify({ ...lock, version: VERSION }, null, 2) + "\n");
   return res;

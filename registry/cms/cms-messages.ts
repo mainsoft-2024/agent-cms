@@ -1454,6 +1454,15 @@ export const en = {
   blk_copied_blocks: "Copied {n} blocks",
   blk_turn_n: "Turn {n} blocks into",
   blk_options: "Block options",
+  blk_media_upload_failed: "The upload did not finish.",
+  blk_media_broken: "The picture could not be loaded.",
+  blk_media_empty: "No file chosen yet.",
+  blk_media_choose: "Choose a file",
+  blk_copy_failed: "The browser did not allow copying.",
+  blk_slash_count: "{n} blocks match",
+  blk_table_align: "Align",
+  blk_table_leave: "Leave the table",
+  blk_merged_both: "Someone else changed the same lines meanwhile. Both versions were kept, theirs first.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2894,6 +2903,15 @@ export const ko: CmsMessages = {
   blk_copied_blocks: "블록 {n}개 복사함",
   blk_turn_n: "블록 {n}개 바꾸기",
   blk_options: "블록 옵션",
+  blk_media_upload_failed: "올리기가 끝나지 않음",
+  blk_media_broken: "그림을 불러오지 못함",
+  blk_media_empty: "아직 고른 파일 없음",
+  blk_media_choose: "파일 고르기",
+  blk_copy_failed: "브라우저가 복사를 막음",
+  blk_slash_count: "맞는 블록 {n}개",
+  blk_table_align: "정렬",
+  blk_table_leave: "표에서 나가기",
+  blk_merged_both: "그동안 다른 곳에서 같은 줄을 고침. 두 쪽을 모두 남김(상대 쪽 먼저)",
 };
 
 export type MessageParams = Record<string, string | number | null | undefined>;

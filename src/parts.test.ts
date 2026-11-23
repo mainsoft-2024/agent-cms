@@ -339,14 +339,24 @@ test("messages: every placeholder in a translation exists in English, and the ot
   assert.deepEqual(bad, []);
 });
 
-test("the block editor is our own: no editor library in the screens or the package", () => {
+test("the editor engine stays in the block editor: Tiptap (MIT) there only, never in the package", () => {
   const dir = join(import.meta.dirname, "../registry/cms");
-  const editorLibs = /from\s+["'](@blocknote|@tiptap|prosemirror|lexical|@lexical|slate|@udecode|@platejs|@mantine|quill|@editorjs)/;
-  const bad = readdirSync(dir).filter((f) => editorLibs.test(readFileSync(join(dir, f), "utf8")));
-  assert.deepEqual(bad, []);
+  // Only the block editor item uses the editing engine; every other screen and the package stay free of it.
+  const engine = /from\s+["'](@tiptap|prosemirror)/;
+  const elsewhere = readdirSync(dir).filter((f) => engine.test(readFileSync(join(dir, f), "utf8")) && !["cms-block-editor.tsx", "cms-blocks-pm.ts"].includes(f));
+  assert.deepEqual(elsewhere, []);
+  // Other editor libraries (and the GPL/paid parts of some) are not used anywhere.
+  const others = /from\s+["'](@blocknote|lexical|@lexical|slate|@udecode|@platejs|@mantine|quill|@editorjs|@tiptap-pro)/;
+  assert.deepEqual(readdirSync(dir).filter((f) => others.test(readFileSync(join(dir, f), "utf8"))), []);
   const pkg = JSON.parse(readFileSync(join(import.meta.dirname, "../package.json"), "utf8")) as Record<string, Record<string, string> | undefined>;
-  const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies });
-  assert.deepEqual(deps.filter((d) => /^(@blocknote|@tiptap|@mantine|prosemirror|lexical|@lexical)/.test(d)), []);
+  const shipped = Object.keys({ ...pkg.dependencies, ...pkg.peerDependencies });
+  assert.deepEqual(shipped.filter((d) => /^(@blocknote|@tiptap|@mantine|prosemirror|lexical|@lexical)/.test(d)), []);
+  // The registry item names exactly the MIT Tiptap packages it imports.
+  const reg = JSON.parse(readFileSync(join(import.meta.dirname, "../registry/registry.json"), "utf8")) as { items: { name: string; dependencies?: string[] }[] };
+  const item = reg.items.find((i) => i.name === "cms-block-editor")!;
+  const used = new Set<string>();
+  for (const f of ["cms-block-editor.tsx", "cms-blocks-pm.ts"]) for (const m of readFileSync(join(dir, f), "utf8").matchAll(/from\s+["'](@tiptap\/[a-z-]+)/g)) used.add(m[1]);
+  assert.deepEqual([...used].sort(), (item.dependencies ?? []).filter((d) => d.startsWith("@tiptap/")).map((d) => d.replace(/@[^@/]+$/, "")).sort());
 });
 
 test("markdown: code spans with backticks inside read back the same", async () => {

@@ -13,7 +13,7 @@
 // operations that keep that true.
 // Pure functions: no React, no DOM (tested in node).
 
-import { inlineToMarkdown, parseMarkdown, sameBlocks, toMarkdown, type Block, type Inline, type TableAlign } from "@mainsoft/agent-cms/markdown";
+import { closesFence, inlineToMarkdown, parseMarkdown, sameBlocks, toMarkdown, type Block, type Inline, type TableAlign } from "@mainsoft/agent-cms/markdown";
 import { mdToSpans, spansToMd, type Span } from "./cms-blocks-inline";
 
 export type TextType = "p" | "h2" | "h3" | "quote" | "callout" | "bullet" | "number" | "todo" | "toggle";
@@ -77,7 +77,7 @@ export function sourceKind(b: Block): string {
 const LIST_MARK = /^\s*(?:[-*+]|\d+[.)])\s/;
 const CONTAINER = /^:::([a-z][a-z0-9-]*)(?:[ \t]+(.*?))?\s*$/;
 const CLOSE = /^:::\s*$/;
-const FENCE = /^```/;
+const FENCE = /^`{3,}[^`\s]*\s*$/;
 
 function indentOf(line: string): number {
   let n = 0;
@@ -125,7 +125,7 @@ function splitColumns(inner: string[]): string[] {
       cols[cols.length - 1].push(l);
       while (++k < inner.length) {
         cols[cols.length - 1].push(inner[k]);
-        if (/^```\s*$/.test(inner[k])) break;
+        if (closesFence(inner[k], l)) break;
       }
       continue;
     }
@@ -285,6 +285,24 @@ function treeFp(b: EBlock, kids: Map<string, EBlock[]>): string {
   return `${fingerprint(b)}{${(kids.get(b.id) ?? []).map((k) => treeFp(k, kids)).join(",")}}`;
 }
 
+/**
+ * Fingerprints again, on blocks that came back from another document model (the editor's).
+ * What a block "looked like when loaded" is then measured in that model, so a difference in
+ * how the two models spell the same thing never counts as an edit.
+ */
+export function refreshFingerprints(blocks: readonly EBlock[]): EBlock[] {
+  const kids = childrenOf(blocks);
+  return blocks.map((b) => (b.orig ? ({ ...b, orig: { md: b.orig.md, fp: treeFp(b, kids) } } as EBlock) : b));
+}
+
+/** The blank lines before and after the text of a document, kept around the body the editor writes. */
+export function keepEdges(original: string, body: string): string {
+  if (!body) return original.trim() ? body : original;
+  const lead = /^\n*/.exec(original)![0];
+  const trail = /\n*$/.exec(original)![0];
+  return lead + body + trail;
+}
+
 /** Markdown → blocks for the editor. Each block remembers its text, and the blank lines before it. */
 export function markdownToBlocks(md: string, parent?: string): EBlock[] {
   const lines = md.split("\n");
@@ -317,7 +335,7 @@ export function markdownToBlocks(md: string, parent?: string): EBlock[] {
 
 function fence(code: string): string {
   let f = "```";
-  while (code.includes(f)) f += "`";
+  while (code.split("\n").some((x) => closesFence(x, f))) f += "`";
   return f;
 }
 
@@ -404,39 +422,43 @@ export function blocksToMarkdown(blocks: readonly EBlock[]): string {
     if (f === undefined) fps.set(b.id, (f = `${fingerprint(b)}{${(kids.get(b.id) ?? []).map(fpOf).join(",")}}`));
     return f;
   };
-  const untouched = (b: EBlock, num?: number) => {
+  /** Written from its original text? `after`: the block before it at this level and whether that one was. */
+  const untouched = (b: EBlock, num?: number, after?: { id: string; kept: boolean } | null) => {
     if (!b.orig || b.orig.fp !== fpOf(b)) return false;
-    // A numbered item that moved writes its new number.
-    if (b.type === "number" && num !== undefined) return Number(/^\s*(\d+)/.exec(b.orig.md)?.[1]) === num;
+    // A numbered item keeps its number when it is still where it was (lists written "1. 1. 1." stay so);
+    // one that moved writes its new number.
+    if (b.type === "number" && num !== undefined && Number(/^\s*(\d+)/.exec(b.orig.md)?.[1]) !== num) return !!after && after.kept && b.gap?.after === after.id;
     return true;
   };
 
   const level = (sibs: readonly EBlock[]): string => {
     let out = "";
     let prev: EBlock | null = null;
-    let prevNum = 0;
+    let prevKept = false;
     let num = 1;
     for (const b of sibs) {
       if (b.type === "number") num = prev?.type === "number" && !b.newList ? num + 1 : (b.start ?? 1);
-      const md = blockMd(b, num);
+      const after = prev ? { id: prev.id, kept: prevKept } : null;
+      const kept = untouched(b, b.type === "number" ? num : undefined, after);
+      const md = blockMd(b, num, after);
       if (!md.trim() && b.type !== "code") {
         // An empty line in the editor is nothing in markdown, and ends a list.
         prev = null;
         continue;
       }
       const sameList = prev && isList(b) && b.type === prev.type && !(b as TextBlock).newList;
-      const sep = prev && b.gap && b.gap.after === prev.id && untouched(b, b.type === "number" ? num : undefined) && untouched(prev, prev.type === "number" ? prevNum : undefined) ? b.gap.text : sameList ? "\n" : "\n\n";
+      const sep = prev && b.gap && b.gap.after === prev.id && kept && prevKept ? b.gap.text : sameList ? "\n" : "\n\n";
       out += out ? sep + md : md;
       prev = b;
-      prevNum = num;
+      prevKept = kept;
     }
     return out;
   };
 
   const inside = (b: EBlock) => level(kids.get(b.id) ?? []);
 
-  function blockMd(b: EBlock, num: number): string {
-    if (untouched(b, b.type === "number" ? num : undefined)) return b.orig!.md;
+  function blockMd(b: EBlock, num: number, after?: { id: string; kept: boolean } | null): string {
+    if (untouched(b, b.type === "number" ? num : undefined, after)) return b.orig!.md;
     if (b.type === "columns") {
       const cols = (kids.get(b.id) ?? []).map((c) => (c.type === "col" ? inside(c) : blockMd(c, 1)));
       if (!cols.some((c) => c.trim())) return "";
