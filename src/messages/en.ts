@@ -174,6 +174,7 @@ export const en: Messages = {
   snippet_cycle: "Snippets cannot include each other in a loop ({path})",
   snippet_inline_multi: "The snippet “{key}” has more than one paragraph, so it cannot sit inside a line of text. Put it on a line of its own",
   video_host_blocked: "Videos from {host} are not allowed. Allowed: {hosts}",
+  anchor_pin_taken: "Another heading already uses {#{pin}} (line {line}). This heading 4 is at #{id}",
   redirect_not_found: "Redirect not found",
   redirects_off: "Redirects are off. Turn them on with createCms({ redirects: true })",
   redirect_invalid: "A redirect needs an address that starts with / ({reason})",

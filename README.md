@@ -176,8 +176,9 @@ of its own or, for a one-paragraph snippet, inside a sentence.
 `cms.single(actor, "site")` returns the defaults until the first save.
 `cms.seoFor(doc)` fills a page's head (and warns about a share image under
 1200×630). `GET /sitemap.xml` lists published public documents (`noindex` left
-out). New blocks: `:::steps`, `:::card`, `:::video`; `## Title {#id}` pins an
-anchor. With redirects on, `cms.resolveRedirect(path)` answers your 404 page;
+out). New blocks: `:::steps`, `:::card`, `:::video` (YouTube and Vimeo, more
+with `video: { hosts }`, only yours with `video: { hosts, defaults: false }`);
+`## Title {#id}` pins an anchor. With redirects on, `cms.resolveRedirect(path)` answers your 404 page;
 admins add redirects to an address or to a document (it follows the document's
 current address) and see visits per day for 30 days. Details in
 `UPGRADE-0.21.md`.

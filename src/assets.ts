@@ -57,6 +57,12 @@ export interface MediaStoreConfig {
   accept?: readonly string[];
   /** Largest file in bytes (replaces `media.maxFileSize` for this store). */
   maxFileSize?: number;
+  /**
+   * The origins browsers send files to and read them from for this store (replaces the adapter's
+   * `browserOrigins`), e.g. `["https://files.example.com"]`. The bundled admin lists them in its
+   * Content-Security-Policy (`connect-src`). Needed for a custom adapter that does not say.
+   */
+  browserOrigins?: readonly string[];
 }
 
 export interface ScanFile {
@@ -1330,6 +1336,11 @@ export function createAssets(ctx: AssetsContext) {
     return { registered, known: seen.size - registered, missing };
   }
 
+  function originsOf(n: string): readonly string[] | null {
+    const s = media!.stores[n];
+    return s.browserOrigins ?? s.adapter.browserOrigins ?? null;
+  }
+
   function describe(actor: Actor) {
     if (!media) return null;
     const stores = names
@@ -1344,16 +1355,18 @@ export function createAssets(ctx: AssetsContext) {
   return {
     enabled: !!media && names.length > 0,
     stores: () => names.map((n) => ({ name: n, ...media!.stores[n], ...rulesOf(media!.stores[n]) })),
-    /** Where browsers upload to (origins of every store), or null when a store does not say. For a Content-Security-Policy. */
-    browserOrigins: (): string[] | null => {
+    /**
+     * Where browsers upload to and read from (origins every store names, through its config's
+     * `browserOrigins` or its adapter's). For a Content-Security-Policy. A store that names none adds
+     * nothing: see `storesWithoutOrigins()`.
+     */
+    browserOrigins: (): string[] => {
       const out = new Set<string>();
-      for (const n of names) {
-        const o = media!.stores[n].adapter.browserOrigins;
-        if (!o) return null;
-        for (const x of o) out.add(x);
-      }
+      for (const n of names) for (const x of originsOf(n) ?? []) out.add(x);
       return [...out];
     },
+    /** Stores whose browser origins are unknown (a custom adapter without `browserOrigins`). */
+    storesWithoutOrigins: (): string[] => names.filter((n) => !originsOf(n)),
     describe,
     can: canAsset,
     requestUpload,

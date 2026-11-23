@@ -191,6 +191,7 @@ export const ERROR_CODES = {
   snippet_cycle: "invalid",
   snippet_inline_multi: "invalid",
   video_host_blocked: "invalid",
+  anchor_pin_taken: "invalid",
   redirect_not_found: "not_found",
   redirects_off: "not_found",
   redirect_invalid: "invalid",

@@ -122,9 +122,11 @@ test("redirects: each visit counts on its own day across midnight; visits being 
     return orig(...a);
   };
   const flushing = cms.core.redirects.flushHits();
-  const during = (await cms.core.redirects.list(admin)).find((x) => x.id === r.id)!;
-  assert.deepEqual(during.daily.slice(-2), [2, 1], "in flight, still counted");
+  // A read during the write waits for that one count to land (never sees it twice or not at all).
+  const reading = cms.core.redirects.list(admin);
   release();
+  const during = (await reading).find((x) => x.id === r.id)!;
+  assert.deepEqual(during.daily.slice(-2), [2, 1], "in flight, still counted");
   await flushing;
   const days = await repo.redirectHitDays("2026-03-01");
   assert.deepEqual(days.filter((x) => x.redirectId === r.id).map((x) => [x.day, x.n]).sort(), [["2026-03-09", 2], ["2026-03-10", 1]]);
@@ -160,7 +162,8 @@ test("heading 4 never moves a ## or ### anchor: it takes the next free id after 
   const cases: { body: string; h2h3: string[]; h4: string[] }[] = [
     { body: "#### Setup\n\nx\n\n## Setup\n\ny", h2h3: ["setup"], h4: ["setup-1"] },
     { body: "## Setup\n\n#### Setup\n\n### Setup\n\n## Setup", h2h3: ["setup", "setup-1", "setup-2"], h4: ["setup-3"] },
-    { body: "#### Notes {#notes}\n\n## Notes\n\n#### Notes", h2h3: ["notes"], h4: ["notes", "notes-2"] },
+    // A heading 4 pinned to a ## id: the ## keeps it, the #### takes the next free one (and a warning).
+    { body: "#### Notes {#notes}\n\n## Notes\n\n#### Notes", h2h3: ["notes"], h4: ["notes-1", "notes-2"] },
     { body: "#### Setup 1\n\n## Setup\n\n## Setup\n\n#### Setup", h2h3: ["setup", "setup-1"], h4: ["setup-1-1", "setup-2"] },
   ];
   for (const c of cases) {
@@ -231,4 +234,149 @@ test("snippets: escaped tokens and tokens in code are text for expansion, diagno
   await cms.create(admin, "guides", { slug: "uses", title: "Uses", body: "[[snippet:long]]" });
   assert.deepEqual((await cms.core.snippetUses(admin, "snippets", "long")).map((x) => x.slug), ["uses"]);
   assert.deepEqual((await cms.core.snippetUses(admin, "snippets", "vat")).map((x) => x.slug), ["how"]);
+});
+
+// ── delta review ────────────────────────────────────────────────────────────
+
+test("templates: fieldAccess rules see a complete draft (slug, status, collection), and the real new document when creating", async () => {
+  const repo = new MemoryRepo();
+  const looked: { slug: string; status: string; collection: string; version: number; id: string }[] = [];
+  const guides = defineCollection({
+    slug: "guides",
+    label: "Guides",
+    visibility: "public",
+    fields: z.object({ cost: z.number().optional(), team: z.string().optional() }),
+    fieldAccess: {
+      cost: {
+        read: ({ actor, doc }) => {
+          looked.push({ slug: doc.slug, status: doc.status, collection: doc.collection, version: doc.version, id: doc.id });
+          return (actor.kind === "user" && actor.isAdmin) || (doc.slug.startsWith("public-") && doc.status === "draft" && doc.collection === "guides");
+        },
+      },
+    },
+    templates: [{ key: "priced", label: "Priced", body: "## Price", fields: { cost: 10, team: "docs" } }],
+  });
+  const cms = createCms({ repo, collections: [guides], searchRefreshMs: 0 });
+  // Listing as a writer used to throw (`doc.slug` was undefined).
+  const listed = await cms.core.templates(writerKey, "guides");
+  assert.deepEqual(listed[0].fields, { team: "docs" }, "no address yet: the rule says no");
+  const seen = looked.at(-1)!;
+  assert.deepEqual([seen.slug, seen.status, seen.collection, seen.version], ["", "draft", "guides", 0]);
+  // Creating: the rule looks at the document being made (its slug), so a public-… one gets the cost.
+  await cms.create(writerKey, "guides", { slug: "public-a", title: "A" }, { template: "priced" });
+  assert.equal(looked.some((d) => d.slug === "public-a" && d.version === 0), true);
+  assert.equal((await cms.get(admin, "guides", "public-a", { draft: true })).fields?.cost, 10);
+  await cms.create(writerKey, "guides", { slug: "inner", title: "B" }, { template: "priced" });
+  const inner = await cms.get(admin, "guides", "inner", { draft: true });
+  assert.equal(inner.fields?.cost, undefined, "hidden from this writer: not copied");
+  assert.equal(inner.fields?.team, "docs");
+});
+
+test("heading 4 pinned to a ## / ### id: the ## keeps it, the #### takes the next free one with a warning", async () => {
+  const { parseMarkdown, toMarkdown, headingAnchors } = await import("./markdown");
+  const { markdownToHtml } = await import("./html");
+  const body = "## Setup\n\n#### Details {#setup}\n\n### Usage\n\n#### More {#usage}\n\n#### Own {#own}";
+  const heads = parseMarkdown(body).flatMap((b) => (b.t === "heading" ? [[b.level, b.id]] : []));
+  assert.deepEqual(heads, [[2, "setup"], [4, "setup-1"], [3, "usage"], [4, "usage-1"], [4, "own"]]);
+  assert.deepEqual(headingAnchors(body).map((h) => h.id), ["setup", "setup-1", "usage", "usage-1", "own"]);
+  const html = markdownToHtml(body);
+  assert.equal(html.match(/id="setup"/g)?.length, 1, html);
+  assert.ok(html.includes('id="setup-1"') && html.includes('id="usage-1"'));
+  // What was written stays written.
+  assert.equal(toMarkdown(parseMarkdown(body)), body);
+  const repo = new MemoryRepo();
+  const guides = defineCollection({ slug: "guides", label: "Guides", visibility: "public" });
+  const cms = createCms({ repo, collections: [guides], searchRefreshMs: 0 });
+  const d = (await cms.diagnose(admin, "guides", { slug: "a", title: "A", body })).filter((x) => x.code === "anchor_pin_taken");
+  assert.deepEqual(d.map((x) => [x.severity, x.params?.pin, x.params?.id, x.params?.line]), [["warning", "setup", "setup-1", 3], ["warning", "usage", "usage-1", 7]]);
+  // A warning, not an error: it saves.
+  await cms.create(admin, "guides", { slug: "a", title: "A", body });
+  const { formatMessage } = await import("./errors");
+  const { ko } = await import("./messages/ko");
+  assert.match(formatMessage(ko, "anchor_pin_taken", { pin: "setup", id: "setup-1", line: 3 }), /#setup-1$/);
+});
+
+test("video files in use come from the parsed tree: an unclosed :::video is text, a quoted one counts; save checks the same", async () => {
+  const { assetUses } = await import("./markdown");
+  const open = ":::video\nasset:vidvidvid001\n\nno closing line";
+  assert.deepEqual(assetUses(open), [], "not a block: not a use");
+  const quoted = "> :::video\n> asset:vidvidvid002/clip.mp4\n> :::";
+  assert.deepEqual(assetUses(quoted).map((u) => [u.id, u.line]), [["vidvidvid002", 2]]);
+  // Saving: a missing file in a quoted video is reported; one in an unclosed block (text) is not.
+  const { MemoryStorage } = await import("./storage");
+  const repo = new MemoryRepo();
+  const guides = defineCollection({ slug: "guides", label: "Guides", visibility: "public" });
+  const cms = createCms({ repo, collections: [guides], searchRefreshMs: 0, media: { stores: { public: { adapter: new MemoryStorage(), visibility: "public" } } } });
+  await assert.rejects(cms.create(admin, "guides", { slug: "q", title: "Q", body: quoted }), (e: unknown) => e instanceof CmsError && (e.diagnostics ?? []).some((x) => x.code === "asset_missing" && x.params?.id === "vidvidvid002"));
+  const d = await cms.diagnose(admin, "guides", { slug: "o", title: "O", body: open });
+  assert.deepEqual(d.filter((x) => x.code === "asset_missing"), []);
+});
+
+test("redirects: visits being written are counted once, also after the first redirect's row is written and before the next", async () => {
+  const { cms, repo } = redirectSetup({ now: () => new Date("2026-03-09T12:00:00Z") });
+  const a = await cms.core.redirects.create(admin, { from: "/a", to: "/x" });
+  const b = await cms.core.redirects.create(admin, { from: "/b", to: "/y" });
+  await cms.core.resolveRedirect("/a");
+  await cms.core.resolveRedirect("/a");
+  await cms.core.resolveRedirect("/b");
+  const orig = repo.addRedirectHits.bind(repo);
+  let calls = 0;
+  let firstDone!: () => void;
+  const first = new Promise<void>((r) => (firstDone = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  repo.addRedirectHits = async (...args: Parameters<typeof orig>) => {
+    if (calls++ === 0) {
+      const out = await orig(...args);
+      firstDone();
+      return out;
+    }
+    await gate;
+    return orig(...args);
+  };
+  const flushing = cms.core.redirects.flushHits();
+  await first;
+  // The first redirect's row is in the database now; the second one is still being written.
+  const rows = await repo.redirectHitDays("2026-03-01");
+  assert.equal(rows.length, 1, "one row visible");
+  const listing = cms.core.redirects.list(admin);
+  release();
+  const list = await listing;
+  await flushing;
+  assert.deepEqual(list.find((x) => x.id === a.id)!.daily.at(-1), 2, "counted once");
+  assert.deepEqual(list.find((x) => x.id === b.id)!.daily.at(-1), 1);
+  const after = await cms.core.redirects.list(admin);
+  assert.deepEqual([after.find((x) => x.id === a.id)!.daily.at(-1), after.find((x) => x.id === b.id)!.daily.at(-1)], [2, 1]);
+});
+
+test("snippets: the scanner reads backticks like the inline parser (an escaped one opens no code) and keeps CRLF", async () => {
+  const { mapSnippetTokens, snippetKeys, parseInline } = await import("./markdown");
+  const line = "Price \\` [[snippet:vat]] \\` end";
+  // The inline parser sees no code span here, so the token is a real one.
+  assert.equal(parseInline(line).some((x) => x.t === "code"), false);
+  assert.equal(parseInline(line).some((x) => x.t === "snippet"), true);
+  assert.deepEqual(snippetKeys(line), ["vat"]);
+  assert.equal(mapSnippetTokens(line, () => "VAT"), "Price \\` VAT \\` end");
+  // A real code span still hides it; bold text is read inside.
+  assert.equal(mapSnippetTokens("`[[snippet:vat]]` and **[[snippet:vat]]**", () => "V"), "`[[snippet:vat]]` and **V**");
+  // CRLF: untouched lines stay byte for byte; a changed line keeps its line end.
+  const crlf = "Line one\r\n[[snippet:vat]]\r\nSee [[snippet:vat]] here\r\nlast";
+  assert.equal(mapSnippetTokens(crlf, () => null), crlf);
+  assert.equal(mapSnippetTokens(crlf, () => "X"), "Line one\r\nX\r\nSee X here\r\nlast");
+});
+
+test("video hosts: defaults: false keeps only the listed sites", async () => {
+  const repo = new MemoryRepo();
+  const guides = defineCollection({ slug: "guides", label: "Guides", visibility: "public" });
+  const cms = createCms({ repo, collections: [guides], searchRefreshMs: 0, video: { hosts: ["Loom.com"], defaults: false } });
+  assert.deepEqual([...cms.core.videoHosts], ["loom.com"]);
+  await cms.create(admin, "guides", { slug: "a", title: "A", body: ":::video\nhttps://www.loom.com/share/0123456789abcdef\n:::" });
+  await rejects(cms.create(admin, "guides", { slug: "b", title: "B", body: ":::video\nhttps://youtu.be/dQw4w9WgXcQ\n:::" }), "video_host_blocked");
+  // Nothing at all: only files from the media library.
+  const none = createCms({ repo: new MemoryRepo(), collections: [guides], searchRefreshMs: 0, video: { hosts: [], defaults: false } });
+  assert.deepEqual([...none.core.videoHosts], []);
+  await rejects(none.create(admin, "guides", { slug: "c", title: "C", body: ":::video\nhttps://vimeo.com/123456789\n:::" }), "video_host_blocked");
+  // Default: YouTube and Vimeo plus what is listed.
+  const plus = createCms({ repo: new MemoryRepo(), collections: [guides], searchRefreshMs: 0, video: { hosts: ["loom.com"] } });
+  assert.deepEqual([...plus.core.videoHosts], ["youtube.com", "youtu.be", "vimeo.com", "loom.com"]);
 });

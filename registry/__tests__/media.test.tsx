@@ -431,3 +431,34 @@ test("gallery: filling the last place puts focus on the last picture; Alt+← �
   await user.keyboard("{Alt>}{ArrowLeft}{/Alt}");
   await waitFor(() => assert.deepEqual(seen.at(-1), [a.id, c.id, b.id]));
 });
+
+test("gallery: the new last picture wins over the field that had focus before (generic focus return stands aside)", async () => {
+  const s = makeServer({ media: true });
+  const a = await s.addFile("a.png", { alt: "A" });
+  const b = await s.addFile("b.png", { alt: "B" });
+  const seen: unknown[] = [];
+  function Harness() {
+    const [v, setV] = React.useState<unknown>([a.id]);
+    seen.push(v);
+    return (
+      <>
+        <input aria-label="Other field" />
+        <GalleryField id="g" label="Photos" value={v} onChange={setV} max={2} accept={["image/*"]} />
+      </>
+    );
+  }
+  const user = userEvent.setup();
+  renderWith(s, <Harness />);
+  // Another field had focus last, then the picker opens with one place left.
+  await user.click(screen.getByRole("textbox", { name: "Other field" }));
+  await user.click(await screen.findByRole("button", { name: "Add" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose media" });
+  await user.click(await within(dialog).findByRole("button", { name: "b.png" }));
+  await user.click(within(dialog).getByRole("button", { name: "Insert 1" }));
+  await waitFor(() => assert.deepEqual(seen.at(-1), [a.id, b.id]));
+  await waitFor(() => assert.equal(screen.queryByRole("dialog", { name: "Choose media" }) === null, true));
+  await waitFor(() => assert.equal(document.activeElement?.getAttribute("aria-label"), "Picture 2 of 2. Alt+← → to move"));
+  // And it stays there (the fallback does not move it to "Other field" afterwards).
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(document.activeElement?.getAttribute("aria-label"), "Picture 2 of 2. Alt+← → to move");
+});

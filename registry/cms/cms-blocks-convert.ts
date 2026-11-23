@@ -246,7 +246,7 @@ function astToBlocks(b: Block, src: string, parent: string | undefined): EBlock[
       return hasImage(b.inline) ? source() : [text("p", spansOf(b.inline))];
     }
     case "heading":
-      return hasImage(b.inline) ? source() : [text(`h${b.level}` as TextType, spansOf(b.inline), b.pinned ? { anchor: b.id } : {})];
+      return hasImage(b.inline) ? source() : [text(`h${b.level}` as TextType, spansOf(b.inline), b.pinned ? { anchor: b.pin ?? b.id } : {})];
     case "steps": {
       const box: EBlock = { id: newId(), parent, type: "steps" };
       return [box, ...markdownToBlocks(innerOf(src), box.id)];

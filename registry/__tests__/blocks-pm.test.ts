@@ -118,6 +118,15 @@ test("editor document: steps, cards, videos, snippets and pinned anchors map bot
   assert.equal(save(tr.doc), md.replace(" {#pin-me}", "").replace("Read them", "Changed"));
 });
 
+test("editor document: a #### pinned to a ## id keeps what was written (the page gives it setup-1)", () => {
+  const md = "## Setup\n\n#### Details {#setup}";
+  const blocks = markdownToBlocks(md);
+  assert.equal((blocks[1] as EBlock & { anchor?: string }).anchor, "setup");
+  const { doc, save } = load(md);
+  assert.equal(save(), md);
+  assert.equal(blocksToMarkdown(docToBlocks(doc)), md, "written fresh, the pin is not rewritten to setup-1");
+});
+
 test("editor document: #### is a level 4 heading block, with its pinned anchor, both ways", () => {
   const md = "## Two\n\n### Three\n\n#### Four {#four-pin}\n\n#### Plain four";
   const blocks = markdownToBlocks(md);

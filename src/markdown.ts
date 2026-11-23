@@ -53,8 +53,12 @@ export type Block = BlockBody & { line?: number; endLine?: number };
 export type TableAlign = "left" | "center" | "right" | null;
 
 type BlockBody =
-  /** `pinned`: the id was written after the heading (`## Title {#id}`, 0.21.0) and stays when the text changes. */
-  | { t: "heading"; level: 2 | 3 | 4; id: string; text: string; inline: Inline[]; pinned?: true }
+  /**
+   * `pinned`: the id was written after the heading (`## Title {#id}`, 0.21.0) and stays when the text changes.
+   * `pin`: on a heading 4 whose written id a ## or ### (or an earlier heading) already has, what was written;
+   * `id` is then the next free one (`setup-1`) and the body gets an `anchor_pin_taken` warning.
+   */
+  | { t: "heading"; level: 2 | 3 | 4; id: string; text: string; inline: Inline[]; pinned?: true; pin?: string }
   | { t: "p"; inline: Inline[] }
   /**
    * `start`: the first number of an ordered list when it is not 1.
@@ -588,9 +592,19 @@ export function parseMarkdown(source: string, o: { lines?: boolean } = {}): Bloc
     for (const b of out) if (b.t === "heading" && b.level !== 4) taken.add(b.id);
     for (const { at, pinned } of h4s) {
       const b = out[at] as Extract<Block, { t: "heading" }>;
-      if (pinned) {
+      if (pinned && !taken.has(pinned)) {
         used.set(pinned, (used.get(pinned) ?? 0) + 1);
         taken.add(pinned);
+        continue;
+      }
+      if (pinned) {
+        // The written id is another heading's: ## and ### keep theirs, this one takes the next free one.
+        let n = Math.max(1, used.get(pinned) ?? 1);
+        while (taken.has(`${pinned}-${n}`)) n++;
+        b.id = `${pinned}-${n}`;
+        b.pin = pinned;
+        used.set(pinned, n + 1);
+        taken.add(b.id);
         continue;
       }
       const base = anchorOf(b.text);
@@ -716,7 +730,7 @@ const cell = (items: Inline[]) => {
 function blockMd(b: Block): string {
   switch (b.t) {
     case "heading":
-      return `${"#".repeat(b.level)} ${inlineToMarkdown(b.inline)}${b.pinned ? ` {#${b.id}}` : ""}`;
+      return `${"#".repeat(b.level)} ${inlineToMarkdown(b.inline)}${b.pinned ? ` {#${b.pin ?? b.id}}` : ""}`;
     case "p":
       return inlineToMarkdown(b.inline);
     case "list":
@@ -876,25 +890,11 @@ export function assetUses(body: string): AssetUse[] {
   const out: AssetUse[] = [];
   const inCode = fenceTracker();
   let inHtml = false;
-  let videoNext = false;
   body.replace(/\r/g, "").split("\n").forEach((line, i) => {
     if (!inHtml && inCode(line)) return;
     if (!inHtml && /^:::html(\s+isolated)?\s*$/.test(line)) {
       inHtml = true;
       return;
-    }
-    // `:::video` (0.21.0): the line after the opener is its address, also inside columns, toggles and steps.
-    if (!inHtml && /^\s*:::video\s*$/.test(line)) {
-      videoNext = true;
-      return;
-    }
-    if (videoNext) {
-      videoNext = false;
-      const v = /^\s*asset:([a-z0-9]{12})(?:\/\S*)?\s*$/.exec(line);
-      if (v) {
-        out.push({ id: v[1], as: "media", alt: "", line: i + 1 });
-        return;
-      }
     }
     if (inHtml) {
       if (CLOSE.test(line)) inHtml = false;
@@ -908,7 +908,26 @@ export function assetUses(body: string): AssetUse[] {
     }
     for (const m of line.matchAll(ASSET_LINK_ANY)) out.push({ id: m[3], as: "file", alt: "", line: i + 1 });
   });
-  return out;
+  // `:::video` (0.21.0) files come from the parsed tree, like every other reader of videos: a block that
+  // is not closed is text (it does not count), one inside a quote, columns, a toggle or steps does.
+  if (!body.includes(":::video")) return out;
+  const parsed = videoUses(body).filter((v) => v.asset);
+  if (!parsed.length) return out;
+  // The line each one is on: its address line (after `:::video`, quote marks aside), in order.
+  const lines = body.replace(/\r/g, "").split("\n");
+  const spots: { id: string; line: number }[] = [];
+  const inCode2 = fenceTracker();
+  lines.forEach((l, i) => {
+    if (inCode2(l)) return;
+    const m = /^[\s>]*asset:([a-z0-9]{12})(?:\/\S*)?\s*$/.exec(l);
+    if (m && i > 0 && /^[\s>]*:::video\s*$/.test(lines[i - 1])) spots.push({ id: m[1], line: i + 1 });
+  });
+  const videos = parsed.map((v) => {
+    const k = spots.findIndex((s) => s.id === v.asset && s.line >= v.line);
+    const line = k >= 0 ? spots.splice(k, 1)[0].line : v.line;
+    return { id: v.asset!, as: "media" as const, alt: "", line };
+  });
+  return [...out, ...videos].sort((a, b) => a.line - b.line);
 }
 
 /** External images (`![alt](https://…)`) in a body: line and alt. */
@@ -1001,57 +1020,95 @@ export function splitSections(body: string): Section[] {
 export { inspectHtml, hasScripts, DEFAULT_IFRAME_HOSTS, type HtmlPolicy, type HtmlInert, type HtmlInertKind } from "./html-inspect";
 export { DEFAULT_VIDEO_HOSTS, videoEmbed, videoHost, hostAllowed } from "./video";
 
-/** Every `:::video` address in a body with its 1-based line (code fences skipped). */
+/**
+ * Every `:::video` in a body with its 1-based line (code fences skipped), nested ones included. A nested
+ * one gets the line of the top-level block it sits in.
+ */
 export function videoUses(body: string): { src: string | null; asset: string | null; line: number }[] {
   const out: { src: string | null; asset: string | null; line: number }[] = [];
-  const walk = (bs: Block[]) => {
+  const walk = (bs: Block[], at: number) => {
     for (const b of bs) {
-      if (b.t === "video") out.push({ src: b.src, asset: b.asset, line: b.line ?? 0 });
-      else if (b.t === "quote" || b.t === "toggle" || b.t === "steps") walk(b.blocks);
-      else if (b.t === "columns") b.cols.forEach(walk);
+      const line = b.line ?? at;
+      if (b.t === "video") out.push({ src: b.src, asset: b.asset, line });
+      else if (b.t === "quote" || b.t === "toggle" || b.t === "steps") walk(b.blocks, line);
+      else if (b.t === "columns") b.cols.forEach((c) => walk(c, line));
+      else if (b.t === "list") b.kids?.forEach((k) => k && walk(k, line));
+      else if (b.t === "todo") b.items.forEach((x) => x.kids && walk(x.kids, line));
     }
   };
-  walk(parseMarkdown(body, { lines: true }));
+  walk(parseMarkdown(body, { lines: true }), 0);
   return out;
 }
 
 /** A `[[snippet:key]]` token anywhere (no context: see `mapSnippetTokens` for the rules). */
 export const SNIPPET_RE = /\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]/gi;
-const SNIPPET_WITH_SLASHES = /(\\*)\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]/gi;
 const SNIPPET_ALONE = /^\s*\[\[snippet:([a-z0-9][a-z0-9._-]*)\]\]\s*$/i;
-/** `fn` applied to the parts of a line outside inline code spans (`` `…` ``, ``` ``…`` ```). */
+/** Where the text of a wrapper starts inside its match (`**x**`: 2). */
+const WRAP_OPEN = { strong: 2, del: 2, em: 1, em2: 1 } as const;
+/**
+ * Code spans and snippet tokens of one line exactly as `parseInline` reads them (the editor and the
+ * page use that reader): the same delimiters in the same order, so an escaped backtick (`` \` ``) opens
+ * no code span, an escaped token (`\[[snippet:x]]`) is text, and bold, struck or emphasised text is
+ * read inside. Offsets are into `src` plus `base`.
+ */
+function scanInline(src: string, base: number, visit: (kind: "code" | "snippet", at: number, len: number, key: string) => void): void {
+  if (!src.includes("`") && !src.includes("[[snippet:")) return;
+  const re = new RegExp(INLINE_RE.source, INLINE_RE.flags);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    const g = m.groups!;
+    if (g.snip) visit("snippet", base + m.index, m[0].length, g.snip.toLowerCase());
+    else if (g.code !== undefined || g.code2 !== undefined) visit("code", base + m.index, m[0].length, "");
+    else
+      for (const k of ["strong", "del", "em", "em2"] as const) {
+        if (g[k] !== undefined) scanInline(g[k], base + m.index + WRAP_OPEN[k], visit);
+      }
+  }
+}
+/** `fn` applied to the parts of a line outside inline code spans (`` `…` ``, ``` ``…`` ```), read like `parseInline` does. */
 export function outsideCodeSpans(line: string, fn: (part: string) => string): string {
   if (!line.includes("`")) return fn(line);
   let out = "";
   let last = 0;
-  for (const m of line.matchAll(/(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g)) {
-    out += fn(line.slice(last, m.index)) + m[0];
-    last = m.index! + m[0].length;
-  }
+  scanInline(line, 0, (kind, at, len) => {
+    if (kind !== "code") return;
+    out += fn(line.slice(last, at)) + line.slice(at, at + len);
+    last = at + len;
+  });
   return out + fn(line.slice(last));
 }
 /**
  * The one reader of snippet tokens (expansion, diagnostics, usage and the editor agree on it).
  * A token counts unless it is in a code fence, in an inline code span, or escaped (`\[[snippet:x]]`
  * is the text itself). `fn` gets each one (`alone`: the token is the whole line) and returns what
- * goes in its place, or null to keep it. Returns the body with the replacements.
+ * goes in its place, or null to keep it. Returns the body with the replacements; lines without one
+ * stay exactly as written (CRLF line ends included).
  */
 export function mapSnippetTokens(body: string, fn: (key: string, alone: boolean) => string | null): string {
+  if (!body.includes("[[snippet:")) return body;
   const inCode = fenceTracker();
   return body
-    .replace(/\r/g, "")
     .split("\n")
-    .map((line) => {
-      if (inCode(line)) return line;
+    .map((raw) => {
+      const cr = raw.endsWith("\r");
+      const line = cr ? raw.slice(0, -1) : raw;
+      if (inCode(line)) return raw;
+      if (!line.includes("[[snippet:")) return raw;
       const alone = SNIPPET_ALONE.exec(line);
-      if (alone) return fn(alone[1].toLowerCase(), true) ?? line;
-      return outsideCodeSpans(line, (part) =>
-        part.replace(SNIPPET_WITH_SLASHES, (m, slashes: string, k: string) => {
-          if (slashes.length % 2) return m;
-          const r = fn(k.toLowerCase(), false);
-          return r === null ? m : slashes + r;
-        })
-      );
+      if (alone) {
+        const r = fn(alone[1].toLowerCase(), true);
+        return r === null ? raw : r + (cr ? "\r" : "");
+      }
+      let out = "";
+      let last = 0;
+      scanInline(line, 0, (kind, at, len, key) => {
+        if (kind !== "snippet") return;
+        const r = fn(key, false);
+        if (r === null) return;
+        out += line.slice(last, at) + r;
+        last = at + len;
+      });
+      return last ? out + line.slice(last) + (cr ? "\r" : "") : raw;
     })
     .join("\n");
 }

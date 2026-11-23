@@ -237,8 +237,12 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
   redirects?: boolean | { ttlMs?: number };
   /** Address suggestions (0.21.0): Korean titles romanized (default), kept as they are, or left out. */
   slugs?: { hangul?: "romanize" | "keep" | "off" };
-  /** More hosts `:::video` blocks may embed (0.21.0), added to YouTube and Vimeo (always allowed). Files from the media library always work. */
-  video?: { hosts?: readonly string[] };
+  /**
+   * Sites `:::video` blocks may embed (0.21.0). `hosts` are added to YouTube and Vimeo; with
+   * `defaults: false` only `hosts` are allowed (`{ hosts: ["loom.com"], defaults: false }`, or
+   * `{ hosts: [], defaults: false }` for no embeds at all). Files from the media library always work.
+   */
+  video?: { hosts?: readonly string[]; defaults?: boolean };
 }
 
 /** Second argument of `afterChange` hooks and `onChange` listeners. */
@@ -975,8 +979,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     report,
     urlOf: (col, slug) => urlOf(col, slug),
     redirects: opts.redirects ? { ttlMs: Math.max(1000, (typeof opts.redirects === "object" ? opts.redirects.ttlMs : undefined) ?? 30_000) } : false,
-    // YouTube and Vimeo always; `video.hosts` adds to them (the decision recorded in the 0.21.0 plan).
-    videoHosts: [...new Set([...DEFAULT_VIDEO_HOSTS, ...(opts.video?.hosts ?? [])])],
+    // YouTube and Vimeo unless `video.defaults` is false; `video.hosts` adds to them.
+    videoHosts: [...new Set([...(opts.video?.defaults === false ? [] : DEFAULT_VIDEO_HOSTS), ...(opts.video?.hosts ?? [])].map((h) => h.toLowerCase()))],
     publicReadable: (col, slug) => readable({ kind: "anonymous" }, col, slug),
     publicCopy: (doc) => {
       if (!collections.has(doc.collection)) return null;
@@ -993,12 +997,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function modelDiagnostics(col: string, slug: string, c: DocContent, prev: DocContent | null, r: CmsRepo = repo, o: { publishing?: boolean } = {}): Promise<Diagnostic[]> {
     return [
       ...(await model.relationDiagnostics(col, c, model.relationIds(col, prev), r, o)),
-      ...(!prev || prev.body !== c.body ? [...(await model.snippetDiagnostics(col, slug, c.body, r)), ...((c.format ?? "markdown") === "markdown" ? model.videoDiagnostics(c.body) : [])] : []),
+      ...(!prev || prev.body !== c.body ? [...(await model.snippetDiagnostics(col, slug, c.body, r)), ...((c.format ?? "markdown") === "markdown" ? [...model.videoDiagnostics(c.body), ...model.anchorDiagnostics(c.body)] : [])] : []),
     ];
   }
   async function assertModel(actor: Actor, col: string, c: DocContent, prev: CmsDoc | null, r: CmsRepo = repo) {
     const errors = (await modelDiagnostics(col, c.slug, c, prev, r)).filter((d) => d.severity === "error");
-    if (errors.length) throw safeError(actor, col, { ...(prev ?? {}), ...c, collection: col } as CmsDoc, fail(errors[0].code, errors[0].params, { diagnostics: errors }));
+    if (errors.length) throw safeError(actor, col, { ...(prev ?? prospectiveDoc(col, c)), ...c, collection: col } as CmsDoc, fail(errors[0].code, errors[0].params, { diagnostics: errors }));
   }
 
   // ── validation ────────────────────────────────────────────────────────────
@@ -1113,7 +1117,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const seen = cur;
       const patch = await hook(fn, { collection: col, slug: cur.slug, content: cur, prev, actor }).catch((e) => {
         // The hook saw the candidate and the previous copy: a field hidden in either stays hidden.
-        throw safeError(actor, col, [{ ...overlay((prev ?? { collection: col }) as CmsDoc, seen, prev?.version), collection: col } as CmsDoc, ...(prev ? [prev] : [])], e, { pathless: "hide" });
+        throw safeError(actor, col, [{ ...overlay(prev ?? prospectiveDoc(col, {}), seen, prev?.version), collection: col } as CmsDoc, ...(prev ? [prev] : [])], e, { pathless: "hide" });
       });
       if (patch && typeof patch === "object") cur = validate(col, { ...cur, ...patch }, { actor, base: prev });
     }
@@ -1166,14 +1170,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function gate(which: "beforePublish" | "beforeDelete", actor: Actor, doc: { collection: string; slug: string; version: number }, content: DocContent, base?: CmsDoc | null) {
     if (which === "beforePublish") {
       // Judged on the very copy being checked (no second read: this runs inside the transaction).
-      const checked = { ...(base ?? {}), ...content, format: content.format, collection: doc.collection, slug: doc.slug, version: doc.version } as CmsDoc;
+      const checked = { ...(base ?? prospectiveDoc(doc.collection, { slug: doc.slug })), ...content, format: content.format, collection: doc.collection, slug: doc.slug, version: doc.version } as CmsDoc;
       const errors = checksFor(actor, doc.collection, checked, await appChecks(doc.collection, doc.slug, content)).filter((x) => x.severity === "error");
       if (errors.length)
         throw fail("publish_check_failed", { checks: errors.map((e) => e.message).join("; ") }, { diagnostics: errors.map((e) => ({ path: e.path ?? "", code: "publish_check_failed" as const, params: { checks: e.message, check: e.code, line: e.line ?? null }, severity: "error" as const, message: e.message })) });
     }
     for (const fn of collection(doc.collection).hooks?.[which] ?? [])
       await hook(fn, { collection: doc.collection, slug: doc.slug, content, version: doc.version, actor }).catch((e) => {
-        throw safeError(actor, doc.collection, { ...overlay((base ?? { collection: doc.collection }) as CmsDoc, content, doc.version), collection: doc.collection, slug: doc.slug } as CmsDoc, e, { pathless: "hide" });
+        throw safeError(actor, doc.collection, { ...overlay(base ?? prospectiveDoc(doc.collection, { slug: doc.slug }), content, doc.version), collection: doc.collection, slug: doc.slug } as CmsDoc, e, { pathless: "hide" });
       });
   }
 
@@ -1203,7 +1207,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (errors.length) {
       const e = fail(errors[0].code, errors[0].params, { diagnostics: errors });
       // Judged on the normalized content the checks saw.
-      throw who ? safeError(who.actor, col, { ...overlay((who.base ?? { collection: col }) as CmsDoc, content, who.base?.version), collection: col } as CmsDoc, e) : e;
+      throw who ? safeError(who.actor, col, { ...overlay(who.base ?? prospectiveDoc(col, {}), content, who.base?.version), collection: col } as CmsDoc, e) : e;
     }
     return content;
   }
@@ -1251,7 +1255,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     // conservative rule as publish checks.
     // Each group judged on the copy its checker saw: the schema's on the normalized copy, the
     // files' on the one as sent.
-    const on = (c: DocContent) => ({ ...overlay((cur ?? { collection: col }) as CmsDoc, c, cur?.version), collection: col }) as CmsDoc;
+    const on = (c: DocContent) => ({ ...overlay(cur ?? prospectiveDoc(col, {}), c, cur?.version), collection: col }) as CmsDoc;
     return [...diagnosticsFor(actor, col, on(normalized), diagnostics), ...diagnosticsFor(actor, col, on(content), files)];
   }
 
@@ -1376,7 +1380,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     // The rule looks at the copy being shown (an old version, a preview) with its own version
     // number, not the latest draft.
     // A stored copy without a format is markdown: it does not inherit the draft's.
-    const hidden = hiddenPaths(actor, col, (doc ? overlay(doc, content as Partial<DocContent>, version ?? doc.version) : content) as CmsDoc);
+    const hidden = hiddenPaths(actor, col, (doc ? overlay(doc, content as Partial<DocContent>, version ?? doc.version) : { ...prospectiveDoc(col, {}), ...content }) as CmsDoc);
     return projectWith(hidden, content);
   }
   /** Remove these field paths from a copy. */
@@ -1415,7 +1419,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const fields = structuredClone(content.fields ?? {}) as Record<string, unknown>;
     const before = (prev?.fields ?? {}) as Record<string, unknown>;
     // On create there is no stored document: the rules look at the one being made.
-    const proposed = (prev ?? ({ collection: col, ...content, fields } as unknown as CmsDoc));
+    const proposed = prev ?? prospectiveDoc(col, { ...content, fields });
     for (const [path, rule] of Object.entries(cfg.fieldAccess ?? {})) {
       const canSee = !rule.read || rule.read({ actor, doc: proposed });
       const canWrite = !rule.write || rule.write({ actor, doc: prev });
@@ -1797,7 +1801,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       ...seoOf(input.seo as DocSeo | null | undefined),
     }, { actor, base: null }));
     await assets.assertDoc(cfg, content).catch((e) => {
-      throw safeError(actor, col, { ...content, collection: col } as CmsDoc, e);
+      throw safeError(actor, col, prospectiveDoc(col, content), e);
     });
     await assertModel(actor, col, content, null);
     await htmlGate(actor, col, null, content);
@@ -3059,17 +3063,27 @@ export function createCmsCore(opts: CreateCmsOptions) {
     assert(actor, slug, o.draft ? "write" : "read");
     await beforeRead(actor, slug, SINGLE_SLUG, !!o.draft);
     const parsed = cfg.fields?.safeParse({});
+    const synthetic = prospectiveDoc(slug, { slug: SINGLE_SLUG, title: cfg.label, category: null, fields: parsed?.success ? (parsed.data as Record<string, unknown>) : {} });
+    return o.draft ? synthetic : read(actor, synthetic, false);
+  }
+  /**
+   * A complete document that does not exist yet (version 0, a draft nobody wrote): what `fieldAccess`
+   * rules and similar callbacks look at before a document is made (a single's defaults, a template).
+   */
+  function prospectiveDoc(col: string, c: Partial<DocContent>): CmsDoc {
     const at = nowIso();
-    const synthetic: CmsDoc = {
+    return {
       id: "",
-      collection: slug,
-      slug: SINGLE_SLUG,
-      title: cfg.label,
-      summary: "",
-      body: "",
-      category: null,
-      keywords: [],
-      fields: parsed?.success ? (parsed.data as Record<string, unknown>) : {},
+      collection: col,
+      slug: c.slug ?? "",
+      title: c.title ?? "",
+      summary: c.summary ?? "",
+      body: c.body ?? "",
+      ...(c.format === "html" ? { format: "html" as const } : {}),
+      category: c.category !== undefined ? c.category : (collection(col).categories?.[0] ?? null),
+      keywords: c.keywords ?? [],
+      fields: c.fields ?? {},
+      ...(c.seo !== undefined ? { seo: c.seo } : {}),
       status: "draft",
       version: 0,
       publishedVersion: null,
@@ -3088,7 +3102,6 @@ export function createCmsCore(opts: CreateCmsOptions) {
       dueAt: null,
       review: null,
     };
-    return o.draft ? synthetic : read(actor, synthetic, false);
   }
   /** Save the one document (made on the first save). */
   async function updateSingle(actor: Actor, slug: string, input: DocInput, o: WriteOptions = {}): Promise<CmsDoc> {
@@ -3118,16 +3131,28 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await ensureSchema();
     if (actor.kind === "anonymous") throw fail("unauthorized");
     assert(actor, col, "read");
-    const code = (collection(col).templates ?? []).map((t) => ({ ...t, source: "code" as const }));
-    const saved = (await repo.listRecords({ kind: "template", scope: col, order: "asc", limit: 200 })).map(templateOf);
-    const all: DocTemplate[] = [...code, ...saved];
+    const all = await allTemplates(col);
     if (!can(actor, col, "write")) return all.map(templateMeta);
     if (!collection(col).fieldAccess) return all;
-    return all.map((t) => {
-      if (!t.fields) return t;
-      // The rules look at the document the template would make.
-      const proposed = { collection: col, title: t.title ?? "", summary: t.summary ?? "", body: t.body ?? "", fields: t.fields } as unknown as CmsDoc;
-      return projectWith(hiddenPaths(actor, col, proposed), t);
+    // The rules look at the draft the template would make (no address yet: slug "").
+    return all.map((t) => (t.fields ? projectWith(hiddenPaths(actor, col, templateDraft(col, t, {})), t) : t));
+  }
+  async function allTemplates(col: string): Promise<DocTemplate[]> {
+    const code = (collection(col).templates ?? []).map((t) => ({ ...t, source: "code" as const }));
+    const saved = (await repo.listRecords({ kind: "template", scope: col, order: "asc", limit: 200 })).map(templateOf);
+    return [...code, ...saved];
+  }
+  /** The new draft a template makes, with `input` over it. */
+  function templateDraft(col: string, t: DocTemplate, input: DocInput): CmsDoc {
+    return prospectiveDoc(col, {
+      slug: collection(col).single ? SINGLE_SLUG : (input.slug ?? ""),
+      title: input.title ?? t.title ?? "",
+      summary: input.summary ?? t.summary ?? "",
+      body: input.body ?? t.body ?? "",
+      ...(input.format === "html" ? { format: "html" as const } : {}),
+      ...(input.category !== undefined ? { category: input.category } : {}),
+      ...(input.keywords ? { keywords: input.keywords } : {}),
+      fields: { ...(t.fields ?? {}), ...((input.fields as Record<string, unknown> | undefined) ?? {}) },
     });
   }
   /** What a reader without write access sees of a template: what it is called, not what is in it. */
@@ -3181,9 +3206,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
   /** `input` over a template. Field values the schema no longer takes are dropped. */
   async function withTemplate(actor: Actor, col: string, input: DocInput, key: string): Promise<DocInput> {
-    const t = (await templates(actor, col)).find((x) => x.key === key || x.id === key);
-    if (!t) throw fail("template_not_found");
+    assert(actor, col, "write");
+    const raw = (await allTemplates(col)).find((x) => x.key === key || x.id === key);
+    if (!raw) throw fail("template_not_found");
     const cfg = collection(col);
+    // Fields the writer may not read stay out of the copy; the rules look at the document being made.
+    const t = cfg.fieldAccess && raw.fields ? projectWith(hiddenPaths(actor, col, templateDraft(col, raw, input)), raw) : raw;
     let fields: Record<string, unknown> = { ...(t.fields ?? {}) };
     if (cfg.fields && Object.keys(fields).length) {
       const parsed = cfg.fields.safeParse(fields);

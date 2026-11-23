@@ -174,6 +174,7 @@ export const ko: Messages = {
   snippet_cycle: "스니펫이 서로를 고리처럼 넣을 수 없음 ({path})",
   snippet_inline_multi: "“{key}” 스니펫은 문단이 여럿이라 글 줄 안에 넣을 수 없음. 줄을 따로 두어야 함",
   video_host_blocked: "{host} 영상은 허용되지 않음. 허용: {hosts}",
+  anchor_pin_taken: "{line}번째 줄 소제목의 {#{pin}}은 다른 제목이 이미 씀. 이 소제목의 주소는 #{id}",
   redirect_not_found: "리다이렉트를 찾을 수 없음",
   redirects_off: "리다이렉트가 꺼져 있음. createCms({ redirects: true })로 켤 수 있음",
   redirect_invalid: "리다이렉트 주소는 /로 시작해야 함 ({reason})",

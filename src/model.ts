@@ -10,7 +10,7 @@ import { fieldMarks, DOC_ID_RE, type FieldMark } from "./fields";
 import { anchorOf, headingAnchors, mapSnippetTokens, parseMarkdown, snippetKeys, videoUses } from "./markdown";
 import type { CmsRepo } from "./repo";
 import type { CmsDoc, CmsRedirect, DocContent, DocRef, DocSeo } from "./types";
-import { DEFAULT_VIDEO_HOSTS, hostAllowed, videoEmbed, videoHost } from "./video";
+import { hostAllowed, videoEmbed, videoHost } from "./video";
 
 export interface ModelContext {
   repo: CmsRepo;
@@ -367,6 +367,16 @@ export function createModel(ctx: ModelContext) {
 
   // ── heading anchors ─────────────────────────────────────────────────────────
 
+  /** A heading 4 whose written id (`{#setup}`) another heading has: it got the next free one (a warning). */
+  function anchorDiagnostics(body: string): Diagnostic[] {
+    if (!body.includes("{#")) return [];
+    const out: Diagnostic[] = [];
+    for (const b of parseMarkdown(body, { lines: true })) {
+      if (b.t === "heading" && b.pin) out.push(ctx.diag("body", "anchor_pin_taken", { pin: b.pin, id: b.id, line: b.line ?? null }, "warning"));
+    }
+    return out;
+  }
+
   /** Anchors of `prev` that `next` lost, each with the heading it most likely became. */
   function lostAnchors(prev: string, next: string): { old: string; current: string }[] {
     const a = headingAnchors(prev);
@@ -494,21 +504,38 @@ export function createModel(ctx: ModelContext) {
   }
   /**
    * Visits not written yet, per day of the visit (a batch that spans midnight counts each visit on its
-   * own day), then per redirect. Batches being written stay in `writing` until the write ends, so the
-   * daily series never misses them.
+   * own day), then per redirect. A batch being written stays in `writing`; each redirect's count is
+   * written on its own and leaves `writing` in the same turn its write ends. Writing one count and
+   * reading the series take turns (`hitTurn`), so a reader sees each visit exactly once: either still
+   * waiting here or in the database, never both and never neither.
    */
   let hits = new Map<string, Map<string, number>>();
   const writing = new Set<Map<string, Map<string, number>>>();
+  let hitLock: Promise<void> = Promise.resolve();
+  function hitTurn<T>(fn: () => Promise<T>): Promise<T> {
+    const run = hitLock.then(fn, fn);
+    hitLock = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
   async function flushHits(): Promise<void> {
     if (hitTimer) clearTimeout(hitTimer);
     hitTimer = null;
     if (!hits.size || !repo.addRedirectHits) return;
+    const add = repo.addRedirectHits.bind(repo);
     const batch = hits;
     hits = new Map();
     writing.add(batch);
     try {
       for (const [day, perId] of [...batch]) {
-        await repo.addRedirectHits(perId, ctx.nowIso(), day).catch((e) => ctx.report(e, "redirect hits"));
+        for (const [id, n] of [...perId]) {
+          await hitTurn(async () => {
+            await add(new Map([[id, n]]), ctx.nowIso(), day).catch((e) => ctx.report(e, "redirect hits"));
+            perId.delete(id);
+          });
+        }
         batch.delete(day);
       }
     } finally {
@@ -587,8 +614,11 @@ export function createModel(ctx: ModelContext) {
       s.total += n;
       out.set(id, s);
     };
-    for (const r of repo.redirectHitDays ? await repo.redirectHitDays(dayList[0]) : []) add(r.redirectId, r.day, r.n);
-    for (const pending of [...writing, hits]) for (const [day, perId] of pending) for (const [id, n] of perId) add(id, day, n);
+    // Between two counts being written, never during one (see `hitTurn`).
+    await hitTurn(async () => {
+      for (const r of repo.redirectHitDays ? await repo.redirectHitDays(dayList[0]) : []) add(r.redirectId, r.day, r.n);
+      for (const pending of [...writing, hits]) for (const [day, perId] of pending) for (const [id, n] of perId) add(id, day, n);
+    });
     return out;
   }
   const validTarget = (to: string) => normalizePath(to) ?? (/^https?:\/\/[^\s]+$/i.test(to) && to.length <= 2000 ? to : null);
@@ -749,6 +779,7 @@ export function createModel(ctx: ModelContext) {
     forgetSnippets,
     snippetCols,
     videoDiagnostics,
+    anchorDiagnostics,
     lostAnchors,
     keepAnchors,
     resolveAnchor,
@@ -771,7 +802,7 @@ export function createModel(ctx: ModelContext) {
     seoImageDiagnostics,
     seoFor,
     sitemap,
-    videoHosts: ctx.videoHosts.length ? ctx.videoHosts : DEFAULT_VIDEO_HOSTS,
+    videoHosts: ctx.videoHosts,
   };
 }
 

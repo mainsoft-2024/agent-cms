@@ -53,8 +53,8 @@ export interface StorageAdapter {
   readonly multipart?: boolean;
   /**
    * The origins the browser sends files to itself (the signed upload URLs), e.g. `["https://bucket.s3.eu-west-1.amazonaws.com"]`.
-   * The bundled admin (`serve`, `dev`) lists them in its Content-Security-Policy (`connect-src`). Leave out when
-   * unknown: the policy then lets the admin connect to any https address.
+   * The bundled admin (`serve`, `dev`) lists them in its Content-Security-Policy (`connect-src`). When left out,
+   * nothing is added (the server warns at start): set `media.stores.<name>.browserOrigins` or `server.connectSrc`.
    */
   readonly browserOrigins?: readonly string[];
   /** A URL the browser can PUT the whole file to. `size`: the size the uploader declared, for storage that can hold it to that. */

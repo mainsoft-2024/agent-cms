@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { AssetThumb, CmsMediaPicker } from "./cms-media-picker";
 import { DIALOG, StateBadge } from "./cms-parts";
 import { errorMessage } from "./cms-messages";
-import { useAsset, useCms, useDebounced } from "./use-cms";
+import { claimFocusReturn, useAsset, useCms, useDebounced } from "./use-cms";
 
 // ── shared: what the editor knows about related documents ────────────────────
 
@@ -87,10 +87,11 @@ function useDragOrder(n: number, move: (from: number, to: number) => void) {
 /**
  * A picker closed because the field became full: its "Add" button is then off or gone, so focus would fall to
  * the page. Call the returned function when that happens; once the dialog is gone, the last item gets focus
- * (where Alt+arrows reorder and Tab reaches its buttons).
+ * (where Alt+arrows reorder and Tab reaches its buttons). This target is explicit: it wins over the admin's
+ * generic "focus goes back to what had it before" (`claimFocusReturn`), which would pick an older field.
  */
 function useFocusLastWhenFull(open: boolean, listRef: React.RefObject<HTMLElement | null>) {
-  const want = React.useRef(false);
+  const want = React.useRef<(() => void) | null>(null);
   React.useEffect(() => {
     if (open || !want.current) return;
     let tries = 0;
@@ -99,14 +100,21 @@ function useFocusLastWhenFull(open: boolean, listRef: React.RefObject<HTMLElemen
       const at = document.activeElement;
       // Still in the closing dialog (it keeps focus until its exit is done): look again shortly.
       if (at?.closest('[role="dialog"]') && ++tries < 40) return void (timer = window.setTimeout(step, 25));
-      want.current = false;
+      const release = want.current;
+      want.current = null;
       const items = listRef.current?.querySelectorAll<HTMLElement>(":scope > li[tabindex]");
-      if (!at || at === document.body || (at instanceof HTMLButtonElement && at.disabled)) items?.[items.length - 1]?.focus();
+      const last = items?.[items.length - 1];
+      if (last && !(at && listRef.current?.contains(at))) last.focus();
+      release?.();
     };
     timer = window.setTimeout(step, 0);
     return () => window.clearTimeout(timer);
   }, [open, listRef]);
-  return React.useCallback(() => void (want.current = true), []);
+  React.useEffect(() => () => want.current?.(), []);
+  return React.useCallback(() => {
+    want.current?.();
+    want.current = claimFocusReturn();
+  }, []);
 }
 
 // ── relation ─────────────────────────────────────────────────────────────────

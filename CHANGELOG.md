@@ -35,6 +35,14 @@ The content model, first half: documents point at each other, nest, hold one doc
 - `list_collections` says which collections are trees, singles, snippets, have SEO, templates and relation fields; `get_document` keeps snippet tokens.
 - The address of a published document is no longer locked when redirects are on; it changes when you publish (a draft save with a new address answers `slug_needs_publish`).
 - A document GET whose body or fields depend on other documents (snippets, `?expand`) sends an ETag that follows the content.
+- `fieldAccess` read rules get a complete document when no stored one exists yet (a single's defaults, listing templates, creating from a template, checking a new document): a draft at version 0, with the address being made (`""` while listing templates). Rules such as `doc.slug.startsWith(…)` no longer throw there.
+- A `#### Title {#id}` whose id a `##` / `###` (or an earlier heading) already has gets the next free one (`#id-1`) and the warning `anchor_pin_taken`; the `##` / `###` keep theirs.
+- Uploaded videos in use come from the parsed body: a `:::video` without its closing `:::` is text and does not count; one inside a quote does. The missing-file check on save reads the same.
+- Redirect visits being written are counted exactly once by the list and `hits()` (each redirect's count is written on its own, and reads wait between writes).
+- Snippet tokens are found with the inline reader's own rules: an escaped backtick (`` \` ``) opens no code span, and filling in keeps CRLF line ends and every line without a token as written.
+- The bundled admin's `connect-src` no longer falls back to any `https:` address when a store does not name its origins. The Vercel Blob adapter names its own (`https://vercel.com`, the store's host); for a custom adapter set `media.stores.<name>.browserOrigins` or `server.connectSrc` (`serve` warns at start, `storage check` says so).
+- `video: { hosts, defaults: false }` allows only the listed sites (no YouTube or Vimeo).
+- Gallery fields: when the picker fills the last place, focus goes to the new last picture even when another field had focus before.
 
 ## 0.20.0
 

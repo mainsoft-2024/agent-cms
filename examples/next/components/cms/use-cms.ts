@@ -195,12 +195,25 @@ const NO_SLOTS: CmsSlots = {};
 
 const LAYER = '[role="dialog"], [role="alertdialog"]';
 
+let focusClaim: object | null = null;
+/**
+ * Says "I put focus somewhere myself when this dialog closes" (a picker that filled its field). While a
+ * claim is held the fallback below stands aside, so the explicit target wins. Returns the release.
+ */
+export function claimFocusReturn(): () => void {
+  const mine = {};
+  focusClaim = mine;
+  return () => {
+    if (focusClaim === mine) focusClaim = null;
+  };
+}
+
 /**
  * Focus goes back where it was when a dialog closes. The admin opens its dialogs from code (no `DialogTrigger`),
  * and Radix then has nothing to return focus to: it would fall to the page, and the next Tab would start from
  * the top. When the focused element leaves the page and nothing else took focus, the most recent element that
  * had focus and is still there (enabled, and inside the dialog still open on top, if any) gets it back.
- * Base UI returns focus itself; this then does nothing.
+ * Base UI returns focus itself; this then does nothing. A `claimFocusReturn()` holder goes first.
  */
 function useFocusReturn() {
   React.useEffect(() => {
@@ -211,6 +224,7 @@ function useFocusReturn() {
       seen = [...seen.filter((x) => x !== e.target && x.isConnected).slice(-19), e.target];
     };
     const mo = new MutationObserver(() => {
+      if (focusClaim) return;
       const last = seen[seen.length - 1];
       if (!last || last.isConnected) return;
       const at = document.activeElement;

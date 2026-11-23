@@ -144,9 +144,22 @@ export function vercelBlobStorage(o: VercelBlobStorageOptions): StorageAdapter &
     await call("copy", (b) => b.copy(full(from), full(to), { ...fixed, ...(contentType ? { contentType } : {}) }));
   }
 
+  // What a browser contacts: signed uploads go to the Blob API (`https://vercel.com/api/blob`, or
+  // VERCEL_BLOB_API_URL when set), signed reads to the store's own host.
+  const apiOverride = (() => {
+    try {
+      const v = process.env.VERCEL_BLOB_API_URL || process.env.NEXT_PUBLIC_VERCEL_BLOB_API_URL;
+      return v ? new URL(v).origin : null;
+    } catch {
+      return null;
+    }
+  })();
+  const browserOrigins = [apiOverride ?? "https://vercel.com", `https://${storeId.toLowerCase()}.${access}.blob.vercel-storage.com`];
+
   return {
     options: o,
     multipart: false,
+    browserOrigins,
     async presignPut(key, p): Promise<SignedRequest> {
       const url = await presign("put", key, p.expires, { addRandomSuffix: false, allowOverwrite: true, ...(p.size ? { maximumSizeInBytes: p.size } : {}), ...maxAge(p.cacheControl) });
       return { url, headers: { "content-type": p.mime } };

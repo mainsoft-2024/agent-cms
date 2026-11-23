@@ -1652,7 +1652,7 @@ function buildExtensions(ctl: React.MutableRefObject<Ctl>) {
 
 export default function CmsBlockEditor({ value, onChange, readOnly, uploadFile, resolveFileUrl, onPickMedia, insertRef, commandsRef, onStateChange, snippetCollections, id, describedBy }: BlockEditorProps) {
   const { t, toast, me } = useCms();
-  const videoHosts = React.useMemo(() => (me?.videoHosts?.length ? me.videoHosts : DEFAULT_VIDEO_HOSTS), [me?.videoHosts]);
+  const videoHosts = React.useMemo(() => (me?.videoHosts ?? DEFAULT_VIDEO_HOSTS), [me?.videoHosts]);
   const snippetCols = React.useMemo(() => snippetCollections ?? [], [snippetCollections]);
   const [formFor, setFormFor] = React.useState<string | null>(null);
   const [emptyLine, setEmptyLine] = React.useState<{ id: string; top: number; right: number } | null>(null);

@@ -23,7 +23,16 @@ If you write your own `CmsRepo`, the new methods (`setDocRefs`, `listDocRefsTo`,
 - **Heading 4** (`####`) is a heading now; its anchor comes after the `##` and `###` ones, so existing links to sections keep landing where they did.
 - **Uploaded videos in `:::video` blocks count as in use**: deleting such a file asks first, like an image.
 - **`\[[snippet:x]]`** (escaped) shows the token as text and is no use of the snippet.
-- **Tree moves need transactions**: with `DrizzleRepo(db, { transactions: false })`, `cms.move()` answers `transactions_required`.
+- **Tree moves need transactions**: with `DrizzleRepo(db, { transactions: false })`, `cms.move()` answers `transactions_required`. The Neon HTTP driver (`drizzle-orm/neon-http`) has no interactive transactions, and the default `transactions: "auto"` detects it, so moves are refused there. For tree collections use a driver with transactions: Neon's serverless `Pool` over WebSocket (`drizzle-orm/neon-serverless`), node-postgres (`drizzle-orm/node-postgres`) or postgres.js (`drizzle-orm/postgres-js`). Everything else works on Neon HTTP as before.
+- **The bundled admin's Content-Security-Policy** (`serve`, `dev`) lists only the origins your stores name in `connect-src`; it no longer allows any `https:` address when a store says nothing. The built-in adapters name theirs (S3/R2, Vercel Blob: `https://vercel.com` and the store's `*.blob.vercel-storage.com` host). For a custom adapter without `browserOrigins`, the server warns at start and uploads from the admin are blocked until you say where they go:
+
+  ```ts
+  media: { stores: { files: { adapter: myAdapter, visibility: "private", browserOrigins: ["https://files.example.com"] } } }
+  // or, for anything else (or every https address on purpose): server: { connectSrc: ["https://uploads.example.com"] }
+  ```
+
+  `npx @mainsoft/agent-cms storage check` prints each store's browser origins, or a warning when they are unknown.
+- **A `#### Title {#id}` pinned to an id a `##` or `###` already has** gets the next free id (`#id-1`) and the warning `anchor_pin_taken`; the `##` / `###` keep theirs.
 - **Agent tools**: six new (`get_tree`, `move_document`, `get_single`, `update_single`, `list_templates`, `list_redirects`). `list_collections` says which collections are trees, singles, snippets, have SEO, templates and relation fields.
 
 ## New, when you want it
@@ -41,7 +50,8 @@ If you write your own `CmsRepo`, the new methods (`setDocRefs`, `listDocRefsTo`,
 | `createCms({ redirects: true })` | A published document's address may change; the old one redirects (301). Admins manage redirects (`/redirects`, admin screen), to an address or to a document (`toDocumentId`: follows its current address), with visits per day for 30 days (`GET /redirects/<id>/hits`). `cms.resolveRedirect(path)` (= `cms.redirects.resolve`) for your 404 page |
 | `retention: { redirectHitsDays: 90 }` | How long redirect visits per day are kept (default 90 with redirects on; 0 keeps them) |
 | `createCms({ slugs: { hangul: "keep" } })` | Korean addresses. Default `"romanize"`: suggested addresses from Korean titles are romanized (`cms.suggestSlug()`) |
-| `createCms({ video: { hosts: ["loom.com"] } })` | More sites for `:::video` |
+| `createCms({ video: { hosts: ["loom.com"] } })` | More sites for `:::video` (added to YouTube and Vimeo). `video: { hosts: ["loom.com"], defaults: false }` allows only the listed ones; `{ hosts: [], defaults: false }` only files from the media library |
+| `media.stores.<name>.browserOrigins`, `server: { connectSrc }` | Where browsers upload to, for the bundled admin's Content-Security-Policy (see above) |
 | `handler({ publicOrigin })` | The site `GET /sitemap.xml` names (published public documents with `url()`, `noindex` left out). `cms.sitemap(origin)` |
 
 ### Using redirects in your app
