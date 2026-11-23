@@ -1,4 +1,4 @@
-// agent-cms registry: cms-doc-list (0.21.0). Copied into your app by `npx @mainsoft/agent-cms add`; edit freely.
+// agent-cms registry: cms-doc-list (0.22.1). Copied into your app by `npx @mainsoft/agent-cms add`; edit freely.
 //
 // Screens of the 0.21.0 content model that sit around the list and the editor:
 // the document tree (drag, or the keyboard), templates for new documents
@@ -263,21 +263,20 @@ function TreeRowMenu({ title, moves, disabled }: { title: string; moves: Record<
   return (
     <span className="ml-1 shrink-0" onKeyDown={(e) => e.stopPropagation()}>
       <DropdownMenu open={open} onOpenChange={(o: boolean) => ((openRef.current = o), setOpen(o))}>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            tabIndex={-1}
-            draggable={false}
-            // When the menu closes it hands focus back to this button, where the row's arrow keys do nothing: give it to the row.
-            onFocus={(e) => {
-              if (!openRef.current) e.currentTarget.closest<HTMLElement>('[role="treeitem"]')?.focus();
-            }}
-            aria-label={t("tree_row_menu", { title })}
-            disabled={disabled}
-            className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity duration-150 ease-out hover:bg-accent focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100"
-          >
-            <MoreHorizontal aria-hidden className="h-4 w-4" />
-          </button>
+        {/* The trigger is the button (no `asChild`): the Radix and Base UI flavours of shadcn/ui both take this. */}
+        <DropdownMenuTrigger
+          type="button"
+          tabIndex={-1}
+          draggable={false}
+          // When the menu closes it hands focus back to this button, where the row's arrow keys do nothing: give it to the row.
+          onFocus={(e: React.FocusEvent<HTMLButtonElement>) => {
+            if (!openRef.current) e.currentTarget.closest<HTMLElement>('[role="treeitem"]')?.focus();
+          }}
+          aria-label={t("tree_row_menu", { title })}
+          disabled={disabled}
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity duration-150 ease-out hover:bg-accent focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100 data-[popup-open]:opacity-100 [@media(hover:none)]:opacity-100"
+        >
+          <MoreHorizontal aria-hidden className="h-4 w-4" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {items.map(([k, label]) => (

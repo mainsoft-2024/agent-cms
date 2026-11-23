@@ -340,6 +340,18 @@ test("messages: every placeholder in a translation exists in English, and the ot
   assert.deepEqual(bad, []);
 });
 
+test("screens work with both shadcn/ui flavours: no `asChild` on a component of the kit, no `onSelect` on a menu item", () => {
+  const dir = join(import.meta.dirname, "../registry/cms");
+  // Base UI's trigger has no `asChild` (it takes `render`): the trigger itself carries the button's props.
+  const bad: string[] = [];
+  for (const f of readdirSync(dir).filter((x) => /\.tsx$/.test(x))) {
+    const src = readFileSync(join(dir, f), "utf8");
+    for (const m of src.matchAll(/<(DropdownMenu\w*|Popover\w*|Dialog\w*|Tooltip\w*|Sheet\w*|Select\w*)\b[^>]*\basChild\b/g)) bad.push(`${f}: ${m[1]} asChild`);
+    for (const m of src.matchAll(/<DropdownMenuItem\b[^>]*\bonSelect=/g)) bad.push(`${f}: ${m[0].slice(0, 40)}`);
+  }
+  assert.deepEqual(bad, []);
+});
+
 test("the editor engine stays in the block editor: Tiptap (MIT) there only, never in the package", () => {
   const dir = join(import.meta.dirname, "../registry/cms");
   // Only the block editor item uses the editing engine; every other screen and the package stay free of it.

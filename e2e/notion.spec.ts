@@ -22,7 +22,7 @@ const line = (page: Page, type: string, text: string) => (LINED.has(type) ? row(
 const texts = (page: Page) => page.locator(".cms-blocks [data-block-type=p]").allInnerTexts();
 const handle = (page: Page) => page.locator("[data-cms-handle] button[aria-label^='Drag to move']");
 async function markdown(page: Page) {
-  await page.getByRole("button", { name: "Markdown", exact: true }).click();
+  await page.getByRole("button", { name: "Edit as markdown" }).click();
   return page.locator("#cms-editor-body");
 }
 async function open(page: Page, request: import("@playwright/test").APIRequestContext, text: string) {
@@ -94,7 +94,7 @@ test("notion: drop beside a block makes columns; moving the last block out takes
   await page.screenshot(shot("a3-columns"));
   let md = await markdown(page);
   await expect(md).toHaveValue(":::columns\n:::col\nLeft words\n:::col\nRight words\n:::\n\nAfter");
-  await page.getByRole("button", { name: "Blocks", exact: true }).click();
+  await page.getByRole("button", { name: "Edit as blocks" }).click();
   // Drag "Right words" back under "After": its column is empty and goes, one column left means no columns.
   const after = (await row(page, "p", "After").boundingBox())!;
   await drag(page, row(page, "p", "Right words"), { x: after.x + 40, y: after.y + after.height - 3 });
@@ -116,7 +116,7 @@ test("notion: toggles open and close, take blocks dropped into them, and Alt-dra
   await drag(page, row(page, "p", "Loose line"), { x: t.x + 80, y: t.y + t.height - 4 });
   let md = await markdown(page);
   await expect(md).toHaveValue(":::toggle Details\nLoose line\n\nHidden inside\n:::");
-  await page.getByRole("button", { name: "Blocks", exact: true }).click();
+  await page.getByRole("button", { name: "Edit as blocks" }).click();
   // Alt-drag the whole toggle below itself: a copy with what is inside it.
   const t2 = (await row(page, "toggle", "Details").boundingBox())!;
   const wrap = t2;

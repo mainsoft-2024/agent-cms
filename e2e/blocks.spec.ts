@@ -16,7 +16,7 @@ const textOf = (type: string) => (LINED.has(type) ? `.cms-blocks [data-block-typ
 const line = (page: Page, type: string, text?: string) => page.locator(textOf(type), text ? { hasText: text } : undefined).first();
 const handle = (page: Page) => page.locator("[data-cms-handle] button[aria-label^='Drag to move']");
 const markdown = async (page: Page) => {
-  await page.getByRole("button", { name: "Markdown", exact: true }).click();
+  await page.getByRole("button", { name: "Edit as markdown" }).click();
   return page.locator("#cms-editor-body");
 };
 async function open(page: Page, request: import("@playwright/test").APIRequestContext, text: string, publish = false) {
@@ -188,13 +188,20 @@ test("blocks: full screen covers the admin, keeps the fields one click away, and
   await line(page, "p", "Second line.").click();
   await page.keyboard.press("End");
   await page.keyboard.type(" Typed in full screen.");
-  await expect(page.getByRole("button", { name: "Leave full screen" }).locator("xpath=..")).toHaveClass(/opacity-0/);
+  const head = page.locator("[data-cms-focus-head]");
+  await expect(head).toHaveClass(/opacity-0/);
   await page.mouse.move(400, 300);
   await page.mouse.move(420, 320);
-  await expect(page.getByRole("button", { name: "Leave full screen" }).locator("xpath=..")).not.toHaveClass(/opacity-0/);
+  await expect(head).not.toHaveClass(/opacity-0/);
+  // The same button that entered leaves: last in the bar, pressed, no toast and no separate exit button.
+  const leave = page.getByRole("button", { name: "Leave full screen" });
+  await expect(leave).toHaveCount(1);
+  await expect(leave).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-cms-toast]")).toHaveCount(0);
 
   // The fields open under the bar and keep what was typed.
-  await page.getByRole("button", { name: "Fields" }).click();
+  await page.getByRole("button", { name: "View options" }).click();
+  await page.getByRole("menuitem", { name: /Show fields/ }).click();
   await expect(page.locator("#cms-focus-fields")).toBeVisible();
   await page.screenshot(shot("97-focus-fields"));
 

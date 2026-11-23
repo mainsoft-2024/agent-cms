@@ -1,4 +1,4 @@
-// agent-cms registry: cms-doc-editor (0.11.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-doc-editor (0.22.1). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // One document: the info form (from `_schema`), the markdown body with a
 // live preview that follows the text (and finds its lines when clicked),
@@ -30,7 +30,7 @@ import { assetMarkdown, CmsMediaPicker } from "./cms-media-picker";
 import { createUploader } from "./cms-upload";
 import { SectionsOrder, bodySections, lineAt, usePreviewSync } from "./cms-body-tools";
 import { pasteAsMarkdown } from "./cms-paste";
-import { bodyStats, EditorToolbar, FindBar, markdownCommands, TipButton } from "./cms-editor-toolbar";
+import { bodyStats, EditorToolbar, FindBar, markdownCommands, TipButton, TipLink, TipMenuTrigger } from "./cms-editor-toolbar";
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, DIALOG } from "./cms-parts";
 import { changedSourceLines, LocaleLeaveDialog, LocaleTabs, MissingTranslation, SourceChanges, SourcePane, TranslationBar } from "./cms-locale";
@@ -165,6 +165,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
   const [focusFields, setFocusFields] = React.useState(false);
   const [screenFull, setScreenFull] = React.useState(false);
   const [barQuiet, setBarQuiet] = React.useState(false);
+  const [focusNote, setFocusNote] = React.useState("");
   const focusButton = React.useRef<HTMLButtonElement | null>(null);
   const insertRef = React.useRef<((md: string) => void) | null>(null);
   // The toolbar asks the block editor for its commands through this; `tbTick` redraws its buttons.
@@ -976,8 +977,15 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
     (on: boolean) => {
       setFocusState(on);
       setBarQuiet(false);
-      if (on) toast(t("focus_entered", { keys: `${modLabel()}+Shift+F` }), { tone: "info", duration: 2500 });
-      else {
+      // Said to screen readers only: the button's tooltip already shows the shortcut, no toast covers the page.
+      setFocusNote(on ? t("focus_entered", { keys: `${modLabel()}+Shift+F` }) : t("focus_left"));
+      // The bar moves into the full-screen header; the same button there keeps the focus when it had it.
+      if (on)
+        requestAnimationFrame(() => {
+          const a = document.activeElement as HTMLElement | null;
+          if (!a || a === document.body) focusButton.current?.focus();
+        });
+      if (!on) {
         setFocusFields(false);
         if (typeof document !== "undefined" && document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
         // Back where the person started (unless they are in the middle of the text).
@@ -987,7 +995,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
         });
       }
     },
-    [t, toast],
+    [t],
   );
   const focusRef = React.useRef(focus);
   focusRef.current = focus;
@@ -1021,6 +1029,8 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
     const type = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.key === "Escape" || e.key === "Tab") return;
       const el = e.target as HTMLElement | null;
+      // Never while a menu or a tooltip of the bar is open.
+      if (document.querySelector('[role="menu"], [role="tooltip"]')) return;
       if (el?.closest?.(".cms-blocks, #cms-editor-body")) setBarQuiet(true);
     };
     let last = 0;
@@ -1588,14 +1598,19 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
       openFind(true);
     }
   };
-  /** The formatting toolbar: over the body, or inside the full-screen header (`inline`). */
-  const toolbar = (inline: boolean) => (
+  /**
+   * The body's bar: on wide screens in the sticky header under the page header (so it stays while the
+   * fields scroll past), inside the full-screen header (`inline`), on phones over the body.
+   */
+  const toolbar = (inline: boolean, extra?: React.ReactNode) => (
     <EditorToolbar
       commands={toolbarCommands}
       tick={tbTick}
-      view={BlockEditor && !inline ? view : undefined}
-      onView={BlockEditor && !inline ? setView : undefined}
+      view={BlockEditor ? view : undefined}
+      onView={BlockEditor ? setView : undefined}
       canWrite={canWrite}
+      extra={extra}
+      onUse={mobile || focus ? undefined : showBody}
       body={content.body}
       inline={inline}
       label={
@@ -1607,16 +1622,41 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
       onMedia={me?.media && canWrite ? () => setPicking(true) : null}
       sidePreview={!mobile && !blocksOn ? { on: sidePreview, toggle: () => setSidePreview(!sidePreview) } : null}
       previewWindow={!mobile ? { on: previewWindow, toggle: () => setPreviewWindow((v) => !v) } : null}
-      fullscreen={!mobile && !focus ? { onEnter: () => setFocus(true), buttonRef: focusButton } : null}
+      fullscreen={!mobile ? { on: focus, toggle: () => setFocus(!focusRef.current), buttonRef: focusButton } : null}
       onFind={(replace) => openFind(replace)}
       findOpen={!!finding}
     />
   );
+  // Full screen's view options: the fields (folded away under the bar) and the browser's own full screen.
+  const screenApi = typeof document !== "undefined" && !!document.fullscreenEnabled;
+  const focusOptions = focus ? (
+    <DropdownMenu modal={false}>
+      <TipMenuTrigger label={t("focus_options")} tipAlign="end">
+        <SlidersHorizontal aria-hidden className="size-4" />
+        {fieldErrors && !focusFields ? <span aria-hidden className="absolute right-1 top-1 size-2 rounded-full bg-destructive" /> : null}
+      </TipMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuItem className="gap-2" aria-controls="cms-focus-fields" onClick={() => setFocusFields((v) => !v)}>
+          <SlidersHorizontal aria-hidden className="size-4" />
+          <span className="grow">{focusFields ? t("focus_fields_hide") : t("focus_fields")}</span>
+          {fieldErrors ? <span className="text-xs text-destructive">{t("problems_n", { n: fieldErrors })}</span> : null}
+        </DropdownMenuItem>
+        {screenApi ? (
+          <DropdownMenuItem className="gap-2" onClick={toggleScreen}>
+            <Monitor aria-hidden className="size-4" />
+            <span className="grow">{screenFull ? t("focus_screen_off") : t("focus_screen")}</span>
+            {screenFull ? <Check aria-hidden className="size-3.5 text-muted-foreground" /> : null}
+          </DropdownMenuItem>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  ) : null;
+  const findBar = finding ? <FindBar key={finding.n} commands={toolbarCommands} replace={finding.replace} canWrite={canWrite} initial={finding.initial} onClose={() => setFinding(null)} /> : null;
   const bodyPane = schema.hideBody ? null : (
     <section ref={bodySectionRef} className="relative flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onBodyKeys}>
       {doc && schema?.agentEdits === "suggest" ? <SuggestionCards collection={collection} slug={docAddr(doc)} canWrite={canWrite} onApplied={() => void client.get(collection, docAddr(doc), { draft: true }).then((d) => (live.current.dirty ? setStatus({ text: t("sugg_applied_dirty"), tone: "muted" }) : applyDoc(d)))} /> : null}
-      {focus ? null : toolbar(false)}
-      {finding ? <FindBar key={finding.n} commands={toolbarCommands} replace={finding.replace} canWrite={canWrite} initial={finding.initial} onClose={() => setFinding(null)} className={focus ? "top-2" : undefined} /> : null}
+      {mobile ? toolbar(false) : null}
+      {mobile ? findBar : null}
       <ConfirmDialog
         open={!!checks}
         onOpenChange={(o) => !o && setChecks(null)}
@@ -1819,11 +1859,14 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
     </FieldGate.Provider>
   );
 
-  const focusStats = (() => {
-    if (!focus) return "";
+  // Words and reading time: in the status line (both in the page and in full screen), not in the bar.
+  const stats = (() => {
+    if (schema.hideBody) return null;
     const s = bodyStats(content.body);
     const n = (x: number) => x.toLocaleString(locale);
-    return s.words ? `${t("blk_words", { n: n(s.words) })} · ${t("blk_read_min", { n: n(s.minutes) })}` : t("blk_words", { n: n(0) });
+    const words = t("blk_words", { n: n(s.words) });
+    const min = s.words ? t("blk_read_min", { n: n(s.minutes) }) : "";
+    return { short: words, long: min ? `${words} · ${min}` : words, title: [words, min, t("blk_chars", { n: n(s.chars) })].filter(Boolean).join(" · ") };
   })();
   const autosaveText =
     offline && dirty ? t("offline_kept") : auto.state === "saving" ? t("autosaving") : auto.state === "saved" && auto.at ? t("autosaved_at", { time: formatTime(auto.at, locale) }) : auto.state === "failed" ? t("autosave_failed") : dirty ? (localBroken ? t("unsaved_no_copy") : t("unsaved")) : "";
@@ -1851,8 +1894,12 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
           {autosaveText ? <Cloud aria-hidden className="h-3.5 w-3.5" /> : null}
           {autosaveText}
         </span>
-        {/* In full screen the toolbar sits in the header without its word count: it shows here. */}
-        {focus && !schema.hideBody ? <span className="tabular-nums">{focusStats}</span> : null}
+        {stats ? (
+          <span data-cms-stats="" title={stats.title} className="whitespace-nowrap tabular-nums">
+            <span className="sm:hidden">{stats.short}</span>
+            <span className="hidden sm:inline">{stats.long}</span>
+          </span>
+        ) : null}
       </div>
       {shownProblems.length && showProblems ? (
         <ul id="cms-editor-problems" aria-label={t("problems_list")} className="border-t px-4 py-2 text-xs md:px-6">
@@ -2027,78 +2074,89 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
     >
       <div ref={headRef} className="sticky top-0 z-20 bg-background">
         {focus ? (
+          // One row: the title and save state, the body's bar (full screen is its last button, where it was
+          // before entering), Save and Publish. It fades while typing; a mouse move or focus brings it back.
           <div
+            data-cms-focus-head=""
             className={cn(
-              "flex h-12 items-center gap-1.5 border-b px-3 transition-opacity duration-300 ease-out motion-reduce:transition-none focus-within:opacity-100 hover:opacity-100",
+              "relative flex h-12 items-center gap-2 border-b px-3 transition-opacity duration-300 ease-out motion-reduce:transition-none focus-within:opacity-100 hover:opacity-100",
               barQuiet && "opacity-0",
             )}
           >
-            <TipButton label={t("focus_exit")} keys="Mod+Shift+F" tipAlign="start" onClick={() => setFocus(false)}>
-              <Minimize2 aria-hidden className="size-4" />
-            </TipButton>
-            <span className="min-w-0 max-w-[16rem] shrink truncate text-sm font-medium" title={title}>
-              <bdi>{title}</bdi>
-            </span>
-            {/* The save state (the status line below announces it). */}
-            <span className="hidden shrink-0 whitespace-nowrap text-xs text-muted-foreground sm:inline">{autosaveText}</span>
-            {bodyPane ? toolbar(true) : <span className="flex-1" />}
-            <TipButton label={focusFields ? t("focus_fields_hide") : t("focus_fields")} tipAlign="end" className={cn("relative", focusFields && "bg-muted text-foreground")} aria-pressed={focusFields} aria-controls="cms-focus-fields" onClick={() => setFocusFields((v) => !v)}>
-              <SlidersHorizontal aria-hidden className="size-4" />
-              {fieldErrors && !focusFields ? <span aria-label={t("problems_n", { n: fieldErrors })} className="absolute right-1 top-1 size-2 rounded-full bg-destructive" /> : null}
-            </TipButton>
-            {typeof document !== "undefined" && document.fullscreenEnabled ? (
-              <TipButton label={screenFull ? t("focus_screen_off") : t("focus_screen")} tipAlign="end" aria-pressed={screenFull} onClick={toggleScreen}>
-                <Monitor aria-hidden className="size-4" />
-              </TipButton>
-            ) : null}
-            {canWrite ? <span aria-hidden className="mx-[3px] h-5 w-px shrink-0 bg-border" /> : null}
-            {saveButtons()}
+            <div className="flex min-w-0 max-w-[16rem] shrink items-baseline gap-2">
+              <span className="min-w-0 truncate text-sm font-medium" title={title}>
+                <bdi>{title}</bdi>
+              </span>
+              {/* The save state (the status line below announces it). */}
+              <span className="hidden shrink-0 whitespace-nowrap text-xs text-muted-foreground lg:inline">{autosaveText}</span>
+            </div>
+            {bodyPane ? (
+              toolbar(true, focusOptions)
+            ) : (
+              <>
+                <span className="flex-1" />
+                {focusOptions}
+                <TipButton label={t("focus_exit")} keys="Mod+Shift+F" tipAlign="end" aria-pressed onClick={() => setFocus(false)}>
+                  <Minimize2 aria-hidden className="size-4" />
+                </TipButton>
+              </>
+            )}
+            {canWrite ? <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" /> : null}
+            <div className="flex shrink-0 items-center gap-1.5">{saveButtons()}</div>
+            {findBar}
           </div>
         ) : (
-        // A single is its own page in the menu: "Site settings / Site settings" would say the same thing twice.
-        <PageHeader title={title} crumbs={schema.single ? undefined : [schema.label]} after={stateBits}>
-          <People people={others} className="mr-1" />
-          {doc && canWrite ? (
-            <Button type="button" variant="ghost" className="gap-1.5" aria-pressed={commentsOpen} onClick={() => setCommentsOpen((v) => !v)}>
-              <MessageSquare aria-hidden className="h-4 w-4" />
-              {openThreads.length ? t("comments_n", { n: openThreads.length }) : t("comments")}
-            </Button>
-          ) : null}
-          {publicUrl ? (
-            <a href={publicUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 px-2 text-sm underline-offset-2 hover:underline">
-              <ExternalLink aria-hidden className="h-4 w-4" />
-              {t("public_page")}
-            </a>
-          ) : null}
-          {previewAllowed ? (
-            <Button type="button" variant="ghost" className="gap-1.5" onClick={() => setPreviewOpen(true)}>
-              <LinkIcon aria-hidden className="h-4 w-4" />
-              {t("preview_link")}
-            </Button>
-          ) : null}
-          {doc && onOpenVersions ? (
-            <Button type="button" variant="ghost" className="gap-1.5" onClick={() => onOpenVersions(collection, docAddr(doc))}>
-              <History aria-hidden className="h-4 w-4" />
-              {t("versions")}
-            </Button>
-          ) : null}
-          {canRelease || (canWrite && !schema.single) || canHide || canUnhide ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon" })} aria-label={t("more")}>
-                <MoreHorizontal aria-hidden className="h-4 w-4" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {canRelease ? <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem> : null}
-                {canWrite && !schema.single ? <DropdownMenuItem onClick={() => setTplDialog(true)}>{t("doc_more_template")}</DropdownMenuItem> : null}
-                {hideItems}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-          {slots.editorActions?.(slotCtx)}
-          {saveButtons()}
-        </PageHeader>
+          <>
+            {/* A single is its own page in the menu: "Site settings / Site settings" would say the same thing twice. */}
+            <PageHeader title={title} crumbs={schema.single ? undefined : [schema.label]} after={stateBits} nowrap>
+              <People people={others} className="mr-1" />
+              {/* Secondary actions are icons with a tooltip, so the header stays one line and Save and Publish stay in view. */}
+              {doc && canWrite ? (
+                <TipButton label={openThreads.length ? t("comments_n", { n: openThreads.length }) : t("comments")} className="size-9" aria-pressed={commentsOpen} onClick={() => setCommentsOpen((v) => !v)}>
+                  <MessageSquare aria-hidden className="size-4" />
+                  {openThreads.length ? <span aria-hidden className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-medium leading-none text-primary-foreground tabular-nums">{openThreads.length}</span> : null}
+                </TipButton>
+              ) : null}
+              {publicUrl ? (
+                <TipLink href={publicUrl} target="_blank" rel="noreferrer" label={t("public_page")} className="size-9">
+                  <ExternalLink aria-hidden className="size-4" />
+                </TipLink>
+              ) : null}
+              {previewAllowed ? (
+                <TipButton label={t("preview_link")} className="size-9" onClick={() => setPreviewOpen(true)}>
+                  <LinkIcon aria-hidden className="size-4" />
+                </TipButton>
+              ) : null}
+              {doc && onOpenVersions ? (
+                <TipButton label={t("versions")} className="size-9" onClick={() => onOpenVersions(collection, docAddr(doc))}>
+                  <History aria-hidden className="size-4" />
+                </TipButton>
+              ) : null}
+              {canRelease || (canWrite && !schema.single) || canHide || canUnhide ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon" })} aria-label={t("more")}>
+                    <MoreHorizontal aria-hidden className="h-4 w-4" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {canRelease ? <DropdownMenuItem onClick={() => setReleaseOpen(true)}>{t("release_add_to")}</DropdownMenuItem> : null}
+                    {canWrite && !schema.single ? <DropdownMenuItem onClick={() => setTplDialog(true)}>{t("doc_more_template")}</DropdownMenuItem> : null}
+                    {hideItems}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+              {slots.editorActions?.(slotCtx)}
+              {canWrite ? <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" /> : null}
+              {saveButtons()}
+            </PageHeader>
+            {localeTabs}
+            {bodyPane ? (
+              <div className="relative">
+                {toolbar(false)}
+                {findBar}
+              </div>
+            ) : null}
+          </>
         )}
-        {focus ? null : localeTabs}
       </div>
       {focus ? null : strips}
       {focus ? null : trBar}
@@ -2155,6 +2213,9 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
       <div ref={footRef} className="sticky bottom-0 z-10 bg-background">
         {problemsFoot}
       </div>
+      <span role="status" aria-live="polite" className="sr-only">
+        {focusNote}
+      </span>
       {previewDialog}
     </div>
   );

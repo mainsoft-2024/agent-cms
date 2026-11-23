@@ -1,8 +1,10 @@
 "use client";
 
 // The body editor's top bar: icon buttons with a tooltip (name and shortcut),
-// in a left group (history, text style, lists and blocks, media, new blocks)
-// and a right group (find, section order, previews, full screen, word count).
+// in two zones. Left, editing: history, text style, marks, lists and blocks,
+// media, insert (+). Right, after a line, the view: blocks or markdown, find,
+// section order, previews, and full screen always last at the far right (the
+// same button enters and leaves it). The word count lives in the status line.
 // One roving tab stop (role="toolbar", arrow keys move); buttons that do not
 // fit go into a More menu. The same buttons work in the block editor (through
 // its commands) and in the markdown text box (they edit the text around the
@@ -11,6 +13,7 @@
 import * as React from "react";
 import {
   AppWindow,
+  Blocks as BlocksIcon,
   Bold,
   CaseSensitive,
   Check,
@@ -21,6 +24,7 @@ import {
   CodeXml,
   Columns2,
   Ellipsis,
+  FileCode2,
   Heading2,
   Heading3,
   Heading4,
@@ -34,6 +38,7 @@ import {
   ListTree,
   Maximize2,
   MessageSquareWarning,
+  Minimize2,
   Minus,
   PanelRight,
   Pilcrow,
@@ -335,14 +340,27 @@ export interface EditorToolbarProps {
   onMedia?: (() => void) | null;
   sidePreview?: { on: boolean; toggle: () => void } | null;
   previewWindow?: { on: boolean; toggle: () => void } | null;
-  fullscreen?: { onEnter: () => void; buttonRef?: React.Ref<HTMLButtonElement> } | null;
+  /**
+   * Full screen: one button, always the last at the far right, in the page and in full screen. `on` turns
+   * its icon into "leave" (Minimize2), its name into "Leave full screen" and sets aria-pressed.
+   */
+  fullscreen?: { on: boolean; toggle: () => void; buttonRef?: React.Ref<HTMLButtonElement> } | null;
   /** Show the find bar (with replace when true). */
   onFind: (replace: boolean) => void;
   findOpen?: boolean;
   /** The box's label (for screen readers; the switch says what the box is). */
   label?: React.ReactNode;
-  /** Drawn inside another bar (the full-screen header): no border or padding of its own, no word count. */
+  /** Drawn inside another bar (the full-screen header): no border or padding of its own. */
   inline?: boolean;
+  /**
+   * More of the view zone, drawn just before the full-screen button (e.g. the full-screen view options).
+   * Mark its buttons `data-tb-item` (tabIndex -1) so the arrow keys reach them.
+   */
+  extra?: React.ReactNode;
+  /** Called after a button changed the text (or opened find): e.g. bring the body into view. */
+  onUse?: () => void;
+  /** Classes for the bar's outer box (e.g. sticky placement). */
+  className?: string;
 }
 
 interface Btn {
@@ -355,6 +373,8 @@ interface Btn {
   pressed?: boolean;
   disabled?: boolean;
   ref?: React.Ref<HTMLButtonElement>;
+  /** Where its tooltip lines up ("end" near the bar's right edge). */
+  tip?: "center" | "start" | "end";
 }
 
 /** A shortcut as this computer writes it ("⌘B" / "Ctrl+B"). */
@@ -392,17 +412,32 @@ function tipStyle() {
   document.head.appendChild(el);
 }
 
+/** The one tooltip on screen: showing another hides it (a hovered button and a focused one never both talk). */
+let shownTip: { hide: () => void } | null = null;
+
 /** Shows the tooltip after a short hover, or at once on keyboard focus. */
 function useTip() {
-  const [show, setShow] = React.useState(false);
+  const [show, setShowState] = React.useState(false);
   const timer = React.useRef<number | null>(null);
+  const self = React.useRef({ hide: () => setShowState(false) });
+  const setShow = (on: boolean) => {
+    if (on) {
+      if (shownTip && shownTip !== self.current) shownTip.hide();
+      shownTip = self.current;
+    } else if (shownTip === self.current) shownTip = null;
+    setShowState(on);
+  };
   const clear = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = null;
   };
   React.useEffect(() => {
     tipStyle();
-    return clear;
+    const me = self.current;
+    return () => {
+      clear();
+      if (shownTip === me) shownTip = null;
+    };
   }, []);
   return {
     show,
@@ -422,10 +457,10 @@ function useTip() {
   };
 }
 
-const BTN = "relative inline-grid size-7 shrink-0 place-items-center rounded-md text-foreground/80 outline-none transition-colors duration-100 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:text-muted-foreground/45 aria-pressed:bg-muted aria-pressed:text-foreground";
-/** A menu button with text (text style, insert): a row, not a square. */
-const WIDE = "inline-flex w-auto items-center gap-1 px-1.5 text-[13px]";
-const STAT = "shrink-0 whitespace-nowrap px-1 text-xs tabular-nums text-muted-foreground";
+/** 32px squares on a desktop, 40px where fingers tap (phone widths, coarse pointers). */
+const BTN = "relative inline-grid size-8 shrink-0 place-items-center rounded-md text-foreground/80 outline-none transition-colors duration-100 ease-out hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:text-muted-foreground/45 aria-pressed:bg-muted aria-pressed:text-foreground max-md:size-10 [@media(pointer:coarse)]:size-10";
+/** A menu button with text (text style): a row, not a square. */
+const WIDE = "inline-flex w-auto items-center gap-1 px-2 text-[13px] max-md:w-auto [@media(pointer:coarse)]:w-auto";
 
 const ToolButton = React.forwardRef<HTMLButtonElement, { b: Btn; t: (k: MessageKey) => string; onRun: () => void } & React.ButtonHTMLAttributes<HTMLButtonElement>>(function ToolButton({ b, t, onRun, className, ...rest }, ref) {
   const tip = useTip();
@@ -451,7 +486,7 @@ const ToolButton = React.forwardRef<HTMLButtonElement, { b: Btn; t: (k: MessageK
       {...rest}
     >
       <I className="size-4" />
-      <Tip text={t(b.label)} keys={b.keys} show={tip.show} />
+      <Tip text={t(b.label)} keys={b.keys} show={tip.show} align={b.tip} />
     </button>
   );
 });
@@ -482,80 +517,94 @@ export const TipButton = React.forwardRef<HTMLButtonElement, { label: string; ti
   );
 });
 
-/** A button that opens a menu (text style, insert, More). */
-const MenuButton = React.forwardRef<HTMLButtonElement, { label: string; keys?: string; children?: React.ReactNode; wide?: boolean; disabled?: boolean } & React.ButtonHTMLAttributes<HTMLButtonElement>>(function MenuButton({ label, keys, children, wide, disabled, className, ...rest }, ref) {
+/** A link drawn like `TipButton` (an icon with the toolbar's tooltip), e.g. the public page in a header. */
+export const TipLink = React.forwardRef<HTMLAnchorElement, { label: string; tipAlign?: "center" | "start" | "end"; children?: React.ReactNode } & React.AnchorHTMLAttributes<HTMLAnchorElement>>(function TipLink({ label, tipAlign, children, className, ...rest }, ref) {
   const tip = useTip();
   return (
-    <button
-      ref={ref}
+    <a ref={ref} aria-label={label} className={cn(BTN, className)} {...tip.props} {...rest}>
+      {children}
+      <Tip text={label} show={tip.show} align={tipAlign} />
+    </a>
+  );
+});
+
+/**
+ * A button that opens a menu (text style, insert, More, full screen's view options), with the toolbar's
+ * tooltip. It *is* the menu's trigger, with no `asChild`: the Radix and the Base UI flavours of
+ * shadcn/ui both draw their trigger as a button and pass these props on. Put it inside a `DropdownMenu`.
+ */
+export function TipMenuTrigger({ label, keys, children, wide, disabled, tipAlign, className, ...rest }: { label: string; keys?: string; children?: React.ReactNode; wide?: boolean; disabled?: boolean; tipAlign?: "center" | "start" | "end" } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  const tip = useTip();
+  return (
+    <DropdownMenuTrigger
       type="button"
       data-tb-item=""
       aria-label={label}
       disabled={disabled}
       tabIndex={-1}
       className={cn(BTN, wide && WIDE, className)}
-      onMouseDown={(e) => e.preventDefault()}
+      onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
       {...tip.props}
       {...rest}
-      onPointerDown={(e) => {
+      onPointerDown={(e: React.PointerEvent<HTMLButtonElement>) => {
         tip.hide();
         rest.onPointerDown?.(e);
       }}
-      onFocus={(e) => {
+      onFocus={(e: React.FocusEvent<HTMLButtonElement>) => {
         tip.props.onFocus(e);
         rest.onFocus?.(e);
       }}
-      onBlur={(e) => {
+      onBlur={(e: React.FocusEvent<HTMLButtonElement>) => {
         tip.props.onBlur();
         rest.onBlur?.(e);
       }}
     >
       {children}
-      <Tip text={label} keys={keys} show={tip.show} />
-    </button>
+      <Tip text={label} keys={keys} show={tip.show} align={tipAlign} />
+    </DropdownMenuTrigger>
   );
-});
+}
 
-const Sep = (p: { "data-tb-m"?: string }) => <span aria-hidden className="mx-[3px] h-5 w-px shrink-0 bg-border" {...p} />;
+const Sep = (p: { "data-tb-m"?: string }) => <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" {...p} />;
 
 // ── what fits ─────────────────────────────────────────────────────────────────
 
-/** The bar's groups, in the order they are drawn. A line separates groups (not inside "right"). */
-export type ToolbarGroup = "history" | "style" | "marks" | "lists" | "blocks" | "media" | "insert" | "right" | "stat";
+/**
+ * The bar's groups, in the order they are drawn. The editing groups on the left have a line between
+ * them; "view" is the right zone (find, section order, previews), after one line of its own.
+ */
+export type ToolbarGroup = "history" | "style" | "marks" | "lists" | "blocks" | "media" | "insert" | "view";
 const LEFT_GROUPS: ToolbarGroup[] = ["history", "style", "marks", "lists", "blocks", "media", "insert"];
 
 /**
- * How long each item stays when the bar gets narrow: the lowest goes first. The word count first
- * drops its reading time ("stat-min"), the rarer blocks and marks follow, then find, lists, the
- * menus and the everyday marks; history and media stay longest among the editing buttons, and
- * the view buttons (section order, previews, full screen) are the very last to go.
+ * How long each item stays when the bar gets narrow: the lowest goes first. The rarer blocks and
+ * marks go first, then find, lists, the menus and the everyday marks; history and media stay longest
+ * among the editing buttons, and the view buttons (previews, section order) are the last to go. The
+ * view switch and the full-screen button never go into More: they are counted as fixed.
  */
 export const TOOLBAR_PRIORITY: Readonly<Record<string, number>> = {
-  "stat-min": 1,
-  hr: 2,
-  codeblock: 3,
-  table: 4,
-  callout: 5,
-  quote: 6,
-  todo: 7,
-  strike: 8,
-  code: 9,
-  find: 10,
-  number: 11,
-  bullet: 12,
+  hr: 1,
+  codeblock: 2,
+  table: 3,
+  callout: 4,
+  quote: 5,
+  todo: 6,
+  strike: 7,
+  code: 8,
+  find: 9,
+  number: 10,
+  bullet: 11,
+  style: 12,
   insert: 13,
-  style: 14,
-  link: 15,
-  italic: 16,
-  bold: 17,
-  stat: 18,
-  redo: 19,
-  undo: 20,
-  media: 21,
-  window: 22,
-  side: 23,
-  outline: 24,
-  full: 25,
+  link: 14,
+  italic: 15,
+  bold: 16,
+  redo: 17,
+  undo: 18,
+  media: 19,
+  window: 20,
+  side: 21,
+  outline: 22,
 };
 
 export interface FitItem {
@@ -567,9 +616,9 @@ export interface FitItem {
 
 /**
  * Which items to hide so the bar fits `avail` pixels. `fixed` is what never leaves (padding, the
- * label and view switch, the spacer); `sep` a group line; `more` the More button, counted once
- * anything goes into it (the word count's two parts do not). Items leave one by one by
- * `TOOLBAR_PRIORITY`; a group left empty also loses its line.
+ * label, the line before the view zone, the view switch, the full-screen button, the spacer); `sep`
+ * a line between editing groups; `more` the More button, counted once anything goes into it. Items
+ * leave one by one by `TOOLBAR_PRIORITY`; a group left empty also loses its line.
  */
 export function fitToolbar(o: { avail: number; fixed: number; items: readonly FitItem[]; sep: number; more: number; leadSep: boolean }): Set<string> {
   const hidden = new Set<string>();
@@ -582,18 +631,14 @@ export function fitToolbar(o: { avail: number; fixed: number; items: readonly Fi
       sum += (before ? o.sep : 0) + shown.reduce((s, i) => s + i.width, 0);
       before = true;
     }
-    for (const i of o.items) if (i.group === "right" && !hidden.has(i.key)) sum += i.width;
-    const stat = o.items.filter((i) => i.group === "stat" && !hidden.has(i.key));
-    if (stat.some((i) => i.key === "stat")) sum += o.sep + stat.reduce((s, i) => s + i.width, 0);
-    if ([...hidden].some((k) => !k.startsWith("stat"))) sum += o.more;
+    for (const i of o.items) if (i.group === "view" && !hidden.has(i.key)) sum += i.width;
+    if (hidden.size) sum += o.more;
     return sum;
   };
   const order = [...o.items].sort((a, b) => (TOOLBAR_PRIORITY[a.key] ?? 50) - (TOOLBAR_PRIORITY[b.key] ?? 50));
   for (const i of order) {
     if (total() <= o.avail) break;
     hidden.add(i.key);
-    // The reading time goes with the word count.
-    if (i.key === "stat") hidden.add("stat-min");
   }
   return hidden;
 }
@@ -607,12 +652,14 @@ interface Slot {
   btn?: Btn;
 }
 
-export function EditorToolbar({ commands, tick, view, onView, canWrite, body, outline, onMedia, sidePreview, previewWindow, fullscreen, onFind, findOpen, label, inline }: EditorToolbarProps) {
+export function EditorToolbar({ commands, tick, view, onView, canWrite, body, outline, onMedia, sidePreview, previewWindow, fullscreen, onFind, findOpen, label, inline, extra, onUse, className }: EditorToolbarProps) {
   const { t, locale } = useCms();
   void tick;
+  void body;
   const st = (cmd: EditorCommand) => (commands && canWrite ? commands.state(cmd) : { enabled: false, active: false });
   const run = (cmd: EditorCommand) => {
     commands?.run(cmd);
+    onUse?.();
   };
   const b = (key: string, labelKey: MessageKey, icon: Icon, cmd: EditorCommand, keys?: string, toggle = false): Btn => {
     const s = st(cmd);
@@ -649,13 +696,24 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
   const insertEnabled = !!commands && canWrite && st("steps").enabled;
   const media: Btn[] = onMedia ? [{ key: "media", label: "media_insert_button", icon: ImagePlus, run: onMedia, disabled: !canWrite }] : [];
 
-  const right: Btn[] = [
-    { key: "find", label: "tb_find", icon: Search, keys: "Mod+F", run: () => onFind(false), pressed: !!findOpen },
-    ...(outline ? [{ key: "outline", label: "sections_order" as MessageKey, icon: ListTree, run: outline.toggle, pressed: outline.on }] : []),
-    ...(sidePreview ? [{ key: "side", label: "blk_preview_side" as MessageKey, icon: PanelRight, run: sidePreview.toggle, pressed: sidePreview.on }] : []),
-    ...(previewWindow ? [{ key: "window", label: "blk_preview_window" as MessageKey, icon: AppWindow, run: previewWindow.toggle, pressed: previewWindow.on }] : []),
-    ...(fullscreen ? [{ key: "full", label: "focus_enter" as MessageKey, icon: Maximize2, keys: "Mod+Shift+F", run: fullscreen.onEnter, pressed: false, ref: fullscreen.buttonRef }] : []),
+  // The view zone: what the person sees, not what the text says. Tooltips line up with the right edge.
+  const viewBtns: Btn[] = [
+    { key: "find", label: "tb_find", icon: Search, keys: "Mod+F", run: () => (onFind(false), onUse?.()), pressed: !!findOpen, tip: "end" },
+    ...(outline ? [{ key: "outline", label: "sections_order" as MessageKey, icon: ListTree, run: outline.toggle, pressed: outline.on, tip: "end" as const }] : []),
+    ...(sidePreview ? [{ key: "side", label: "blk_preview_side" as MessageKey, icon: PanelRight, run: sidePreview.toggle, pressed: sidePreview.on, tip: "end" as const }] : []),
+    ...(previewWindow ? [{ key: "window", label: "blk_preview_window" as MessageKey, icon: AppWindow, run: previewWindow.toggle, pressed: previewWindow.on, tip: "end" as const }] : []),
   ];
+  // Full screen: the same button enters and leaves, always last at the far right.
+  const fullBtn: Btn | null = fullscreen
+    ? { key: "full", label: fullscreen.on ? "focus_exit" : "focus_enter", icon: fullscreen.on ? Minimize2 : Maximize2, keys: "Mod+Shift+F", run: fullscreen.toggle, pressed: fullscreen.on, ref: fullscreen.buttonRef, tip: "end" }
+    : null;
+  const viewSwitchBtns: Btn[] =
+    view && onView
+      ? [
+          { key: "view-blocks", label: "tb_view_blocks", icon: BlocksIcon, run: () => onView("blocks"), pressed: view === "blocks" },
+          { key: "view-markdown", label: "tb_view_markdown", icon: FileCode2, run: () => onView("markdown"), pressed: view === "markdown" },
+        ]
+      : [];
 
   const slots: Slot[] = [
     ...history.map((x) => ({ key: x.key, group: "history" as const, btn: x })),
@@ -665,13 +723,8 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
     ...blocks.map((x) => ({ key: x.key, group: "blocks" as const, btn: x })),
     ...media.map((x) => ({ key: x.key, group: "media" as const, btn: x })),
     { key: "insert", group: "insert" },
-    ...right.map((x) => ({ key: x.key, group: "right" as const, btn: x })),
+    ...viewBtns.map((x) => ({ key: x.key, group: "view" as const, btn: x })),
   ];
-
-  const s = React.useMemo(() => bodyStats(body), [body]);
-  const n = (x: number) => x.toLocaleString(locale);
-  const wordsText = t("blk_words", { n: n(s.words) });
-  const minText = s.words ? t("blk_read_min", { n: n(s.minutes) }) : "";
 
   // ── which items fit; the rest go into More ──
   const barRef = React.useRef<HTMLDivElement>(null);
@@ -695,19 +748,16 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
     const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
     const lead = bar.querySelector<HTMLElement>('[data-tb-group="lead"]')?.getBoundingClientRect().width ?? 0;
     const items: FitItem[] = slots.map((x) => ({ key: x.key, group: x.group, width: w(x.key) + GAP }));
-    if (!inline) {
-      const full = w("stat-full");
-      const short = w("stat-short");
-      items.push({ key: "stat-min", group: "stat", width: Math.max(0, full - short) }, { key: "stat", group: "stat", width: short + GAP });
-    }
-    // Padding, the label and view switch, the spacer (at least 4px) and 2px to spare for rounding.
-    // Inside the full-screen header a second spacer before the buttons centres them.
-    const fixed = pad + lead + GAP + 4 + GAP + 2 + (inline ? 4 + GAP : 0);
-    const out = fitToolbar({ avail, fixed, items, sep: w("sep") + GAP, more: w("more") + GAP, leadSep: !!view });
+    const sep = w("sep") + GAP;
+    // Padding, the label, the line before the view zone, the view switch and full screen (they never
+    // leave), the spacer (at least 4px) and 2px to spare for rounding.
+    const extraW = bar.querySelector<HTMLElement>("[data-tb-extra]")?.getBoundingClientRect().width ?? 0;
+    const fixed = pad + (lead ? lead + GAP : 0) + (extraW ? extraW + GAP : 0) + sep + (viewSwitchBtns.length ? w("view") + GAP : 0) + (fullBtn ? w("full") + GAP : 0) + 4 + GAP + 2;
+    const out = fitToolbar({ avail, fixed, items, sep, more: w("more") + GAP, leadSep: false });
     setHidden((old) => (old.size === out.size && [...out].every((k) => old.has(k)) ? old : out));
   };
   // Fit again when the bar or what is in it changes size, and when the set of buttons changes.
-  const signature = `${slots.map((x) => x.key).join(",")}|${view ?? ""}|${styleNow.cmd}|${wordsText}|${minText}|${locale}|${inline ? 1 : 0}`;
+  const signature = `${slots.map((x) => x.key).join(",")}|${view ?? ""}|${styleNow.cmd}|${locale}|${inline ? 1 : 0}|${fullBtn ? 1 : 0}`;
   React.useLayoutEffect(() => fitRef.current(), [signature]);
   React.useLayoutEffect(() => {
     const bar = barRef.current;
@@ -745,33 +795,6 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
     const at = items().indexOf(e.target as HTMLButtonElement);
     if (at >= 0 && at !== focusKey) setFocusKey(at);
   };
-
-  const statShown = !inline && !hidden.has("stat");
-  const stat = statShown ? (
-    <span data-tb-stat="" title={[wordsText, minText, t("blk_chars", { n: n(s.chars) })].filter(Boolean).join(" · ")} className={STAT}>
-      {wordsText}
-      {minText && !hidden.has("stat-min") ? ` · ${minText}` : null}
-    </span>
-  ) : null;
-
-  const viewSwitch =
-    view && onView ? (
-      <div role="group" aria-label={t("blk_view")} className="flex shrink-0 gap-0.5 rounded-md bg-muted p-0.5">
-        {(["blocks", "markdown"] as const).map((v) => (
-          <button
-            key={v}
-            type="button"
-            data-tb-item=""
-            tabIndex={-1}
-            aria-pressed={view === v}
-            onClick={() => onView(v)}
-            className={cn("h-6 whitespace-nowrap rounded px-2 text-xs outline-none transition-colors duration-100 focus-visible:ring-2 focus-visible:ring-ring", view === v ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
-          >
-            {t(v === "blocks" ? "blk_view_blocks" : "blk_view_markdown")}
-          </button>
-        ))}
-      </div>
-    ) : null;
 
   // Closing a menu: after an action that moved focus on purpose (into the text, a dialog, the find bar) focus
   // stays where the action put it; closed with Esc or a click outside, Radix puts it back on the menu button.
@@ -823,26 +846,21 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
 
   const styleMenu = (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>
-        <MenuButton onFocus={onTriggerFocus} label={t("tb_style")} wide disabled={!styleEnabled} className="min-w-[4.5rem] justify-between">
+      <TipMenuTrigger onFocus={onTriggerFocus} label={t("tb_style")} wide disabled={!styleEnabled} className="min-w-[5rem] justify-between">
           <span className="truncate">{t(styleNow.label)}</span>
           <ChevronDown className="size-3 text-muted-foreground" />
-        </MenuButton>
-      </DropdownMenuTrigger>
+        </TipMenuTrigger>
       <DropdownMenuContent align="start" className="w-52" {...closeFocus(toText)}>
         {styleItems}
       </DropdownMenuContent>
     </DropdownMenu>
   );
+  // Insert: a "+" like the other icons; its tooltip says "Insert", its name says what it puts in.
   const insertMenu = (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>
-        <MenuButton onFocus={onTriggerFocus} label={t("tb_insert")} wide disabled={!insertEnabled}>
+      <TipMenuTrigger onFocus={onTriggerFocus} label={t("tb_insert")} disabled={!insertEnabled}>
           <Plus className="size-4" />
-          <span>{t("tb_insert_short")}</span>
-          <ChevronDown className="size-3 text-muted-foreground" />
-        </MenuButton>
-      </DropdownMenuTrigger>
+        </TipMenuTrigger>
       <DropdownMenuContent align="start" className="w-60" {...closeFocus()}>
         {insertItems}
       </DropdownMenuContent>
@@ -853,7 +871,7 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
   const draw = (x: Slot) => (x.key === "style" ? <React.Fragment key="style">{styleMenu}</React.Fragment> : x.key === "insert" ? <React.Fragment key="insert">{insertMenu}</React.Fragment> : <ToolButton key={x.key} ref={x.btn!.ref} b={x.btn!} t={t} onRun={() => runBtn(x.btn!)} />);
 
   const left: React.ReactNode[] = [];
-  let lineBefore = !!view;
+  let lineBefore = false;
   for (const g of LEFT_GROUPS) {
     const shown = slots.filter((x) => x.group === g && !hidden.has(x.key));
     if (!shown.length) continue;
@@ -907,33 +925,47 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
   }
   const more = moreSlots.length ? (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>
-        <MenuButton onFocus={onTriggerFocus} label={t("tb_more")}>
+      <TipMenuTrigger onFocus={onTriggerFocus} label={t("tb_more")}>
           <Ellipsis className="size-4" />
-        </MenuButton>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60" {...closeFocus()}>
+        </TipMenuTrigger>
+      <DropdownMenuContent align="start" className="w-60" {...closeFocus()}>
         {moreBody}
       </DropdownMenuContent>
     </DropdownMenu>
   ) : null;
 
+  // Blocks or markdown: two icons side by side, the one shown pressed (a segmented switch).
+  const viewSwitch = viewSwitchBtns.length ? (
+    <div role="group" aria-label={t("blk_view")} data-tb-group="switch" className="flex shrink-0 items-center gap-px rounded-md bg-muted/70">
+      {viewSwitchBtns.map((x) => (
+        <ToolButton key={x.key} b={x} t={t} onRun={() => runBtn(x)} className="text-muted-foreground hover:bg-background/70 aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-sm aria-pressed:ring-1 aria-pressed:ring-border" />
+      ))}
+    </div>
+  ) : null;
+
   return (
-    <div className={cn("relative min-w-0", !inline && "border-b", inline && "flex-1")}>
-      <div ref={barRef} role="toolbar" aria-label={t("tb_label")} aria-orientation="horizontal" className={cn("flex min-w-0 items-center gap-px overflow-visible", inline ? "h-12" : "h-11 px-2 sm:px-3")} onKeyDown={onKeyDown} onFocus={onFocusIn}>
-        <div data-tb-group="lead" className="flex shrink-0 items-center gap-1.5">
-          {label}
-          {viewSwitch}
-        </div>
-        {inline ? <span className="min-w-1 flex-1" /> : null}
+    <div className={cn("relative min-w-0", !inline && "border-b", inline && "h-full flex-1", className)}>
+      <div ref={barRef} role="toolbar" aria-label={t("tb_label")} aria-orientation="horizontal" className={cn("flex min-w-0 items-center gap-px overflow-visible", inline ? "h-full" : "h-11 px-2 sm:px-3 max-md:h-12 [@media(pointer:coarse)]:h-12")} onKeyDown={onKeyDown} onFocus={onFocusIn}>
+        {label ? (
+          <div data-tb-group="lead" className="flex shrink-0 items-center gap-1.5 empty:hidden">
+            {label}
+          </div>
+        ) : null}
         {left}
+        {more}
         <span className="min-w-1 flex-1" />
-        <div data-tb-group="right" className="flex shrink-0 items-center gap-px">
-          {slots.filter((x) => x.group === "right" && !hidden.has(x.key)).map(draw)}
-          {more}
+        <Sep />
+        <div data-tb-group="view" className="flex shrink-0 items-center gap-px">
+          {viewSwitch}
+          {viewSwitch ? <span aria-hidden className="w-1 shrink-0" /> : null}
+          {slots.filter((x) => x.group === "view" && !hidden.has(x.key)).map(draw)}
+          {extra ? (
+            <div data-tb-extra="" className="flex shrink-0 items-center gap-px">
+              {extra}
+            </div>
+          ) : null}
+          {fullBtn ? <ToolButton key="full" ref={fullBtn.ref} b={fullBtn} t={t} onRun={() => runBtn(fullBtn)} /> : null}
         </div>
-        {stat ? <Sep /> : null}
-        {stat}
       </div>
       {/* Copies of the items, never shown: their widths decide what fits. The zero-size box around them keeps
           their full width from widening the scrolling page (a sideways scrollbar under a narrow window). */}
@@ -941,14 +973,8 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
         <div ref={measureRef} data-tb-measure="" className="flex h-0 w-max items-center gap-px whitespace-nowrap">
           {slots.map((x) =>
             x.key === "style" ? (
-              <span key={x.key} data-tb-m="style" className={cn(BTN, WIDE, "min-w-[4.5rem] justify-between")}>
+              <span key={x.key} data-tb-m="style" className={cn(BTN, WIDE, "min-w-[5rem] justify-between")}>
                 <span className="truncate">{t(styleNow.label)}</span>
-                <ChevronDown className="size-3" />
-              </span>
-            ) : x.key === "insert" ? (
-              <span key={x.key} data-tb-m="insert" className={cn(BTN, WIDE)}>
-                <Plus className="size-4" />
-                <span>{t("tb_insert_short")}</span>
                 <ChevronDown className="size-3" />
               </span>
             ) : (
@@ -956,14 +982,13 @@ export function EditorToolbar({ commands, tick, view, onView, canWrite, body, ou
             ),
           )}
           <span data-tb-m="more" className={BTN} />
+          <span data-tb-m="full" className={BTN} />
+          <span data-tb-m="view" className="flex shrink-0 gap-px">
+            <span className={BTN} />
+            <span className={BTN} />
+            <span className="w-1 shrink-0" />
+          </span>
           <Sep data-tb-m="sep" />
-          <span data-tb-m="stat-full" className={STAT}>
-            {wordsText}
-            {minText ? ` · ${minText}` : null}
-          </span>
-          <span data-tb-m="stat-short" className={STAT}>
-            {wordsText}
-          </span>
         </div>
       </div>
     </div>

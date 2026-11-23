@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.1
+
+### Changed
+- **The body editor's bar**: one row in two zones. Left, editing (undo and redo, text style, marks, lists, blocks, media, and Insert as a `+` icon); right, after a line, the view (blocks or markdown as a two-icon switch, find, section order, the previews) with **Full screen always last at the far right**. Buttons are 32px on a desktop and 40px on phones and touch screens. The word count and reading time moved to the status line at the bottom, in the page and in full screen.
+- **The bar stays in view**: it sits right under the document header and sticks there while the fields and the body scroll; a button that changes the text brings the body into view.
+- **Full screen**: entered and left with the same button in the same place (its icon, name and `aria-pressed` change), or Ctrl/⌘+Shift+F; Esc still leaves outside the text. No toast on entering (screen readers hear it). The header is one row: the title and save state, the bar, Save and Publish. "Show fields" and "Fill the whole monitor" are in one "View options" menu instead of two unlabelled icons; the header no longer fades while a menu or a tooltip is open.
+- **Document header**: Comments, the public page, Preview link and Version history are icon buttons with tooltips, so the header stays on one line and Save and Publish stay in view (`PageHeader` takes `nowrap`). Only one toolbar tooltip shows at a time.
+
 ## 0.22.0
 
 Multilingual documents and forms. **Schema 11** (three columns, the unique index on addresses becomes one per language, and one new table `cms_form_submissions`). See `UPGRADE-0.22.md`.
