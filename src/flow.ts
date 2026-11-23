@@ -348,15 +348,23 @@ export function createFlow(ctx: FlowContext) {
         // Review 0.22: every translation that would come back is checked first (the same right as
         // restoring it on its own), and all of them come back in one transaction or none does.
         for (const x of kids) assert(actor, x.collection, "publish", x);
+        // Review 0.22 (3rd round): each write is bound to the row as it was checked (in the trash since
+        // the same moment, same version); a row that left the batch since (restored, purged, deleted
+        // again) refuses the whole restore. Several rows need a real transaction.
         const back = await repo.tx(async (r) => {
+          if (!isTranslationDoc(d)) await r.lockGroup?.(d.id);
+          if (kids.length || !isTranslationDoc(d)) {
+            const now = (await r.listDocs({ trashed: true, groupId: d.id })).filter((x) => x.id !== d.id && x.deletedAt === d.deletedAt);
+            if (now.length !== kids.length || now.some((x) => !kids.some((k) => k.id === x.id))) throw fail("trash_changed", { id: d.id });
+          }
           const out: CmsDoc[] = [];
           for (const x of [d, ...kids]) {
-            const doc = await r.updateDoc(x.id, { deletedAt: null, deletedBy: null, updatedAt: nowIso() });
-            if (!doc) throw fail("trash_not_found", { id: x.id });
+            const doc = await r.updateDoc(x.id, { deletedAt: null, deletedBy: null, updatedAt: nowIso() }, undefined, { trashed: { version: x.version, deletedAt: x.deletedAt! } });
+            if (!doc) throw fail("trash_changed", { id: x.id });
             out.push(doc);
           }
           return out;
-        });
+        }, { atomic: kids.length > 0 });
         for (const doc of back) {
           audit(actor, "doc.undelete", { collection: doc.collection, slug: docAddress(doc), version: doc.version });
           ctx.changed(null, doc, { quiet: true }); // told as doc.restored, not as a new document

@@ -44,6 +44,47 @@ export function bodyLimit(method: string, pathname: string, o: NodeHandlerOption
 
 type Req = IncomingMessage & { originalUrl?: string; body?: unknown };
 
+const tooLarge = () => Object.assign(new Error("request body too large"), { status: 413 });
+
+/**
+ * The body, up to `max` bytes. Review 0.22 (3rd round): past the limit (a chunked body has no
+ * length to check first) reading stops without destroying the socket, so the 413 still reaches the
+ * caller; the rest is let through unread and the connection closes after the answer.
+ */
+function readBody(req: Req, max: number): Promise<Uint8Array[]> {
+  return new Promise((ok, no) => {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    const done = () => {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+    };
+    const onData = (c: Buffer | string) => {
+      const chunk = typeof c === "string" ? new TextEncoder().encode(c) : (c as Uint8Array);
+      size += chunk.length;
+      if (size <= max) return void chunks.push(chunk);
+      done();
+      req.on("error", () => undefined);
+      // Nothing more is kept. On a real connection the rest is let through and dropped (not
+      // destroyed), so the 413 reaches the caller before the connection closes; a bare stream is
+      // just left paused.
+      if (req.socket) req.resume();
+      else req.pause();
+      no(tooLarge());
+    };
+    const onEnd = () => {
+      done();
+      ok(chunks);
+    };
+    const onError = (e: Error) => {
+      done();
+      no(e);
+    };
+    req.on("data", onData).on("end", onEnd).on("error", onError);
+  });
+}
+
 /** The web `Request` a Node request stands for. Use it in `resolveUser` code shared with other hosts. */
 export async function toWebRequest(req: Req, o: NodeHandlerOptions = {}): Promise<Request> {
   const forwarded = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim();
@@ -69,18 +110,12 @@ export async function toWebRequest(req: Req, o: NodeHandlerOptions = {}): Promis
     // A body parser ran before us (express.json()): send what it read on.
     body = req.body instanceof Uint8Array ? req.body : typeof req.body === "string" ? req.body : JSON.stringify(req.body);
     const size = typeof body === "string" ? new TextEncoder().encode(body).length : body.length;
-    if (size > max) throw Object.assign(new Error("request body too large"), { status: 413 });
+    if (size > max) throw tooLarge();
   } else {
-    const chunks: Uint8Array[] = [];
-    let size = 0;
     const declared = Number(req.headers["content-length"] ?? NaN);
-    if (Number.isFinite(declared) && declared > max) throw Object.assign(new Error("request body too large"), { status: 413 });
-    for await (const c of req) {
-      const chunk = typeof c === "string" ? new TextEncoder().encode(c) : (c as Uint8Array);
-      size += chunk.length;
-      if (size > max) throw Object.assign(new Error("request body too large"), { status: 413 });
-      chunks.push(chunk);
-    }
+    if (Number.isFinite(declared) && declared > max) throw tooLarge();
+    const chunks = await readBody(req, max);
+    const size = chunks.reduce((n, c) => n + c.length, 0);
     body = new Uint8Array(size);
     let at = 0;
     for (const c of chunks) {
@@ -154,8 +189,11 @@ export function toNodeHandler(handler: (req: Request) => Response | Promise<Resp
     } catch (err) {
       const status = (err as { status?: number })?.status;
       if (status === 413) {
+        if (res.headersSent) return void res.destroy();
         res.statusCode = 413;
         res.setHeader("content-type", "application/json; charset=utf-8");
+        // The rest of the body is not read: this connection takes no further request.
+        res.setHeader("connection", "close");
         return void res.end(JSON.stringify({ error: "body_too_large", kind: "invalid", message: "The request body is too large.", params: {} }));
       }
       if (next) return next(err);

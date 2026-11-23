@@ -9,10 +9,10 @@ import * as React from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CmsForm } from "../cms/cms-form";
-import { CmsFormEditor } from "../cms/cms-forms";
+import { CmsFormEditor, newOptionValue } from "../cms/cms-forms";
 import { CmsFormSubmissions } from "../cms/cms-form-submissions";
 import { ko } from "../cms/cms-messages";
-import type { FormStep, FormView, PublicForm } from "@mainsoft/agent-cms/client";
+import { nextOptionNumber, type FormStep, type FormView, type PublicForm } from "@mainsoft/agent-cms/client";
 import { setMobile } from "./setup";
 import { admin, axeViolations, makeServer, renderWith, type Server } from "./server";
 
@@ -325,6 +325,7 @@ test("CSV: says what it takes and takes the box and search on screen", async () 
   await user.type(screen.getByRole("searchbox"), "Kim");
   await screen.findByText("The CSV has what is shown: Inbox matching “Kim”, 1");
   const created = URL.createObjectURL;
+  const revoked = URL.revokeObjectURL;
   URL.createObjectURL = () => "blob:x";
   URL.revokeObjectURL = () => {};
   const click = HTMLAnchorElement.prototype.click;
@@ -339,6 +340,8 @@ test("CSV: says what it takes and takes the box and search on screen", async () 
   } finally {
     HTMLAnchorElement.prototype.click = click;
     URL.createObjectURL = created;
+    // The screen frees the link a second later: put it back after that.
+    setTimeout(() => (URL.revokeObjectURL = revoked), 1100).unref();
   }
   // An empty box has nothing to download.
   await user.click(screen.getByRole("radio", { name: /Spam 0/ }));
@@ -374,3 +377,95 @@ test("public form: a required file field that cannot take a file gets focus on i
   assert.match(live.textContent ?? "", /This type is not taken/);
 });
 
+// Round 3 (확인 리뷰): choice values are never handed out twice; the CSV waits for the list it describes.
+
+test("choices: a removed choice's value is never given to a new one; a condition on it stays flagged when one is added in the same edit", async () => {
+  const s = await server([
+    {
+      title: "",
+      fields: [
+        { key: "topic", label: "Topic", kind: "select", options: [{ value: "option_1", label: "Bug" }, { value: "option_2", label: "Price" }] },
+        { key: "plan", label: "Plan", kind: "text", showIf: { field: "topic", op: "eq", value: "option_2" } },
+      ],
+    },
+  ]);
+  const user = userEvent.setup();
+  renderWith(s, <CmsFormEditor slug="contact" onBack={() => {}} />);
+  await pick(user, /^Topic/);
+  // Remove "Price" (option_2) and add a choice in the same edit: it takes option_3, not option_2.
+  await user.click(within(panel()).getByRole("button", { name: "Remove option Price" }));
+  await user.click(within(panel()).getByRole("button", { name: "Add option" }));
+  assert.ok(await screen.findByRole("listitem", { name: /^Plan.*a choice Topic does not have any more/ }));
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Fix 1 marked fields first");
+  // Point the condition at the new choice and save: the definition sent carries the counter.
+  await pick(user, /^Plan/);
+  await user.selectOptions(within(panel()).getByLabelText("Value"), "option_3");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Form saved");
+  const sent = s.requests.filter((r) => r.path === "/forms/contact" && r.method !== "GET").at(-1)!.body as { steps: FormStep[] };
+  const topic = sent.steps[0].fields[0];
+  assert.deepEqual(topic.options?.map((o) => o.value), ["option_1", "option_3"]);
+  assert.equal(topic.nextOption, 4);
+});
+
+test("choices: the next value comes from the field's counter, past every value it ever gave", () => {
+  // Saved after option_2 and option_3 were removed: the counter remembers them.
+  assert.equal(nextOptionNumber({ options: [{ value: "option_1", label: "A" }], nextOption: 4 }), 4);
+  // Older forms without a counter: past the highest option_<n> and the number of choices.
+  assert.equal(nextOptionNumber({ options: [{ value: "bug", label: "Bug" }, { value: "option_7", label: "X" }] }), 8);
+  assert.equal(nextOptionNumber({ options: [{ value: "bug", label: "Bug" }, { value: "price", label: "Price" }] }), 3);
+  // A counter behind the values (edited by hand) never hands out a value in use.
+  assert.equal(nextOptionNumber({ options: [{ value: "option_5", label: "A" }], nextOption: 2 }), 6);
+  assert.equal(newOptionValue([{ value: "option_1" }], 9), "option_9");
+});
+
+test("CSV: switching box disables the download until that box's list is in; a failed load says why", async () => {
+  const s = await server(STEPS, { enabled: true });
+  await s.cms.forms.submit("contact", { name: "Kim", topic: "price" }, { ip: "1.2.3.4" });
+  let release!: () => void;
+  let gate: Promise<void> | null = null;
+  let fail = false;
+  const slow: Server = {
+    ...s,
+    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/forms\/contact\/submissions\?/.test(url)) {
+        if (fail) return Response.json({ error: { code: "internal", message: "down" } }, { status: 500 });
+        if (/status=spam/.test(url) && gate) await gate;
+      }
+      return s.fetch(input, init);
+    }) as typeof fetch,
+  };
+  const user = userEvent.setup();
+  renderWith(slow, <CmsFormEditor slug="contact" tab="submissions" onBack={() => {}} />);
+  const button = () => screen.getByRole("button", { name: "Download CSV" }) as HTMLButtonElement;
+  await screen.findByText("The CSV has what is shown: Inbox, 1");
+  assert.equal(button().disabled, false);
+
+  gate = new Promise<void>((r) => (release = r));
+  await user.click(screen.getByRole("radio", { name: /Spam/ }));
+  await screen.findByText("CSV waits until the list for Spam is loaded");
+  assert.equal(button().disabled, true);
+  await user.click(button());
+  assert.ok(!s.requests.some((r) => r.path.startsWith("/forms/contact/export.csv")), "nothing exported while loading");
+  release();
+  await screen.findByText("Nothing to put in a CSV: Spam is empty");
+  assert.equal(button().disabled, true);
+
+  // A search typed but not applied yet: the CSV waits for it too.
+  await user.click(screen.getByRole("radio", { name: /Inbox/ }));
+  await screen.findByText("The CSV has what is shown: Inbox, 1");
+  fireEvent.change(screen.getByRole("searchbox"), { target: { value: "Kim" } });
+  assert.equal(button().disabled, true);
+  await screen.findByText("The CSV has what is shown: Inbox matching “Kim”, 1");
+  assert.equal(button().disabled, false);
+
+  // The list fails to load: no CSV, and the line says why.
+  fail = true;
+  await user.click(screen.getByRole("radio", { name: /Archived/ }));
+  await screen.findByText("No CSV: the list for Archived did not load. Try again from the list");
+  assert.equal(button().disabled, true);
+  assert.ok(!screen.queryByRole("button", { name: /Kim/ }), "the Inbox rows are not shown under Archived");
+  assert.equal(button().getAttribute("aria-describedby"), "cms-form-export-scope");
+});

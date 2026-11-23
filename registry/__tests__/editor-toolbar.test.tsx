@@ -132,7 +132,7 @@ test("editor toolbar: icon buttons named for screen readers, one tab stop moved 
   assert.equal(stops().length, 1);
   assert.equal(stops()[0], document.activeElement);
   fireEvent.keyDown(document.activeElement!, { key: "Home" });
-  assert.equal(document.activeElement, first);
+  assert.ok(document.activeElement === first, `focus on ${document.activeElement?.tagName} ${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.slice(0, 40)}`);
 
   // A tooltip names the button and its shortcut on keyboard focus.
   const bold = within(bar).getByRole("button", { name: "Bold" });

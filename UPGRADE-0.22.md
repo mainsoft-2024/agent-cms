@@ -59,16 +59,18 @@ It repeats `UPDATE … SET locale = 'ko' WHERE id IN (SELECT id … WHERE locale
 
 Turning `localized` off again later: translations stay in the table but are no longer listed or read; the source documents are what readers get.
 
-If you write your own `CmsRepo`: `findDoc(collection, slug, { locale })` finds a translation, and without `locale` it must return the source (the row with no `groupId`, or `groupId === id`); `listDocs` takes `sources`, `locale` and `groupId`; `pageDocs` takes `locale`; documents carry `locale`, `groupId` and `sourceVersion`. Without locales none of this is asked for.
+If you write your own `CmsRepo`: `updateDoc(id, patch, expectedVersion, { trashed: { version, deletedAt } })` writes a trashed row only if it is still at that version and deleted at that moment (return null otherwise; restores rely on it), and an optional `lockGroup(groupId)` serialises changes to one translation group inside a transaction. `findDoc(collection, slug, { locale })` finds a translation, and without `locale` it must return the source (the row with no `groupId`, or `groupId === id`); `listDocs` takes `sources`, `locale` and `groupId`; `pageDocs` takes `locale`; documents carry `locale`, `groupId` and `sourceVersion`. Without locales none of this is asked for.
 
 ## What changes without you doing anything
 
 Nothing, unless you set `locales`. With `locales` and a `localized` collection:
 
-- **ETags of that collection's documents carry the language**: `"v3-ko"`, `"v3-en"`. `If-Match: "v3-en"` and `"v3"` both work.
+- **ETags of that collection's documents carry the language**: `"v3-ko"`, `"v3-en"`. On a source, `If-Match: "v3-ko"` and `"v3"` both work. On a translation the tag must name its language (`"v3-en"`): a tag without a language (`"v3"`, from before 0.22) or another language's tag answers 409 `locale_etag_mismatch`. A bare version number (`If-Match: 3`) is accepted everywhere. The REST client sends the language for `slug@locale` addresses; if you build `If-Match` yourself from an ETag you read, send it back unchanged.
 - **Events, the change log, webhooks and the audit log** name the slug and say `locale` (the audit log in `detail.locale`).
 - **`url(doc)`** of a localized collection gets `doc.locale` too.
 - **Search** searches the default language unless you pass `locale`; collections that are not translated are searched whatever the language. Korean 2-grams are used for Korean text (and text with no language, as before), not for other languages.
+- **Renaming and deleting a group**: a group is live when any language is published. Renaming a source that was never published while a translation is live needs `publish` (`slug_needs_publish`) and `redirects` (else `slug_locked`), like renaming a published source. Deleting or restoring a source with translations writes several rows at once and needs a driver with transactions: on `DrizzleRepo(db, { transactions: false })` it answers `transactions_required` (a document without translations is deleted as before). A translation saved while the delete runs makes it a `conflict_version`, and a trash batch that changed after it was read answers `trash_changed`: nothing changes, try again.
+- **`list_translations` / `GET …/_translations` for readers** judge each language by its own read rule, and `sourceVersion` is `null` when the caller may not read the source (the type is now `number | null`).
 - **Agent tools**: one new (`list_translations`). Document tools take `locale`; `list_collections` says which collections are translated and which fields every language shares (`sharedFields`).
 
 ## Copied admin screens

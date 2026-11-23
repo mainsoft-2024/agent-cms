@@ -260,3 +260,168 @@ test("client: If-Match on a translation names its language, so its own saves are
   await client.update("guide", "start", { summary: "x" }, { expectedVersion: 4 });
   assert.deepEqual(seen, ['http://x/api/collections/guide/start%40pt-BR "v4-ptbr"', 'http://x/api/collections/guide/start "v4"']);
 });
+
+// ── 3rd round (확인 리뷰) ──
+
+test("review 0.22 (3rd): a translation's autosave never carries a shared field the editor may not read on the source (core and REST, whole payload)", async () => {
+  const { cms } = setup({
+    access: { write: ({ actor }) => actor.kind === "user", publish: ({ actor }) => actor.kind === "user" },
+    // `secret` is hidden from Lee on the source (ko) and allowed on the English translation.
+    fieldAccess: { secret: { read: ({ actor, doc }) => (actor.kind === "user" && actor.isAdmin) || doc?.locale === "en" } },
+  });
+  await cms.create(admin, "guide", { slug: "a", title: "원문", body: "x\n", fields: { secret: "TOPSECRET-1", order: 4 } }, { publish: true });
+  await cms.create(admin, "guide", { slug: "a", title: "English", body: "y\n" }, { locale: "en", publish: true });
+  // Core: the write's answer, then later draft reads.
+  const saved = await cms.autosave(lee, "guide", "a@en", { title: "English (typing)" }, 1);
+  assert.equal(JSON.stringify(saved).includes("TOPSECRET"), false, "autosave answer");
+  assert.equal((saved.content.fields as Record<string, unknown>).order, 4, "shared values Lee may read are still filled");
+  const draft = await cms.get(lee, "guide", "a", { locale: "en", draft: true });
+  assert.equal(draft.autosave?.content.title, "English (typing)");
+  assert.equal(JSON.stringify(draft).includes("TOPSECRET"), false, "draft read");
+  // A later write answer (update) shows the same projection.
+  const upd = await cms.update(lee, "guide", "a@en", { title: "English 2" });
+  assert.equal(JSON.stringify(upd).includes("TOPSECRET"), false, "update answer");
+  // An editor allowed on the source still gets the source's value.
+  const own = await cms.autosave(admin, "guide", "a@en", { title: "Admin typing" }, 2);
+  assert.equal((own.content.fields as Record<string, unknown>).secret, "TOPSECRET-1");
+
+  // REST: PUT autosave and GET ?draft=1, whole bodies.
+  const { createCmsHandler } = await import("./http");
+  const handler = createCmsHandler({ cms, resolveUser: async () => lee });
+  const put = await handler(new Request("http://localhost/api/cms/collections/guide/a/autosave?locale=en", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: { title: "REST typing" }, baseVersion: 2 }) }));
+  const putText = await put.text();
+  assert.equal(put.status, 200, putText);
+  assert.equal(putText.includes("TOPSECRET"), false, "REST autosave answer");
+  const got = await handler(new Request("http://localhost/api/cms/collections/guide/a?locale=en&draft=1"));
+  const gotText = await got.text();
+  assert.equal(got.status, 200);
+  assert.ok(gotText.includes("REST typing"));
+  assert.equal(gotText.includes("TOPSECRET"), false, "REST draft read");
+});
+
+test("review 0.22 (3rd): publishing an older translation version puts it at the group's current address; history keeps its own slug", async () => {
+  const { cms, repo } = setup({ redirects: true });
+  await cms.create(admin, "guide", { slug: "old", title: "원문", body: "x\n" }, { publish: true });
+  const en = await cms.create(admin, "guide", { slug: "old", title: "English", body: "first\n" }, { locale: "en", publish: true });
+  await cms.update(admin, "guide", "old@en", { title: "English 2" });
+  await cms.update(admin, "guide", "old", { slug: "new" }, { publish: true });
+  await cms.publish(admin, "guide", "new@en", { version: 1 });
+  const row = (await repo.findDocById(en.id))!;
+  assert.deepEqual([row.slug, row.published?.slug], ["new", "new"]);
+  const live = await cms.get(anon, "guide", "new", { locale: "en" });
+  assert.deepEqual([live.slug, live.title], ["new", "English"]);
+  assert.equal((await repo.listVersions(en.id)).find((v) => v.version === 1)!.snapshot.slug, "old", "history unchanged");
+  assert.deepEqual([...new Set((await cms.search(anon, ["guide"], "first", { locale: "en" })).hits.map((h) => h.unit.slug))], ["new"]);
+});
+
+test("review 0.22 (3rd): renaming a never-published source whose translation is live needs a publish and redirects the live language", async () => {
+  const { cms } = setup({ redirects: true });
+  await cms.create(admin, "guide", { slug: "d1", title: "원문", body: "x\n" });
+  await cms.create(admin, "guide", { slug: "d1", title: "English" }, { locale: "en", publish: true });
+  assert.equal(await code(cms.update(admin, "guide", "d1", { slug: "d2" })), "slug_needs_publish");
+  assert.equal((await cms.get(anon, "guide", "d1", { locale: "en" })).slug, "d1", "the live translation did not move");
+  await cms.update(admin, "guide", "d1", { slug: "d2" }, { publish: true });
+  assert.equal((await cms.get(anon, "guide", "d2", { locale: "en" })).slug, "d2");
+  assert.deepEqual(await cms.redirects.resolve("/en/guide/d1"), { to: "/en/guide/d2", status: 301 });
+  assert.equal(await cms.redirects.resolve("/ko/guide/d1"), null, "the source was never live there");
+  // Without redirects the live group's address is locked.
+  const off = setup();
+  await off.cms.create(admin, "guide", { slug: "e1", title: "원문", body: "x\n" });
+  await off.cms.create(admin, "guide", { slug: "e1", title: "English" }, { locale: "en", publish: true });
+  assert.equal(await code(off.cms.update(admin, "guide", "e1", { slug: "e2" }, { publish: true })), "slug_locked");
+  // A group with nothing live renames freely as a draft.
+  await off.cms.create(admin, "guide", { slug: "f1", title: "원문", body: "x\n" });
+  await off.cms.create(admin, "guide", { slug: "f1", title: "English" }, { locale: "en" });
+  assert.equal(await code(off.cms.update(admin, "guide", "f1", { slug: "f2" })), "ok");
+  assert.equal((await off.cms.get(admin, "guide", "f2", { locale: "en", draft: true })).slug, "f2");
+});
+
+test("review 0.22 (3rd): a translation revised between the delete's check and its write makes the whole delete a conflict; nothing goes", async () => {
+  const { cms, repo } = setup({ trash: true });
+  await cms.create(admin, "guide", { slug: "c", title: "원문", body: "x\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "c", title: "English" }, { locale: "en" });
+  await cms.create(admin, "guide", { slug: "c", title: "日本語" }, { locale: "ja" });
+  const orig = repo.tx.bind(repo);
+  let once = true;
+  repo.tx = (async (fn: Parameters<typeof orig>[0]) => {
+    if (once) {
+      once = false;
+      // Someone saves the English translation after the delete checked it.
+      await cms.update(admin, "guide", "c@en", { title: "English (edited)" });
+    }
+    return orig(fn);
+  }) as typeof repo.tx;
+  assert.equal(await code(cms.remove(admin, "guide", "c")), "conflict_version");
+  repo.tx = orig;
+  assert.equal((await cms.trash.list(admin)).items.length, 0, "nothing went to the trash");
+  assert.equal((await cms.get(admin, "guide", "c", { draft: true })).title, "원문");
+  assert.equal((await cms.get(admin, "guide", "c", { locale: "en", draft: true })).title, "English (edited)");
+  await cms.remove(admin, "guide", "c");
+  assert.equal((await cms.trash.list(admin)).items.length, 3);
+});
+
+test("review 0.22 (3rd): a restore whose batch changed after the check (a translation left the trash) is refused; nothing comes back", async () => {
+  const { cms, repo } = setup({ trash: true });
+  await cms.create(admin, "guide", { slug: "r3", title: "원문", body: "x\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "r3", title: "English" }, { locale: "en" });
+  const ja = await cms.create(admin, "guide", { slug: "r3", title: "日本語" }, { locale: "ja" });
+  await cms.remove(admin, "guide", "r3");
+  const src = (await cms.trash.list(admin)).items.find((i) => !i.locale)!;
+  const orig = repo.tx.bind(repo);
+  let once = true;
+  repo.tx = (async (fn: Parameters<typeof orig>[0]) => {
+    if (once) {
+      once = false;
+      await repo.updateDoc(ja.id, { deletedAt: null, deletedBy: null, updatedAt: new Date().toISOString() });
+    }
+    return orig(fn);
+  }) as typeof repo.tx;
+  assert.equal(await code(cms.trash.restore(admin, [{ kind: "document", id: src.id }])), "trash_changed");
+  repo.tx = orig;
+  const left = (await cms.trash.list(admin)).items.map((i) => i.locale ?? "ko").sort();
+  assert.deepEqual(left, ["en", "ko"], "the source and English stayed in the trash");
+});
+
+test("review 0.22 (3rd): translation ETags follow the address (a rename answers 200); an untagged If-Match on a translation is refused", async () => {
+  const { cms } = setup({ redirects: true });
+  const { createCmsHandler } = await import("./http");
+  const handler = createCmsHandler({ cms, resolveUser: async () => admin });
+  const call = (method: string, path: string, headers: Record<string, string> = {}, body?: unknown) =>
+    handler(new Request(`http://localhost/api/cms${path}`, { method, headers: { ...(body ? { "content-type": "application/json" } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined }));
+  await cms.create(admin, "guide", { slug: "m1", title: "원문", body: "x\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "m1", title: "English" }, { locale: "en", publish: true });
+  const first = await call("GET", "/collections/guide/m1?locale=en");
+  const tag = first.headers.get("etag")!;
+  assert.equal((await call("GET", "/collections/guide/m1?locale=en", { "if-none-match": tag })).status, 304);
+  await cms.update(admin, "guide", "m1", { slug: "m2" }, { publish: true });
+  const after = await call("GET", "/collections/guide/m2?locale=en", { "if-none-match": tag });
+  assert.equal(after.status, 200, "same version, new address: not 304");
+  assert.equal(((await after.json()) as { doc: { slug: string } }).doc.slug, "m2");
+  const untagged = await call("PATCH", "/collections/guide/m2?locale=en", { "if-match": '"v1"' }, { doc: { title: "x" } });
+  assert.deepEqual([untagged.status, ((await untagged.json()) as { error: string }).error], [409, "locale_etag_mismatch"]);
+  assert.equal((await call("PATCH", "/collections/guide/m2?locale=en", { "if-match": '"v1-en"' }, { doc: { title: "x" } })).status, 200);
+});
+
+test("review 0.22 (3rd): list_translations judges each language by its own read rule; the source's version stays out when the source is not readable", async () => {
+  // Anonymous readers may read English documents only (a rule about the document, false without one).
+  const { cms } = setup({ access: { read: ({ actor, doc }) => actor.kind === "user" || doc?.locale === "en" } });
+  await cms.create(admin, "guide", { slug: "lt", title: "원문", body: "x\n" }, { publish: true });
+  await cms.create(admin, "guide", { slug: "lt", title: "English" }, { locale: "en", publish: true });
+  await cms.create(admin, "guide", { slug: "lt", title: "日本語" }, { locale: "ja", publish: true });
+  await cms.update(admin, "guide", "lt", { title: "원문 2" }, { publish: true });
+  const r = await cms.translations(anon, "guide", "lt");
+  assert.deepEqual(r.translations.map((t) => [t.locale, t.status, t.sourceVersion]), [["en", "current", null]]);
+  assert.equal(r.sourceVersion, null, "how far the source moved on is not told");
+  const tool = (await callTool(cms, anon, "list_translations", { collection: "guide", slug: "lt" })) as { translations: { locale: string }[] };
+  assert.deepEqual(tool.translations.map((t) => t.locale), ["en"]);
+  // A reader of the source gets the comparison.
+  const reader: Actor = { kind: "user", id: "u9", label: "Reader", isAdmin: false };
+  const full = await cms.translations(reader, "guide", "lt");
+  assert.equal(full.sourceVersion, 2);
+  assert.deepEqual(full.translations.map((t) => [t.locale, t.status]), [["ko", "source"], ["en", "outdated"], ["ja", "outdated"]]);
+  // beforeRead refusing the document hides every language.
+  const blocked = createCms({ repo: new MemoryRepo(), collections: [defineCollection({ slug: "guide", label: "Guide", visibility: "public", localized: true, url: (d) => `/${d.locale}/guide/${d.slug}`, hooks: { beforeRead: [() => { throw new Error("closed"); }] } })], locales: ["ko", "en"], defaultLocale: "ko", warn: () => {} });
+  await blocked.create(admin, "guide", { slug: "b", title: "원문", body: "x\n" }, { publish: true });
+  await blocked.create(admin, "guide", { slug: "b", title: "English" }, { locale: "en", publish: true });
+  assert.equal(await code(blocked.translations(anon, "guide", "b")), "not_found");
+});

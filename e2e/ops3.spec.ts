@@ -82,11 +82,11 @@ test("events: the browser hears a publish as it happens, and a reconnect gets wh
 
 test("retention: a dry run says what would go and deletes nothing", async ({ request }) => {
   const rules = (await (await request.get(`${api}/retention`)).json()) as { rules: { what: string; days: number }[] };
-  expect(rules.rules).toEqual([{ what: "audit", days: 365 }, { what: "hits", days: 400 }, { what: "keys", days: 90 }]);
+  expect(rules.rules).toEqual([{ what: "audit", days: 365 }, { what: "hits", days: 400 }, { what: "keys", days: 90 }, { what: "form_submissions", days: 365 }]);
   const before = (await (await request.get(`${api}/audit?limit=1`)).json()) as { entries: unknown[] };
   const dry = (await (await request.post(`${api}/retention`, { data: { dryRun: true } })).json()) as { dryRun: boolean; items: { what: string; rows: number }[] };
   expect(dry.dryRun).toBe(true);
-  expect(dry.items.map((i) => i.what)).toEqual(["audit", "hits", "keys"]);
+  expect(dry.items.map((i) => i.what)).toEqual(["audit", "hits", "keys", "form_submissions"]);
   expect(dry.items.every((i) => i.rows === 0)).toBe(true);
   expect(((await (await request.get(`${api}/audit?limit=1`)).json()) as { entries: unknown[] }).entries.length).toBe(before.entries.length);
 });

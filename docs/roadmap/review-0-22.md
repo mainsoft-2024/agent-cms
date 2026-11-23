@@ -70,3 +70,34 @@
 남은 것:
 - (해결) `locale: a translation shows the shared fields read only…` 실패: 리뷰 수정으로 번역 쓰기의 `If-Match`가 언어를 확인하게 됐는데, `client.ts`가 언어 없는 `"vN"`을 보내 409 `locale_etag_mismatch`가 남. 클라이언트가 `slug@locale` 주소면 `"vN-<언어>"`를 보내도록 고침 (`client: If-Match on a translation names its language…`).
 - sessionStorage 초안은 탭 안에서만 남음 (탭을 닫으면 사라짐). 의도한 범위임.
+
+## 3차 (확인 리뷰) 서버
+
+| 지적 | 고친 것 | 테스트 |
+| --- | --- | --- |
+| P0 번역 자동 저장(autosave)에 원문에서 못 읽는 공유 필드가 실림 (쓰기 응답, 이후 초안 GET) | `src/cms.ts` `sharedCopy()`: `fillShared()`가 자동 저장 사본도 문서와 같은 원문 사본(읽는 사람 기준으로 투영)으로 채움. 원문 사본이 있어도 번역에 저장된 공유 값은 버림. `autosave()` 응답, 쓰기 응답(`forCaller()`가 번역이면 `fillOne(…, actor)`), 충돌 응답(`sharedless()`)도 같은 길 | `src/review-0-22.test.ts` "a translation's autosave never carries…" (core + REST, 응답 전체 `JSON.stringify`/본문 문자열 검사) |
+| P1 옛 번역 버전을 게시하면(직접, 릴리스) 옛 slug가 `published`로 들어감 | `publishIn()`: 번역이면 게시 사본의 `slug`를 지금 그룹 주소로 찍음. 기록(버전 스냅숏)은 그대로 | "publishing an older translation version puts it at the group's current address…" |
+| P1 게시 안 된 원문 + 게시된 번역: 원문 초안 이름 바꾸기가 살아 있는 번역을 게시·리디렉트 없이 옮김 | `commit()`: 그룹 안 아무 언어라도 살아 있으면 `moved` (`slug_needs_publish`, `slug_locked` 규칙 적용). 리디렉트는 살아 있는 언어마다(원문은 게시돼 있을 때만). 번역 행 이동은 원문 쓰기가 통과한 뒤에 | "renaming a never-published source whose translation is live…" |
+| P1 휴지통 연쇄 삭제·복원의 사전 점검이 실제 쓰기와 묶이지 않음 | 삭제: 각 행을 점검한 버전·살아 있음 조건으로 씀(`updateDoc(…, version)`, 실패하면 `conflict_version`, 전체 취소), 번역이 있으면 `{ atomic: true }`. 복원(`src/flow.ts` `restoreOne`): 묶음을 트랜잭션 안에서 다시 읽어 비교, 각 행은 `updateDoc(…, { trashed: { version, deletedAt } })` 조건부(새 오류 `trash_changed`), 여럿이면 `atomic`. `src/drizzle-repo.ts`: 조건부 복원 SQL, `lockGroup()`(그룹 id 기준 advisory xact lock)을 연쇄 삭제·복원·번역 시작에서 잡음. 트랜잭션 없는 드라이버는 `transactions_required` | "a translation revised between the delete's check…", "a restore whose batch changed…"; pglite `src/db/drizzle.test.ts` "cascades are bound to the rows checked…" (`transactions: false` 포함) |
+| P2 번역 ETag가 주소·게시 시각 등 버전 없는 변화를 모름; `If-Match: "vN"` 문서와 코드 불일치 | `src/http.ts` `contentTag()`: 번역은 보낸 문서 전체로 해시. 언어 없는 태그는 번역에서 거절(코드 유지), UPGRADE-0.22.md·CHANGELOG를 코드에 맞춤 | "translation ETags follow the address…" |
+| P2 `list_translations` 투영이 컬렉션 단위로 먼저 거절하고, 못 읽는 원문의 버전을 알려 줌 | `translations()`: 언어마다 문서 read 규칙 + `beforeRead`로 따로 판단, 원문을 못 읽으면 `sourceVersion: null`(타입 `number \| null`)이고 상태는 `current` | "list_translations judges each language by its own read rule…" |
+| P2 업로드 청소가 삭제 실패한 200건에서 멈춤; 복사 대상 키를 복사 뒤에 기록 | `src/forms.ts` `sweepUploads()`: 오래된 쪽에서 내려가며(desc) 남은 행이 있으면 커서를 그 뒤로 옮김. 제출: 대상 키를 `copy` 전에 `copied`에 넣음 | `src/forms.test.ts` "the upload sweep pages past grants…", "a copy that lands but answers with an error…" |
+| P2 Node 본문 한도가 사용자 basePath에서 안 걸림; chunked 초과 시 소켓을 끊어 413이 안 감 | `src/serve.ts`가 정규화한 `basePath`를 어댑터에 넘김. `src/adapters/node.ts` `readBody()`: 한도를 넘으면 더 모으지 않고 나머지는 흘려 버림(소켓 유지), 413에 `connection: close` | `src/serve.test.ts` "a form submission past 64 KB on a custom basePath…" (실제 HTTP, Content-Length와 chunked) |
+
+남은 것:
+- 메모리 repo의 `lockGroup`은 없음 (한 프로세스, 테스트용). 원격 트랜잭션 없는 드라이버에서 번역 없는 문서 하나 삭제는 예전처럼 조건부 쓰기만으로 처리.
+- 번역 시작(`create` with `locale`)과 연쇄 삭제는 Postgres에서 같은 그룹 잠금으로 줄을 섬. 다른 저장소는 삭제 쪽의 묶음 재확인(`listDocs(groupId)` 비교)에 기댐.
+
+## 3차 (확인 리뷰) 화면
+
+고친 것 (각 항목 옆은 UI 테스트):
+- P1 보기 값 재사용: 새 보기 값은 `option_<n>`, n은 필드의 `nextOption`(새 속성, `src/form-rules.ts`의 `FormField`)과 지금 값 중 가장 큰 `option_<n>`, 보기 수 + 1 중 큰 것부터 비어 있는 첫 번호 (`nextOptionNumber()`, 같은 파일에서 내보냄). 보기를 빼면 그 전에 카운터가 뺀 값 뒤로 옮겨져 같은 값이 다시 나오지 않음. 종류를 선택으로 바꿀 때 만드는 기본 보기 둘도 카운터를 씀. 이미 저장된 이름 값(`bug` 등)은 그대로. 같은 고침에서 보기를 빼고 새로 더해도 뺀 값을 보던 조건은 "없는 보기" 오류로 남음 (`choices: a removed choice's value is never given…`, `choices: the next value comes from the field's counter…`). 서버가 저장할 때 `nextOption`을 남겨야 저장 뒤에도 이어짐: `src/forms.ts` `cleanSteps()`에 한 줄 필요 (아래 남은 것).
+- P1 CSV 범위: 제출 목록이 `onView`에 `state`(`loading`/`ready`/`error`)를 함께 알림. 상자·검색을 바꾸거나 검색어를 치는 중(아직 적용 전)이면 `loading`, 불러오기 실패면 `error`. 내려받기는 `ready`일 때만 켜지고, 버튼에 연결된 줄이 이유를 말함: "Spam 목록을 다 불러온 뒤 CSV 내려받기 가능", "목록을 불러오지 못해 CSV 없음", "담긴 것이 없어 CSV 없음". 다른 상자로 바꾼 뒤 불러오기가 실패하면 앞 상자의 줄을 그 아래 보이지 않음 (`CSV: switching box disables the download until…`).
+- P2 저장 안 한 폼에서 뒤로/앞으로 취소: 라우터를 `admin/history.ts`로 옮김. 앱이 만드는 모든 기록 항목의 `history.state.cmsIdx`에 위치를 남기고, 취소하면 `history.go(지금 − 간 곳)`으로 되돌림(한 번만 쓰는 표시로 그 popstate는 무시). 새 항목을 넣지 않으므로 앞으로 가기 항목과 상태가 남음. 위치 없는 항목(앱 밖에서 생긴 것)만 예전처럼 다시 넣음 (`admin-history`: router 세 개).
+- P2 CI `ui` 작업: 테스트 단계가 시작 53초 뒤 "The runner has received a shutdown signal"로 끝남 (10분 제한이 아님, 실패한 테스트 없음). 그때 돌던 파일은 `model.test.tsx`. 이 파일의 `await waitFor(() => assert.equal(document.activeElement, …))` 두 곳은 초점이 늦게 오면(느린 CI) 실패 메시지를 만들며 DOM 노드를 출력하는데, 노드 하나를 출력하는 것만으로 로컬에서도 3분 넘게 끝나지 않음을 확인함 (메모리 계속 증가). `document.activeElement`를 노드와 `assert.equal`로 비교하던 6곳(`model` 4, `locale` 1, `editor-toolbar` 1)을 `assert.ok(a === b, "focus on …")`로 바꿈. 다시 생기지 않게 `registry/__tests__/test-rules.test.ts`가 테스트 파일에서 이 형태를 거부함. `test:ui`에 `--test-timeout=120000`. 그 밖에: `forms-review`의 CSV 테스트가 `URL.revokeObjectURL`을 되돌리지 않던 것 고침. 남은 타이머·열린 핸들은 없음: 전체 실행이 요약 뒤 1초 안에 끝남 (CI와 같은 명령 `NODE_OPTIONS=--max-old-space-size=2048 npm run test:ui`, 2 CPU에서 5회 모두 통과, 프로세스 합계 최대 1.5 GB).
+
+화면 확인 (헤드리스 브라우저, `npm run build:admin` 후 `dev`, `.slash/workspace/vis/fix22b/`): `1440-csv-ready.png`, `1440-csv-loading.png`(스팸 응답을 8초 늦춤: 버튼 꺼짐, 이유 줄), `1440-csv-failed.png`, `360-csv-failed.png`, `1440-choice-replaced-flagged.png`("버그"를 빼고 보기 추가: 새 보기는 다른 값, 버그를 보던 두 필드에 오류). 실제 브라우저에서 고친 폼 → 뒤로 → 취소: 주소·`cmsIdx`·기록 길이 그대로, 다시 뒤로(확인) → 목록, 앞으로 → 폼으로 돌아감.
+
+남은 것:
+- `src/forms.ts` `cleanSteps()`가 모르는 속성을 버려서 `nextOption`이 아직 저장되지 않음. 저장 뒤 다시 열면 카운터는 지금 값과 보기 수에서 다시 계산되므로, 저장 전에 지운 가장 큰 `option_<n>`은 다시 나올 수 있음. 서버 쪽 한 줄과 OpenAPI 설명 추가 필요.
+- 실패한 불러오기에서 다시 시도는 목록의 "다시 시도" 버튼으로 함 (CSV 줄에는 버튼 없음).

@@ -55,6 +55,12 @@ export interface FormField {
   placeholder?: string | null;
   /** For `select` and `multiselect`. */
   options?: FormOption[];
+  /**
+   * For `select` and `multiselect`: the number the next new choice takes (`option_<n>`). It only
+   * grows, so the value of a removed choice is never given to another one (old submissions and
+   * conditions would read it as the new choice).
+   */
+  nextOption?: number;
   /** Text: fewest / most characters. Number: smallest / largest value. Multi-select: fewest / most picks. Date: earliest / latest (`YYYY-MM-DD`). */
   min?: number | string | null;
   max?: number | string | null;
@@ -601,6 +607,30 @@ export function displayValue(
   if (f && (f.kind === "select" || f.kind === "multiselect"))
     return f.options?.find((x) => x.value === v)?.label ?? String(v);
   return String(v);
+}
+
+/**
+ * The number of the next new choice of a select (`option_<n>`): past `nextOption`, past every
+ * `option_<n>` the field has, and free. Values are never handed out twice, even after a removal.
+ */
+export function nextOptionNumber(
+  f: Pick<FormField, "options" | "nextOption">,
+): number {
+  const opts = f.options ?? [];
+  let n =
+    typeof f.nextOption === "number" &&
+    Number.isInteger(f.nextOption) &&
+    f.nextOption >= 1
+      ? f.nextOption
+      : 1;
+  n = Math.max(n, opts.length + 1);
+  for (const o of opts) {
+    const m = /^option_(\d{1,9})$/.exec(o.value);
+    if (m) n = Math.max(n, Number(m[1]) + 1);
+  }
+  const taken = new Set(opts.map((o) => o.value));
+  while (taken.has(`option_${n}`)) n++;
+  return n;
 }
 
 /** Does `accept` take this file? (`image/*`, `.pdf`, `application/pdf`.) */

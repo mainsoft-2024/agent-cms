@@ -1462,9 +1462,19 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const pubCopy = s ? (draft ? sharedSource(actor, s, false) : copy) : null;
       const out = copy ? withShared(d.collection, d, copy) : withoutShared(d.collection, d);
       if (out.published) out.published = pubCopy ? withShared(d.collection, out.published, pubCopy) : withoutShared(d.collection, out.published);
-      if (!copy && out.autosave?.content?.fields) out.autosave = { ...out.autosave, content: { ...out.autosave.content, fields: withoutShared(d.collection, out.autosave.content).fields } };
+      if (out.autosave?.content) out.autosave = { ...out.autosave, content: sharedCopy(d.collection, out.autosave.content, copy) };
       return out;
     });
+  }
+  /**
+   * Review 0.22 (3rd round): an unsaved copy (autosave) of a translation shows the shared values of the
+   * same source copy as the document around it (`copy`, already projected for the reader), never the
+   * values the translation stored when it was seeded or last saved. Without a copy: no shared fields.
+   */
+  function sharedCopy<T extends Partial<DocContent>>(col: string, content: T, copy: CmsDoc | null): T {
+    if (!content?.fields) return content;
+    const filled = copy ? withShared(col, content, copy) : withoutShared(col, content);
+    return { ...content, fields: filled.fields, ...("category" in content ? { category: filled.category ?? null } : {}) };
   }
   const fillOne = async (d: CmsDoc, draft: boolean, actor: Actor | null = null) => (await fillShared([d], draft, actor))[0];
   /** Whether filling a translation depends on who reads (per-document read rules or field rules). */
@@ -1973,7 +1983,15 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   const conflict = (cur: CmsDoc, expected: number, actor: Actor, col: string) =>
-    fail("conflict_version", { expected, current: cur.version }, { current: can(actor, col, "write", cur) ? conflictCopy(actor, col, cur) : undefined });
+    // Review 0.22 (3rd round): a translation's stored copies of shared values are not sent with a conflict (a read gets them).
+    fail("conflict_version", { expected, current: cur.version }, { current: can(actor, col, "write", cur) ? conflictCopy(actor, col, isTranslationDoc(cur) ? sharedless(col, cur) : cur) : undefined });
+  /** A translation with no shared values in any copy (top level, published, autosave). */
+  const sharedless = (col: string, d: CmsDoc): CmsDoc => {
+    const out = withoutShared(col, d);
+    if (out.published) out.published = withoutShared(col, out.published);
+    if (out.autosave?.content) out.autosave = { ...out.autosave, content: sharedCopy(col, out.autosave.content, null) };
+    return out;
+  };
   /** The current document sent with a conflict: the same field projection as a read. */
   const conflictCopy = (actor: Actor, col: string, cur: CmsDoc): CmsDoc => {
     if (!collection(col).fieldAccess) return cur;
@@ -2123,6 +2141,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const who = actorRef(actor);
     const at = nowIso();
     const doc = await loggedTx(async (r, log) => {
+      // Review 0.22 (3rd round): joining a group waits for a cascade (delete, restore) of it in progress,
+      // and a source deleted meanwhile takes no new translation.
+      await r.lockGroup?.(src.id);
+      if (!(await r.findDocById(src.id))) throw fail("locale_source_missing", { slug: src.slug, source: defaultLocale });
       if (await r.findDoc(col, localeAddress(src.slug, locale), { trashed: true })) throw fail("translation_exists", { slug: src.slug, locale });
       const publish = !!o.publish;
       if (publish) await gate("beforePublish", actor, { collection: col, slug: src.slug, version: 1 }, content);
@@ -2183,13 +2205,15 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function translations(actor: Actor, col: string, slug: string): Promise<TranslationList> {
     const src = await sourceOf(col, slug);
     if (!can(actor, col, "write", src)) {
-      await beforeRead(actor, col, src.slug, false);
-      const readableCopy = (d: CmsDoc | null) => {
+      // Review 0.22 (3rd round): each published copy is judged on its own, like a read of it (the
+      // document's read rule, then `beforeRead`); no collection-wide refusal first, since a rule about
+      // one document may allow some languages. What says how far the source moved on (its version, a
+      // status of "outdated") is left out when the source itself is not readable.
+      const readableCopy = async (d: CmsDoc | null) => {
         const p = d ? publicView(d) : null;
-        return p && can(actor, col, "read", p) ? p : null;
+        return p && can(actor, col, "read", p) && (await readable(actor, col, src.slug)) ? p : null;
       };
-      const srcPub = readableCopy(src);
-      if (!srcPub && !can(actor, col, "read")) throw fail("forbidden", { collection: col });
+      const srcPub = await readableCopy(src);
       const rows = await repo.listDocs({ groupId: src.id, published: true });
       const list: TranslationInfo[] = [];
       for (const l of locales) {
@@ -2197,11 +2221,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
           if (srcPub) list.push({ locale: l, status: "source", version: src.publishedVersion, sourceVersion: null, publishedVersion: src.publishedVersion, updatedAt: src.publishedAt ?? null, docStatus: "published", url: urlOf(col, src.slug) });
           continue;
         }
-        const t = readableCopy(rows.find((d) => isTranslationDoc(d) && d.locale === l) ?? null);
+        const t = await readableCopy(rows.find((d) => isTranslationDoc(d) && d.locale === l) ?? null);
         if (t) list.push({ locale: l, status: srcPub ? statusOf(src, t) : "current", version: t.publishedVersion, sourceVersion: null, publishedVersion: t.publishedVersion, updatedAt: t.publishedAt ?? null, docStatus: "published", url: urlOf(col, localeAddress(src.slug, l)) });
       }
       if (!list.length) throw fail("not_found", { collection: col, slug: src.slug });
-      return { collection: col, slug: src.slug, defaultLocale, sourceVersion: src.publishedVersion ?? 0, translations: list };
+      return { collection: col, slug: src.slug, defaultLocale, sourceVersion: srcPub ? (src.publishedVersion ?? 0) : null, translations: list };
     }
     const rows = await repo.listDocs({ groupId: src.id });
     const list: TranslationInfo[] = locales.map((l) => {
@@ -2242,23 +2266,27 @@ export function createCmsCore(opts: CreateCmsOptions) {
     // 0.22.0: a translation keeps the source's slug and shared values whatever the copy says (a restored old version too).
     if (isTranslationDoc(doc)) next = { ...withShared(doc.collection, next, await r.findDocById(doc.groupId!)), slug: doc.slug };
     next = await hooked(actor, doc.collection, doc, next);
-    const moved = next.slug !== doc.slug && doc.publishedVersion !== null;
-    if (moved && !model.redirectsOn()) throw fail("slug_locked");
-    const other = next.slug !== doc.slug ? await r.findDoc(doc.collection, next.slug, { trashed: true }) : null;
-    if (other) throw slugTaken(other);
+    const renamed = next.slug !== doc.slug;
     // 0.22.0: translations move with their source (same slug in every language). No new version for them.
     // Review 0.22: their published copies (what readers, search and feeds get) carry the new slug too,
     // and a published translation's old address redirects like the source's.
+    const kids: CmsDoc[] = [];
     const movedKids: CmsDoc[] = [];
-    if (next.slug !== doc.slug && localized(doc.collection)) {
+    if (renamed && localized(doc.collection) && !isTranslationDoc(doc)) {
       for (const trashed of [false, true]) {
         for (const t of await r.listDocs({ groupId: doc.id, trashed })) {
           if (t.id === doc.id) continue;
-          await r.updateDoc(t.id, { slug: next.slug, ...(t.published ? { published: { ...t.published, slug: next.slug } } : {}), updatedAt: t.updatedAt });
+          kids.push(t);
           if (!trashed && t.publishedVersion !== null && t.status !== "archived") movedKids.push(t);
         }
       }
     }
+    // Review 0.22 (3rd round): a group is live when any of its languages is: renaming a source that was
+    // never published still moves a live translation, so it needs a publish and redirects too.
+    const moved = renamed && (doc.publishedVersion !== null || movedKids.length > 0);
+    if (moved && !model.redirectsOn()) throw fail("slug_locked");
+    const other = renamed ? await r.findDoc(doc.collection, next.slug, { trashed: true }) : null;
+    if (other) throw slugTaken(other);
 
     const inPlace = cfg.versions?.drafts === false && doc.publishedVersion !== null && doc.status !== "archived";
     const publish = !!o.publish || inPlace;
@@ -2284,6 +2312,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       const cur = (await r.findDoc(doc.collection, doc.slug)) ?? doc;
       throw conflict(cur, o.expectedVersion ?? doc.version, actor, doc.collection);
     }
+    for (const t of kids) await r.updateDoc(t.id, { slug: next.slug, ...(t.published ? { published: { ...t.published, slug: next.slug } } : {}), updatedAt: t.updatedAt });
     await r.insertVersion({
       documentId: doc.id,
       version: v,
@@ -2299,7 +2328,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await prune(r, updated);
     await syncAllRefs(r, updated);
     await model.keepAnchors(r, doc.id, doc.body, next.body);
-    if (moved) await model.autoRedirect(r, updated, doc.slug, next.slug, who.label);
+    if (moved && doc.publishedVersion !== null) await model.autoRedirect(r, updated, doc.slug, next.slug, who.label);
     if (moved) for (const t of movedKids) await model.autoRedirect(r, t, localeAddress(doc.slug, t.locale!), localeAddress(next.slug, t.locale!), who.label);
     return updated;
   }
@@ -2409,7 +2438,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
     // Keep updatedAt: an autosave is not a change anyone else sees.
     await repo.updateDoc(cur.id, { autosave: state, updatedAt: cur.updatedAt });
     // The answer goes to the caller: fields they may not see (kept from the stored copy) stay out.
-    return collection(col).fieldAccess ? { ...state, content: copyProjected(actor, col, cur, state.content, baseVersion, hiddenPaths(actor, col, cur)) } : state;
+    let shownContent = collection(col).fieldAccess ? copyProjected(actor, col, cur, state.content, baseVersion, hiddenPaths(actor, col, cur)) : state.content;
+    // Review 0.22 (3rd round): a translation's shared values come from the source copy this caller
+    // may see (as on a read), not from what the translation stored.
+    if (isTranslationDoc(cur)) {
+      const src = await repo.findDocById(cur.groupId!);
+      shownContent = sharedCopy(col, shownContent, src ? sharedSource(actor, src, true) : null);
+    }
+    return shownContent === state.content ? state : { ...state, content: shownContent };
   }
 
   async function discardAutosave(actor: Actor, col: string, slug: string) {
@@ -2426,10 +2462,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await gate("beforePublish", actor, { collection: doc.collection, slug: doc.slug, version: n }, v.snapshot, doc);
     const at = nowIso();
     const wasPublic = doc.publishedVersion !== null && doc.status !== "archived";
+    // Review 0.22 (3rd round): a translation is published at its group's current address. An older
+    // version keeps its own slug in history; the public copy carries today's (the source may have
+    // been renamed since that version was written).
+    const published = isTranslationDoc(doc) ? { ...v.snapshot, slug: doc.slug } : v.snapshot;
     const updated = await r.updateDoc(doc.id, {
       status: n === doc.version ? "published" : "draft",
       publishedVersion: n,
-      published: v.snapshot,
+      published,
       publishedAt: doc.publishedAt ?? at,
       ...(!wasPublic && doc.publishedAt ? { republishedAt: at } : {}),
       ...afterPublish(doc),
@@ -2625,19 +2665,25 @@ export function createCmsCore(opts: CreateCmsOptions) {
       await gate("beforeDelete", actor, d, contentOf(d));
     }
     // With a trash the row stays (and keeps its address) until it is restored or purged.
+    const cascade = localized(col) && !isTranslationDoc(cur);
+    // Review 0.22 (3rd round): several rows go all together or not at all: a driver without
+    // transactions refuses (`transactions_required`) instead of deleting them one by one.
     await loggedTx(async (r, log) => {
+      if (cascade) await r.lockGroup?.(cur.id);
       // The same set that was checked; one added since is refused by its own check next time (not taken silently).
-      const now = (await r.listDocs({ groupId: cur.id })).filter((d) => d.id !== cur.id);
-      if (localized(col) && !isTranslationDoc(cur) && now.some((d) => !group.some((g) => g.id === d.id))) throw conflict(cur, cur.version, actor, col);
-      const kids = localized(col) && !isTranslationDoc(cur) ? now : [];
+      const now = cascade ? (await r.listDocs({ groupId: cur.id })).filter((d) => d.id !== cur.id) : [];
+      if (now.length !== group.length || now.some((d) => !group.some((g) => g.id === d.id))) throw conflict(cur, cur.version, actor, col);
       // One moment for all of them: restoring the source brings back the translations deleted with it.
       const at = nowIso();
-      for (const d of [...kids, cur]) {
-        if (trashDays > 0) await r.updateDoc(d.id, { deletedAt: at, deletedBy: actorRef(actor).label, schedule: null, dueAt: null, updatedAt: at });
-        else await r.deleteDoc(d.id);
+      // Each write is bound to the row as it was checked (same version, still live): a translation
+      // revised or deleted since its check makes the whole delete a conflict, and nothing changes.
+      for (const d of [...group, cur]) {
+        const done = await r.updateDoc(d.id, trashDays > 0 ? { deletedAt: at, deletedBy: actorRef(actor).label, schedule: null, dueAt: null, updatedAt: at } : { updatedAt: d.updatedAt }, d.version);
+        if (!done) throw await movedOn(r, actor, d);
+        if (trashDays <= 0) await r.deleteDoc(d.id);
       }
       if (actor.kind !== "anonymous") await log({ event: "doc.deleted", actor: actorRef(actor), collection: col, slug, version: cur.version, url: urlOf(col, slug) });
-    });
+    }, { atomic: group.length > 0 });
     audit(actor, "doc.delete", { collection: col, slug, version: cur.version, detail: { trash: trashDays > 0 } });
     changed(cur, null);
   }
@@ -3381,7 +3427,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const isDoc = (d: unknown): d is CmsDoc => !!d && typeof d === "object" && "collection" in d && "fields" in d && "slug" in d;
     // What the caller may receive is decided apart from what they were allowed to do: someone who
     // may publish but not edit gets the published copy if they may read it, else only the state.
-    const forCaller = (actor: Actor, d: CmsDoc): CmsDoc => {
+    const forCaller = async (actor: Actor, d: CmsDoc): Promise<CmsDoc> => {
+      // Review 0.22 (3rd round): a translation's shared values (top level, published and autosave
+      // copies) are the source's as this caller may see them, like on a read.
+      if (collections.has(d.collection) && isTranslationDoc(d) && can(actor, d.collection, "write", d)) return conflictCopy(actor, d.collection, await fillOne(d, true, actor));
       if (!collections.has(d.collection) || can(actor, d.collection, "write", d)) return conflictCopy(actor, d.collection, d);
       // Not an editable copy: only the state, with the working version (what a next write is
       // checked against). Readers fetch the published copy with a read.
@@ -3389,10 +3438,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     };
     return async (...a: A) => {
       const out = await fn(...a);
-      if (isDoc(out)) return forCaller(a[0], out) as unknown as R;
+      if (isDoc(out)) return (await forCaller(a[0], out)) as unknown as R;
       // `{ doc, … }` (patch and friends): the document inside.
       if (out && typeof out === "object" && isDoc((out as { doc?: unknown }).doc)) {
-        const d = forCaller(a[0], (out as unknown as { doc: CmsDoc }).doc);
+        const d = await forCaller(a[0], (out as unknown as { doc: CmsDoc }).doc);
         // A receipt says nothing of the content: a diff of the saved body would.
         return { ...(out as object), doc: d, ...(d.receipt && "diff" in (out as object) ? { diff: "" } : {}) } as unknown as R;
       }

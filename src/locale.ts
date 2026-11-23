@@ -42,8 +42,11 @@ export interface TranslationList {
   collection: string;
   slug: string;
   defaultLocale: string;
-  /** The source version translations are compared with: its published version, or its latest when never published. */
-  sourceVersion: number;
+  /**
+   * The source version translations are compared with: its published version, or its latest when never
+   * published. `null` for a reader who may not read the source (review 0.22).
+   */
+  sourceVersion: number | null;
   translations: TranslationInfo[];
 }
 

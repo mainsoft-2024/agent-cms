@@ -448,7 +448,9 @@ function contentTag(raw: CmsDoc, sent: CmsDoc, dynamic: boolean): string {
   // follows what is sent, so a change in the source alone is not answered with 304.
   const tr = isTranslationDoc(raw);
   if (!dynamic && !tr) return etag(raw);
-  const text = JSON.stringify(tr ? [sent.body, sent.fields, sent.category ?? null, sent.format ?? null] : [sent.body, sent.fields]);
+  // Review 0.22 (3rd round): a translation's tag follows the whole answer, also what changes without a
+  // new version of its own (its address after the source is renamed, publishedAt, values filled in).
+  const text = JSON.stringify(tr ? sent : [sent.body, sent.fields]);
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
   return `W/"v${raw.version}${raw.locale ? `-${localeTag(raw.locale)}` : ""}-${(h >>> 0).toString(36)}"`;

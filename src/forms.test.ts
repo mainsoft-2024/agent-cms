@@ -1326,3 +1326,66 @@ test("forms review: definition problems are codes, so Korean messages are wholly
   assert.equal(formatMessage(ko, "form_invalid", notify.params), "폼을 저장할 수 없음: 이메일 주소가 아님: not-mail");
   assert.equal(formatMessage(ko, "form_upload_invalid", { reason: "used" }), "파일을 받지 못함 (이미 쓴 토큰). 다시 골라야 함");
 });
+
+// ── 0.22.0 review, 3rd round ──
+
+test("forms review (3rd): the upload sweep pages past grants whose files cannot be deleted", async () => {
+  const { cms, repo, priv, clock } = setup();
+  await contact(cms);
+  const old = clock.t - 2 * 86_400_000;
+  // 650 stale grants, oldest first: 200 whose file cannot be deleted, 250 that can, 200 that cannot.
+  for (let i = 0; i < 650; i++) {
+    const bad = i < 200 || i >= 450;
+    await repo.insertRecord({
+      kind: "form_upload",
+      scope: "x",
+      data: { status: "uploaded", field: "shot", tmp: `_cms/forms/_tmp/${bad ? "bad" : "ok"}-${i}`, size: 1, mime: "image/png", name: "a.png", expires: 0 },
+      at: new Date(old + i).toISOString(),
+    });
+  }
+  const del = priv.delete.bind(priv);
+  priv.delete = async (k: string) => {
+    if (k.includes("/bad-")) throw new Error("storage down");
+    return del(k);
+  };
+  clock.t += 86_400_000;
+  await cms.cron();
+  priv.delete = del;
+  const left = (await repo.listRecords({ kind: "form_upload", limit: 1000 })).map((r) => String((r.data as { tmp: string }).tmp));
+  assert.equal(left.filter((k) => k.includes("/ok-")).length, 0, "every grant that could go went");
+  assert.equal(left.filter((k) => k.includes("/bad-")).length, 400, "the others stay for the next run");
+});
+
+test("forms review (3rd): a copy that lands but answers with an error is still removed when the submission fails", async () => {
+  const { cms, api, priv } = setup();
+  await contact(cms);
+  const g = await api.formUploadGrant("contact", { field: "shot", name: "s.png", size: 200, mime: "image/png" });
+  await api.formUpload("contact", g, new Blob([png()]));
+  const copy = priv.copy.bind(priv);
+  priv.copy = async (from: string, to: string) => {
+    await copy(from, to);
+    throw new Error("timeout after the copy");
+  };
+  const bug = { ...good, topic: "bug", version: "2.1", seats: undefined };
+  await assert.rejects(cms.forms.submit("contact", { ...bug, shot: [g.token] }, { ip: "1.0.0.9" }), /timeout after the copy/);
+  priv.copy = copy;
+  assert.deepEqual(
+    [...priv.objects.keys()].filter((k) => k.startsWith("_cms/forms/") && !k.startsWith("_cms/forms/_tmp")),
+    [],
+    "no permanent copy left behind",
+  );
+  await cms.forms.submit("contact", { ...bug, shot: [g.token] }, { ip: "1.0.0.9" });
+});
+
+test("forms review: a choice field keeps its nextOption, so a removed choice's value is never handed out again", async () => {
+  const { cms } = setup();
+  const made = await cms.forms.create(admin, {
+    slug: "pick",
+    title: "Pick",
+    steps: [{ title: "", fields: [{ key: "topic", label: "Topic", kind: "select", options: [{ value: "option_1", label: "A" }, { value: "option_3", label: "C" }], nextOption: 4 } as never] }],
+  });
+  const field = made.steps[0].fields[0] as { nextOption?: number };
+  assert.equal(field.nextOption, 4);
+  const again = await cms.forms.get(admin, "pick");
+  assert.equal((again.steps[0].fields[0] as { nextOption?: number }).nextOption, 4);
+});

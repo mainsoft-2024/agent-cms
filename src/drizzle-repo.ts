@@ -3,7 +3,7 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { getTableConfig, type PgDatabase } from "drizzle-orm/pg-core";
 import { CmsError } from "./errors";
-import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp, NewChange, ChangeRow, DocPageQuery, DocPage, NewRedirect, RedirectPatch, NewFormSubmission, FormSubmissionQuery } from "./repo";
+import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilter, DocPatch, FindOptions, UpdateDocOptions, KeyRow, NewAsset, NewAudit, NewComment, NewDoc, JobPatch, NewFilter, NewJob, NewRelease, NewWebhook, WebhookPatch, NewVersion, ReleasePatch, StoredVersion, VersionPatch, NewRecord, RecordPatch, RecordQuery, VersionStamp, NewChange, ChangeRow, DocPageQuery, DocPage, NewRedirect, RedirectPatch, NewFormSubmission, FormSubmissionQuery } from "./repo";
 import type { CmsRedirect, DocRef, FormSubmission, FormSubmissionStatus } from "./types";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
@@ -274,6 +274,11 @@ export class DrizzleRepo implements CmsRepo {
   async lockTree(collection: string) {
     await this.db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`agent-cms:tree:${collection}`}))`);
   }
+  /** Review 0.22: serialises cascades (delete, restore) and new translations of one group until the commit. */
+  async lockGroup(groupId: string) {
+    if (this.txMode === false) return;
+    await this.db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`agent-cms:group:${groupId}`}))`);
+  }
 
   private patchRow(p: DocPatch): Partial<typeof this.t.documents.$inferInsert> {
     const out: Record<string, unknown> = {};
@@ -438,11 +443,15 @@ export class DrizzleRepo implements CmsRepo {
     );
     return this.toDoc(r);
   }
-  async updateDoc(id: string, p: DocPatch, expectedVersion?: number) {
+  async updateDoc(id: string, p: DocPatch, expectedVersion?: number, o: UpdateDocOptions = {}) {
     const D = this.t.documents;
     // With an expected version the row must also still be live (not in the trash): a guarded write
     // never lands on a document deleted after it was checked.
-    const where = expectedVersion === undefined ? eq(D.id, id) : and(eq(D.id, id), eq(D.version, expectedVersion), isNull(D.deletedAt));
+    const conds: SQL[] = [eq(D.id, id)];
+    if (expectedVersion !== undefined) conds.push(eq(D.version, expectedVersion), isNull(D.deletedAt));
+    // Review 0.22: a restore writes only the trashed row it checked (same version, same moment deleted).
+    if (o.trashed) conds.push(eq(D.version, o.trashed.version), sql`date_trunc('milliseconds', ${D.deletedAt}) = ${new Date(o.trashed.deletedAt).toISOString()}::timestamptz`);
+    const where = conds.length === 1 ? conds[0] : and(...conds)!;
     const [r] = await uniq(
       this.db
         .update(D)

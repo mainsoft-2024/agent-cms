@@ -27,6 +27,7 @@ import { CmsTrash } from "@/components/cms/cms-trash";
 import { CmsVersions } from "@/components/cms/cms-versions";
 import { CmsWebhooks } from "@/components/cms/cms-webhooks";
 import { CmsProvider, useCms } from "@/components/cms/use-cms";
+import { usePath as useHistoryPath, type Go } from "./history";
 
 const CmsBlockEditor = React.lazy(() => import("@/components/cms/cms-block-editor"));
 const slots = { blockEditor: CmsBlockEditor };
@@ -58,36 +59,8 @@ function mayLeave(): boolean {
   return !guard.defaultPrevented || window.confirm(document.documentElement.lang === "ko" ? "저장하지 않은 변경이 있음. 나갈지 확인" : "You have unsaved changes. Leave anyway?");
 }
 
-type Go = (to: string, replace?: boolean, o?: { guard?: boolean }) => void;
-
-function usePath(): [string, Go] {
-  const [path, setPath] = React.useState(() => window.location.pathname + window.location.search);
-  const here = React.useRef(path);
-  React.useEffect(() => {
-    // Back and forward ask too: on "stay" the address goes back to the page still on screen.
-    const on = () => {
-      const to = window.location.pathname + window.location.search;
-      if (to !== here.current && !mayLeave()) {
-        window.history.pushState(null, "", here.current);
-        return;
-      }
-      here.current = to;
-      setPath(to);
-    };
-    window.addEventListener("popstate", on);
-    return () => window.removeEventListener("popstate", on);
-  }, []);
-  const go = React.useCallback<Go>((to, replace = false, o = {}) => {
-    if (/^https?:/.test(to)) return window.location.assign(to);
-    // Leaving a page with unsaved edits asks first. Moving inside one editing session (a tab of the
-    // same form) does not: its draft stays on screen.
-    if (o.guard !== false && !mayLeave()) return;
-    window.history[replace ? "replaceState" : "pushState"](null, "", to);
-    here.current = to.split("#")[0];
-    setPath(to.split("#")[0]);
-    if (!to.includes("#")) window.scrollTo(0, 0);
-  }, []);
-  return [path, go];
+function usePath() {
+  return useHistoryPath(mayLeave);
 }
 
 /** Links inside the admin move without reloading the page. */

@@ -196,6 +196,7 @@ export const en: Messages = {
   locale_is_source: "{locale} is the source language of {slug}; it is not a translation",
   translation_source_trashed: "The {source} document {slug} is in the trash: restore it first (its translations come back with it)",
   locale_etag_mismatch: "If-Match {tag} is the ETag of another language of {slug}: send the {locale} document's ETag",
+  trash_changed: "The trash changed after it was checked (a document was restored, deleted or edited): nothing was restored, try again",
   // 0.22.0 forms
   forms_off: "Forms are off on this server (createCms({ forms: true }))",
   form_not_found: "Form not found: {slug}",

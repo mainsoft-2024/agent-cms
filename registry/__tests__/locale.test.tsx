@@ -40,7 +40,7 @@ test("locale: tabs show every language with its status; a tab opens that languag
   // Arrow keys move between the tabs.
   tabs().getByRole("button", { name: "English, Source" }).focus();
   fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
-  assert.equal(document.activeElement, tabs().getByRole("button", { name: "한국어, Up to date" }));
+  assert.ok(document.activeElement === tabs().getByRole("button", { name: "한국어, Up to date" }), `focus on ${document.activeElement?.tagName} ${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.slice(0, 40)}`);
   assert.deepEqual(await axeViolations(), []);
 
   fireEvent.click(tabs().getByRole("button", { name: "한국어, Up to date" }));

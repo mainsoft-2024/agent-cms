@@ -71,6 +71,11 @@ export interface FindOptions {
    */
   locale?: string;
 }
+/** `updateDoc` conditions beyond `expectedVersion` (review 0.22). */
+export interface UpdateDocOptions {
+  /** Write only a row in the trash since exactly `deletedAt`, at `version` (restoring what was checked). */
+  trashed?: { version: number; deletedAt: string };
+}
 /** A translation row (0.22.0): it belongs to the group of another document. */
 export const isTranslation = (d: Pick<CmsDoc, "id"> & { groupId?: string | null }): boolean => !!d.groupId && d.groupId !== d.id;
 export interface DocFilter {
@@ -139,8 +144,18 @@ export interface CmsRepo {
   insertDoc(doc: NewDoc): Promise<CmsDoc>;
   /** Returns null when `expectedVersion` is given and the row moved on. */
   /** With `expectedVersion`: only if the row is still at that version and not in the trash (else null). */
-  updateDoc(id: string, patch: DocPatch, expectedVersion?: number): Promise<CmsDoc | null>;
+  /**
+   * With `o.trashed` (review 0.22, restoring from the trash): only if the row is in the trash since
+   * exactly `deletedAt` and at `version` (else null). A repo that ignores the option writes as before.
+   */
+  updateDoc(id: string, patch: DocPatch, expectedVersion?: number, o?: UpdateDocOptions): Promise<CmsDoc | null>;
   deleteDoc(id: string): Promise<void>;
+  /**
+   * Serialises changes to one translation group (a cascade delete or restore against adding a
+   * translation) until this transaction ends (review 0.22; Postgres: an advisory transaction lock).
+   * Optional: without it the cascades rely on their conditional writes.
+   */
+  lockGroup?(groupId: string): Promise<void>;
 
   insertVersion(v: NewVersion): Promise<void>;
   listVersions(documentId: string): Promise<StoredVersion[]>;
@@ -522,10 +537,11 @@ export class MemoryRepo implements CmsRepo {
     this.docs.set(row.id, structuredClone(row));
     return structuredClone(row);
   }
-  async updateDoc(id: string, patch: DocPatch, expectedVersion?: number) {
+  async updateDoc(id: string, patch: DocPatch, expectedVersion?: number, o: UpdateDocOptions = {}) {
     const d = this.docs.get(id);
     if (!d) return null;
     if (expectedVersion !== undefined && (d.version !== expectedVersion || d.deletedAt)) return null;
+    if (o.trashed && (d.version !== o.trashed.version || d.deletedAt !== o.trashed.deletedAt)) return null;
     if (patch.slug && patch.slug !== d.slug) {
       for (const o of this.docs.values()) if (o.id !== id && o.collection === d.collection && o.slug === patch.slug && (o.locale ?? "") === (patch.locale ?? d.locale ?? "")) throw new Error("duplicate slug");
     }

@@ -246,6 +246,7 @@ export const ko: Messages = {
   locale_is_source: "{locale}은(는) {slug}의 원문 언어라 번역이 아님",
   translation_source_trashed: "{source} 원문 {slug}이(가) 휴지통에 있음. 원문을 먼저 복원할 것 (번역도 함께 돌아옴)",
   locale_etag_mismatch: "If-Match {tag}은(는) {slug}의 다른 언어 문서 ETag임. {locale} 문서의 ETag를 보낼 것",
+  trash_changed: "확인한 뒤 휴지통이 바뀜 (다른 사람이 복원·삭제·수정함). 아무것도 복원하지 않음. 다시 시도할 것",
   // 0.22.0 forms
   forms_off: "이 서버는 폼이 꺼져 있음 (createCms({ forms: true }))",
   form_not_found: "폼 없음: {slug}",

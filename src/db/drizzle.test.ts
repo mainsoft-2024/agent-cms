@@ -1042,3 +1042,56 @@ test("db: review 0.22 (다국어): a language's page filtered by category follow
     await close();
   }
 });
+
+test("db: review 0.22 (3rd): cascades are bound to the rows checked; a driver without transactions refuses a cascade with translations", async () => {
+  const { z } = await import("zod");
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public", localized: true, url: (d) => `/${d.locale}/guide/${d.slug}`, fields: z.object({}) });
+    const make = (repo: DrizzleRepo) => createCms({ repo, collections: [guide], locales: ["ko", "en"], defaultLocale: "ko", searchRefreshMs: 0, trash: { days: 30 }, warn: () => {} });
+    const repo = new DrizzleRepo(db);
+    const cms = make(repo);
+    await cms.create(admin, "guide", { slug: "k", title: "원문", body: "x\n" }, { publish: true });
+    await cms.create(admin, "guide", { slug: "k", title: "English" }, { locale: "en" });
+
+    // A translation saved after the delete checked it: conflict, nothing in the trash.
+    const orig = DrizzleRepo.prototype.tx;
+    let once = true;
+    DrizzleRepo.prototype.tx = async function <T>(this: DrizzleRepo, fn: (r: never) => Promise<T>, o?: { atomic?: boolean }) {
+      if (once) {
+        once = false;
+        await cms.update(admin, "guide", "k@en", { title: "English (edited)" });
+      }
+      return orig.call(this, fn as never, o) as Promise<T>;
+    } as typeof orig;
+    try {
+      const e = await cms.remove(admin, "guide", "k").then(() => null, (x: unknown) => x);
+      assert.ok(isCmsError(e) && e.code === "conflict_version", String(e));
+    } finally {
+      DrizzleRepo.prototype.tx = orig;
+    }
+    assert.equal((await cms.trash.list(admin)).items.length, 0);
+    assert.equal((await cms.get(admin, "guide", "k", { locale: "en", draft: true })).title, "English (edited)");
+
+    // Restore checks the trashed rows it read (version and moment deleted) in SQL.
+    await cms.remove(admin, "guide", "k");
+    const src = (await cms.trash.list(admin)).items.find((i) => !i.locale)!;
+    const en = (await cms.trash.list(admin)).items.find((i) => i.locale === "en")!;
+    assert.equal(await repo.updateDoc(en.id, { updatedAt: new Date().toISOString() }, undefined, { trashed: { version: 99, deletedAt: new Date().toISOString() } }), null, "a row not as checked is not written");
+    await cms.trash.restore(admin, [{ kind: "document", id: src.id }]);
+    assert.equal((await cms.get(anon, "guide", "k")).title, "원문");
+
+    // No transactions: a group with translations is not deleted row by row.
+    const plain = make(new DrizzleRepo(db, { transactions: false }));
+    const e2 = await plain.remove(admin, "guide", "k").then(() => null, (x: unknown) => x);
+    assert.ok(isCmsError(e2) && e2.code === "transactions_required", String(e2));
+    assert.equal((await plain.trash.list(admin)).items.length, 0, "nothing was deleted");
+    // A document without translations still goes.
+    await plain.create(admin, "guide", { slug: "solo", title: "혼자", body: "x\n" });
+    await plain.remove(admin, "guide", "solo");
+    assert.equal((await plain.trash.list(admin)).items.length, 1);
+  } finally {
+    await close();
+  }
+});

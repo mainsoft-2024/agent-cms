@@ -68,8 +68,18 @@ export interface CmsFormSubmissionsProps {
   form: FormView;
   /** The number of submissions that are not spam (for a tab label). */
   onTotal?: (n: number) => void;
-  /** What is shown now (box, search, how many): the CSV of <CmsFormEditor> takes the same. */
-  onView?: (v: { box: Box; status: FormSubmissionStatus[]; q: string; total: number }) => void;
+  /**
+   * What is shown now (box, search, how many): the CSV of <CmsFormEditor> takes the same.
+   * `state` is "loading" while the list for these filters is on its way (or a search is still
+   * being typed), "error" when it failed; only "ready" means the list matches the filters.
+   */
+  onView?: (v: {
+    box: Box;
+    status: FormSubmissionStatus[];
+    q: string;
+    total: number;
+    state: "loading" | "ready" | "error";
+  }) => void;
   className?: string;
 }
 
@@ -120,10 +130,21 @@ export function CmsFormSubmissions({
   const [confirm, setConfirm] = React.useState<string[] | null>(null);
   const [confirmError, setConfirmError] = React.useState<string | null>(null);
 
+  // A search typed but not yet applied: what is shown is not what is asked for, so the CSV waits.
+  React.useEffect(() => {
+    if (query !== q)
+      onView?.({ box, status: BOX_STATUS[box], q: query, total: 0, state: "loading" });
+  }, [query, q, box, onView]);
+
+  /** The box, search and page the rows on screen were loaded for. */
+  const loadedFor = React.useRef("");
   React.useEffect(() => {
     let live = true;
+    const key = JSON.stringify([box, q, offset]);
     setLoading(true);
     setError(null);
+    // Until this answer is in, the CSV of the editor would not match what is asked for.
+    onView?.({ box, status: BOX_STATUS[box], q, total: 0, state: "loading" });
     client
       .formSubmissions(form.slug, {
         status: BOX_STATUS[box],
@@ -133,10 +154,11 @@ export function CmsFormSubmissions({
       })
       .then((r) => {
         if (!live) return;
+        loadedFor.current = key;
         setItems(r.items);
         setTotalN(r.total);
         setCounts(r.counts);
-        onView?.({ box, status: BOX_STATUS[box], q, total: r.total });
+        onView?.({ box, status: BOX_STATUS[box], q, total: r.total, state: "ready" });
         onTotal?.(r.counts.new + r.counts.read + r.counts.archived);
         // What was picked but is not on this page any more is let go.
         setPicked(
@@ -144,7 +166,13 @@ export function CmsFormSubmissions({
             new Set([...cur].filter((id) => r.items.some((x) => x.id === id))),
         );
       })
-      .catch((e) => live && setError(e))
+      .catch((e) => {
+        if (!live) return;
+        setError(e);
+        // Rows of another box or search are not shown under this one (a failed refresh keeps its rows).
+        if (loadedFor.current !== key) setItems(null);
+        onView?.({ box, status: BOX_STATUS[box], q, total: 0, state: "error" });
+      })
       .finally(() => live && setLoading(false));
     return () => {
       live = false;

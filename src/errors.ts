@@ -213,6 +213,7 @@ export const ERROR_CODES = {
   locale_is_source: "invalid",
   translation_source_trashed: "conflict",
   locale_etag_mismatch: "conflict",
+  trash_changed: "conflict",
   // 0.22.0 forms
   forms_off: "not_found",
   form_not_found: "not_found",

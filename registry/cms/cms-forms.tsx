@@ -39,8 +39,10 @@ import {
   FORM_KEY_RE,
   formFields,
   isCmsRemoteError,
+  nextOptionNumber,
   type FormCondition,
   type FormField,
+  type FormOption,
   type FormFieldKind,
   type FormListItem,
   type FormSettings,
@@ -507,6 +509,8 @@ export interface CmsSubmissionsView {
   status: FormSubmissionStatus[];
   q: string;
   total: number;
+  /** "ready" only when the list shown matches the box and search asked for. */
+  state?: "loading" | "ready" | "error";
 }
 
 export function CmsFormEditor({
@@ -699,13 +703,15 @@ export function CmsFormEditor({
   };
 
   const exportCsv = async () => {
-    if (!base) return;
+    // Only what the list shows now, loaded for exactly these filters (never a stale or failed one).
+    if (!base || !view || view.state === "loading" || view.state === "error")
+      return;
     setExportBusy(true);
     try {
       // The CSV has what the Submissions tab shows: the same box and search.
       const r = await client.exportSubmissions(base.slug, {
-        status: view?.status ?? BOX_STATUS.inbox,
-        q: view?.q || undefined,
+        status: view.status,
+        q: view.q || undefined,
       });
       const url = URL.createObjectURL(
         new Blob([r.csv], { type: "text/csv;charset=utf-8" }),
@@ -814,13 +820,22 @@ export function CmsFormEditor({
     // As the public page will show it: file fields say they cannot take files on this server.
     uploads: base.uploads !== false,
   };
-  const exportScope = view
-    ? t(view.q ? "fm_export_scope_q" : "fm_export_scope", {
-        box: t(`fs_box_${view.box}` as MessageKey),
-        q: view.q,
-        n: view.total,
-      })
-    : null;
+  // The CSV takes the box and search of the list, and only once that list is in for them.
+  const exportReady = !!view && view.state !== "loading" && view.state !== "error";
+  const viewBox = t(`fs_box_${view?.box ?? "inbox"}` as MessageKey);
+  const exportScope = !view
+    ? t("fm_export_wait", { box: viewBox })
+    : view.state === "loading"
+      ? t("fm_export_wait", { box: viewBox })
+      : view.state === "error"
+        ? t("fm_export_failed", { box: viewBox })
+        : view.total === 0
+          ? t("fm_export_none", { box: viewBox })
+          : t(view.q ? "fm_export_scope_q" : "fm_export_scope", {
+              box: viewBox,
+              q: view.q,
+              n: view.total,
+            });
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
@@ -876,9 +891,9 @@ export function CmsFormEditor({
             size="sm"
             className="gap-1.5"
             onClick={() => void exportCsv()}
-            disabled={exportBusy || view?.total === 0}
-            aria-describedby={exportScope ? "cms-form-export-scope" : undefined}
-            title={exportScope ?? undefined}
+            disabled={exportBusy || !exportReady || view?.total === 0}
+            aria-describedby="cms-form-export-scope"
+            title={exportScope}
           >
             <Download aria-hidden className="h-4 w-4" />
             {exportBusy ? t("fm_exporting") : t("fm_export")}
@@ -1013,14 +1028,13 @@ export function CmsFormEditor({
           />
         ) : tab === "submissions" ? (
           <>
-            {exportScope ? (
-              <p
-                id="cms-form-export-scope"
-                className="px-4 pt-3 text-xs text-muted-foreground md:px-6"
-              >
-                {exportScope}
-              </p>
-            ) : null}
+            <p
+              id="cms-form-export-scope"
+              aria-live="polite"
+              className="px-4 pt-3 text-xs text-muted-foreground md:px-6"
+            >
+              {exportScope}
+            </p>
             <CmsFormSubmissions
               form={base}
               onTotal={setSubsTotal}
@@ -1899,11 +1913,14 @@ function FieldPanel({
   };
   const setKind = (kind: FormFieldKind) => {
     const p: Partial<FormField> = { kind };
-    if ((kind === "select" || kind === "multiselect") && !field.options?.length)
-      p.options = [1, 2].map((n) => ({
-        value: `option_${n}`,
-        label: t("fm_option_n", { n }),
+    if ((kind === "select" || kind === "multiselect") && !field.options?.length) {
+      const first = nextOptionNumber(field);
+      p.options = [0, 1].map((i) => ({
+        value: `option_${first + i}`,
+        label: t("fm_option_n", { n: i + 1 }),
       }));
+      p.nextOption = first + 2;
+    }
     if (kind !== "select" && kind !== "multiselect") p.options = undefined;
     if (kind !== "text" && kind !== "textarea") p.pattern = undefined;
     if (kind !== "file")
@@ -2272,12 +2289,15 @@ function FieldPanel({
   );
 }
 
-/** A value for a new choice no other choice has: option_1, option_2, … (made once, never renamed). */
-export function newOptionValue(opts: readonly { value: string }[]): string {
-  const taken = new Set(opts.map((o) => o.value));
-  let n = opts.length + 1;
-  while (taken.has(`option_${n}`)) n++;
-  return `option_${n}`;
+/**
+ * A value for a new choice: option_1, option_2, … (made once, never renamed). The number only grows
+ * (the field keeps it in `nextOption`), so a removed choice's value never comes back on another one.
+ */
+export function newOptionValue(
+  opts: readonly { value: string }[],
+  nextOption?: number,
+): string {
+  return `option_${nextOptionNumber({ options: opts as FormOption[], nextOption })}`;
 }
 
 function OptionsEditor({
@@ -2300,14 +2320,13 @@ function OptionsEditor({
     });
   };
   const add = () => {
+    const n = nextOptionNumber(field);
     onChange({
       options: [
         ...opts,
-        {
-          value: newOptionValue(opts),
-          label: t("fm_option_n", { n: opts.length + 1 }),
-        },
+        { value: `option_${n}`, label: t("fm_option_n", { n: opts.length + 1 }) },
       ],
+      nextOption: n + 1,
     });
     requestAnimationFrame(() => refs.current[opts.length]?.select());
   };
@@ -2344,7 +2363,11 @@ function OptionsEditor({
               })}
               disabled={disabled || opts.length <= 1}
               onClick={() =>
-                onChange({ options: opts.filter((_, j) => j !== i) })
+                // The counter moves past the removed value first, so it is never handed out again.
+                onChange({
+                  options: opts.filter((_, j) => j !== i),
+                  nextOption: nextOptionNumber(field),
+                })
               }
             >
               <Trash2 aria-hidden className="h-4 w-4" />

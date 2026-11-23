@@ -61,7 +61,7 @@ const formBody = z
     slug: z.string().optional(),
     title: z.string().optional(),
     enabled: z.boolean().optional(),
-    steps: z.array(z.object({ title: z.string(), fields: z.array(z.record(z.unknown())) })).optional().describe("Fields: key, label, kind (text, textarea, email, number, select, multiselect, checkbox, date, file), required, help, options, min, max, pattern, accept, maxSize, maxFiles, showIf { field, op: eq|neq|in|contains|empty|filled, value }."),
+    steps: z.array(z.object({ title: z.string(), fields: z.array(z.record(z.unknown())) })).optional().describe("Fields: key, label, kind (text, textarea, email, number, select, multiselect, checkbox, date, file), required, help, options, nextOption, min, max, pattern, accept, maxSize, maxFiles, showIf { field, op: eq|neq|in|contains|empty|filled, value }."),
     settings: z.object({ successMessage: z.string().optional(), notify: z.array(z.string()).optional(), keepDays: z.number().int().nullable().optional(), redirectUrl: z.string().nullable().optional() }).optional(),
     expectedUpdatedAt: z.string().optional(),
   })

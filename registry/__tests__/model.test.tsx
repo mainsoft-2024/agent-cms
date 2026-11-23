@@ -560,7 +560,7 @@ test("dialogs: closing a dialog opened from code puts focus back on the button t
   await screen.findByRole("dialog", { name: "Choose: Author" });
   await user.keyboard("{Escape}");
   await waitFor(() => assert.ok(!screen.queryByRole("dialog", { name: "Choose: Author" })));
-  await waitFor(() => assert.equal(document.activeElement, screen.getByRole("button", { name: "Choose a document" })));
+  await waitFor(() => assert.ok(document.activeElement === screen.getByRole("button", { name: "Choose a document" }), `focus on ${document.activeElement?.tagName} ${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.slice(0, 40)}`));
 });
 
 test("relation picker: with several collections typing goes to the search box, arrows move between collections", async () => {
@@ -569,14 +569,14 @@ test("relation picker: with several collections typing goes to the search box, a
   await s.cms.create(admin, "docs", { slug: "intro", title: "Intro", body: "x" }, { publish: true });
   renderWith(s, <RelationPicker title="Target" collections={["docs", "team"]} onPick={() => {}} onClose={() => {}} />);
   const box = await screen.findByRole("combobox", { name: "Search by title or address" });
-  await waitFor(() => assert.equal(document.activeElement, box));
+  await waitFor(() => assert.ok(document.activeElement === box, `focus on ${document.activeElement?.tagName} ${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.slice(0, 40)}`));
   const user = userEvent.setup();
   const docsTab = screen.getByRole("tab", { name: "Docs" });
   await user.click(docsTab);
   await user.keyboard("{ArrowRight}");
   const teamTab = screen.getByRole("tab", { name: "Team" });
   assert.equal(teamTab.getAttribute("aria-selected"), "true");
-  assert.equal(document.activeElement, teamTab);
+  assert.ok(document.activeElement === teamTab, `focus on ${document.activeElement?.tagName} ${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.slice(0, 40)}`);
   assert.equal(docsTab.tabIndex, -1);
   assert.ok(await screen.findByRole("option", { name: /Paul Park/ }));
 });
@@ -599,7 +599,7 @@ test("SEO: the share image is picked from the media library (name, Replace, Remo
   await user.click(screen.getByRole("button", { name: "or type an address" }));
   const box = screen.getByLabelText("Share image");
   assert.equal(box.tagName, "INPUT");
-  assert.equal(document.activeElement, box);
+  assert.ok(document.activeElement === box, `focus on ${document.activeElement?.tagName} ${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.slice(0, 40)}`);
   await user.type(box, "https://example.com/a.png");
   assert.deepEqual(seen, { image: "https://example.com/a.png" });
 });

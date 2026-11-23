@@ -403,6 +403,10 @@ export function createForms(ctx: FormsContext) {
           if (help) field.help = help;
           const ph = str(f.placeholder, 200);
           if (ph) field.placeholder = ph;
+          if (field.kind === "select" || field.kind === "multiselect") {
+            // Review 0.22: the next new choice's number; it only grows, so a removed value never returns.
+            if (Number.isInteger(f.nextOption) && (f.nextOption as number) >= 1 && (f.nextOption as number) <= 1_000_000) field.nextOption = f.nextOption as number;
+          }
           if (field.kind === "select" || field.kind === "multiselect")
             field.options = Array.isArray(f.options)
               ? (f.options as { value?: unknown; label?: unknown }[]).map(
@@ -633,11 +637,15 @@ export function createForms(ctx: FormsContext) {
         () => true,
         (e) => (ctx.report(e, "forms: old upload"), false),
       );
+    // Review 0.22 (3rd round): pages go backwards from the cut-off. A page where some grants stayed
+    // (their file could not be deleted) moves the cursor past them, so the sweep does not read the
+    // same 200 again and again; a page where all went is read again from the same place.
+    let before = new Date(cut).toISOString();
     for (let page = 0; page < 20; page++) {
       const recs = await repo.listRecords({
         kind: UPLOAD_KIND,
-        before: new Date(cut).toISOString(),
-        order: "asc",
+        before,
+        order: "desc",
         limit: 200,
       });
       let kept = 0;
@@ -660,7 +668,8 @@ export function createForms(ctx: FormsContext) {
           n++;
         } else kept++;
       }
-      if (recs.length < 200 || kept === recs.length) break;
+      if (recs.length < 200) break;
+      if (kept) before = recs[recs.length - 1].createdAt;
     }
     // Objects under the temporary prefix with no record (older versions, lost records).
     let cursor: string | null = null;
@@ -1236,8 +1245,10 @@ export function createForms(ctx: FormsContext) {
           claimed.push({ rec: next, prev: p.d });
         }
         for (const p of picked) {
-          await st!.adapter.copy(p.d.tmp, p.to);
+          // Review 0.22 (3rd round): counted before the copy is awaited: a copy that landed but
+          // answered with an error (a timeout) is still removed on undo.
           copied.push(p.to);
+          await st!.adapter.copy(p.d.tmp, p.to);
         }
         row = await repo.insertFormSubmission!({
           formId: f.id,

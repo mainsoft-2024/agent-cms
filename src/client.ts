@@ -492,8 +492,8 @@ export interface TranslationsView {
   collection: string;
   slug: string;
   defaultLocale: string;
-  /** The source version translations are compared with (published, else latest). */
-  sourceVersion: number;
+  /** The source version translations are compared with (published, else latest); null when you may not read the source. */
+  sourceVersion: number | null;
   translations: TranslationView[];
 }
 
