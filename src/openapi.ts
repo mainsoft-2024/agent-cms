@@ -263,6 +263,11 @@ const BASE_ROUTES: readonly ApiRoute[] = [
   { method: "post", path: "/webhooks/deliveries/{id}/retry", summary: "Send a delivery again", tag: "webhooks", auth: "admin", returns: any, status: 202 },
   { method: "get", path: "/jobs", summary: "Background jobs", tag: "operations", auth: "admin", query: { state: "waiting | failed | done", kind: "", limit: "" }, returns: any },
   { method: "post", path: "/jobs/{id}/retry", summary: "Run a failed job again", tag: "operations", auth: "admin", returns: OK },
+  { method: "get", path: "/plugins", summary: "Plugins: state, version and what each added", tag: "operations", auth: "admin", returns: any },
+  { method: "get", path: "/plugins/{name}", summary: "One plugin", tag: "operations", auth: "admin", returns: any },
+  { method: "get", path: "/plugins/{name}/settings", summary: "A plugin's settings (secrets show their last four characters)", tag: "operations", auth: "admin", returns: any },
+  { method: "put", path: "/plugins/{name}/settings", summary: "Save a plugin's settings and restart it", tag: "operations", auth: "admin", body: z.object({ values: z.record(z.unknown()) }), returns: any },
+  { method: "post", path: "/plugins/{name}/restart", summary: "Stop a plugin and the ones that need it, and start them again", tag: "operations", auth: "admin", returns: any },
   { method: "get", path: "/_cron", summary: "Run what is due: schedules, the trash, jobs. `Authorization: Bearer <cronSecret>`", tag: "operations", auth: "cron", returns: any, needs: "cron" },
   { method: "post", path: "/_cron", summary: "Same as GET", tag: "operations", auth: "cron", returns: any, needs: "cron" },
 

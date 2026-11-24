@@ -304,7 +304,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
                 ...(me.auth?.people ? [{ kind: "people", label: t("nav_people"), Icon: Users } as const] : []),
                 ...(me.roles ? [{ kind: "roles", label: t("nav_roles"), Icon: Shield } as const] : []),
                 ...(me.redirects ? [{ kind: "redirects", label: t("nav_redirects"), Icon: CornerDownRight } as const] : []),
-                ...(me.automations ? [{ kind: "transfer", label: t("nav_transfer"), Icon: ArrowLeftRight } as const] : []),
+                ...(me.roles ? [{ kind: "transfer", label: t("nav_transfer"), Icon: ArrowLeftRight } as const] : []),
               ] as const
             ).map(({ kind, label, Icon }) => {
               const h = href({ kind });

@@ -723,6 +723,39 @@ createCms({ /* … */, plugins: [stats] });
 
 `ctx.secrets` seals values the plugin keeps in the database (null without `secretsKey`).
 
+**Plugin v2 (0.23.0).** A plugin can also have options, settings, a start and a stop, and add hooks, collections, fields, automation actions, filters and access rules:
+
+```ts
+export const slack = definePlugin({
+  name: "slack-notify",
+  version: "0.3.0",
+  engine: ">=0.23",                       // agent-cms versions it works with; createCms checks it
+  requires: ["webhooks"],                 // set up and started after these; off when one is off
+  options: z.object({ channel: z.string().default("#content") }),            // from code: slack({ channel: "#news" })
+  settings: z.object({ url: z.string().url().describe("secret") }),          // from the admin; secrets are sealed
+  setup(ctx, options) {
+    ctx.hook("beforePublish", ({ content }) => { if (!content.summary) throw new Error("Write a summary"); }, { collections: ["posts"] });
+    ctx.field("posts", "readingMinutes", z.number().int().default(0), { label: "Reading time" });
+    ctx.collection(defineCollection({ slug: "slack-log", label: "Slack log", visibility: "internal", access: { read: isAdmin } }));
+    ctx.automationAction("post", { label: "Post to Slack", run: async ({ doc }) => { /* … */ } });   // "slack-notify.post"
+    ctx.filter("rest.doc", (doc, { actor }) => doc, { priority: 10 });   // sitemap.entries, rest.doc, mcp.result, export.file, mail.message
+    ctx.access(({ actor, op, doc }) => true);   // can only narrow what the CMS allows
+    ctx.on("doc.published", async (e) => { await ctx.store.set(`last:${e.collection}`, e.slug); ctx.log("info", "published", { slug: e.slug }); });
+  },
+  async start(ctx) { /* before the first request; ctx.settings() is checked here */ },
+  async stop() { /* cms.close() */ },
+});
+createCms({ /* … */, plugins: [slack({ channel: "#news" })] });   // or `slack` for the defaults
+```
+
+- **Start**: `start` runs once before the first request (10 s, `pluginStartTimeoutMs`). A plugin that fails is switched off with the plugins that need it, and the CMS goes on: its routes answer 503 `plugin_failed`, and its tools, hooks, filters, access rules, actions, `_me` values and menu entries are skipped. `required: true` makes every request answer 503 until it starts. `cms.close()` waits for running work and calls `stop`, last started first.
+- **Admins**: `GET /plugins` (state, version, error, what each added), `POST /plugins/:name/restart`, `GET`/`PUT /plugins/:name/settings` (secrets come back as `••••` and their last four characters; saving restarts the plugin and is in the audit log). `cms.plugins.list()` is the same list.
+- **Built-in plugins**: webhooks and automations are plugins of the CMS, listed with `builtin: true`. `createCms({ builtins: { webhooks: false, automations: false } })` turns them off (routes 404, the admin hides them).
+- **Access rules fail closed**: while a plugin with `ctx.access` is not running, the collections its rules cover refuse everyone but system actors. Rules are synchronous.
+- **Secrets**: a setting with `.describe("secret")` (any type) is sealed and never sent back; the admin sees `••••••••`, and a save that leaves it out keeps it. Error messages name the setting, never its value.
+- **Limits in 0.23.0**: saved settings restart the plugin on the server that saved them; restart the other instances yourself. A plugin tool named like one of the CMS's own is ignored. Built-ins turned off are still listed in `openapi.json`.
+- Plugins written for 0.12 to 0.22 work unchanged.
+
 **Telemetry.** `createCms({ onEvent })` gets every request (`method`, `path`, `status`, `ms`, `actor`, `via`), every event, every job run, every cron call and every error the CMS reports. Connect it to your tracing; it is never awaited.
 
 ## Automations, roles, dashboard

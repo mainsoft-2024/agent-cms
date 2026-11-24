@@ -19,11 +19,12 @@ import { DEFAULT_VIDEO_HOSTS } from "./video";
 import { createFlow, type ScheduledRun } from "./flow";
 import { createJobs, type JobsRun } from "./jobs";
 import { createOutbox, type OutEvent, type WebhookOptions } from "./outbox";
-import { PLUGIN_NAME, type CmsPlugin, type PluginNav, type PluginRoute, type PluginTool } from "./plugin";
+import type { CmsPlugin, PluginInput } from "./plugin";
+import { BUILTIN_PLUGINS, createPluginHost, PLUGIN_STOP_TIMEOUT_MS, type PluginHost } from "./plugins";
 import { createSealer } from "./secrets";
 import { PUBLIC_EVENTS, type CacheAdapter, type CacheOptions, type ChangeEvent, type ChangesOptions } from "./changes";
 import { base64url, fromBase64url, fromUtf8, hex, hmacSha256, sha256, timingSafeEqual } from "./crypto";
-import type { z, ZodTypeAny } from "zod";
+import { z as zod, type z, type ZodTypeAny } from "zod";
 import { fieldChanges, hunks, splitLines, unifiedDiff, type FieldChange, type Hunk } from "./diff";
 import { CmsError, formatMessage, isCmsError, type CmsErrorCode, type CmsErrorOptions, type Diagnostic, type ErrorParams, type Messages } from "./errors";
 import { displayPrefix, generateKey, hashKey } from "./keys";
@@ -38,6 +39,7 @@ import { applyPatch, sectionRanges, type PatchOp } from "./patch";
 import type { AuditQuery, CmsRepo, DocPatch, StoredVersion } from "./repo";
 import { docsById } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
+import { VERSION } from "./version";
 import { normalizeQuery, SearchIndex, unitsOf, type SearchHit } from "./search";
 import {
   docState,
@@ -218,8 +220,16 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
    */
   secretsKey?: string;
   webhooks?: WebhookOptions;
-  /** Additions made with `definePlugin`. */
-  plugins?: readonly CmsPlugin[];
+  /** Additions made with `definePlugin` (a plugin defined with `options` can be given called or as is). */
+  plugins?: readonly PluginInput[];
+  /** How long a plugin's `start` may take before it counts as failed. Default 10000 ms. */
+  pluginStartTimeoutMs?: number;
+  /**
+   * 0.23.0: parts of the CMS that are built-in plugins, on by default. `false` turns one off: its
+   * routes answer 404, the admin hides it, it hears no events (`webhooks: false` also makes the
+   * automations' "Send a webhook" action fail).
+   */
+  builtins?: { webhooks?: boolean; automations?: boolean };
   /**
    * Everything worth measuring, as it happens: requests, events, job runs, errors. Connect it to
    * your tracing or metrics. Must not throw; it is never awaited.
@@ -411,7 +421,9 @@ export type CmsTelemetry =
   | { type: "error"; where: string; message: string }
   | { type: "cache"; collection: string; hit: boolean }
   | { type: "search"; ms: number; q: string; hits: number; collections: number }
-  | { type: "index"; ms: number; documents: number; units: number };
+  | { type: "index"; ms: number; documents: number; units: number }
+  /** 0.23.0: a line a plugin logged (`ctx.log`). */
+  | { type: "plugin"; plugin: string; level: "debug" | "info" | "warn" | "error"; message: string; data?: Record<string, unknown> };
 
 /** How long a missing change-log number may still be committing before it counts as rolled back. */
 // A number missing from the change log for less than this is a transaction still committing
@@ -556,6 +568,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // ── events: webhooks and plugin listeners ─────────────────────────────────
 
+  /** What plugins' event listeners are doing (`settle()` waits for it, at most 5 s: a listener must not hold up a shutdown). */
+  const pluginWork = new Set<Promise<unknown>>();
   const eventListeners: { event: WebhookEvent | "*"; fn: (e: OutEvent) => void | Promise<void>; plugin: string }[] = [];
   /** Tell the outside what happened. Never throws, never awaited by the write that caused it. */
   /** Listeners added at run time (the events stream): told about every event until they unsubscribe. */
@@ -702,15 +716,19 @@ export function createCmsCore(opts: CreateCmsOptions) {
           }),
       );
     } else tellSubscribers(e);
-    // Webhook deliveries being queued count as unfinished work too: `settle()` waits for them.
-    const queued: Promise<unknown> = Promise.resolve(outbox.emit(e)).catch((err) => report(err, "webhooks")).finally(() => inFlight.delete(queued));
-    inFlight.add(queued);
-    void automations.onEvent(e);
+    // Plugins (webhooks and automations among them, 0.23.0) hear every event after the write.
+    // What they do counts as unfinished work: `settle()` and `close()` wait for it.
     for (const l of eventListeners) {
       if (l.event !== "*" && l.event !== e.event) continue;
-      Promise.resolve()
-        .then(() => l.fn(e))
-        .catch((err) => report(err, `plugin ${l.plugin}: ${e.event}`));
+      // A plugin that failed to start, or is off, hears nothing.
+      if (pluginHost && !pluginHost.usable(l.plugin)) continue;
+      // Built-ins pick recipients now, at dispatch, as before 0.23.0; other plugins run after.
+      const builtin = pluginHost.get(l.plugin)?.builtin;
+      const set = builtin ? inFlight : pluginWork;
+      const heard: Promise<unknown> = (builtin ? new Promise((ok) => ok(l.fn(e))) : Promise.resolve().then(() => l.fn(e)))
+        .catch((err) => report(err, `plugin ${l.plugin}: ${e.event}`))
+        .finally(() => set.delete(heard));
+      set.add(heard);
     }
   }
   // ── following the change log (other servers) and the read cache ───────────
@@ -817,7 +835,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const newGen = () => Math.random().toString(36).slice(2, 10);
   const GEN_TTL = 30 * 86_400_000;
   /** Readers of this collection all see the same thing (no per-document read rule): it can be cached. */
-  const cacheable = (col: string) => !!cacheStore && !collection(col).access?.read;
+  const cacheable = (col: string) => !!cacheStore && !collection(col).access?.read && !pluginHost.hasAccess(col);
   function invalidate(col: string) {
     // Redirects that follow a document read its address from a 30 s cache: a change here forgets it.
     model.forgetTargets();
@@ -882,8 +900,78 @@ export function createCmsCore(opts: CreateCmsOptions) {
   dayIn(timeZone, new Date()); // throws RangeError at boot on an unknown zone
   if (opts.previewSecret !== undefined && opts.previewSecret.length < 32) throw new Error("[agent-cms] previewSecret must be at least 32 characters");
 
+  // Made before the collections are read; plugins get the CMS (`ctx.cms`) once it exists (plugins.ts).
+  // eslint-disable-next-line prefer-const
+  let pluginHost: PluginHost = null!;
+  let closing: Promise<void> | null = null;
+  /** A collection with what plugins add to it: fields (and their admin labels), hooks, and a per-reader mark for access rules. */
+  function withPlugins(c: AnyCollection): AnyCollection {
+    const added = pluginHost.fields.filter((f) => f.collection === c.slug);
+    const hooks = pluginHost.hooksFor(c.slug);
+    if (!added.length && !Object.keys(hooks).length) return c;
+    let fields = c.fields as ZodTypeAny | undefined;
+    if (added.length) {
+      const shape = Object.fromEntries(added.map((f) => [f.key, f.schema]));
+      const own = fields as { extend?: (s: Record<string, ZodTypeAny>) => ZodTypeAny; shape?: Record<string, unknown> } | undefined;
+      if (own && typeof own.extend !== "function") throw new Error(`[agent-cms] plugin ${added[0].plugin}: collection "${c.slug}" has fields that are not a z.object(), so a field cannot be added`);
+      for (const f of added) if (own?.shape && f.key in own.shape) throw new Error(`[agent-cms] plugin ${f.plugin}: collection "${c.slug}" already has the field "${f.key}"`);
+      fields = own ? own.extend!(shape) : zod.object(shape);
+    }
+    const mergedHooks = { ...(c.hooks ?? {}) } as Record<string, unknown[]>;
+    for (const [k, fns] of Object.entries(hooks)) mergedHooks[k] = [...(mergedHooks[k] ?? []), ...(fns ?? [])];
+    const adminFields = { ...(c.admin?.fields ?? {}) };
+    for (const f of added) if (f.admin && !adminFields[f.key]) adminFields[f.key] = f.admin;
+    return {
+      ...c,
+      fields,
+      hooks: mergedHooks as AnyCollection["hooks"],
+      ...(added.some((f) => f.admin) ? { admin: { ...(c.admin ?? {}), fields: adminFields } } : {}),
+    } as AnyCollection;
+  }
+
+  // Plugins are set up before the collections are read: they can add collections, fields and hooks.
+  const appSlugs = new Set(opts.collections.map((c) => c.slug));
+  // 0.23.0: webhooks and automations are plugins of the CMS, written against the same contract.
+  const builtinOn = { webhooks: opts.builtins?.webhooks !== false, automations: opts.builtins?.automations !== false };
+  const builtins: CmsPlugin[] = [];
+  if (builtinOn.webhooks)
+    builtins.push({
+      name: "webhooks",
+      version: VERSION,
+      setup(ctx) {
+        ctx.on("*", async (e) => {
+          await Promise.resolve(outbox.emit(e)).catch((err) => report(err, "webhooks"));
+        });
+      },
+    });
+  if (builtinOn.automations)
+    builtins.push({
+      name: "automations",
+      version: VERSION,
+      setup(ctx) {
+        ctx.on("*", async (e) => {
+          await automations.onEvent(e);
+        });
+      },
+    });
+  for (const b of builtins) BUILTIN_PLUGINS.add(b);
+  // Made before the plugins are set up: a plugin may keep `ctx.secrets` from `setup` (as in 0.12 to 0.22).
+  const sealer = opts.secretsKey ? createSealer(opts.secretsKey) : null;
+  pluginHost = createPluginHost([...builtins, ...(opts.plugins ?? [])], {
+    cms: () => api,
+    secrets: () => sealer,
+    repo: () => repo,
+    taken: (name) => RESERVED_ROUTES.has(name) || appSlugs.has(name),
+    listen: (event, fn, plugin) => void eventListeners.push({ event, fn, plugin }),
+    enqueue: (kind, payload, o) => jobs.enqueue(kind, payload, o),
+    report,
+    log: (e) => telemetry({ type: "plugin", ...e }),
+    now,
+    startTimeoutMs: opts.pluginStartTimeoutMs,
+  });
+
   // Fail closed at boot: every collection says who may read it.
-  for (const c of opts.collections) {
+  for (const c of [...opts.collections.map(withPlugins), ...pluginHost.collections.map((x) => withPlugins(x.config))]) {
     if (collections.has(c.slug)) throw new Error(`[agent-cms] two collections are named "${c.slug}"`);
     if (c.visibility !== "public" && c.visibility !== "internal") {
       throw new Error(`[agent-cms] collection "${c.slug}": set visibility to "public" or "internal" (required since 0.6.0)`);
@@ -898,6 +986,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     }
     collections.set(c.slug, c);
   }
+  for (const n of pluginHost.namedCollections()) for (const name of n.names) if (!collections.has(name)) throw new Error(`[agent-cms] plugin ${n.plugin}: there is no collection "${name}"`);
+  for (const f of pluginHost.fields) if (!collections.has(f.collection)) throw new Error(`[agent-cms] plugin ${f.plugin}: there is no collection "${f.collection}" to add the field "${f.key}" to`);
 
   const fail = (code: CmsErrorCode, params: ErrorParams = {}, o: CmsErrorOptions = {}) => new CmsError(code, params, { messages, ...o });
   const trashDays = Math.max(0, Math.floor(opts.trash?.days ?? 30));
@@ -966,8 +1056,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   function can(actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null): boolean {
-    const c = collection(col);
     if (actor.kind === "system") return true;
+    if (!baseCan(actor, col, what, doc)) return false;
+    // 0.23.0: plugins' access rules can only narrow.
+    return pluginHost.allows({ actor, collection: col, op: what, doc });
+  }
+  function baseCan(actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null): boolean {
+    const c = collection(col);
     if (c.managed && what !== "read") return false;
     if (actor.kind === "key") {
       if (!keyCovers(actor, col)) return false;
@@ -1043,7 +1138,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     redirects: opts.redirects ? { ttlMs: Math.max(1000, (typeof opts.redirects === "object" ? opts.redirects.ttlMs : undefined) ?? 30_000) } : false,
     // YouTube and Vimeo unless `video.defaults` is false; `video.hosts` adds to them.
     videoHosts: [...new Set([...(opts.video?.defaults === false ? [] : DEFAULT_VIDEO_HOSTS), ...(opts.video?.hosts ?? [])].map((h) => h.toLowerCase()))],
-    publicReadable: (col, slug) => readable({ kind: "anonymous" }, col, locales.length ? splitAddress(slug).slug : slug),
+    // 0.23.0: plugins' access rules are asked too (about the collection: the sitemap names addresses, not content).
+    // A collection with plugin rules is left out (they may judge each document; this path has none).
+    publicReadable: async (col, slug) => !pluginHost.hasAccess(col) && (await readable({ kind: "anonymous" }, col, locales.length ? splitAddress(slug).slug : slug)),
     localized,
     defaultLocale,
     publicCopy: (doc) => {
@@ -1478,7 +1575,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
   const fillOne = async (d: CmsDoc, draft: boolean, actor: Actor | null = null) => (await fillShared([d], draft, actor))[0];
   /** Whether filling a translation depends on who reads (per-document read rules or field rules). */
-  const perReader = (col: string) => !!(collection(col).access?.read || collection(col).fieldAccess);
+  const perReader = (col: string) => !!(collection(col).access?.read || collection(col).fieldAccess || pluginHost.hasAccess(col));
 
   async function get(actor: Actor, col: string, slug: string, o: { draft?: boolean; snippets?: "raw"; locale?: string | null; fallback?: boolean } = {}): Promise<CmsDoc> {
     const l = localeOf(col, o.locale);
@@ -1651,7 +1748,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const fallback = new WeakSet<CmsDoc>();
     // With per-document write rules the status filter is applied to the copy each person gets (a
     // published copy shown in place of a draft is "published"), not to the stored row.
-    const perDocWrite = !!collection(col).access?.write;
+    const perDocWrite = !!collection(col).access?.write || pluginHost.hasAccess(col);
     // 0.22.0: one language at a time (the default language: the source documents).
     const l = localeOf(col, o.locale);
     const which = l ? { locale: l } : srcOnly();
@@ -1761,7 +1858,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const l = localeOf(col, o.locale);
     // A translation's category is its source's (review 0.22): a page of one language filtered by
     // category is cut from the filled rows (the list path), not from the translation's stored copy.
-    if (typeof repo.pageDocs === "function" && !(editor && o.state) && keyset !== "offset" && !collection(col).access?.read && !(editor && collection(col).access?.write) && !(l && o.fallback && !editor) && !(l && o.category)) {
+    if (typeof repo.pageDocs === "function" && !(editor && o.state) && keyset !== "offset" && !collection(col).access?.read && !pluginHost.hasAccess(col) && !(editor && collection(col).access?.write) && !(l && o.fallback && !editor) && !(l && o.category)) {
       collection(col);
       await ensureSchema();
       if (!editor) assert(actor, col, "read");
@@ -1807,7 +1904,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const out: DocCounts = { all: 0, draft: 0, published: 0, modified: 0, archived: 0, scheduled: 0, review: 0 };
     // The same selection as the editor's list: working copies of what this person may edit, the
     // published copy of the rest they may read, nothing else.
-    const perDoc = !!collection(col).access?.write;
+    const perDoc = !!collection(col).access?.write || pluginHost.hasAccess(col);
     for (const d of await repo.listDocs({ collection: col, ...(l ? { locale: l } : srcOnly()) })) {
       if (perDoc && !can(actor, col, "write", d)) {
         const pub = publicView(d);
@@ -2900,7 +2997,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const started = Date.now();
     const idx = await searchIndex();
     const limit = Math.max(1, Math.min(o.limit ?? 5, 50));
-    const ruled = (col: string) => { const c = collection(col); return !!(c.access?.read || c.fieldAccess); };
+    const ruled = (col: string) => { const c = collection(col); return !!(c.access?.read || c.fieldAccess || pluginHost.hasAccess(col)); };
     const restricted = cols.some(ruled);
     // With per-document rules some hits will be dropped: rank more candidates, authorize, then cut,
     // so documents the reader may not see do not crowd out the ones they may.
@@ -3185,8 +3282,19 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // ── background jobs, webhooks (jobs.ts, outbox.ts) ─────────────────────────
 
-  const sealer = opts.secretsKey ? createSealer(opts.secretsKey) : null;
-  const jobs = createJobs({ repo, now, report, event: telemetry });
+  const jobs = createJobs({
+    repo,
+    now,
+    report,
+    event: telemetry,
+    // 0.23.0: a job of a plugin that is not running (or a built-in that is off) waits instead of failing.
+    paused: (kind) => {
+      const owner = kind === "webhook.deliver" ? "webhooks" : kind === "automation.run" ? "automations" : kind.includes(".") ? kind.slice(0, kind.indexOf(".")) : null;
+      if (owner === "webhooks" || owner === "automations") return !pluginHost.usable(owner);
+      return !!owner && pluginHost.names.includes(owner) && !pluginHost.usable(owner);
+    },
+  });
+  for (const j of pluginHost.jobs) jobs.define(j.kind, j.def);
   const outbox = createOutbox({
     repo,
     now,
@@ -3219,7 +3327,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     diagnosticsFor,
     rulesPerDocument: (col: string) => {
       const c = collections.get(col);
-      return !!(c?.access?.read || c?.access?.write || c?.access?.publish);
+      return !!(c?.access?.read || c?.access?.write || c?.access?.publish || pluginHost.hasAccess(col));
     },
     ready: ensureSchema,
     editable,
@@ -3276,9 +3384,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
     },
     update: (actor, col, slug, input) => update(actor, col, slug, input),
     addToRelease: (actor, id, item) => flow.releases.add(actor, id, [item]),
-    sendWebhook: (id, e) => outbox.send(id, e),
+    sendWebhook: (id, e) => {
+      if (!pluginHost.usable("webhooks")) throw new Error("webhooks are off on this server");
+      return outbox.send(id, e);
+    },
     options: opts.automations ?? {},
   });
+  for (const a of pluginHost.actions) automations.addAction(a.name, { label: a.label, run: a.run });
   const formsOn = opts.forms ? (typeof opts.forms === "object" ? opts.forms : {}) : null;
   const forms = createForms({
     repo,
@@ -3315,9 +3427,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     },
     audit: (actor, detail) => audit(actor, "retention.run", { detail }),
   });
-  const stats = createStats({ repo, now, dayOf: (d) => dayIn(timeZone, d), ready: ensureSchema, collections: () => [...collections.keys()], can, counts, isAdmin, generation: () => writeGen, publicView: fallbackView, rulesPerDocument: (c: string) => { const x = collections.get(c); return !!(x?.access?.read || x?.access?.write || x?.access?.publish); } });
+  const stats = createStats({ repo, now, dayOf: (d) => dayIn(timeZone, d), ready: ensureSchema, collections: () => [...collections.keys()], can, counts, isAdmin, generation: () => writeGen, publicView: fallbackView, rulesPerDocument: (c: string) => { const x = collections.get(c); return !!(x?.access?.read || x?.access?.write || x?.access?.publish || pluginHost.hasAccess(c)); } });
 
   const transfer = createTransfer({
+    exportFile: (f, actor) => (pluginHost.filters("export.file") ? pluginHost.filter("export.file", f, { actor }) : Promise.resolve(f)),
     repo,
     now,
     fail,
@@ -3380,15 +3493,6 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // ── plugins (plugin.ts) ───────────────────────────────────────────────────
 
-  const plugins = {
-    names: [] as string[],
-    routes: [] as PluginRoute[],
-    tools: [] as (PluginTool<any> & { plugin: string })[],
-    nav: [] as (PluginNav & { plugin: string })[],
-    me: [] as { plugin: string; fn: (actor: Actor) => Record<string, unknown> | Promise<Record<string, unknown>> }[],
-    /** The SQL the plugins' tables need (run it with your migrations; every statement is safe to repeat). */
-    sql: [] as string[],
-  };
 
   /** Wrap a write so the document it returns is projected for the actor who asked. */
   /** The state of a document and nothing of its content: what a caller who may change but not read it gets back. */
@@ -3894,7 +3998,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** Whether the collection's rules decide per document who may read, edit or publish (`access`). */
     rulesPerDocument: (col: string) => {
       const c = collections.get(col);
-      return !!(c?.access?.read || c?.access?.write || c?.access?.publish);
+      return !!(c?.access?.read || c?.access?.write || c?.access?.publish || pluginHost.hasAccess(col));
     },
     can,
     isAdmin,
@@ -3961,7 +4065,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     seoFor,
     /** `seoFor(doc)` under its 0.21.0 first-pass name. */
     seoOf: (doc: SeoSource) => model.seoFor(doc),
-    sitemap: (origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string } = {}) => Promise.resolve(ensureSchema()).then(() => model.sitemap(origin, o)),
+    sitemap: (origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string } = {}) =>
+      Promise.resolve(ensureSchema()).then(() => model.sitemap(origin, { ...o, filter: pluginHost.filters("sitemap.entries") ? (urls) => pluginHost.filter("sitemap.entries", urls, { origin }) : undefined })),
     suggestSlug,
     /** Old heading anchors by current anchor (public renders keep old links working). */
     anchorAliases: (documentId: string) => model.aliasMap(documentId),
@@ -4060,6 +4165,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
     async settle(): Promise<void> {
       follow.closed = true;
       while (inFlight.size) await Promise.allSettled([...inFlight]);
+      if (pluginWork.size) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([Promise.allSettled([...pluginWork]), new Promise<void>((done) => (timer = setTimeout(done, PLUGIN_STOP_TIMEOUT_MS)))]);
+        clearTimeout(timer);
+      }
       // A read of the log that was already running finishes (it tells nobody once closed).
       if (pulling) {
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -4132,7 +4242,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     async cron(o: { budgetMs?: number } = {}): Promise<ScheduledRun & { jobs: JobsRun }> {
       const t0 = Date.now();
       const scheduled = await flow.runScheduled();
-      await automations.tick().catch((e) => report(e, "automations"));
+      if (pluginHost.usable("automations")) await automations.tick().catch((e) => report(e, "automations"));
       const ran = await jobs.run(o);
       const keepDays = Math.max(1, opts.changes?.keepDays ?? 7);
       const pruneChanges = repo.pruneChanges ? repo.pruneChanges(new Date(now().getTime() - keepDays * 86_400_000).toISOString()) : Promise.resolve(0);
@@ -4143,7 +4253,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** Background jobs: `enqueue`, `run`, `stats`, `list`, `retry`, `define`. */
     jobs,
     /** Webhooks: `list`, `create`, `update`, `remove`, `secret`, `test`, `deliveries`, `retry`. Admins only. */
-    webhooks: outbox,
+    /** Webhooks (outbox.ts). `enabled()` is false without `secretsKey` or with `builtins: { webhooks: false }`. */
+    webhooks: { ...outbox, enabled: () => pluginHost.usable("webhooks") && outbox.enabled() },
     /** Automations: `list`, `create`, `update`, `remove`, `runs`, `test`, `addAction`. Admins only. */
     automations,
     /** Roles: `list`, `create`, `update`, `remove`, `addMember`, `removeMember`, `searchUsers`. Admins only. */
@@ -4155,7 +4266,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** Seal and open values kept in the database (null without `secretsKey`). */
     secrets: sealer,
     telemetry,
-    plugins,
+    /** The plugins given to `createCms`: their state (`list()`), what they added, `start`, `restart`, `stop` (plugins.ts). */
+    get plugins(): PluginHost {
+      return pluginHost;
+    },
     cronSecret: opts.cronSecret ?? null,
     /** Deleted documents and files: `list`, `restore`, `purge`. */
     trash: { ...flow.trash, days: trashDays },
@@ -4206,6 +4320,23 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** The roles a person is in (for the people screen). */
     rolesOf: (userId: string, email?: string | null) => roles.of(userId, email),
     /** Fails with `schema_outdated` when the database needs a migration. */
+    /** Records a plugin action (a restart) in the audit log, under the plugin's name. */
+    auditPlugin(actor: Actor, action: "plugin.restart" | "plugin.settings", plugin: string, detail: Record<string, unknown> = {}) {
+      audit(actor, action, { slug: plugin, detail });
+    },
+    /**
+     * Finish what is running and stop the plugins (last started first, 5 s each). Call it when
+     * the process ends; the CMS answers no further requests after it.
+     */
+    async close(): Promise<void> {
+      closing ??= (async () => {
+        // Plugins first marked closed (nothing starts again), then the work drains, then they stop.
+        pluginHost.markClosed();
+        await api.settle();
+        await pluginHost.close();
+      })();
+      return closing;
+    },
     checkSchema: async () => {
       await ensureSchema();
     },
@@ -4221,27 +4352,6 @@ export function createCmsCore(opts: CreateCmsOptions) {
     repo,
   };
 
-  for (const p of opts.plugins ?? []) {
-    if (!PLUGIN_NAME.test(p.name)) throw new Error(`[agent-cms] plugin name "${p.name}" must be lowercase letters, digits and dashes`);
-    if (plugins.names.includes(p.name)) throw new Error(`[agent-cms] plugin "${p.name}" is given twice`);
-    if (RESERVED_ROUTES.has(p.name) || collections.has(p.name)) throw new Error(`[agent-cms] plugin name "${p.name}" is taken by a route of the CMS`);
-    plugins.names.push(p.name);
-    plugins.sql.push(...(p.sql ?? []));
-    p.setup({
-      cms: api,
-      secrets: sealer,
-      on: (event, fn) => void eventListeners.push({ event, fn, plugin: p.name }),
-      route: (method, path, handler) => void plugins.routes.push({ plugin: p.name, method, path: path.split("/").filter(Boolean), handler }),
-      tool: (tool) => {
-        if (!/^[a-z][a-z0-9_]{2,63}$/.test(tool.name)) throw new Error(`[agent-cms] plugin ${p.name}: tool name "${tool.name}" must be snake_case`);
-        plugins.tools.push({ ...tool, plugin: p.name });
-      },
-      job: (kind, def) => jobs.define(`${p.name}.${kind}`, def),
-      enqueue: (kind, payload, o) => jobs.enqueue(`${p.name}.${kind}`, payload, o),
-      me: (fn) => void plugins.me.push({ plugin: p.name, fn }),
-      nav: (item) => void plugins.nav.push({ ...item, plugin: p.name }),
-    });
-  }
   return api;
 }
 

@@ -12,6 +12,9 @@ import type { CmsRepo } from "./repo";
 import type { CmsDoc, CmsRedirect, DocContent, DocRef, DocSeo } from "./types";
 import { hostAllowed, videoEmbed, videoHost } from "./video";
 
+/** One URL of `sitemap.xml`. */
+type SitemapUrl = { loc: string; lastmod: string; alternates?: { hreflang: string; href: string }[] };
+
 export interface ModelContext {
   repo: CmsRepo;
   collections: ReadonlyMap<string, AnyCollection>;
@@ -745,10 +748,10 @@ export function createModel(ctx: ModelContext) {
    * `sitemap.xml` for published documents of public collections that have `url()`. `noindex`
    * documents stay out. Above 50 000 addresses, `page` picks a part and `page: null` answers the index.
    */
-  async function sitemap(origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string } = {}): Promise<string> {
+  async function sitemap(origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string; filter?: (urls: SitemapUrl[]) => Promise<SitemapUrl[]> } = {}): Promise<string> {
     const base = origin.replace(/\/+$/, "");
     const abs = (u: string) => (/^https?:\/\//i.test(u) ? u : `${base}${u.startsWith("/") ? "" : "/"}${u}`);
-    const urls: { loc: string; lastmod: string; alternates?: { hreflang: string; href: string }[] }[] = [];
+    let urls: SitemapUrl[] = [];
     for (const c of ctx.collections.values()) {
       if (o.collections && !o.collections.includes(c.slug)) continue;
       if (!c.url || c.visibility !== "public" || c.access?.read || c.single || c.snippets) continue;
@@ -782,6 +785,8 @@ export function createModel(ctx: ModelContext) {
         if (u) urls.push({ loc: abs((pub as DocContent).seo?.canonical || u), lastmod: d.republishedAt ?? d.publishedAt ?? d.updatedAt });
       }
     }
+    // 0.23.0: plugins' `sitemap.entries` filters (pages the CMS does not hold, or fewer).
+    if (o.filter) urls = (await o.filter(urls)).filter((u) => u && typeof u.loc === "string" && typeof u.lastmod === "string");
     urls.sort((a, b) => a.loc.localeCompare(b.loc));
     const PER = 50_000;
     const head = `<?xml version="1.0" encoding="UTF-8"?>\n`;

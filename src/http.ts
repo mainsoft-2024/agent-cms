@@ -492,6 +492,15 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
     if (opts.auth && actor.kind === "user" && (await opts.auth.hasSession(req)) && !(await opts.auth.confirmed(req))) throw new CmsError("reauth_required", {}, { status: 401, messages: core.messages });
   };
   const base = (opts.basePath ?? "/api/cms").replace(/\/$/, "");
+  /** 0.23.0: plugins' `rest.doc` filters, on documents REST sends out. */
+  const restDoc = (actor: Actor, doc: CmsDoc, draft: boolean, list: boolean) => (core.plugins.filters("rest.doc") ? core.plugins.filter("rest.doc", doc, { actor, draft, list }) : Promise.resolve(doc));
+  /** A `required` plugin that is not running stops every request with 503 `plugin_failed`; the next request tries again. */
+  const startPlugins = () =>
+    core.plugins.start().catch((err: unknown) => {
+      const e = err as { pluginFailed?: string; reason?: string };
+      if (!e.pluginFailed) throw err;
+      throw new CmsError("plugin_failed", { plugin: e.pluginFailed, reason: e.reason ?? "" }, { status: 503, messages: core.messages });
+    });
 
   return async function handler(req: Request): Promise<Response> {
     const t0 = Date.now();
@@ -519,6 +528,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         throw new CmsError("invalid_request", { issues: "path encoding" }, { status: 400 });
       }
       const m = req.method.toUpperCase();
+      // Plugins start once, before the first request is answered (plugins.ts). Admins can still
+      // reach /plugins (list, settings, restart) while a required plugin is down, to fix it.
+      if (core.plugins.closed()) throw new CmsError("plugin_failed", { plugin: "*", reason: "closed" }, { status: 503, messages: core.messages });
+      const recovery = seg[0] === "plugins" || (seg[0] === "_me" && seg.length === 1) || seg[0] === "auth";
+      await startPlugins().catch((err) => {
+        if (!recovery) throw err;
+      });
       if (seg[0] === "_cron" && seg.length === 1 && (m === "GET" || m === "POST")) {
         // Its own secret, not a session or a key: a cron service calls this.
         if (!core.cronSecret) throw new CmsError("route_not_found");
@@ -609,12 +625,12 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           webhooks: core.webhooks.enabled() && core.isAdmin(actor),
           /** The dashboard, automations and roles screens exist in this version. */
           dashboard: actor.kind !== "anonymous",
-          automations: core.isAdmin(actor),
+          automations: core.plugins.usable("automations") && core.isAdmin(actor),
           roles: core.isAdmin(actor),
           /** The CMS's own sign-in, when it is on: how people sign in, and whether this caller manages people. */
           auth: opts.auth ? { ...opts.auth.describe(), people: core.isAdmin(actor) && actor.kind === "user" } : null,
-          nav: core.plugins.nav.filter((n) => !n.admin || core.isAdmin(actor)).map(({ label, href, plugin }) => ({ label, href, plugin })),
-          plugins: Object.fromEntries(await Promise.all(core.plugins.names.map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
+          nav: core.plugins.nav.filter((n) => core.plugins.usable(n.plugin) && (!n.admin || core.isAdmin(actor))).map(({ label, href, plugin }) => ({ label, href, plugin })),
+          plugins: Object.fromEntries(await Promise.all(core.plugins.names.filter((name) => core.plugins.usable(name) && !core.plugins.get(name)!.builtin).map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
           collections: core
             .collections()
             .filter((c) => core.can(actor, c.slug, "read"))
@@ -988,7 +1004,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             if (q.get("fields") === "summary") {
               return json(await core.page(actor, col, { ...lo, limit: Number(q.get("limit") ?? 50) || 50, cursor: q.get("cursor"), hits: q.get("hits") === "1" }));
             }
-            const docs = await core.list(actor, col, lo);
+            const docs = await Promise.all((await core.list(actor, col, lo)).map((d) => restDoc(actor, d, !!lo.drafts, true)));
             let counts: Map<string, number> | null = null;
             if (q.get("hits") === "1" && core.can(actor, col, "write")) counts = await core.hitCounts(actor, col, 7);
             return json({ docs: docs.map((d) => ({ ...wire(d), hits7d: counts?.get(d.id) ?? undefined })) });
@@ -1027,8 +1043,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (slug && seg.length === 3) {
           if (m === "GET" || m === "HEAD") {
             const raw = await core.get(actor, col, seg[2], { draft: q.get("draft") === "1", snippets: q.get("snippets") === "raw" ? "raw" : undefined, locale, fallback: q.get("fallback") === "1" });
-            const doc = await core.expand(actor, raw, expandOf(q), q.get("draft") === "1");
-            const tag = contentTag(raw, doc, expandOf(q).length > 0 || (q.get("draft") !== "1" && q.get("snippets") !== "raw" && core.collections().some((c) => c.snippets)));
+            const doc = await restDoc(actor, await core.expand(actor, raw, expandOf(q), q.get("draft") === "1"), q.get("draft") === "1", false);
+            const tag = contentTag(raw, doc, core.plugins.filters("rest.doc") || expandOf(q).length > 0 || (q.get("draft") !== "1" && q.get("snippets") !== "raw" && core.collections().some((c) => c.snippets)));
             if (req.headers.get("if-none-match") === tag) return new Response(null, { status: 304, headers: { etag: tag } });
             // Editors also learn which open release the document is in.
             const release = q.get("draft") === "1" && core.can(actor, col, "write", doc) ? await core.releases.of(doc.id) : undefined;
@@ -1198,7 +1214,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const sl = seg[1];
         if (seg.length === 2 && (m === "GET" || m === "HEAD")) {
           const doc = await core.single(actor, sl, { draft: q.get("draft") === "1" });
-          return json({ doc: wire(await core.expand(actor, doc, expandOf(q), q.get("draft") === "1")) });
+          return json({ doc: wire(await restDoc(actor, await core.expand(actor, doc, expandOf(q), q.get("draft") === "1"), q.get("draft") === "1", false)) });
         }
         if (seg.length === 2 && m === "PUT") {
           // expectedVersion 0: what GET says before the first save ("create it").
@@ -1295,6 +1311,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       }
 
       // ── automations and roles (admins) ──
+      // 0.23.0: built-in plugins turned off (or failed) answer like a route that is not there.
+      if ((seg[0] === "automations" || seg[0] === "webhooks") && !core.plugins.usable(seg[0])) throw new CmsError("route_not_found");
       if (seg[0] === "automations") {
         const a = core.automations;
         const input = z.object({
@@ -1354,8 +1372,42 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         }
       }
 
+      if (seg[0] === "plugins") {
+        if (!core.isAdmin(actor)) throw new CmsError(actor.kind === "anonymous" ? "unauthorized" : "forbidden", {}, { messages: core.messages });
+        if (seg.length === 1 && m === "GET") return json({ plugins: core.plugins.list() });
+        if (seg.length === 2 && m === "GET") {
+          const p = core.plugins.get(seg[1]);
+          if (!p) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
+          return json({ plugin: p });
+        }
+        if (seg.length === 3 && seg[2] === "settings" && m === "GET") {
+          if (!core.plugins.get(seg[1])) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
+          return json({ settings: await core.plugins.settings(seg[1]) }, 200, { "cache-control": "no-store" });
+        }
+        if (seg.length === 3 && seg[2] === "settings" && m === "PUT") {
+          if (!core.plugins.get(seg[1])) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
+          const b = await body(req, z.object({ values: z.record(z.unknown()) }));
+          const p = await core.plugins.saveSettings(seg[1], b.values).catch((err: { invalid?: string }) => {
+            if (err?.invalid) throw new CmsError("plugin_settings_invalid", { plugin: seg[1], issues: err.invalid }, { messages: core.messages });
+            throw err;
+          });
+          if (!p) throw new CmsError("plugin_settings_invalid", { plugin: seg[1], issues: "this plugin has no settings" }, { messages: core.messages });
+          core.auditPlugin(actor, "plugin.settings", seg[1], { keys: Object.keys(b.values), state: p.state });
+          return json({ plugin: p, settings: await core.plugins.settings(seg[1]) });
+        }
+        if (seg.length === 3 && seg[2] === "restart" && m === "POST") {
+          const p = await core.plugins.restart(seg[1]);
+          if (!p) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
+          core.auditPlugin(actor, "plugin.restart", seg[1], { state: p.state });
+          return json({ plugin: p });
+        }
+      }
+
       // ── plugin routes: /<plugin name>/… ──
       if (seg[0] && core.plugins.names.includes(seg[0])) {
+        const st = core.plugins.get(seg[0])!;
+        // The reason (it may quote a setting) is for admins at GET /plugins, not for callers.
+        if (st.state !== "running" && st.state !== "starting") throw new CmsError("plugin_failed", { plugin: seg[0], reason: st.state }, { status: 503, messages: core.messages });
         const rest = seg.slice(1);
         const route = core.plugins.routes
           .filter((r) => r.plugin === seg[0] && r.method === m && r.path.length <= rest.length && r.path.every((p, i) => p === rest[i]))

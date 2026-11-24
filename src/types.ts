@@ -437,6 +437,8 @@ export const AUDIT_ACTIONS = [
   "automation.create",
   "automation.update",
   "automation.delete",
+  "plugin.restart",
+  "plugin.settings",
   "role.create",
   "role.update",
   "role.delete",

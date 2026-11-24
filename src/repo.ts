@@ -443,7 +443,7 @@ export interface VersionStamp {
   authorAgent: string | null;
 }
 export type NewJob = Pick<CmsJob, "kind" | "payload" | "runAt" | "maxAttempts" | "createdAt">;
-export type JobPatch = Partial<Pick<CmsJob, "runAt" | "lockedUntil" | "lastError" | "doneAt" | "failedAt">>;
+export type JobPatch = Partial<Pick<CmsJob, "runAt" | "lockedUntil" | "lastError" | "doneAt" | "failedAt" | "attempts">>;
 export type NewWebhook = Omit<CmsWebhook, "id" | "failures" | "disabledReason">;
 export type WebhookPatch = Partial<Omit<CmsWebhook, "id" | "createdAt" | "createdBy">>;
 

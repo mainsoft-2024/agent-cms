@@ -649,7 +649,7 @@ export function toolsFor(cms: CmsLike, actor: Actor, only?: readonly string[]): 
   const own = CMS_TOOLS.filter((t) => (!only || only.includes(t.name)) && (!t.locales || core.locales.length > 0) && (!t.needs || cols.some((c) => core.can(actor, c, t.needs!))) && (!t.media || stores.some((s) => core.assets.can(actor, s, t.media!))));
   // Tools plugins add. `read` is open to whoever may read something; the others follow the same rule as ours; `admin` is for admins.
   const added = core.plugins.tools
-    .filter((t) => !only || only.includes(t.name))
+    .filter((t) => core.plugins.usable(t.plugin) && (!only || only.includes(t.name)))
     .filter((t) => {
       const scope = t.scope ?? "read";
       return scope === "admin" ? core.isAdmin(actor) : cols.some((c) => core.can(actor, c, scope));
@@ -702,6 +702,8 @@ export function toolErrorResult(err: unknown): ToolErrorResult | null {
  */
 export async function runTool(cms: CmsLike, actor: Actor, name: string, args: unknown = {}, opts: CallToolOptions = {}): Promise<ToolOutcome> {
   const core = coreOf(cms);
+  // 0.23.0: tools called directly (not over HTTP) also wait for the plugins to start.
+  await core.plugins.start().catch(() => undefined);
   const def = toolsFor(core, actor, opts.only).find((t) => t.name === name);
   // Same list as toolsFor: a hidden tool is not callable either.
   if (!def) return { ok: false, error: { error: "unknown_tool", kind: "not_found", message: `Unknown tool: ${name}`, params: { name } } };
@@ -713,7 +715,9 @@ export async function runTool(cms: CmsLike, actor: Actor, name: string, args: un
     return { ok: false, error: { error: "invalid_request", kind: "invalid", message: core.message({ isCmsError: true, code: "invalid_request", params: { issues } }), params: { issues }, issues: list } as never };
   }
   try {
-    return { ok: true, value: await def.run(core, actor, parsed.data as Record<string, unknown>) };
+    const value = await def.run(core, actor, parsed.data as Record<string, unknown>);
+    // 0.23.0: plugins' `mcp.result` filters see every tool's result (MCP and callTool alike).
+    return { ok: true, value: core.plugins.filters("mcp.result") ? await core.plugins.filter("mcp.result", value, { tool: name, actor }) : value };
   } catch (err) {
     if (!isCmsError(err)) throw err;
     return { ok: false, error: { ...err.toJSON(), message: core.message(err) } };
