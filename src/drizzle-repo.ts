@@ -899,7 +899,7 @@ export class DrizzleRepo implements CmsRepo {
     const d = (v: string | null | undefined) => (v === undefined ? undefined : v === null ? null : new Date(v));
     await this.db
       .update(this.t.jobs)
-      .set({ runAt: patch.runAt === undefined ? undefined : new Date(patch.runAt), lockedUntil: d(patch.lockedUntil), lastError: patch.lastError, doneAt: d(patch.doneAt), failedAt: d(patch.failedAt) })
+      .set({ runAt: patch.runAt === undefined ? undefined : new Date(patch.runAt), lockedUntil: d(patch.lockedUntil), lastError: patch.lastError, doneAt: d(patch.doneAt), failedAt: d(patch.failedAt), attempts: patch.attempts })
       .where(eq(this.t.jobs.id, id));
   }
   async listJobs(q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number }) {

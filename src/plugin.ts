@@ -160,7 +160,9 @@ export interface PluginContext<Cms = unknown> {
   /**
    * An access rule on top of the CMS's (roles, `access`, keys): return false to refuse. It can
    * only narrow: what the CMS refuses stays refused. Runs on every check, so keep it fast and
-   * synchronous. System actors (jobs, automations) are not asked.
+   * synchronous. System actors (jobs, automations) are not asked. It fails closed: while the
+   * plugin is not running (failed, restarting), the collections it covers refuse everyone but
+   * system actors, and a rule that throws refuses.
    */
   access(rule: (q: PluginAccessQuery) => boolean, o?: { collections?: readonly string[] }): void;
   /** Small values the plugin keeps in the database (`cms_records`, kind `plugin:<name>`). */
@@ -177,8 +179,6 @@ export interface CmsPlugin<Cms = any, O = any> {
   version?: string;
   /** Versions of `@mainsoft/agent-cms` it works with, as a semver range (`">=0.23"`, `"^0.23.0"`). Checked by `createCms`. */
   engine?: string;
-  /** Part of the CMS itself (`webhooks`, `automations`); turned off with `createCms({ builtins })`. Not for your plugins. */
-  builtin?: boolean;
   /** Plugins this one needs, by name. They are set up and started first; when one is missing or off, this one is off too. */
   requires?: readonly string[];
   /** When it cannot start, stop the CMS (every request answers 503 `plugin_failed`) instead of going on without it. */
@@ -186,15 +186,16 @@ export interface CmsPlugin<Cms = any, O = any> {
   /**
    * Settings people change on the admin screen (`PUT /plugins/:name/settings`), checked with this
    * schema when the plugin starts: a missing required setting makes the start fail. Values whose
-   * schema has `.describe("secret")` are sealed with `secretsKey` and never sent back whole.
+   * schema has `.describe("secret")` (any type) are sealed with `secretsKey` and never sent back:
+   * the admin gets a mask, and a value left out of a save keeps what was stored.
    */
   settings?: z.ZodObject<z.ZodRawShape>;
   /** SQL the plugin's tables need, in order. Every statement must be safe to run again (`IF NOT EXISTS`). The CMS does not run it: `cms.plugins.sql` collects it for your migrations. */
   sql?: readonly string[];
   /** Registers what the plugin adds. Runs inside `createCms`, synchronously. */
-  setup(ctx: PluginContext<Cms>, options: O): void;
+  setup(ctx: PluginContext<Cms>, options?: O): void;
   /** Runs once before the first request is answered (and again on a restart). Keep it short on serverless hosts: it runs on every cold start. */
-  start?(ctx: PluginContext<Cms>, options: O): void | Promise<void>;
+  start?(ctx: PluginContext<Cms>, options?: O): void | Promise<void>;
   /** Runs on `cms.close()` and before a restart. */
   stop?(): void | Promise<void>;
 }
@@ -254,7 +255,7 @@ export interface PluginRoute {
   handler: (a: PluginRouteArgs<any>) => Response | Promise<Response>;
 }
 
-export type PluginState = "starting" | "running" | "failed" | "off";
+export type PluginState = "starting" | "running" | "restarting" | "failed" | "off";
 
 /** One plugin as `cms.plugins.list()` and `GET /plugins` show it. */
 export interface PluginInfo {
@@ -266,9 +267,9 @@ export interface PluginInfo {
   requires: string[];
   required: boolean;
   /**
-   * `running`: started (or nothing to start). `starting`: before the first request, or during a
-   * restart. `failed`: its `start` threw or took too long. `off`: a plugin it needs is missing or
-   * not running.
+   * `running`: started (or nothing to start). `starting`: before the first request. `restarting`:
+   * being stopped and started again (what it added waits). `failed`: its `start` threw, took too
+   * long or its settings do not fit. `off`: a plugin it needs is missing or not running.
    */
   state: PluginState;
   error: string | null;

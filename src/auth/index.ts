@@ -485,7 +485,11 @@ export function createAuth(o: AuthOptions) {
     if (!o.sendMail) return false;
     try {
       // 0.23.0: plugins' `mail.message` filters (a footer, another wording, a copy address).
-      if (core.plugins.filters("mail.message")) m = { ...(await core.plugins.filter("mail.message", m, { kind })), to: m.to };
+      if (core.plugins.filters("mail.message")) {
+        const to = m.to;
+        const f = await core.plugins.filter("mail.message", m, { kind });
+        m = { to, subject: String(f.subject ?? m.subject), text: String(f.text ?? m.text) };
+      }
       await o.sendMail(m);
       return true;
     } catch (e) {

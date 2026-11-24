@@ -29,6 +29,8 @@ export interface JobsContext {
   now: () => Date;
   report: (err: unknown, where: string) => void;
   event?: (e: { type: "job"; kind: string; id: string; ok: boolean; attempt: number; ms: number; error?: string }) => void;
+  /** A kind whose owner is not running (a plugin that failed, a built-in turned off): its jobs wait without using an attempt. */
+  paused?: (kind: string) => boolean;
 }
 
 export const JOB_BATCH = 5;
@@ -58,6 +60,12 @@ export function createJobs(ctx: JobsContext) {
       const started = Date.now();
       const out: JobsRun = { ran: 0, ok: 0, retried: 0, failed: 0, waiting: 0 };
       const one = async (job: CmsJob) => {
+        if (ctx.paused?.(job.kind)) {
+          // Put back as it was (the claim counted an attempt: give it back), and try again in a minute.
+          out.waiting++;
+          await ctx.repo.updateJob(job.id, { runAt: iso(new Date(ctx.now().getTime() + 60_000)), lockedUntil: null, attempts: Math.max(0, job.attempts - 1) });
+          return;
+        }
         const def = kinds.get(job.kind);
         const t0 = Date.now();
         let error: string | null = null;
@@ -86,7 +94,10 @@ export function createJobs(ctx: JobsContext) {
         const at = ctx.now();
         const batch = await ctx.repo.claimJobs(iso(at), iso(new Date(at.getTime() + JOB_LOCK_MS)), JOB_BATCH);
         if (!batch.length) break;
+        const ranBefore = out.ran;
         await Promise.all(batch.map((j) => one(j).catch((e) => ctx.report(e, "jobs"))));
+        // Only paused jobs in this batch (put back for later): stop rather than claim them again.
+        if (out.ran === ranBefore) break;
       }
       out.waiting = (await ctx.repo.countJobs()).waiting;
       return out;

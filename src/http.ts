@@ -528,8 +528,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         throw new CmsError("invalid_request", { issues: "path encoding" }, { status: 400 });
       }
       const m = req.method.toUpperCase();
-      // Plugins start once, before the first request is answered (plugins.ts).
-      await startPlugins();
+      // Plugins start once, before the first request is answered (plugins.ts). Admins can still
+      // reach /plugins (list, settings, restart) while a required plugin is down, to fix it.
+      if (core.plugins.closed()) throw new CmsError("plugin_failed", { plugin: "*", reason: "closed" }, { status: 503, messages: core.messages });
+      const recovery = seg[0] === "plugins" || (seg[0] === "_me" && seg.length === 1) || seg[0] === "auth";
+      await startPlugins().catch((err) => {
+        if (!recovery) throw err;
+      });
       if (seg[0] === "_cron" && seg.length === 1 && (m === "GET" || m === "POST")) {
         // Its own secret, not a session or a key: a cron service calls this.
         if (!core.cronSecret) throw new CmsError("route_not_found");
@@ -1393,7 +1398,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (seg.length === 3 && seg[2] === "restart" && m === "POST") {
           const p = await core.plugins.restart(seg[1]);
           if (!p) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
-          core.auditPlugin(actor, "plugin.restart", seg[1], { state: p.state, error: p.error });
+          core.auditPlugin(actor, "plugin.restart", seg[1], { state: p.state });
           return json({ plugin: p });
         }
       }
@@ -1401,7 +1406,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       // ── plugin routes: /<plugin name>/… ──
       if (seg[0] && core.plugins.names.includes(seg[0])) {
         const st = core.plugins.get(seg[0])!;
-        if (st.state === "failed" || st.state === "off") throw new CmsError("plugin_failed", { plugin: seg[0], reason: st.error ?? st.state }, { status: 503, messages: core.messages });
+        // The reason (it may quote a setting) is for admins at GET /plugins, not for callers.
+        if (st.state !== "running" && st.state !== "starting") throw new CmsError("plugin_failed", { plugin: seg[0], reason: st.state }, { status: 503, messages: core.messages });
         const rest = seg.slice(1);
         const route = core.plugins.routes
           .filter((r) => r.plugin === seg[0] && r.method === m && r.path.length <= rest.length && r.path.every((p, i) => p === rest[i]))

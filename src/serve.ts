@@ -241,7 +241,8 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
       server.closeIdleConnections?.();
     });
     unhear?.();
-    await o.cms.settle?.().catch(() => undefined);
+    // 0.23.0: close() also stops the plugins (after the running work).
+    await (o.cms.close ?? o.cms.settle)?.call(o.cms).catch(() => undefined);
   }
   return { server, url, stop };
 }

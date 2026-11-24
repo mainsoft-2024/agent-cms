@@ -702,6 +702,8 @@ export function toolErrorResult(err: unknown): ToolErrorResult | null {
  */
 export async function runTool(cms: CmsLike, actor: Actor, name: string, args: unknown = {}, opts: CallToolOptions = {}): Promise<ToolOutcome> {
   const core = coreOf(cms);
+  // 0.23.0: tools called directly (not over HTTP) also wait for the plugins to start.
+  await core.plugins.start().catch(() => undefined);
   const def = toolsFor(core, actor, opts.only).find((t) => t.name === name);
   // Same list as toolsFor: a hidden tool is not callable either.
   if (!def) return { ok: false, error: { error: "unknown_tool", kind: "not_found", message: `Unknown tool: ${name}`, params: { name } } };

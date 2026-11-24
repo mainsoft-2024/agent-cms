@@ -14,7 +14,14 @@ Plugin v2, server side. No schema change. Plugins written for 0.12 to 0.22 work 
 ### Changed
 - Work that plugins' event listeners do now counts as unfinished: `settle()` and `close()` wait for it.
 - A collection with a plugin access rule is checked per reader (like one with `access.read`): it is not cached and not in `sitemap.xml`.
-- A `mail.message` filter cannot change the address a mail goes to.
+- A `mail.message` filter cannot change the address a mail goes to (filters get copies of the value).
+- The standalone server (`serve`, `dev`) calls `cms.close()` on shutdown, so plugins' `stop` runs.
+- The admin's Transfer menu follows the roles flag (it no longer disappears with automations).
+
+### Known limits
+- Saved plugin settings restart the plugin on the server that saved them only; restart other instances yourself.
+- Plugin access rules are synchronous. The `render.html` filter from the plan is not there (the CMS does not render HTML on the server).
+- With a built-in turned off its routes still appear in `openapi.json`.
 
 ## 0.22.2
 

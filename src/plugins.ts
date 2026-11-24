@@ -40,6 +40,14 @@ export const PLUGIN_STORE_KEY_MAX = 200;
 export const PLUGIN_STORE_VALUE_MAX = 64 * 1024;
 /** Where a plugin's settings are kept (`cms_records`, one row per plugin, key = its name). */
 export const PLUGIN_SETTINGS_KIND = "plugin-settings";
+/** Plugins the CMS itself registers (webhooks, automations). Identity comes from here, never from a field a plugin sets. */
+export const BUILTIN_PLUGINS = new WeakSet<CmsPlugin>();
+const isBuiltin = (p: CmsPlugin) => BUILTIN_PLUGINS.has(p);
+/** What the admin sees instead of a stored secret. */
+export const SECRET_MASK = "••••••••";
+
+/** A zod problem without the value it was about (validators quote values; settings may be secrets). */
+const safeIssues = (issues: readonly { path: (string | number)[]; code: string }[]) => issues.map((i) => `${i.path.join(".") || "settings"}: ${i.code}`).join("; ");
 
 type Registered = PluginInfo["registered"];
 
@@ -136,7 +144,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
   const seen = new Set<string>();
   for (const p of given) {
     if (!PLUGIN_NAME.test(p.name)) throw new Error(`[agent-cms] plugin name "${p.name}" must be lowercase letters, digits and dashes`);
-    if (!p.builtin && (deps.taken(p.name) || given.some((g) => g.builtin && g.name === p.name))) throw new Error(`[agent-cms] plugin name "${p.name}" is taken by a route of the CMS`);
+    if (!isBuiltin(p) && (deps.taken(p.name) || given.some((g) => isBuiltin(g) && g.name === p.name))) throw new Error(`[agent-cms] plugin name "${p.name}" is taken by a route of the CMS`);
     if (seen.has(p.name)) throw new Error(`[agent-cms] plugin "${p.name}" is given twice`);
     seen.add(p.name);
     if (p.engine && !versionSatisfies(VERSION, p.engine)) throw new Error(`[agent-cms] plugin ${p.name} works with agent-cms ${p.engine}, this is ${VERSION}`);
@@ -170,6 +178,14 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
     const st = entries.get(name)?.state;
     return st === "running" || st === "starting";
   };
+  /** One transition at a time (start, restart, settings, stop, close): a second waits for the first. */
+  let chain: Promise<unknown> = Promise.resolve();
+  const serial = <T,>(fn: () => Promise<T>): Promise<T> => {
+    const run = chain.then(fn, fn);
+    chain = run.catch(() => undefined);
+    return run;
+  };
+  let closed = false;
 
   function makeStore(name: string): PluginStore {
     const kind = `plugin:${name}`;
@@ -239,8 +255,10 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
         deps.listen(event, fn, p.name);
       },
       route: (method, path, handler) => {
+        const parts = path.split("/").filter(Boolean);
+        if (routes.some((r) => r.plugin === p.name && r.method === method && r.path.join("/") === parts.join("/"))) throw new Error(`${where}: the route ${method} /${parts.join("/")} is added twice`);
         count(p.name, "routes");
-        routes.push({ plugin: p.name, method, path: path.split("/").filter(Boolean), handler });
+        routes.push({ plugin: p.name, method, path: parts, handler });
       },
       tool: (tool) => {
         if (!/^[a-z][a-z0-9_]{2,63}$/.test(tool.name)) throw new Error(`${where}: tool name "${tool.name}" must be snake_case`);
@@ -347,7 +365,8 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       if (isSecretSetting(shape[k] as ZodTypeAny) && v && typeof v === "object" && typeof (v as { sealed?: unknown }).sealed === "string") {
         const sealer = deps.secrets();
         if (!sealer) throw new Error(`the setting "${k}" is sealed and the CMS has no secretsKey`);
-        out[k] = sealer.open((v as { sealed: string }).sealed);
+        const text = sealer.open((v as { sealed: string }).sealed);
+        out[k] = (v as { json?: boolean }).json ? JSON.parse(text) : text;
       } else out[k] = v;
     }
     return out;
@@ -358,7 +377,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
     if (!e.plugin.settings) return {};
     const stored = await storedSettings(e.plugin.name);
     const r = e.plugin.settings.safeParse(opened(e.plugin, stored?.data ?? {}));
-    if (!r.success) throw new Error(`settings: ${r.error.issues.map((i) => `${i.path.join(".") || "settings"}: ${i.message}`).join("; ")}`);
+    if (!r.success) throw new Error(`settings: ${safeIssues(r.error.issues)}`);
     return r.data as Record<string, unknown>;
   }
 
@@ -388,9 +407,15 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
     e.error = null;
     const t0 = Date.now();
     try {
-      e.settings = await loadSettings(e);
-      e.live = true;
-      if (e.plugin.start) await within(Promise.resolve().then(() => e.plugin.start!(e.ctx!, undefined)), startTimeout, `plugin ${e.plugin.name}: start`);
+      await within(
+        (async () => {
+          e.settings = await loadSettings(e);
+          e.live = true;
+          if (e.plugin.start) await e.plugin.start(e.ctx!, undefined);
+        })(),
+        startTimeout,
+        `plugin ${e.plugin.name}: start`,
+      );
       e.state = "running";
     } catch (err) {
       e.state = "failed";
@@ -407,39 +432,56 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
   const requiredDown = () => [...entries.values()].find((e) => e.plugin.required && e.state !== "running");
 
   let started: Promise<void> | null = null;
-  /** Start every plugin once, in order. Rejects (and is tried again on the next call) while a `required` one is not running. */
+  const downError = (down: Entry) => Object.assign(new Error(`plugin ${down.plugin.name}: ${down.state}`), { pluginFailed: down.plugin.name, reason: down.state });
+  /**
+   * Start every plugin once, in order. Rejects while a `required` plugin is not running: on the
+   * first start everything started is stopped again and the next call tries again; later (a
+   * restart that failed) the other plugins keep running and requests wait for a fix.
+   */
+  async function start(): Promise<void> {
+    if (closed) return;
+    await startAll();
+    const down = requiredDown();
+    if (down) throw downError(down);
+  }
   function startAll(): Promise<void> {
-    started ??= (async () => {
+    started ??= serial(async () => {
+      if (closed) return;
       for (const e of entries.values()) await startOne(e);
       const down = requiredDown();
       if (down) {
         // Close what started, so the next try begins clean.
         for (const e of [...entries.values()].reverse()) await stopOne(e);
-        throw Object.assign(new Error(`plugin ${down.plugin.name}: ${down.error ?? down.state}`), { pluginFailed: down.plugin.name, reason: down.error ?? down.state });
+        throw downError(down);
       }
-    })().catch((err) => {
+    }).catch((err) => {
       started = null;
       throw err;
     });
     return started;
   }
 
-  async function restart(name: string): Promise<PluginInfo | null> {
+  function restart(name: string): Promise<PluginInfo | null> {
     const e = entries.get(name);
-    if (!e) return null;
-    const after = dependants(name);
-    for (const d of [...after].reverse()) await stopOne(d);
-    await stopOne(e);
-    await startOne(e);
-    for (const d of after) await startOne(d);
-    return info(e);
+    if (!e) return Promise.resolve(null);
+    return serial(async () => {
+      if (closed) return info(e);
+      const after = dependants(name);
+      // What they added waits while they change (routes 503, rules refuse).
+      for (const x of [e, ...after]) if (x.ctx) x.state = "restarting";
+      for (const d of [...after].reverse()) await stopOne(d);
+      await stopOne(e);
+      await startOne(e);
+      for (const d of after) await startOne(d);
+      return info(e);
+    });
   }
 
   function info(e: Entry): PluginInfo {
     const p = e.plugin;
     return {
       name: p.name,
-      builtin: !!p.builtin,
+      builtin: isBuiltin(p),
       version: p.version ?? null,
       engine: p.engine ?? null,
       requires: [...(p.requires ?? [])],
@@ -481,7 +523,13 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
     collections,
     fields,
     /** Automation actions plugins added (`<plugin>.<name>`); each runs only while its plugin is in use. */
-    actions: actions.map((a) => ({ ...a, run: ((c) => (usable(a.plugin) ? a.run(c) : `the plugin ${a.plugin} is not running`)) as AutomationFn })),
+    actions: actions.map((a) => ({
+      ...a,
+      run: ((c) => {
+        if (!usable(a.plugin)) throw new Error(`the plugin ${a.plugin} is not running`);
+        return a.run(c);
+      }) as AutomationFn,
+    })),
     hooksFor,
     /** Collection names plugins' hooks and access rules point at (checked by the CMS: each must exist). */
     namedCollections: () => [...hooks.map((h) => ({ plugin: h.plugin, names: h.collections ?? [] })), ...access.map((a) => ({ plugin: a.plugin, names: a.collections ?? [] }))],
@@ -495,7 +543,8 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
     allows(q: PluginAccessQuery): boolean {
       for (const a of access) {
         if (a.collections && !a.collections.includes(q.collection)) continue;
-        if (!usable(a.plugin)) continue;
+        // Fails closed: a rule whose plugin is not running refuses.
+        if (!usable(a.plugin)) return false;
         try {
           if (a.rule(q) === false) return false;
         } catch (err) {
@@ -513,7 +562,8 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       for (const f of filters.get(name) ?? []) {
         if (!usable(f.plugin)) continue;
         try {
-          const next = await f.fn(cur, ctx);
+          // Each filter gets a copy: changing the value in place cannot reach what the caller keeps.
+          const next = await f.fn(structuredClone(cur), ctx);
           if (next !== undefined) cur = next;
         } catch (err) {
           deps.report(err, `plugin ${f.plugin}: filter ${name}`);
@@ -527,8 +577,10 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       const e = entries.get(name);
       return e ? info(e) : null;
     },
-    /** Runs before the first request. */
-    start: startAll,
+    /** Runs before the first request; rejects while a `required` plugin is not running. */
+    start,
+    /** Whether the plugins were closed (`cms.close()`). */
+    closed: () => closed,
     /**
      * Stop a plugin and the ones that need it, then start them again in order. For a plugin that
      * failed (after fixing what it needs) or to pick up new settings. Returns its state after.
@@ -548,17 +600,33 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
         values = { ...(stored?.data ?? {}) };
         for (const k of secret) if (k in values) values[k] = "";
       }
-      for (const k of secret) if (typeof values[k] === "string" && values[k]) values[k] = `••••${String(values[k]).slice(-4)}`;
+      // A secret is never sent back: only whether one is stored.
+      for (const k of secret) values[k] = values[k] === undefined || values[k] === null || values[k] === "" ? null : SECRET_MASK;
       return { schema: Object.keys(shape), secret, values };
     },
     /**
-     * Save a plugin's settings (checked with its schema), then restart it. A secret left as its
-     * masked value (`••••abcd`) or left out keeps what was stored. Throws `{ invalid: issues }` when they do not fit.
+     * Save a plugin's settings (checked with its schema), then restart it. A secret left out (or
+     * sent back as the mask) keeps what was stored. Throws `{ invalid: issues }` when they do not fit.
      */
-    async saveSettings(name: string, input: Record<string, unknown>): Promise<PluginInfo | null> {
+    saveSettings(name: string, input: Record<string, unknown>): Promise<PluginInfo | null> {
       const e = entries.get(name);
-      if (!e?.plugin.settings) return null;
-      const shape = e.plugin.settings.shape;
+      if (!e?.plugin.settings) return Promise.resolve(null);
+      return serial(() => save(e, input)).then(() => restart(name));
+    },
+    /** Stop every plugin, last started first. Final: nothing starts again afterwards. */
+    close(): Promise<void> {
+      closed = true;
+      return serial(async () => {
+        for (const e of [...entries.values()].reverse()) await stopOne(e);
+        for (const e of entries.values()) if (e.ctx && e.state !== "failed") ((e.state = "off"), (e.error = "closed"));
+      });
+    },
+  };
+
+  async function save(e: Entry, input: Record<string, unknown>): Promise<void> {
+    const name = e.plugin.name;
+    {
+      const shape = e.plugin.settings!.shape;
       const stored = await storedSettings(name);
       const prev = (() => {
         try {
@@ -570,32 +638,31 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       const merged: Record<string, unknown> = { ...input };
       for (const k of Object.keys(shape)) {
         if (!isSecretSetting(shape[k] as ZodTypeAny)) continue;
-        const v = merged[k];
-        if (v === undefined || (typeof v === "string" && v.startsWith("••••"))) merged[k] = prev[k];
+        // A secret left out (or sent back as the mask exactly) keeps what was stored.
+        if (merged[k] === undefined || merged[k] === SECRET_MASK) merged[k] = prev[k];
       }
-      const r = e.plugin.settings.safeParse(merged);
-      if (!r.success) throw Object.assign(new Error("settings do not fit"), { invalid: r.error.issues.map((i) => `${i.path.join(".") || "settings"}: ${i.message}`).join("; ") });
+      const r = e.plugin.settings!.safeParse(merged);
+      if (!r.success) throw Object.assign(new Error("settings do not fit"), { invalid: safeIssues(r.error.issues) });
       const data: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(r.data as Record<string, unknown>)) {
-        if (isSecretSetting(shape[k] as ZodTypeAny) && typeof v === "string" && v) {
+        if (isSecretSetting(shape[k] as ZodTypeAny) && v !== undefined && v !== null && v !== "") {
           const sealer = deps.secrets();
-          if (!sealer) throw Object.assign(new Error("no secretsKey"), { invalid: `${k}: a secret setting needs createCms({ secretsKey })` });
-          data[k] = { sealed: sealer.seal(v) };
+          if (!sealer) throw Object.assign(new Error("no secretsKey"), { invalid: `${k}: needs createCms({ secretsKey })` });
+          data[k] = typeof v === "string" ? { sealed: sealer.seal(v) } : { sealed: sealer.seal(JSON.stringify(v)), json: true };
         } else data[k] = v;
       }
       const repo = deps.repo();
       const at = deps.now().toISOString();
       if (stored) await repo.updateRecord(PLUGIN_SETTINGS_KIND, stored.id, { data, at });
-      else await repo.insertRecord({ kind: PLUGIN_SETTINGS_KIND, key: name, data, at });
-      return restart(name);
-    },
-    /** Stop every plugin, last started first. */
-    async stop(): Promise<void> {
-      for (const e of [...entries.values()].reverse()) await stopOne(e);
-      for (const e of entries.values()) if (e.ctx && e.state === "running") e.state = "starting";
-      started = null;
-    },
-  };
+      else
+        await repo.insertRecord({ kind: PLUGIN_SETTINGS_KIND, key: name, data, at }).catch(async (err) => {
+          // Another server saved first: change that row.
+          const again = await storedSettings(name);
+          if (!again) throw err;
+          await repo.updateRecord(PLUGIN_SETTINGS_KIND, again.id, { data, at });
+        });
+    }
+  }
 }
 
 export const FILTER_NAMES: readonly PluginFilterName[] = ["sitemap.entries", "rest.doc", "mcp.result", "export.file", "mail.message"];

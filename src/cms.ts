@@ -20,7 +20,7 @@ import { createFlow, type ScheduledRun } from "./flow";
 import { createJobs, type JobsRun } from "./jobs";
 import { createOutbox, type OutEvent, type WebhookOptions } from "./outbox";
 import type { CmsPlugin, PluginInput } from "./plugin";
-import { createPluginHost, type PluginHost } from "./plugins";
+import { BUILTIN_PLUGINS, createPluginHost, PLUGIN_STOP_TIMEOUT_MS, type PluginHost } from "./plugins";
 import { createSealer } from "./secrets";
 import { PUBLIC_EVENTS, type CacheAdapter, type CacheOptions, type ChangeEvent, type ChangesOptions } from "./changes";
 import { base64url, fromBase64url, fromUtf8, hex, hmacSha256, sha256, timingSafeEqual } from "./crypto";
@@ -568,6 +568,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // ── events: webhooks and plugin listeners ─────────────────────────────────
 
+  /** What plugins' event listeners are doing (`settle()` waits for it, at most 5 s: a listener must not hold up a shutdown). */
+  const pluginWork = new Set<Promise<unknown>>();
   const eventListeners: { event: WebhookEvent | "*"; fn: (e: OutEvent) => void | Promise<void>; plugin: string }[] = [];
   /** Tell the outside what happened. Never throws, never awaited by the write that caused it. */
   /** Listeners added at run time (the events stream): told about every event until they unsubscribe. */
@@ -720,11 +722,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (l.event !== "*" && l.event !== e.event) continue;
       // A plugin that failed to start, or is off, hears nothing.
       if (pluginHost && !pluginHost.usable(l.plugin)) continue;
-      const heard: Promise<unknown> = Promise.resolve()
-        .then(() => l.fn(e))
+      // Built-ins pick recipients now, at dispatch, as before 0.23.0; other plugins run after.
+      const builtin = pluginHost.get(l.plugin)?.builtin;
+      const set = builtin ? inFlight : pluginWork;
+      const heard: Promise<unknown> = (builtin ? new Promise((ok) => ok(l.fn(e))) : Promise.resolve().then(() => l.fn(e)))
         .catch((err) => report(err, `plugin ${l.plugin}: ${e.event}`))
-        .finally(() => inFlight.delete(heard));
-      inFlight.add(heard);
+        .finally(() => set.delete(heard));
+      set.add(heard);
     }
   }
   // ── following the change log (other servers) and the read cache ───────────
@@ -831,7 +835,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const newGen = () => Math.random().toString(36).slice(2, 10);
   const GEN_TTL = 30 * 86_400_000;
   /** Readers of this collection all see the same thing (no per-document read rule): it can be cached. */
-  const cacheable = (col: string) => !!cacheStore && !collection(col).access?.read;
+  const cacheable = (col: string) => !!cacheStore && !collection(col).access?.read && !pluginHost.hasAccess(col);
   function invalidate(col: string) {
     // Redirects that follow a document read its address from a 30 s cache: a change here forgets it.
     model.forgetTargets();
@@ -899,12 +903,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
   // Made before the collections are read; plugins get the CMS (`ctx.cms`) once it exists (plugins.ts).
   // eslint-disable-next-line prefer-const
   let pluginHost: PluginHost = null!;
+  let closing: Promise<void> | null = null;
   /** A collection with what plugins add to it: fields (and their admin labels), hooks, and a per-reader mark for access rules. */
   function withPlugins(c: AnyCollection): AnyCollection {
     const added = pluginHost.fields.filter((f) => f.collection === c.slug);
     const hooks = pluginHost.hooksFor(c.slug);
-    const ruled = pluginHost.hasAccess(c.slug);
-    if (!added.length && !Object.keys(hooks).length && !ruled) return c;
+    if (!added.length && !Object.keys(hooks).length) return c;
     let fields = c.fields as ZodTypeAny | undefined;
     if (added.length) {
       const shape = Object.fromEntries(added.map((f) => [f.key, f.schema]));
@@ -922,8 +926,6 @@ export function createCmsCore(opts: CreateCmsOptions) {
       fields,
       hooks: mergedHooks as AnyCollection["hooks"],
       ...(added.some((f) => f.admin) ? { admin: { ...(c.admin ?? {}), fields: adminFields } } : {}),
-      // A rule that depends on the reader: lists and caches then check each document (the rule itself runs in `can`).
-      ...(ruled && !c.access?.read ? { access: { ...(c.access ?? {}), read: (a: { actor: Actor; collection: string; doc?: CmsDoc | null }) => (c.visibility === "public" || a.actor.kind === "system") } } : {}),
     } as AnyCollection;
   }
 
@@ -936,7 +938,6 @@ export function createCmsCore(opts: CreateCmsOptions) {
     builtins.push({
       name: "webhooks",
       version: VERSION,
-      builtin: true,
       setup(ctx) {
         ctx.on("*", async (e) => {
           await Promise.resolve(outbox.emit(e)).catch((err) => report(err, "webhooks"));
@@ -947,13 +948,15 @@ export function createCmsCore(opts: CreateCmsOptions) {
     builtins.push({
       name: "automations",
       version: VERSION,
-      builtin: true,
       setup(ctx) {
         ctx.on("*", async (e) => {
           await automations.onEvent(e);
         });
       },
     });
+  for (const b of builtins) BUILTIN_PLUGINS.add(b);
+  // Made before the plugins are set up: a plugin may keep `ctx.secrets` from `setup` (as in 0.12 to 0.22).
+  const sealer = opts.secretsKey ? createSealer(opts.secretsKey) : null;
   pluginHost = createPluginHost([...builtins, ...(opts.plugins ?? [])], {
     cms: () => api,
     secrets: () => sealer,
@@ -1135,7 +1138,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     redirects: opts.redirects ? { ttlMs: Math.max(1000, (typeof opts.redirects === "object" ? opts.redirects.ttlMs : undefined) ?? 30_000) } : false,
     // YouTube and Vimeo unless `video.defaults` is false; `video.hosts` adds to them.
     videoHosts: [...new Set([...(opts.video?.defaults === false ? [] : DEFAULT_VIDEO_HOSTS), ...(opts.video?.hosts ?? [])].map((h) => h.toLowerCase()))],
-    publicReadable: (col, slug) => readable({ kind: "anonymous" }, col, locales.length ? splitAddress(slug).slug : slug),
+    // 0.23.0: plugins' access rules are asked too (about the collection: the sitemap names addresses, not content).
+    publicReadable: async (col, slug) => pluginHost.allows({ actor: { kind: "anonymous" }, collection: col, op: "read" }) && (await readable({ kind: "anonymous" }, col, locales.length ? splitAddress(slug).slug : slug)),
     localized,
     defaultLocale,
     publicCopy: (doc) => {
@@ -1570,7 +1574,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
   const fillOne = async (d: CmsDoc, draft: boolean, actor: Actor | null = null) => (await fillShared([d], draft, actor))[0];
   /** Whether filling a translation depends on who reads (per-document read rules or field rules). */
-  const perReader = (col: string) => !!(collection(col).access?.read || collection(col).fieldAccess);
+  const perReader = (col: string) => !!(collection(col).access?.read || collection(col).fieldAccess || pluginHost.hasAccess(col));
 
   async function get(actor: Actor, col: string, slug: string, o: { draft?: boolean; snippets?: "raw"; locale?: string | null; fallback?: boolean } = {}): Promise<CmsDoc> {
     const l = localeOf(col, o.locale);
@@ -1743,7 +1747,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const fallback = new WeakSet<CmsDoc>();
     // With per-document write rules the status filter is applied to the copy each person gets (a
     // published copy shown in place of a draft is "published"), not to the stored row.
-    const perDocWrite = !!collection(col).access?.write;
+    const perDocWrite = !!collection(col).access?.write || pluginHost.hasAccess(col);
     // 0.22.0: one language at a time (the default language: the source documents).
     const l = localeOf(col, o.locale);
     const which = l ? { locale: l } : srcOnly();
@@ -1853,7 +1857,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const l = localeOf(col, o.locale);
     // A translation's category is its source's (review 0.22): a page of one language filtered by
     // category is cut from the filled rows (the list path), not from the translation's stored copy.
-    if (typeof repo.pageDocs === "function" && !(editor && o.state) && keyset !== "offset" && !collection(col).access?.read && !(editor && collection(col).access?.write) && !(l && o.fallback && !editor) && !(l && o.category)) {
+    if (typeof repo.pageDocs === "function" && !(editor && o.state) && keyset !== "offset" && !collection(col).access?.read && !pluginHost.hasAccess(col) && !(editor && collection(col).access?.write) && !(l && o.fallback && !editor) && !(l && o.category)) {
       collection(col);
       await ensureSchema();
       if (!editor) assert(actor, col, "read");
@@ -1899,7 +1903,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const out: DocCounts = { all: 0, draft: 0, published: 0, modified: 0, archived: 0, scheduled: 0, review: 0 };
     // The same selection as the editor's list: working copies of what this person may edit, the
     // published copy of the rest they may read, nothing else.
-    const perDoc = !!collection(col).access?.write;
+    const perDoc = !!collection(col).access?.write || pluginHost.hasAccess(col);
     for (const d of await repo.listDocs({ collection: col, ...(l ? { locale: l } : srcOnly()) })) {
       if (perDoc && !can(actor, col, "write", d)) {
         const pub = publicView(d);
@@ -2992,7 +2996,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     const started = Date.now();
     const idx = await searchIndex();
     const limit = Math.max(1, Math.min(o.limit ?? 5, 50));
-    const ruled = (col: string) => { const c = collection(col); return !!(c.access?.read || c.fieldAccess); };
+    const ruled = (col: string) => { const c = collection(col); return !!(c.access?.read || c.fieldAccess || pluginHost.hasAccess(col)); };
     const restricted = cols.some(ruled);
     // With per-document rules some hits will be dropped: rank more candidates, authorize, then cut,
     // so documents the reader may not see do not crowd out the ones they may.
@@ -3277,8 +3281,18 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // ── background jobs, webhooks (jobs.ts, outbox.ts) ─────────────────────────
 
-  const sealer = opts.secretsKey ? createSealer(opts.secretsKey) : null;
-  const jobs = createJobs({ repo, now, report, event: telemetry });
+  const jobs = createJobs({
+    repo,
+    now,
+    report,
+    event: telemetry,
+    // 0.23.0: a job of a plugin that is not running (or a built-in that is off) waits instead of failing.
+    paused: (kind) => {
+      const owner = kind === "webhook.deliver" ? "webhooks" : kind === "automation.run" ? "automations" : kind.includes(".") ? kind.slice(0, kind.indexOf(".")) : null;
+      if (owner === "webhooks" || owner === "automations") return !pluginHost.usable(owner);
+      return !!owner && pluginHost.names.includes(owner) && !pluginHost.usable(owner);
+    },
+  });
   for (const j of pluginHost.jobs) jobs.define(j.kind, j.def);
   const outbox = createOutbox({
     repo,
@@ -3312,7 +3326,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     diagnosticsFor,
     rulesPerDocument: (col: string) => {
       const c = collections.get(col);
-      return !!(c?.access?.read || c?.access?.write || c?.access?.publish);
+      return !!(c?.access?.read || c?.access?.write || c?.access?.publish || pluginHost.hasAccess(col));
     },
     ready: ensureSchema,
     editable,
@@ -3412,7 +3426,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     },
     audit: (actor, detail) => audit(actor, "retention.run", { detail }),
   });
-  const stats = createStats({ repo, now, dayOf: (d) => dayIn(timeZone, d), ready: ensureSchema, collections: () => [...collections.keys()], can, counts, isAdmin, generation: () => writeGen, publicView: fallbackView, rulesPerDocument: (c: string) => { const x = collections.get(c); return !!(x?.access?.read || x?.access?.write || x?.access?.publish); } });
+  const stats = createStats({ repo, now, dayOf: (d) => dayIn(timeZone, d), ready: ensureSchema, collections: () => [...collections.keys()], can, counts, isAdmin, generation: () => writeGen, publicView: fallbackView, rulesPerDocument: (c: string) => { const x = collections.get(c); return !!(x?.access?.read || x?.access?.write || x?.access?.publish || pluginHost.hasAccess(c)); } });
 
   const transfer = createTransfer({
     exportFile: (f, actor) => (pluginHost.filters("export.file") ? pluginHost.filter("export.file", f, { actor }) : Promise.resolve(f)),
@@ -3983,7 +3997,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** Whether the collection's rules decide per document who may read, edit or publish (`access`). */
     rulesPerDocument: (col: string) => {
       const c = collections.get(col);
-      return !!(c?.access?.read || c?.access?.write || c?.access?.publish);
+      return !!(c?.access?.read || c?.access?.write || c?.access?.publish || pluginHost.hasAccess(col));
     },
     can,
     isAdmin,
@@ -4150,6 +4164,11 @@ export function createCmsCore(opts: CreateCmsOptions) {
     async settle(): Promise<void> {
       follow.closed = true;
       while (inFlight.size) await Promise.allSettled([...inFlight]);
+      if (pluginWork.size) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([Promise.allSettled([...pluginWork]), new Promise<void>((done) => (timer = setTimeout(done, PLUGIN_STOP_TIMEOUT_MS)))]);
+        clearTimeout(timer);
+      }
       // A read of the log that was already running finishes (it tells nobody once closed).
       if (pulling) {
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -4309,8 +4328,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
      * the process ends; the CMS answers no further requests after it.
      */
     async close(): Promise<void> {
-      await api.settle();
-      await pluginHost.stop();
+      closing ??= (async () => {
+        // Plugins first marked closed (nothing starts again), then the work drains, then they stop.
+        const stopped = pluginHost.close();
+        await api.settle();
+        await stopped;
+      })();
+      return closing;
     },
     checkSchema: async () => {
       await ensureSchema();

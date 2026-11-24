@@ -154,16 +154,20 @@ test("failure: a plugin that cannot start is off with the ones that need it; the
 test("required: the CMS answers 503 plugin_failed until the plugin starts", async () => {
   const log: string[] = [];
   const down = { now: true };
-  const { api } = setup([probe("auth-bridge", log, { required: true, fail: () => down.now })]);
-  const err = await api.me().then(
+  const { api, doFetch } = setup([probe("auth-bridge", log, { required: true, fail: () => down.now })]);
+  const err = await api.list("guide").then(
     () => null,
     (e) => e,
   );
   assert.ok(isCmsRemoteError(err));
   assert.deepEqual([err.status, err.code], [503, "plugin_failed"]);
+  // Admins can still reach /plugins and _me to fix it.
+  assert.equal((await api.plugins()).plugins.find((p) => p.name === "auth-bridge")?.state, "failed");
   down.now = false;
-  assert.ok(await api.me(), "the next request tries again");
-  assert.deepEqual(log, ["setup auth-bridge", "start auth-bridge", "stop auth-bridge", "start auth-bridge"]);
+  assert.ok(await api.list("guide"), "the next request tries again");
+  void doFetch;
+  assert.equal(log.at(-1), "start auth-bridge");
+  assert.ok(!log.slice(0, -1).some((l, i) => l === "start auth-bridge" && log[i + 1] !== "stop auth-bridge"), "every failed start was stopped again");
 });
 
 test("start timeout: a start that hangs counts as failed", async () => {
@@ -192,8 +196,16 @@ test("close: plugins stop last started first; the list is for admins", async () 
     registered: { routes: 1, tools: 1, events: 1, jobs: 0, nav: 1, me: 1, sql: 0, hooks: 0, collections: 0, fields: 0, actions: 0, filters: 0, access: 0 },
     settings: null,
   });
+  const unknown = await api.plugin("nope").then(
+    () => null,
+    (e) => e,
+  );
+  assert.equal(unknown?.code, "plugin_unknown");
   await cms.close();
   assert.deepEqual(log.slice(-2), ["stop b-two", "stop a-one"]);
+  assert.equal(await api.me().then(() => "ok", (e) => e.code), "plugin_failed", "a closed CMS answers nothing more");
+  await cms.close();
+  assert.equal(log.filter((l) => l.startsWith("start")).length, 2, "nothing starts again after close");
 
   const { api: asWriter } = setup([probe("a-one", [])], { as: writer });
   const err = await asWriter.plugins().then(
@@ -201,11 +213,6 @@ test("close: plugins stop last started first; the list is for admins", async () 
     (e) => e,
   );
   assert.equal(err?.code, "forbidden");
-  const unknown = await api.plugin("nope").then(
-    () => null,
-    (e) => e,
-  );
-  assert.equal(unknown?.code, "plugin_unknown");
 });
 
 test("v1 plugins (0.12 to 0.22) work unchanged, without start or stop", async () => {
@@ -219,4 +226,12 @@ test("v1 plugins (0.12 to 0.22) work unchanged, without start or stop", async ()
   await tick();
   assert.deepEqual(got, ["early", "late"]);
   assert.equal(cms.plugins.get("old-style")!.state, "running");
+});
+
+test("v1: a plugin may keep ctx.secrets from setup", () => {
+  let kept: unknown = "unset";
+  const p = definePlugin({ name: "keeper", setup: ({ secrets }) => void (kept = secrets) });
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public" });
+  createCms({ repo: new MemoryRepo(), collections: [guide], plugins: [p], secretsKey: "k".repeat(40) });
+  assert.ok(kept && typeof (kept as { seal?: unknown }).seal === "function");
 });

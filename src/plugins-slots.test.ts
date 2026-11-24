@@ -206,19 +206,19 @@ test("settings: checked at start (missing ones fail the start), secrets sealed a
   await api.me();
   const first = cms.plugins.get("slack")!;
   assert.equal(first.state, "failed");
-  assert.match(first.error ?? "", /^settings: webhookUrl: Required/);
+  assert.equal(first.error, "settings: webhookUrl: invalid_type", "the reason names the setting, never its value");
   assert.deepEqual(first.settings, ["webhookUrl", "channel"]);
 
   assert.equal(await code(api.savePluginSettings("slack", { webhookUrl: "not a url" })), "plugin_settings_invalid");
   const saved = await api.savePluginSettings("slack", { webhookUrl: "https://hooks.slack.test/T000/abcd1234" });
   assert.equal(saved.plugin.state, "running");
-  assert.deepEqual(saved.settings.values, { webhookUrl: "••••1234", channel: "#content" });
+  assert.deepEqual(saved.settings.values, { webhookUrl: "••••••••", channel: "#content" }, "a secret is never sent back, not even its end");
   assert.deepEqual(seen, [{ webhookUrl: "https://hooks.slack.test/T000/abcd1234", channel: "#content" }]);
   const row = (await repo.listRecords({ kind: "plugin-settings" }))[0];
   assert.ok(!JSON.stringify(row.data).includes("hooks.slack.test"), "the secret is sealed in the database");
 
-  // The masked value sent back keeps the stored secret.
-  await api.savePluginSettings("slack", { webhookUrl: "••••1234", channel: "#news" });
+  // The mask sent back (or the key left out) keeps the stored secret.
+  await api.savePluginSettings("slack", { webhookUrl: "••••••••", channel: "#news" });
   assert.deepEqual(seen[1], { webhookUrl: "https://hooks.slack.test/T000/abcd1234", channel: "#news" });
   const audit = (await cms.audit(admin, { limit: 10 })).entries.filter((e) => e.action === "plugin.settings");
   assert.equal(audit.length, 2);
@@ -233,7 +233,7 @@ test("log: goes to onEvent as a plugin line", async () => {
   assert.deepEqual(seen.filter((e) => e.type === "plugin"), [{ type: "plugin", plugin: "chatty", level: "info", message: "made one", data: { n: 1 } }]);
 });
 
-test("a failed plugin's hooks, filters, access rules and actions are out of use", async () => {
+test("a failed plugin's hooks and filters are out of use; its access rules fail closed", async () => {
   const flaky = definePlugin({
     name: "flaky",
     setup(ctx) {
@@ -241,7 +241,7 @@ test("a failed plugin's hooks, filters, access rules and actions are out of use"
         throw new Error("never publish");
       });
       ctx.filter("rest.doc", (d) => ({ ...d, title: "changed" }));
-      ctx.access(() => false);
+      ctx.access(() => true, { collections: ["guide"] });
     },
     start() {
       throw new Error("cannot start");
@@ -250,9 +250,78 @@ test("a failed plugin's hooks, filters, access rules and actions are out of use"
   const { cms, api } = setup([flaky]);
   await api.me();
   assert.equal(cms.plugins.get("flaky")!.state, "failed");
-  await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" });
-  await cms.publish(admin, "guide", "a");
-  assert.equal((await api.get("guide", "a")).title, "A");
+  // Its rule allowed everything, but while it is down the collection it covers refuses (fails closed).
+  assert.equal(await code(cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" })), "forbidden_write");
+  const sys = { kind: "system" as const, label: "seed" };
+  await cms.create(sys, "guide", { slug: "a", title: "A", body: "x\n" });
+  await cms.publish(sys, "guide", "a");
+  assert.equal(await code(api.get("guide", "a")), "forbidden_read");
+});
+
+test("review fixes: draft lists follow plugin write rules; secrets of any type sealed; jobs of a failed plugin wait; filters get copies", async () => {
+  // A plugin rule that hides one draft from an editor: lists and counts must agree with the single read.
+  const editor: Extract<Actor, { kind: "user" }> = { kind: "user", id: "u9", label: "Ed", isAdmin: false };
+  const teams = definePlugin({ name: "teams", setup: (ctx) => ctx.access(({ actor, op, doc }) => !(op === "write" && actor.kind === "user" && actor.id === "u9" && doc?.slug === "secret")) });
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public", access: { write: ({ actor }) => actor.kind === "user" }, fields: z.object({ pin: z.number().optional() }) });
+  const pinPlugin = definePlugin({ name: "pins", settings: z.object({ pin: z.number().describe("secret") }), setup() {} });
+  const ran: string[] = [];
+  const down = { now: true };
+  const flaky = definePlugin({
+    name: "flaky",
+    setup: (ctx) => ctx.job("work", { run: () => void ran.push("ran") }),
+    start() {
+      if (down.now) throw new Error("down");
+    },
+  });
+  const repo = new MemoryRepo();
+  const cms = createCms({ repo, collections: [guide], plugins: [teams, pinPlugin, flaky], secretsKey: KEY, onError: () => {} });
+  const sys = { kind: "system" as const, label: "seed" };
+  await cms.create(sys, "guide", { slug: "open", title: "Open", body: "x\n" });
+  await cms.create(sys, "guide", { slug: "secret", title: "Secret draft", body: "classified\n" });
+  const drafts = await cms.list(editor, "guide", { drafts: true });
+  assert.deepEqual(drafts.map((d) => d.slug), ["open"], "the hidden draft is not in the editor's list");
+  assert.equal(await code(cms.get(editor, "guide", "secret", { draft: true })), "not_found");
+
+  await cms.plugins.start().catch(() => {});
+  await cms.plugins.saveSettings("pins", { pin: 1234 });
+  const row = (await repo.listRecords({ kind: "plugin-settings" }))[0];
+  assert.ok(!JSON.stringify(row.data).includes("1234"), "a number marked secret is sealed too");
+  assert.deepEqual((await cms.plugins.settings("pins"))!.values, { pin: "••••••••" });
+
+  // The job of a failed plugin waits (no attempt used), and runs once the plugin is fixed.
+  await cms.core.jobs.enqueue("flaky.work");
+  await cms.cron();
+  assert.deepEqual(ran, []);
+  const [job] = await cms.core.jobs.list({ state: "waiting" });
+  assert.equal(job.attempts, 0);
+  down.now = false;
+  await cms.plugins.restart("flaky");
+  await cms.core.jobs.retry(job.id).catch(() => {});
+  await repo.updateJob(job.id, { runAt: new Date(0).toISOString() });
+  await cms.cron();
+  assert.deepEqual(ran, ["ran"]);
+});
+
+test("review fixes: a mail filter cannot change the recipient, even in place; an app plugin cannot pose as a built-in", async () => {
+  const sneaky = definePlugin({
+    name: "sneaky",
+    setup: (ctx) =>
+      ctx.filter("mail.message", (m) => {
+        m.to = "attacker@evil.test";
+        m.text += "\n-- footer";
+        return m;
+      }),
+  });
+  const { cms } = setup([sneaky]);
+  const out = await cms.plugins.filter("mail.message", { to: "kim@site.test", subject: "Reset", text: "link" }, { kind: "reset" });
+  assert.equal(out.text, "link\n-- footer");
+  const original = { to: "kim@site.test", subject: "Reset", text: "link" };
+  await cms.plugins.filter("mail.message", original, { kind: "reset" });
+  assert.equal(original.to, "kim@site.test", "the filter got a copy");
+
+  const fake = { name: "automations", builtin: true, setup() {} } as unknown as import("./plugin").CmsPlugin;
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public" });
+  assert.throws(() => createCms({ repo: new MemoryRepo(), collections: [guide], builtins: { automations: false }, plugins: [fake] }), /taken by a route/);
 });
 
 test("built-ins: webhooks and automations are plugins; builtins: false turns them off", async () => {
