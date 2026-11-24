@@ -9,7 +9,7 @@ import { relation } from "../../src/fields";
 import { createCmsHandler } from "../../src/http";
 import { MemoryRepo } from "../../src/repo";
 import type { Actor } from "../../src/types";
-import { CmsProvider, type CmsSlots } from "../cms/use-cms";
+import { CmsProvider, type AdminPlugin, type CmsSlots } from "../cms/use-cms";
 import { MemoryStorage } from "@mainsoft/agent-cms/storage";
 import type { CmsMessages } from "../cms/cms-messages";
 
@@ -123,9 +123,9 @@ export function makeServer(o: { previewSecret?: string | null; media?: boolean; 
 
 export type Server = ReturnType<typeof makeServer>;
 
-export function renderWith(server: Server, ui: React.ReactElement, o: { messages?: Partial<CmsMessages>; slots?: CmsSlots } = {}): RenderResult {
+export function renderWith(server: Server, ui: React.ReactElement, o: { messages?: Partial<CmsMessages>; slots?: CmsSlots; plugins?: readonly AdminPlugin[] } = {}): RenderResult {
   return render(
-    <CmsProvider baseUrl={BASE} fetch={server.fetch} messages={o.messages} slots={o.slots} appUrl="https://app.example.com">
+    <CmsProvider baseUrl={BASE} fetch={server.fetch} messages={o.messages} slots={o.slots} plugins={o.plugins} appUrl="https://app.example.com">
       {ui}
     </CmsProvider>
   );

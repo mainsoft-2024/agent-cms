@@ -7,6 +7,7 @@ import { s3Storage } from "@mainsoft/agent-cms/storage-s3";
 import { vercelBlobStorage } from "@mainsoft/agent-cms/storage-vercel-blob";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { countsPlugin } from "./counts-plugin";
 import { db, ready } from "./db";
 
 export const posts = defineCollection({
@@ -66,6 +67,8 @@ function make() {
   return createCms({
     repo: new DrizzleRepo(db),
     collections: [posts, guide],
+    // 0.24.0: a plugin with an admin page (app/admin/counts-admin.tsx). See examples/plugins for more.
+    plugins: [countsPlugin],
     media,
     previewSecret: process.env.CMS_PREVIEW_SECRET ?? "example-preview-secret-at-least-32-chars",
     timeZone: "Asia/Seoul",

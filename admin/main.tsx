@@ -23,6 +23,8 @@ import { CmsRelease, CmsReleases } from "@/components/cms/cms-releases";
 import { CmsRoles } from "@/components/cms/cms-roles";
 import { CmsShell } from "@/components/cms/cms-shell";
 import { CmsTransfer } from "@/components/cms/cms-transfer";
+import { CmsPlugins } from "@/components/cms/cms-plugins";
+import { CmsPluginPage } from "@/components/cms/cms-plugin-page";
 import { CmsTrash } from "@/components/cms/cms-trash";
 import { CmsVersions } from "@/components/cms/cms-versions";
 import { CmsWebhooks } from "@/components/cms/cms-webhooks";
@@ -121,6 +123,12 @@ function Screen({ rest, go }: { rest: string[]; go: Go }) {
       return <CmsRoles />;
     case "transfer":
       return <CmsTransfer />;
+    case "plugins":
+      return <CmsPlugins onOpenPage={(h) => go(h)} />;
+    // A plugin's page (0.24.0). The built-in admin has no admin plugins of its own: a plugin
+    // that needs a page there says so; in your app, give them to <CmsProvider plugins>.
+    case "p":
+      return p1 ? <CmsPluginPage key={rest.join("/")} plugin={p1} path={rest.slice(2).map(decodeURIComponent)} /> : <Home go={go} />;
     case "people":
       return <CmsPeople />;
     case "redirects":
@@ -205,10 +213,10 @@ function App() {
       </CmsProvider>
     );
 
-  const active = rest[0] && !["dashboard", "media", "files", "releases", "trash", "keys", "audit", "webhooks", "automations", "roles", "transfer", "people", "redirects", "forms", "account"].includes(rest[0]) ? rest[0] : undefined;
+  const active = rest[0] && !["dashboard", "media", "files", "releases", "trash", "keys", "audit", "webhooks", "automations", "roles", "transfer", "plugins", "p", "people", "redirects", "forms", "account"].includes(rest[0]) ? rest[0] : undefined;
   return (
     // A provider of its own: what the person may do is read again after signing in.
-    <CmsProvider key="admin" baseUrl={S.basePath} messages={messages} slots={slots}>
+    <CmsProvider key="admin" baseUrl={S.basePath} basePath={S.adminPath} messages={messages} slots={slots}>
       <Gate go={go}>
       <CmsShell title={S.appName} basePath={S.adminPath} activeCollection={active} activeHref={pathname} LinkComponent={Link} onSearch={() => setSearch(true)} onNavigate={go}>
         <React.Suspense fallback={null}>

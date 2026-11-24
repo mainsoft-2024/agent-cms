@@ -1,4 +1,4 @@
-// agent-cms registry: cms-lib (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-lib (0.24.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // The one place the admin screens get their REST client, strings and a few
 // small hooks from. Wrap the admin pages once:
@@ -8,7 +8,7 @@
 
 import * as React from "react";
 import { createRestClient, type AssetDetail, type Me, type RestClient } from "@mainsoft/agent-cms/client";
-import type { DocLike } from "@mainsoft/agent-cms/diff";
+import { CmsAdminProvider, useCreateAdminRuntime, type AdminPlugin, type AdminPluginSlots, type DocContent, type EditorSlotContext, type LocaleSlotContext, type ReactAdminRuntime } from "@mainsoft/agent-cms/react";
 import { createT, en, type CmsMessages, type T } from "./cms-messages";
 
 /** What create / update / autosave take. */
@@ -25,46 +25,25 @@ export interface CmsProviderProps {
   fetch?: typeof fetch;
   /** Places where an extension package adds its own controls. An empty slot shows nothing. */
   slots?: CmsSlots;
+  /**
+   * 0.24.0: admin plugins (`defineAdminPlugin` from `@mainsoft/agent-cms/react`): their slot parts
+   * come after yours, their pages open under `${basePath}/p/<name>` (`npx @mainsoft/agent-cms add
+   * cms-plugin-page`). Keep the array stable (define it outside the component).
+   */
+  plugins?: readonly AdminPlugin[];
+  /** Where the admin pages live, for plugin pages and menus. Default "/admin". */
+  basePath?: string;
   children?: React.ReactNode;
 }
 
-export interface CmsSlots {
-  /** Next to a file's alt text field in the media library. `setAlt` fills the field (the person still saves it). */
-  assetAlt?: (asset: AssetDetail, o: { setAlt: (alt: string) => void }) => React.ReactNode;
+export type { AdminPlugin, DocContent, EditorSlotContext, LocaleSlotContext };
+
+export interface CmsSlots extends AdminPluginSlots {
   /**
    * The block editor for the body (`npx @mainsoft/agent-cms add cms-block-editor`). Without it
    * the body is edited as markdown text. Pass it lazily (next/dynamic or React.lazy): it is large.
    */
   blockEditor?: React.ComponentType<BlockEditorProps>;
-  /** 0.17.0: buttons in the document editor's header, before Save (a "Translate" or "Check links" button). */
-  editorActions?: (ctx: EditorSlotContext) => React.ReactNode;
-  /** 0.17.0: a panel under the fields in the document editor (an SEO score, a social card preview). */
-  editorPanel?: (ctx: EditorSlotContext) => React.ReactNode;
-  /** 0.17.0: next to a field's input in the editor's form (a "Generate" button, a counter). */
-  fieldAddon?: (field: { key: string; label: string; widget: string }, ctx: EditorSlotContext & { value: unknown; setValue: (v: unknown) => void }) => React.ReactNode;
-  /**
-   * 0.22.0: next to "Start translation" and in a translation's status bar (a "Draft a translation"
-   * button of a plugin). Nothing shows when it is not set.
-   */
-  localeAction?: (ctx: LocaleSlotContext) => React.ReactNode;
-}
-
-/** What `slots.localeAction` gets (0.22.0). */
-export interface LocaleSlotContext {
-  collection: string;
-  /** The source document's slug. */
-  slug: string;
-  /** The language on screen and the source's. */
-  locale: string;
-  defaultLocale: string;
-  /** How this language stands: `missing` before it is started. */
-  status: "missing" | "outdated" | "current";
-  /** The translation's working copy on screen (null while missing), and a way to change it (the person still saves). */
-  content: DocContent | null;
-  setContent: ((patch: Partial<DocContent>) => void) | null;
-  /** Load the languages and the document again (after the plugin wrote through the API). */
-  reload: () => void;
-  readOnly: boolean;
 }
 
 /** 0.22.0: how a client names a document: `slug`, or `slug@locale` for a translation. */
@@ -86,21 +65,6 @@ export function languageName(code: string): string {
   } catch {
     return code;
   }
-}
-
-/** What editor slots get: the document as it is on screen, and ways to change it (the person still saves). */
-export interface EditorSlotContext {
-  collection: string;
-  /** null while the document is new. */
-  slug: string | null;
-  content: DocContent;
-  /** Merge a change into the form (marks the document as changed). */
-  setContent: (patch: Partial<DocContent>) => void;
-  /** Put markdown at the cursor in the body. */
-  insertMarkdown: (markdown: string) => void;
-  version: number | null;
-  published: boolean;
-  readOnly: boolean;
 }
 
 export interface BlockEditorProps {
@@ -185,7 +149,12 @@ export interface CmsContextValue {
   me: Me | null;
   meError: unknown;
   reloadMe: () => void;
+  /** Your slots with every admin plugin's merged in. */
   slots: CmsSlots;
+  /** 0.24.0: admin plugins (pages, menus, strings). */
+  runtime: ReactAdminRuntime;
+  /** Where the admin pages live ("/admin"). */
+  basePath: string;
   /** Show a short message at the bottom of the screen (announced to screen readers). Returns its id. */
   toast: (message: string, o?: ToastOptions) => number;
   /** Take a message away before its time. */
@@ -236,6 +205,7 @@ export function applyTheme(theme: CmsTheme = storedTheme()): void {
 }
 
 const NO_SLOTS: CmsSlots = {};
+const NO_PLUGINS: readonly AdminPlugin[] = [];
 
 const LAYER = '[role="dialog"], [role="alertdialog"]';
 
@@ -292,7 +262,9 @@ function useFocusReturn() {
   }, []);
 }
 
-export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, slots = NO_SLOTS, children }: CmsProviderProps) {
+export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, slots: appSlots = NO_SLOTS, plugins = NO_PLUGINS, basePath = "/admin", children }: CmsProviderProps) {
+  const runtime = useCreateAdminRuntime({ plugins, slots: appSlots, basePath });
+  const slots = runtime.slots as CmsSlots;
   const client = React.useMemo(() => createRestClient({ url: baseUrl, fetch: f }), [baseUrl, f]);
   const t = React.useMemo(() => createT(messages), [messages]);
   const locale = messages?._locale ?? en._locale;
@@ -329,10 +301,19 @@ export function CmsProvider({ baseUrl = "/api/cms", messages, appUrl, fetch: f, 
     return id;
   }, []);
   const value = React.useMemo<CmsContextValue>(
-    () => ({ client, t, locale, baseUrl, appUrl: origin.replace(/\/+$/, ""), me, meError, reloadMe: () => setTick((n) => n + 1), slots, toast, dismissToast }),
-    [client, t, locale, baseUrl, origin, me, meError, slots, toast, dismissToast]
+    () => ({ client, t, locale, baseUrl, appUrl: origin.replace(/\/+$/, ""), me, meError, reloadMe: () => setTick((n) => n + 1), slots, runtime, basePath, toast, dismissToast }),
+    [client, t, locale, baseUrl, origin, me, meError, slots, runtime, basePath, toast, dismissToast]
   );
-  return React.createElement(CmsContext.Provider, { value }, children, React.createElement(Toaster, { toasts, dismiss: dismissToast, closeLabel: t("close") }));
+  const admin = React.useMemo(
+    () => ({ client, me, reloadMe: value.reloadMe, locale, baseUrl, basePath, appUrl: value.appUrl, toast, runtime }),
+    [client, me, value.reloadMe, locale, baseUrl, basePath, value.appUrl, toast, runtime]
+  );
+  return React.createElement(
+    CmsContext.Provider,
+    { value },
+    React.createElement(CmsAdminProvider, { value: admin }, children),
+    React.createElement(Toaster, { toasts, dismiss: dismissToast, closeLabel: t("close") })
+  );
 }
 
 // ── toasts ────────────────────────────────────────────────────────────────────
@@ -652,9 +633,6 @@ export function formatUntil(iso: string, locale: string): string {
 }
 
 // ── documents ─────────────────────────────────────────────────────────────────
-
-/** 0.21.0: `seo` in collections with search engine details. */
-export type DocContent = DocLike & { seo?: { title?: string | null; description?: string | null; image?: string | null; canonical?: string | null; noindex?: boolean } | null };
 
 export function contentOf(d: DocContent): DocContent {
   return { slug: d.slug, title: d.title, summary: d.summary, body: d.body, category: d.category, keywords: [...(d.keywords ?? [])], fields: structuredClone(d.fields ?? {}), ...(d.seo ? { seo: { ...d.seo } } : {}) };

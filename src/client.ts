@@ -11,7 +11,9 @@
 import type { AutomationCondition, AutomationInput, AutomationRun, CmsAutomation } from "./automations";
 import type { WebhookInput, WebhookView } from "./outbox";
 import type { CmsRole, PersonMatch, RoleInput, RoleMember, RoleOp } from "./roles";
-import type { PluginInfo } from "./plugin";
+import type { PluginInfo, PluginSettingsView } from "./plugin";
+
+export type { PluginInfo, PluginSettingsView, PluginState, SettingField, SettingFieldType } from "./plugin";
 import type { CmsStats } from "./stats";
 import type { ImportItem, ImportOptions, TransferFile } from "./transfer";
 import type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
@@ -199,9 +201,11 @@ export interface Me {
   /** Webhooks can be made and this caller may manage them. */
   webhooks?: boolean;
   /** Menu entries plugins add. */
-  nav?: { label: string; href: string; plugin: string }[];
+  nav?: { label: string; href?: string; plugin: string }[];
   /** What plugins put into `_me`, by plugin name. */
   plugins?: Record<string, Record<string, unknown>>;
+  /** 0.24.0, admins only: how many plugins failed to start (the shell shows it beside "Plugins"). */
+  pluginsFailed?: number;
   actor: { kind: string; label?: string; id?: string | null; email?: string | null };
   isAdmin: boolean;
   previewLinks: boolean;
@@ -515,6 +519,28 @@ function versionTag(path: string, version: number): string {
   return `"v${version}${locale ? `-${locale}` : ""}"`;
 }
 
+/**
+ * 0.24.0: the path `client.request()` sends, kept under the CMS address: only a pathname (no
+ * query, fragment or backslash; put query values in `query`), and no `.`/`..` segment, written
+ * plainly or percent-encoded, so URL normalising can never move it outside the mount.
+ */
+export function safeRequestPath(path: string): string {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  const bad = () => new TypeError(`[agent-cms] client.request: "${path.slice(0, 200)}" is not a path under the CMS (no "?", "#", "\\", "//" or "." / ".." segments; pass query values in \`query\`)`);
+  if (/[?#\\\s]/.test(p) || p.startsWith("//") || /[\u0000-\u001f\u007f-\u009f]/.test(p)) throw bad();
+  for (const seg of p.slice(1).split("/")) {
+    let d: string;
+    try {
+      d = decodeURIComponent(seg);
+    } catch {
+      throw bad();
+    }
+    // `.`/`..` alone, or inside an encoded `/` or `\` (`..%2F`), which some servers decode.
+    if (/(^|[\\/])\.{1,2}($|[\\/])/.test(d)) throw bad();
+  }
+  return p;
+}
+
 export function createRestClient(opts: RestClientOptions) {
   const base = opts.url.replace(/\/+$/, "");
   const doFetch = opts.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -791,9 +817,15 @@ export function createRestClient(opts: RestClientOptions) {
     /** Plugins with their state (admins). */
     plugins: () => req<{ plugins: PluginInfo[] }>("GET", "/plugins"),
     plugin: (name: string) => req<{ plugin: PluginInfo }>("GET", `/plugins/${enc(name)}`),
-    pluginSettings: (name: string) => req<{ settings: { schema: string[]; secret: string[]; values: Record<string, unknown> } | null }>("GET", `/plugins/${enc(name)}/settings`),
-    savePluginSettings: (name: string, values: Record<string, unknown>) => req<{ plugin: PluginInfo; settings: { schema: string[]; secret: string[]; values: Record<string, unknown> } }>("PUT", `/plugins/${enc(name)}/settings`, { body: { values } }),
+    pluginSettings: (name: string) => req<{ settings: PluginSettingsView | null }>("GET", `/plugins/${enc(name)}/settings`),
+    savePluginSettings: (name: string, values: Record<string, unknown>) => req<{ plugin: PluginInfo; settings: PluginSettingsView }>("PUT", `/plugins/${enc(name)}/settings`, { body: { values } }),
     restartPlugin: (name: string) => req<{ plugin: PluginInfo }>("POST", `/plugins/${enc(name)}/restart`),
+    /**
+     * 0.24.0: call any route under the CMS with this client's address, fetch and errors: a plugin's
+     * own routes (`client.request("GET", "/stats/summary")`). The answer must be JSON (anything else is null).
+     */
+    request: <T = unknown>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, o: { body?: unknown; query?: Record<string, string | number | boolean | null | undefined> } = {}) =>
+      Promise.resolve().then(() => req<T>(method, safeRequestPath(path), o)),
     search: (q: string, collections?: string[], o: { locale?: string } = {}) =>
       req<{ empty: boolean; hits: { collection: string; slug: string; locale?: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(","), locale: o.locale } }),
     keys: () => req<{ keys: CmsKey[] }>("GET", "/keys").then((r) => r.keys),

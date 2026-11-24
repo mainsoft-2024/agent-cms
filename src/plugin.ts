@@ -59,9 +59,13 @@ export interface PluginTool<Cms = unknown> {
   run(actor: Actor, input: any, cms: Cms): unknown | Promise<unknown>;
 }
 
+export type { SettingField, SettingFieldType } from "./plugin-fields";
+import type { SettingField } from "./plugin-fields";
+
 export interface PluginNav {
   label: string;
-  href: string;
+  /** Where it goes. 0.24.0: leave it out to open the plugin's admin page (`/admin/p/<plugin>`). */
+  href?: string;
   /** Only for admins. Default false. */
   admin?: boolean;
 }
@@ -258,6 +262,17 @@ export interface PluginRoute {
 export type PluginState = "starting" | "running" | "restarting" | "failed" | "off";
 
 /** One plugin as `cms.plugins.list()` and `GET /plugins` show it. */
+/** `GET /plugins/:name/settings` (0.24.0 adds `fields`, what the settings form draws). */
+export interface PluginSettingsView {
+  /** The schema's keys, in order. */
+  schema: string[];
+  /** Keys whose values are sealed and never sent back. */
+  secret: string[];
+  /** Saved values; a stored secret shows as `••••••••`, a missing one as null. */
+  values: Record<string, unknown>;
+  fields: SettingField[];
+}
+
 export interface PluginInfo {
   name: string;
   /** Part of the CMS (`webhooks`, `automations`). */

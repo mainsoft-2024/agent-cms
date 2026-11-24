@@ -630,6 +630,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           /** The CMS's own sign-in, when it is on: how people sign in, and whether this caller manages people. */
           auth: opts.auth ? { ...opts.auth.describe(), people: core.isAdmin(actor) && actor.kind === "user" } : null,
           nav: core.plugins.nav.filter((n) => core.plugins.usable(n.plugin) && (!n.admin || core.isAdmin(actor))).map(({ label, href, plugin }) => ({ label, href, plugin })),
+          /** 0.24.0: admins see how many plugins failed to start (the plugins screen has why). */
+          ...(core.isAdmin(actor) ? { pluginsFailed: core.plugins.list().filter((p) => p.state === "failed").length } : {}),
           plugins: Object.fromEntries(await Promise.all(core.plugins.names.filter((name) => core.plugins.usable(name) && !core.plugins.get(name)!.builtin).map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
           collections: core
             .collections()
