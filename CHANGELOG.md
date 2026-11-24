@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.23.0
+
+Plugin v2, server side. No schema change. Plugins written for 0.12 to 0.22 work unchanged.
+
+### Added
+- **Plugin definition**: `version`, `engine` (a semver range checked by `createCms`), `requires` (other plugins, set up and started first; a missing or failed one switches this one off), `required` (the CMS answers 503 `plugin_failed` until it starts), `options` (zod; `definePlugin` then returns a function: `slack({ channel })`, or `slack` for the defaults), `settings` (zod, saved from the admin; `.describe("secret")` values are sealed with `secretsKey`), `start` and `stop`.
+- **Lifecycle**: `start` runs once before the first request (10 s each, `createCms({ pluginStartTimeoutMs })`). A plugin that fails to start (or whose settings do not fit) is `failed`; it and the plugins that need it add nothing until a restart. `cms.close()` waits for running work, then stops the plugins in reverse order (5 s each).
+- **Slots**: `ctx.hook(name, fn, { collections })` (every collection hook), `ctx.collection()`, `ctx.field(collection, key, schema, admin)`, `ctx.automationAction(name, { label, run })` (named `<plugin>.<name>`), `ctx.filter(name, fn, { priority })` with `sitemap.entries`, `rest.doc`, `mcp.result`, `export.file`, `mail.message`, `ctx.access(rule)` (narrows only; system actors are not asked), `ctx.store` (JSON values in `cms_records`, keys up to 200 characters, values up to 64 KB), `ctx.settings()`, `ctx.log()` (`onEvent` gets `{ type: "plugin", … }`), `ctx.name`.
+- **Admin API**: `GET /plugins`, `GET /plugins/:name`, `POST /plugins/:name/restart`, `GET`/`PUT /plugins/:name/settings`; the client's `plugins()`, `plugin()`, `restartPlugin()`, `pluginSettings()`, `savePluginSettings()`; `cms.plugins.list()`, `get()`, `restart()`. Errors `plugin_failed` (503), `plugin_unknown` (404), `plugin_settings_invalid` (422). Audit actions `plugin.restart`, `plugin.settings`.
+- **Built-in plugins**: webhooks and automations now hear events through the plugin contract and are listed as built-in plugins. `createCms({ builtins: { webhooks: false, automations: false } })` turns them off: their routes answer 404, `_me` says they are off, and "Send a webhook" fails while webhooks are off.
+
+### Changed
+- Work that plugins' event listeners do now counts as unfinished: `settle()` and `close()` wait for it.
+- A collection with a plugin access rule is checked per reader (like one with `access.read`): it is not cached and not in `sitemap.xml`.
+- A `mail.message` filter cannot change the address a mail goes to.
+
 ## 0.22.2
 
 ### Fixed
