@@ -137,7 +137,7 @@ test("db: concurrent saves on one version: one wins, the other gets conflict_ver
   }
 });
 
-test("db: upgrade from 0.5.x keeps cms_gaps rows untouched; the UPGRADE copy SQL moves them", async () => {
+test("db: upgrade from 0.5.x keeps cms_gaps rows untouched; the 0.6 copy SQL moves them", async () => {
   const { db, close } = await freshDb();
   try {
     await run(db, OLD_DDL);
@@ -195,7 +195,7 @@ test("db: upgrade from 0.5.x keeps cms_gaps rows untouched; the UPGRADE copy SQL
       { query: "환불 받는 법", count: 3 },
     ]);
 
-    // UPGRADE-0.6.md step 3.
+    // The copy SQL the 0.6 upgrade used (step 3).
     await run(db, "CREATE TABLE IF NOT EXISTS app_search_misses (LIKE cms_gaps INCLUDING ALL); INSERT INTO app_search_misses SELECT * FROM cms_gaps ON CONFLICT DO NOTHING;");
     const [counts] = await rows<{ before: number; after: number }>(db, "SELECT (SELECT count(*)::int FROM cms_gaps) AS before, (SELECT count(*)::int FROM app_search_misses) AS after");
     assert.deepEqual(counts, { before: 2, after: 2 });
@@ -845,7 +845,7 @@ test("db: schema 10 → 11 swaps the unique index for one slug per language; tra
     assert.deepEqual(before.missingColumns.sort(), ["cms_documents.group_id", "cms_documents.locale", "cms_documents.source_version"]);
     const pending = migrationSql(before, cmsTables())!;
     assert.equal(pending.steps.at(-1), "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale), form submissions");
-    // The safe order for big tables (UPGRADE-0.22.md): columns first, check, then the index by hand.
+    // The safe order for big tables: columns first, check, then the index by hand.
     await run(db, `ALTER TABLE cms_documents ADD COLUMN IF NOT EXISTS "locale" text NOT NULL DEFAULT '';`);
     assert.deepEqual(await rows(db, localeDuplicatesSql()), [], "nothing would break the new index");
     await run(db, `CREATE UNIQUE INDEX IF NOT EXISTS cms_documents_collection_slug_locale_idx ON cms_documents ("collection", "slug", "locale");`);

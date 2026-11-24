@@ -8,7 +8,7 @@ import { Transform } from "@tiptap/pm/transform";
 import { blockAt, cmsSchema, docNode, docToBlocks, textStartOf } from "../cms/cms-blocks-pm";
 
 const root = new URL("../../", import.meta.url).pathname;
-const files = ["README.md", "CHANGELOG.md", "TODO.md", ...readdirSync(`${root}docs/roadmap`).map((f) => `docs/roadmap/${f}`), ...readdirSync(root).filter((f) => /^UPGRADE/.test(f))];
+const files = ["README.md", "CHANGELOG.md", "TODO.md", ...readdirSync(`${root}docs/roadmap`).map((f) => `docs/roadmap/${f}`)];
 
 /** What the editor does on load and on save. */
 function load(md: string) {

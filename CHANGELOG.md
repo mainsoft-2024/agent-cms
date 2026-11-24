@@ -10,7 +10,7 @@
 
 ## 0.22.0
 
-Multilingual documents and forms. **Schema 11** (three columns, the unique index on addresses becomes one per language, and one new table `cms_form_submissions`). See `UPGRADE-0.22.md`.
+Multilingual documents and forms. **Schema 11** (three columns, the unique index on addresses becomes one per language, and one new table `cms_form_submissions`).
 
 ### Added
 - **Locales**: `createCms({ locales: ["ko", "en"], defaultLocale: "ko" })` and `localized: true` on a collection. A translation is a document of its own with the source's address, its own language, versions, drafts, publishing, schedule and review; it belongs to the source's group (`groupId`) and remembers which source version it was last aligned to (`sourceVersion`). Apps without `locales` are unchanged.
@@ -57,7 +57,7 @@ Multilingual documents and forms. **Schema 11** (three columns, the unique index
 
 ## 0.21.0
 
-The content model, first half: documents point at each other, nest, hold one document only, start from templates and share snippets; the body editor gets three new blocks and a new top bar; addresses can change after publishing and redirect. **Schema 10** (three columns, four tables). See `UPGRADE-0.21.md`.
+The content model, first half: documents point at each other, nest, hold one document only, start from templates and share snippets; the body editor gets three new blocks and a new top bar; addresses can change after publishing and redirect. **Schema 10** (three columns, four tables).
 
 ### Added
 - **Relation fields** (`relation("people")`, `relation([...], { many: true, max })`): stored as document ids, so a link survives a new address. Agents may send `{ collection, slug }`. Saving checks the target exists and is in the right collection (a target deleted later is a warning); publishing warns about unpublished targets. `?expand=author` (REST, `get_document`'s `expand`, `cms.expand()`) fills in title, address, summary and status, one level, as the reader may see them. The admin picks documents in a search dialog (keyboard: ↑ ↓ Enter), reorders them by dragging or Alt+↑ ↓.
@@ -101,7 +101,7 @@ The content model, first half: documents point at each other, nest, hold one doc
 
 ## 0.20.0
 
-The block editor runs on Tiptap 3 / ProseMirror (MIT) and was redesigned. The body is still markdown, written by our own converter; opening a document still never changes it. No schema change, no API change. See `UPGRADE-0.20.md`.
+The block editor runs on Tiptap 3 / ProseMirror (MIT) and was redesigned. The body is still markdown, written by our own converter; opening a document still never changes it. No schema change, no API change.
 
 ### Changed
 - **One document instead of one editable box per block**: select text across blocks, copy, cut, paste and undo across them; input methods (Korean, Japanese, Chinese, phone keyboards) go through ProseMirror. A real composition session (letter by letter) is tested in the browser.
@@ -124,7 +124,7 @@ The block editor runs on Tiptap 3 / ProseMirror (MIT) and was redesigned. The bo
 
 ## 0.19.0
 
-The block editor works like Notion with the mouse, and lists can nest. No schema change. See `UPGRADE-0.19.md`.
+The block editor works like Notion with the mouse, and lists can nest. No schema change.
 
 ### Added
 - **Drag blocks by their handle** (pointer events, mouse and pen): a picture of the blocks follows the pointer, a blue line shows where they land, the page scrolls when you reach its edge, Esc cancels, Alt (Option) drags a copy. Drop beside a block to put both in **columns**; drop on the lower half of an open toggle or to the right under a list item to put it **inside**; drag out to the left below the last block of a toggle or list item to take it **out**. Several selected blocks move together.
@@ -138,7 +138,7 @@ The block editor works like Notion with the mouse, and lists can nest. No schema
 - `npx @mainsoft/agent-cms add cms-block-editor` now also copies `cms-blocks-tree.ts`.
 
 ### Changed
-- **Markdown: lines indented under a list item (2 spaces or more, starting with a list marker) are a nested list now**, in the parser, `toMarkdown`, `markdownToHtml` and the admin preview (`list.kids`, `todo.items[].kids`). Before, they were siblings of the item. A renderer of your own that draws `list` / `todo` blocks should draw `kids` too (see `UPGRADE-0.19.md`).
+- **Markdown: lines indented under a list item (2 spaces or more, starting with a list marker) are a nested list now**, in the parser, `toMarkdown`, `markdownToHtml` and the admin preview (`list.kids`, `todo.items[].kids`). Before, they were siblings of the item. A renderer of your own that draws `list` / `todo` blocks should draw `kids` too.
 - Tables, toggles, columns and captioned pictures are no longer "source" blocks in the editor; HTML, page links and callouts with several paragraphs still are.
 
 ## 0.18.1
@@ -148,7 +148,7 @@ The block editor works like Notion with the mouse, and lists can nest. No schema
 
 ## 0.18.0
 
-One read policy for every copy of a document, exact event resume points, and server-side guards for releases and imports: the review findings from 0.17, after three review rounds. No schema change. See `UPGRADE-0.18.md`.
+One read policy for every copy of a document, exact event resume points, and server-side guards for releases and imports: the review findings from 0.17, after three review rounds. No schema change.
 
 ### Changed
 - Hidden fields (`fieldAccess`) are removed from every copy, each judged on its own version: published and autosave copies (and the autosave answer), versions, diffs, conflicts, preview links and their file lists, file usage, diagnostics, publish check results, search, grep and the documents writes return. A throwing publish check shows a fixed message (`check_failed`).
@@ -193,7 +193,7 @@ Fixes for the admin on phones and on the Base UI flavour of the components (the 
 
 ## 0.17.0
 
-The rest of the operations bundle. **Schema 9** (the change log and eleven indexes): see [UPGRADE-0.17.md](UPGRADE-0.17.md).
+The rest of the operations bundle. **Schema 9** (the change log and eleven indexes).
 
 ### Several servers, caching, paging
 
@@ -230,7 +230,7 @@ The rest of the operations bundle. **Schema 9** (the change log and eleven index
 
 ## 0.16.0
 
-The CMS runs on its own (`npx @mainsoft/agent-cms dev` / `serve`) with a sign-in of its own: passkeys, two-step codes, single sign-on, invitations. No schema change. Every admin screen was checked at four widths with long names; the ones that broke are fixed, and screens that showed API fields as they are were redone. See [UPGRADE-0.16.md](UPGRADE-0.16.md).
+The CMS runs on its own (`npx @mainsoft/agent-cms dev` / `serve`) with a sign-in of its own: passkeys, two-step codes, single sign-on, invitations. No schema change. Every admin screen was checked at four widths with long names; the ones that broke are fixed, and screens that showed API fields as they are were redone.
 
 ### Standalone server and sign-in
 
@@ -261,7 +261,7 @@ The CMS runs on its own (`npx @mainsoft/agent-cms dev` / `serve`) with a sign-in
 
 ## 0.15.0
 
-Agents edit documents the way coding agents edit code, HTML is kept exactly as written, and markdown grows tables, task lists, toggles, columns, italic and strike. **Schema 8** (one column: `cms_documents.body_format`); run `npx @mainsoft/agent-cms migrate apply` or the step in `migrate check`. See [UPGRADE-0.15.md](UPGRADE-0.15.md).
+Agents edit documents the way coding agents edit code, HTML is kept exactly as written, and markdown grows tables, task lists, toggles, columns, italic and strike. **Schema 8** (one column: `cms_documents.body_format`); run `npx @mainsoft/agent-cms migrate apply` or the step in `migrate check`.
 
 - **Documents as files for agents.** New tools `read_document` (numbered lines, `offset`/`limit`, `outline`), `grep_documents` (literal or regex, `collections`, `glob`, `context`, `output: lines|files|count`, stops early with `partial: true`), `edit_document` (exact `oldString` → `newString`, unique unless `replaceAll`, several edits as one version, all or none; "not found" answers name the closest lines), `write_document` (whole file; replacing needs `expectedVersion`) and `document_file_link` (10-minute GET/PUT link). Fields are frontmatter lines, so one edit can change body text, HTML and fields together; a bad field fails with its line number. REST: `POST /grep`, `GET …/:slug/read`, `GET|PUT …/:slug/file`, `POST …/:slug/edit`, `POST …/:slug/file-link`, `GET|PUT /raw/:token`.
 - **CLI** `read`, `grep`, `edit`, `pull`, `push`, `status`: pull documents into files, edit them with any editor, push them back. An edit someone made in the CMS meanwhile is merged; when both changed the same lines the file gets git-style conflict markers and nothing is saved.
@@ -288,7 +288,7 @@ Agents edit documents the way coding agents edit code, HTML is kept exactly as w
 
 ## 0.14.0
 
-Operations: request limits, key rotation, retention, more hooks, and a live stream of events. **No schema change.** See [UPGRADE-0.14.md](./UPGRADE-0.14.md).
+Operations: request limits, key rotation, retention, more hooks, and a live stream of events. **No schema change.**
 
 - **Request limits.** `createCms({ rateLimit: { perMinute, anonymousPerMinute } })` counts requests per API key and, for callers with no key and no session, per address. A key can carry its own number (`createKey({ rateLimit: 60 })`). Over the limit the answer is 429 `rate_limited` with `Retry-After`. Counts live in the process; pass `rateLimit.store` (one `hit(bucket, ttlMs)` method) to share them between servers. Signed-in people are not counted.
 - **Allowed addresses.** `createKey({ allowedIps: ["203.0.113.0/24", "2001:db8::/32"] })`: the key answers 403 `forbidden_ip` from anywhere else. `createCmsHandler({ clientIp })` says where the caller's address comes from (default: `X-Forwarded-For`, then `X-Real-IP`).
@@ -302,7 +302,7 @@ Operations: request limits, key rotation, retention, more hooks, and a live stre
 
 ## 0.13.0
 
-Integrations and operations, second part: automations, roles, a dashboard, import and export, an OpenAPI document. **Schema version 7** (one new table, `cms_records`; `npx @mainsoft/agent-cms migrate apply`). See [UPGRADE-0.13.md](./UPGRADE-0.13.md).
+Integrations and operations, second part: automations, roles, a dashboard, import and export, an OpenAPI document. **Schema version 7** (one new table, `cms_records`; `npx @mainsoft/agent-cms migrate apply`).
 
 - **Automations.** "When this happens, and these conditions hold, do that", made on a screen. Nine triggers (a document is created, updated, published, unpublished or deleted; a review is asked for; a file is uploaded; every day; every Monday), conditions on the category, the author, the title or a field, and five actions: send a webhook, add a keyword, set a field, put the document into a release, call a function the app named in `createCms({ automations: { actions } })`. The work runs on the next cron call, is recorded as "automation: <name>", and never starts another automation. "Try it" says what would happen to one document without changing anything. 30 days of run history.
 - **Roles.** Per collection: write, publish, delete, set on a screen; an admin role may do everything. People are found through `createCms({ users })` or added by id. A collection's `access` functions in code still win and show as "Set in code". An app without roles behaves as before. A role name can be used once (`name_taken`).
@@ -341,7 +341,7 @@ Commands and messages. The library, the schema and the REST API are the same as 
 
 ## 0.11.0
 
-What was left of the media library and the editor. **Schema version 5** (three columns on `cms_assets`; `npx @mainsoft/agent-cms migrate apply`). See [UPGRADE-0.11.md](./UPGRADE-0.11.md).
+What was left of the media library and the editor. **Schema version 5** (three columns on `cms_assets`; `npx @mainsoft/agent-cms migrate apply`).
 
 - **New: Vercel Blob.** `vercelBlobStorage({ token, access })` from `@mainsoft/agent-cms/storage-vercel-blob` (`@vercel/blob` is an optional peer dependency). Browsers upload straight to Blob with a signed address that holds the file to its declared size; private stores are read through signed links. On this kind of store a file goes up in one request whatever its size, so there is no per-part retry and no carrying on after a reload; `storage check` and `_me.media.stores[].parts` say so. Checked against real public and private stores with `@vercel/blob` 2.9.0.
 - **New: image sizes.** `media.transforms: sharpTransforms({ presets })` from `@mainsoft/agent-cms/image-sharp` (`sharp` is an optional peer dependency, Node only). Named sizes only, at `/files/<id>/<name>?size=card`, made on first request and kept under `_cms/derived/`; limits on side, input size, time and how many at once, with the original as the fallback. `cms.imageUrl(asset, { size })`. Pictures the server stores itself get a list thumbnail.
@@ -366,9 +366,9 @@ What was left of the media library and the editor. **Schema version 5** (three c
 
 ## 0.10.0
 
-The first npm release since 0.7.0. It contains 0.8.0 and 0.9.0 below, which were not published on their own: coming from 0.7.0, read [UPGRADE-0.8.md](./UPGRADE-0.8.md) first, then [UPGRADE-0.10.md](./UPGRADE-0.10.md).
+The first npm release since 0.7.0. It contains 0.8.0 and 0.9.0 below, which were not published on their own.
 
-The editing and publishing flow: its rules, REST routes, admin client, agent tools and screens. Read [UPGRADE-0.10.md](./UPGRADE-0.10.md): deletes now go to a trash, and the schema is version 4.
+The editing and publishing flow: its rules, REST routes, admin client, agent tools and screens. Deletes now go to a trash, and the schema is version 4.
 
 - **Scheduled publishing:** `cms.schedule(actor, col, slug, { publishAt, unpublishAt })`. What goes public is the version that was current when it was scheduled, not what the draft holds later. `cms.runScheduled()` does what is due; the `/_cron` route calls it and has its own secret (`createCms({ cronSecret })`, `Authorization: Bearer`). A version that no longer passes its checks is not published and the failure is in the audit log.
 - **Trash:** a deleted document or file goes to the trash for 30 days (`createCms({ trash: { days } })`, `0` deletes at once). It is gone for readers, search and agents, keeps its address, and comes back as it was. `cms.trash.list / restore / purge`; purging is for admins; `runScheduled` empties what is older.
@@ -407,7 +407,7 @@ Screens (`npx @mainsoft/agent-cms add --update`, then `add cms-trash cms-release
 
 ## 0.8.0 (released as part of 0.10.0)
 
-Read [UPGRADE-0.8.md](./UPGRADE-0.8.md). What comes next is in [docs/roadmap](./docs/roadmap/README.md).
+What comes next is in [docs/roadmap](./docs/roadmap/README.md).
 
 - **Breaking: the `./ai` entry and the optional `ai` peer dependency are removed.** This package hands agents tools and never calls a model, and it no longer depends on a library that does. MCP, REST, the CLI and `./tools` are unchanged. A test keeps model libraries out of the sources and the dependencies.
 - **`callTool`, `runTool`, `toolErrorResult`** in `./tools`: run a tool by name as an actor, with CMS errors returned as results. Together with `toolsFor` this is the way to give the tools to an agent in your app, whatever framework runs it. MCP runs tools through the same path.
@@ -431,13 +431,13 @@ Read [UPGRADE-0.8.md](./UPGRADE-0.8.md). What comes next is in [docs/roadmap](./
 
 ## 0.6.1
 
-- **Renamed to `@mainsoft/agent-cms`** and published to npmjs.com (with provenance) instead of GitHub Packages: `npm i @mainsoft/agent-cms` needs no `.npmrc` or token. Import paths change scope only (`@mainsoft-2024/agent-cms/http` → `@mainsoft/agent-cms/http`). `@mainsoft-2024/agent-cms` on GitHub Packages stays at 0.6.0. See "New name on npmjs" in [UPGRADE-0.6.md](./UPGRADE-0.6.md).
+- **Renamed to `@mainsoft/agent-cms`** and published to npmjs.com (with provenance) instead of GitHub Packages: `npm i @mainsoft/agent-cms` needs no `.npmrc` or token. Import paths change scope only (`@mainsoft-2024/agent-cms/http` → `@mainsoft/agent-cms/http`). `@mainsoft-2024/agent-cms` on GitHub Packages stays at 0.6.0.
 - The admin screens install with the shadcn CLI: `npx shadcn add <registry-url>/cms-shell.json`. `npm run build:registry -- --base-url <url> --out <dir>` writes the registry (files go to `<components>/cms/`, screens that need other screens point at their URLs, this package is pinned to `^0.6.1`).
 - `scripts/shadcn-smoke.sh` and a CI job install a screen into a fresh Next.js app with the shadcn CLI and build it.
 
 ## 0.6.0
 
-Breaking changes are listed with what to do in [UPGRADE-0.6.md](./UPGRADE-0.6.md).
+Breaking changes are listed below.
 
 ### Breaking
 

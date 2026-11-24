@@ -9,7 +9,7 @@
  * set with another name prefix or in another Postgres schema.
  *
  * 0.6.0 no longer defines `cms_gaps`. An existing `cms_gaps` table is left
- * alone (never read, written or dropped): see UPGRADE-0.6.md.
+ * alone (never read, written or dropped).
  */
 
 import { bigint, bigserial, boolean, date, index, integer, jsonb, pgSchema, pgTable, primaryKey, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
@@ -526,7 +526,7 @@ export function invalidIndexGuard(name: string, schema: string | null): string {
   const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
   return `DO $agent_cms$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = ${lit(name)} AND n.nspname = ${schema ? lit(schema) : "current_schema()"} AND NOT i.indisvalid) THEN
-    RAISE EXCEPTION 'agent-cms: index % is INVALID (a CREATE UNIQUE INDEX CONCURRENTLY that failed). Drop it, build it again (UPGRADE-0.22.md), then run the migration again. The old index was kept.', ${lit(name)};
+    RAISE EXCEPTION 'agent-cms: index % is INVALID (a CREATE UNIQUE INDEX CONCURRENTLY that failed). Drop it, build it again, then run the migration again. The old index was kept.', ${lit(name)};
   END IF;
 END $agent_cms$;`;
 }
@@ -841,7 +841,7 @@ CREATE INDEX IF NOT EXISTS ${idx("redirect_hits_day_idx")} ON ${tbl("redirect_hi
       name: "agent-cms 0.22.0: multilingual documents (locale, group_id, source_version; one slug per locale), form submissions",
       // The unique index swap: the new one is built before the old one goes, so a slug is never
       // unguarded. On a big table build it by hand first with CREATE UNIQUE INDEX CONCURRENTLY
-      // (UPGRADE-0.22.md); then this step finds it and only drops the old one.
+      // (`migrate check` prints it); then this step finds it and only drops the old one.
       sql: `
 ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "locale" text NOT NULL DEFAULT '';
 ALTER TABLE ${tbl("documents")} ADD COLUMN IF NOT EXISTS "group_id" uuid;

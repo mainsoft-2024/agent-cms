@@ -894,7 +894,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (c.localized && !locales.length) throw new Error(`[agent-cms] collection "${c.slug}" is localized: set createCms({ locales, defaultLocale })`);
     if (c.localized && c.single) throw new Error(`[agent-cms] collection "${c.slug}": a single cannot be localized yet`);
     if ((c.search as { gapLogging?: unknown } | undefined)?.gapLogging !== undefined) {
-      warnOnce("gapLogging", `search.gapLogging was removed in 0.6.0 and is ignored ("${c.slug}"). Use createCms({ onSearchMiss }) and store misses in your app. See UPGRADE-0.6.md.`);
+      warnOnce("gapLogging", `search.gapLogging was removed in 0.6.0 and is ignored ("${c.slug}"). Use createCms({ onSearchMiss }) and store misses in your app.`);
     }
     collections.set(c.slug, c);
   }
