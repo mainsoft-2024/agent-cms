@@ -41,10 +41,8 @@ notes, a help center, internal docs, a notice board.
 > Design follows [Payload](https://payloadcms.com)'s collection, version and
 > MCP shapes, written to run on Next.js 14+/React 18 and Postgres + Drizzle.
 
-Used `./ai`? It is gone: read [UPGRADE-0.8.md](./UPGRADE-0.8.md).
-Upgrading from 0.5? Read [UPGRADE-0.6.md](./UPGRADE-0.6.md) first (the
-`cms_gaps` table needs moving before anything drops it). Changes are in
-[CHANGELOG.md](./CHANGELOG.md).
+Changes are in [CHANGELOG.md](./CHANGELOG.md). Until 1.0 there are no
+separate upgrade guides: breaking changes are listed there.
 
 ## Install
 
@@ -180,8 +178,7 @@ out). New blocks: `:::steps`, `:::card`, `:::video` (YouTube and Vimeo, more
 with `video: { hosts }`, only yours with `video: { hosts, defaults: false }`);
 `## Title {#id}` pins an anchor. With redirects on, `cms.resolveRedirect(path)` answers your 404 page;
 admins add redirects to an address or to a document (it follows the document's
-current address) and see visits per day for 30 days. Details in
-`UPGRADE-0.21.md`.
+current address) and see visits per day for 30 days.
 
 **3. The route** (`app/api/cms/[...path]/route.ts`):
 
@@ -719,7 +716,7 @@ createCms({ /* … */, plugins: [stats] });
 
 ## Automations, roles, dashboard
 
-From 0.13.0 (schema version 7). Coming from 0.12: [UPGRADE-0.13.md](./UPGRADE-0.13.md).
+From 0.13.0 (schema version 7).
 
 **Automations** are rules made on a screen (`cms-automations`): when a document is created, updated, published, unpublished or deleted, a review is asked for, a file is uploaded, or on a daily or weekly schedule; if the category, the author (person or agent), the title or a field matches; then send a webhook, add a keyword, set a field, put the document into a release, or call a function you named:
 
@@ -742,7 +739,7 @@ The work is a background job: it runs on the next `POST /_cron`, is written into
 
 ## Limits, key rotation, retention, events
 
-From 0.14.0. Coming from 0.13: [UPGRADE-0.14.md](./UPGRADE-0.14.md).
+From 0.14.0.
 
 ```ts
 createCms({
@@ -759,7 +756,7 @@ createCms({
 
 ## Several servers, caching, sites (0.17)
 
-Every change goes to a numbered change log (`cms_changes`); each server follows it, so the events stream, a read cache (`cache: memoryCache()`) and search hear what any server did. Lists are paged in the database. `@mainsoft/agent-cms/db` connects pg, postgres.js, Neon or PGlite; `@mainsoft/agent-cms/tenants` gives each site its own Postgres schema; the core runs on Edge runtimes; `/metrics` speaks Prometheus. Single fields can be hidden or locked per reader (`fieldAccess`). See the [guide](https://agent-cms-docs.vercel.app/docs/scaling) and [UPGRADE-0.17.md](UPGRADE-0.17.md).
+Every change goes to a numbered change log (`cms_changes`); each server follows it, so the events stream, a read cache (`cache: memoryCache()`) and search hear what any server did. Lists are paged in the database. `@mainsoft/agent-cms/db` connects pg, postgres.js, Neon or PGlite; `@mainsoft/agent-cms/tenants` gives each site its own Postgres schema; the core runs on Edge runtimes; `/metrics` speaks Prometheus. Single fields can be hidden or locked per reader (`fieldAccess`). See the [guide](https://agent-cms-docs.vercel.app/docs/scaling).
 
 ## Languages (0.22)
 
@@ -796,7 +793,7 @@ await cms.markAligned(user, "guide", "start", "en"); // "matches the current Kor
 
 A translation is a document of its own, with the source's address: its own versions, drafts, publishing, schedule and review. Title, summary, body, keywords, SEO and text fields are translated; everything else follows the source and is filled in when read (a different value sent to a translation answers `locale_field_shared`). Publishing the source again makes its translations `outdated` until they are updated and aligned.
 
-REST: `?locale=` on every document route (and `&fallback=1` on reads), `GET|POST /collections/<c>/<slug>/_translations`, `POST …/_align`, `GET …/_source-diff?locale=`, `GET /search?locale=`. Agents: `locale` on the document tools and `list_translations`. The sitemap names every language with `hreflang`. Search takes one language at a time; Korean 2-grams only for Korean. Upgrading a big table: [UPGRADE-0.22.md](UPGRADE-0.22.md).
+REST: `?locale=` on every document route (and `&fallback=1` on reads), `GET|POST /collections/<c>/<slug>/_translations`, `POST …/_align`, `GET …/_source-diff?locale=`, `GET /search?locale=`. Agents: `locale` on the document tools and `list_translations`. The sitemap names every language with `hreflang`. Search takes one language at a time; Korean 2-grams only for Korean. Upgrading a big table: `npx @mainsoft/agent-cms migrate check` prints the SQL for building the new index by hand.
 
 **In the admin** (`cms-doc-editor`, `cms-doc-list`): a tab per language with its status (source, none, needs update, up to date). A translation shows which source version it follows, "Show changes" (what the source changed since) and "Mark as matching v7"; the source sits beside the text with the changed lines marked. Fields every language shares, the address and the category are read only there, with a link to the source. A language not started yet says readers may get the source instead, and "Start translation" copies the source. The list filters by language and marks each row's translations. Hosts open another language through `onOpenDocument(collection, "start@en")`. A plugin can add its own button (say, a translation draft from your own service) with `slots.localeAction`.
 
@@ -822,7 +819,7 @@ import { CmsForm } from "@/components/cms/cms-form";
 - **The sender's address** (for the limit): `forms.clientIp`, else the handler's `clientIp`, else the first `X-Forwarded-For` entry. Behind a load balancer that appends to `X-Forwarded-For` the first entry is whatever the sender wrote, so set `clientIp: clientIpBehind(1)` (one proxy). The Node adapter without `trustProxy` uses the socket's address.
 - **Submissions**: received, spam and archived, search, bulk actions and CSV export (formulas made harmless; `?status=&q=` exports the view shown) on the admin screen and over REST (`/forms/:slug/submissions`, `/forms/:slug/export.csv`).
 - **After a submission**: the `form.submitted` event (webhooks, automations) carries ids and field names, not values; `forms.notify` is where your app sends an e-mail.
-- **Privacy**: addresses are kept as a hash, `retention.submissionsDays` (365 by default) deletes old submissions with their files, and agents get no tools for submissions. See [UPGRADE-0.22.md](UPGRADE-0.22.md).
+- **Privacy**: addresses are kept as a hash, `retention.submissionsDays` (365 by default) deletes old submissions with their files, and agents get no tools for submissions.
 
 ## Export, import, OpenAPI
 

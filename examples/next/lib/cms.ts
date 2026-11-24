@@ -92,7 +92,7 @@ function make() {
         log: ({ automation, doc }) => console.log(`[automation] ${automation.name}: ${doc ? `${doc.collection}/${doc.slug}` : "schedule"}`),
       },
     },
-    // The app keeps search misses in its own table (see UPGRADE-0.6.md).
+    // The app keeps search misses in its own table.
     onSearchMiss: async (e) => {
       for (const c of e.collections) {
         await db.execute(sql`INSERT INTO app_search_misses (collection, query, normalized) VALUES (${c}, ${e.query}, ${e.normalized})
