@@ -254,3 +254,28 @@ test("a failed plugin's hooks, filters, access rules and actions are out of use"
   await cms.publish(admin, "guide", "a");
   assert.equal((await api.get("guide", "a")).title, "A");
 });
+
+test("built-ins: webhooks and automations are plugins; builtins: false turns them off", async () => {
+  const on = setup([], { secretsKey: KEY });
+  const listed = on.cms.plugins.list().filter((p) => p.builtin);
+  assert.deepEqual(listed.map((p) => [p.name, p.state]), [
+    ["webhooks", "starting"],
+    ["automations", "starting"],
+  ]);
+  const me = await on.api.me();
+  assert.equal(me.automations, true);
+  assert.deepEqual(me.plugins, {}, "built-ins add nothing under plugins");
+  assert.equal(on.cms.plugins.get("webhooks")!.state, "running");
+
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public" });
+  const cms = createCms({ repo: new MemoryRepo(), collections: [guide], secretsKey: KEY, builtins: { webhooks: false, automations: false } });
+  const handler = createCmsHandler({ cms, resolveUser: async () => admin });
+  const api = createRestClient({ url: "http://app.test/api/cms", fetch: (async (i: RequestInfo | URL, init?: RequestInit) => handler(new Request(String(i), init))) as typeof fetch });
+  assert.deepEqual(cms.plugins.list().map((p) => p.name), []);
+  assert.equal(cms.webhooks.enabled(), false);
+  const off = await api.me();
+  assert.equal(off.automations, false);
+  assert.equal(off.webhooks, false);
+  assert.equal(await code(api.webhooks()), "route_not_found");
+  assert.equal(await code(api.automations()), "route_not_found");
+});

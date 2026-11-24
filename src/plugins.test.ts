@@ -93,7 +93,7 @@ test("options: checked with zod, defaults filled in, given called or as is", asy
 test("order: what a plugin needs is set up and started first; a circle is refused", async () => {
   const log: string[] = [];
   const { cms, api } = setup([probe("b-two", log, { requires: ["a-one"] }), probe("a-one", log)]);
-  assert.deepEqual(cms.plugins.names, ["a-one", "b-two"]);
+  assert.deepEqual(cms.plugins.names, ["webhooks", "automations", "a-one", "b-two"], "the built-in plugins come first");
   await api.me();
   assert.deepEqual(log, ["setup a-one", "setup b-two", "start a-one", "start b-two"]);
   assert.throws(
@@ -124,7 +124,7 @@ test("failure: a plugin that cannot start is off with the ones that need it; the
   const me = await api.me();
   assert.deepEqual(log, ["setup vectors", "setup answers", "setup other", "start vectors", "stop vectors", "start other"], "the failed one is stopped again; the one that needs it never starts");
   assert.deepEqual(
-    cms.plugins.list().map((p) => [p.name, p.state, p.error]),
+    cms.plugins.list().filter((p) => !p.builtin).map((p) => [p.name, p.state, p.error]),
     [
       ["vectors", "failed", "vectors could not connect"],
       ["answers", "off", 'needs the plugin "vectors", which is failed'],
@@ -177,9 +177,10 @@ test("start timeout: a start that hangs counts as failed", async () => {
 test("close: plugins stop last started first; the list is for admins", async () => {
   const log: string[] = [];
   const { cms, api } = setup([probe("a-one", log), probe("b-two", log, { requires: ["a-one"], version: "1.2.0", engine: ">=0.22" })]);
-  const { plugins } = await api.plugins();
+  const plugins = (await api.plugins()).plugins.filter((p) => !p.builtin);
   assert.deepEqual(plugins[1], {
     name: "b-two",
+    builtin: false,
     version: "1.2.0",
     engine: ">=0.22",
     requires: ["a-one"],

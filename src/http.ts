@@ -620,12 +620,12 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           webhooks: core.webhooks.enabled() && core.isAdmin(actor),
           /** The dashboard, automations and roles screens exist in this version. */
           dashboard: actor.kind !== "anonymous",
-          automations: core.isAdmin(actor),
+          automations: core.plugins.usable("automations") && core.isAdmin(actor),
           roles: core.isAdmin(actor),
           /** The CMS's own sign-in, when it is on: how people sign in, and whether this caller manages people. */
           auth: opts.auth ? { ...opts.auth.describe(), people: core.isAdmin(actor) && actor.kind === "user" } : null,
           nav: core.plugins.nav.filter((n) => core.plugins.usable(n.plugin) && (!n.admin || core.isAdmin(actor))).map(({ label, href, plugin }) => ({ label, href, plugin })),
-          plugins: Object.fromEntries(await Promise.all(core.plugins.names.filter((name) => core.plugins.usable(name)).map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
+          plugins: Object.fromEntries(await Promise.all(core.plugins.names.filter((name) => core.plugins.usable(name) && !core.plugins.get(name)!.builtin).map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
           collections: core
             .collections()
             .filter((c) => core.can(actor, c.slug, "read"))
@@ -1306,6 +1306,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
       }
 
       // ── automations and roles (admins) ──
+      // 0.23.0: built-in plugins turned off (or failed) answer like a route that is not there.
+      if ((seg[0] === "automations" || seg[0] === "webhooks") && !core.plugins.usable(seg[0])) throw new CmsError("route_not_found");
       if (seg[0] === "automations") {
         const a = core.automations;
         const input = z.object({

@@ -177,6 +177,8 @@ export interface CmsPlugin<Cms = any, O = any> {
   version?: string;
   /** Versions of `@mainsoft/agent-cms` it works with, as a semver range (`">=0.23"`, `"^0.23.0"`). Checked by `createCms`. */
   engine?: string;
+  /** Part of the CMS itself (`webhooks`, `automations`); turned off with `createCms({ builtins })`. Not for your plugins. */
+  builtin?: boolean;
   /** Plugins this one needs, by name. They are set up and started first; when one is missing or off, this one is off too. */
   requires?: readonly string[];
   /** When it cannot start, stop the CMS (every request answers 503 `plugin_failed`) instead of going on without it. */
@@ -257,6 +259,8 @@ export type PluginState = "starting" | "running" | "failed" | "off";
 /** One plugin as `cms.plugins.list()` and `GET /plugins` show it. */
 export interface PluginInfo {
   name: string;
+  /** Part of the CMS (`webhooks`, `automations`). */
+  builtin: boolean;
   version: string | null;
   engine: string | null;
   requires: string[];

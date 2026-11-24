@@ -19,7 +19,7 @@ import { DEFAULT_VIDEO_HOSTS } from "./video";
 import { createFlow, type ScheduledRun } from "./flow";
 import { createJobs, type JobsRun } from "./jobs";
 import { createOutbox, type OutEvent, type WebhookOptions } from "./outbox";
-import type { PluginInput } from "./plugin";
+import type { CmsPlugin, PluginInput } from "./plugin";
 import { createPluginHost, type PluginHost } from "./plugins";
 import { createSealer } from "./secrets";
 import { PUBLIC_EVENTS, type CacheAdapter, type CacheOptions, type ChangeEvent, type ChangesOptions } from "./changes";
@@ -39,6 +39,7 @@ import { applyPatch, sectionRanges, type PatchOp } from "./patch";
 import type { AuditQuery, CmsRepo, DocPatch, StoredVersion } from "./repo";
 import { docsById } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
+import { VERSION } from "./version";
 import { normalizeQuery, SearchIndex, unitsOf, type SearchHit } from "./search";
 import {
   docState,
@@ -223,6 +224,12 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
   plugins?: readonly PluginInput[];
   /** How long a plugin's `start` may take before it counts as failed. Default 10000 ms. */
   pluginStartTimeoutMs?: number;
+  /**
+   * 0.23.0: parts of the CMS that are built-in plugins, on by default. `false` turns one off: its
+   * routes answer 404, the admin hides it, it hears no events (`webhooks: false` also makes the
+   * automations' "Send a webhook" action fail).
+   */
+  builtins?: { webhooks?: boolean; automations?: boolean };
   /**
    * Everything worth measuring, as it happens: requests, events, job runs, errors. Connect it to
    * your tracing or metrics. Must not throw; it is never awaited.
@@ -707,17 +714,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
           }),
       );
     } else tellSubscribers(e);
-    // Webhook deliveries being queued count as unfinished work too: `settle()` waits for them.
-    const queued: Promise<unknown> = Promise.resolve(outbox.emit(e)).catch((err) => report(err, "webhooks")).finally(() => inFlight.delete(queued));
-    inFlight.add(queued);
-    void automations.onEvent(e);
+    // Plugins (webhooks and automations among them, 0.23.0) hear every event after the write.
+    // What they do counts as unfinished work: `settle()` and `close()` wait for it.
     for (const l of eventListeners) {
       if (l.event !== "*" && l.event !== e.event) continue;
       // A plugin that failed to start, or is off, hears nothing.
       if (pluginHost && !pluginHost.usable(l.plugin)) continue;
-      Promise.resolve()
+      const heard: Promise<unknown> = Promise.resolve()
         .then(() => l.fn(e))
-        .catch((err) => report(err, `plugin ${l.plugin}: ${e.event}`));
+        .catch((err) => report(err, `plugin ${l.plugin}: ${e.event}`))
+        .finally(() => inFlight.delete(heard));
+      inFlight.add(heard);
     }
   }
   // ── following the change log (other servers) and the read cache ───────────
@@ -922,7 +929,32 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // Plugins are set up before the collections are read: they can add collections, fields and hooks.
   const appSlugs = new Set(opts.collections.map((c) => c.slug));
-  pluginHost = createPluginHost(opts.plugins ?? [], {
+  // 0.23.0: webhooks and automations are plugins of the CMS, written against the same contract.
+  const builtinOn = { webhooks: opts.builtins?.webhooks !== false, automations: opts.builtins?.automations !== false };
+  const builtins: CmsPlugin[] = [];
+  if (builtinOn.webhooks)
+    builtins.push({
+      name: "webhooks",
+      version: VERSION,
+      builtin: true,
+      setup(ctx) {
+        ctx.on("*", async (e) => {
+          await Promise.resolve(outbox.emit(e)).catch((err) => report(err, "webhooks"));
+        });
+      },
+    });
+  if (builtinOn.automations)
+    builtins.push({
+      name: "automations",
+      version: VERSION,
+      builtin: true,
+      setup(ctx) {
+        ctx.on("*", async (e) => {
+          await automations.onEvent(e);
+        });
+      },
+    });
+  pluginHost = createPluginHost([...builtins, ...(opts.plugins ?? [])], {
     cms: () => api,
     secrets: () => sealer,
     repo: () => repo,
@@ -3337,7 +3369,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     },
     update: (actor, col, slug, input) => update(actor, col, slug, input),
     addToRelease: (actor, id, item) => flow.releases.add(actor, id, [item]),
-    sendWebhook: (id, e) => outbox.send(id, e),
+    sendWebhook: (id, e) => {
+      if (!pluginHost.usable("webhooks")) throw new Error("webhooks are off on this server");
+      return outbox.send(id, e);
+    },
     options: opts.automations ?? {},
   });
   for (const a of pluginHost.actions) automations.addAction(a.name, { label: a.label, run: a.run });
@@ -4187,7 +4222,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     async cron(o: { budgetMs?: number } = {}): Promise<ScheduledRun & { jobs: JobsRun }> {
       const t0 = Date.now();
       const scheduled = await flow.runScheduled();
-      await automations.tick().catch((e) => report(e, "automations"));
+      if (pluginHost.usable("automations")) await automations.tick().catch((e) => report(e, "automations"));
       const ran = await jobs.run(o);
       const keepDays = Math.max(1, opts.changes?.keepDays ?? 7);
       const pruneChanges = repo.pruneChanges ? repo.pruneChanges(new Date(now().getTime() - keepDays * 86_400_000).toISOString()) : Promise.resolve(0);
@@ -4198,7 +4233,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** Background jobs: `enqueue`, `run`, `stats`, `list`, `retry`, `define`. */
     jobs,
     /** Webhooks: `list`, `create`, `update`, `remove`, `secret`, `test`, `deliveries`, `retry`. Admins only. */
-    webhooks: outbox,
+    /** Webhooks (outbox.ts). `enabled()` is false without `secretsKey` or with `builtins: { webhooks: false }`. */
+    webhooks: { ...outbox, enabled: () => pluginHost.usable("webhooks") && outbox.enabled() },
     /** Automations: `list`, `create`, `update`, `remove`, `runs`, `test`, `addAction`. Admins only. */
     automations,
     /** Roles: `list`, `create`, `update`, `remove`, `addMember`, `removeMember`, `searchUsers`. Admins only. */

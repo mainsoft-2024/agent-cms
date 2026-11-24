@@ -136,8 +136,8 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
   const seen = new Set<string>();
   for (const p of given) {
     if (!PLUGIN_NAME.test(p.name)) throw new Error(`[agent-cms] plugin name "${p.name}" must be lowercase letters, digits and dashes`);
+    if (!p.builtin && (deps.taken(p.name) || given.some((g) => g.builtin && g.name === p.name))) throw new Error(`[agent-cms] plugin name "${p.name}" is taken by a route of the CMS`);
     if (seen.has(p.name)) throw new Error(`[agent-cms] plugin "${p.name}" is given twice`);
-    if (deps.taken(p.name)) throw new Error(`[agent-cms] plugin name "${p.name}" is taken by a route of the CMS`);
     seen.add(p.name);
     if (p.engine && !versionSatisfies(VERSION, p.engine)) throw new Error(`[agent-cms] plugin ${p.name} works with agent-cms ${p.engine}, this is ${VERSION}`);
     for (const dep of p.requires ?? []) {
@@ -439,6 +439,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
     const p = e.plugin;
     return {
       name: p.name,
+      builtin: !!p.builtin,
       version: p.version ?? null,
       engine: p.engine ?? null,
       requires: [...(p.requires ?? [])],
