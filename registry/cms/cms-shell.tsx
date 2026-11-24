@@ -465,7 +465,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
 
   if (signedOut)
     return (
-      <div className="grid min-h-screen place-items-center bg-muted/40 px-4">
+      <div className="cms-root grid min-h-screen place-items-center bg-muted/40 px-4">
         <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-xl border bg-background p-8 text-center shadow-sm">
           <LogIn aria-hidden className="h-6 w-6 text-muted-foreground" />
           <h1 className="text-lg font-semibold">{t("shell_signed_out")}</h1>
@@ -479,7 +479,8 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
 
   return (
     <ShellNavContext.Provider value={navCtx}>
-      <div className={cn("flex min-h-screen bg-background text-foreground", className)}>
+      {/* cms-root: where the admin fonts apply (cms-fonts.css, 0.22.2). */}
+      <div className={cn("cms-root flex min-h-screen bg-background text-foreground", className)}>
         <aside className={cn("sticky top-0 hidden h-screen w-60 shrink-0 flex-col overflow-y-auto border-r bg-muted/30 px-3 pt-3 md:flex", user ? "pb-0" : "pb-3")}>
           {brand}
           {nav}

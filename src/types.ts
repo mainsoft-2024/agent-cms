@@ -862,13 +862,21 @@ export const WEBHOOK_EVENTS = [
   "form.submitted",
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
+/**
+ * 0.22.2: the subscription of a webhook that only automations send to (`events: ["automation"]`).
+ * It matches no event, so the webhook gets what an automation's "send a webhook" action sends and
+ * nothing else.
+ */
+export const WEBHOOK_AUTOMATION_ONLY = "automation" as const;
+/** What a webhook can subscribe to: events, or only what automations send. */
+export type WebhookSubscription = WebhookEvent | typeof WEBHOOK_AUTOMATION_ONLY;
 
 export interface CmsWebhook {
   id: string;
   name: string;
   url: string;
-  /** Empty = every event. */
-  events: WebhookEvent[];
+  /** Empty = every event. `["automation"]` = only what automations send (0.22.2). */
+  events: WebhookSubscription[];
   /** Empty = every collection. Events without a collection (files, releases) always pass. */
   collections: string[];
   /** The signing secret, sealed with `secretsKey`. Never leaves the server as is. */

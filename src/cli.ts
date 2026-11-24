@@ -77,6 +77,7 @@ import { imageSize } from "./net-guard";
 import { DEFAULT_ACCEPT, DEFAULT_MAX_FILE_SIZE } from "./storage";
 import { addItems, buildPublicRegistry, findRegistryDir, installCommand, loadRegistry, type Registry } from "./registry";
 import { cmsDdl, cmsTables, fillLocaleSql, SCHEMA_VERSION, schemaVersionSql, splitSql, upgradeSteps } from "./tables";
+import { CMS_FONTS_CSS } from "./fonts";
 import { VERSION } from "./version";
 
 export interface CliIo {
@@ -104,7 +105,7 @@ export interface CliIo {
 
 const WITH_VALUE = new Set(["--base-url", "--out", "--name", "--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--port", "--host", "--offset", "--limit", "--context", "--glob", "--args-file", "--default", "--batch"]);
 /** Switches without a value. Anything else that starts with "--" is refused before any request. */
-const SWITCHES = new Set(["--admin", "--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--fix", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--memory", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
+const SWITCHES = new Set(["--admin", "--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--fix", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--memory", "--no-fonts", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
 
 /** Problems with the flags (unknown, missing value), or null. Checked before reading any settings. */
 export function checkFlags(argv: string[]): string | null {
@@ -172,7 +173,7 @@ export function parseEnvFile(text: string): Record<string, string> {
 
 const USAGE = `agent-cms ${VERSION}
 a server:      dev [--port 3000] [--memory] | serve [--port <n>] [--host <h>]
-in your app:   init | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync> | registry build
+in your app:   init [--no-fonts] | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync> | registry build
 with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import | openapi | retention
                read | grep | edit | pull | push | status
 options:       --env <file>  --json  --json-errors  --  (what follows is a file name, even if it starts with --)
@@ -989,6 +990,9 @@ export { handler as GET, handler as POST, handler as PUT, handler as PATCH, hand
 `,
     ],
   ];
+  // 0.22.2: the admin's default fonts (Wanted Sans + Geist Mono), only where the admin is on screen.
+  const fonts = !argv.includes("--no-fonts");
+  if (fonts) files.push([`${appDir}app/cms-fonts.css`, CMS_FONTS_CSS]);
   const created: string[] = [];
   for (const [rel, content] of files) {
     const p = join(cwd, rel);
@@ -1013,8 +1017,13 @@ export { handler as GET, handler as POST, handler as PUT, handler as PATCH, hand
 next:
   1. point ${appDir}lib/cms.ts and agent-cms.config.ts at your Drizzle db, and resolveUser at your session
   2. npx @mainsoft/agent-cms migrate check        (SQL for your migration, or: npx @mainsoft/agent-cms migrate apply)
-  3. npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command`);
-  void argv;
+  3. npx @mainsoft/agent-cms add cms-shell cms-doc-list cms-doc-editor cms-versions cms-keys cms-audit cms-command${
+    fonts
+      ? `
+  4. import "../cms-fonts.css" in your admin layout (${appDir}app/admin/layout.tsx): the admin's fonts,
+     Wanted Sans and Geist Mono. Your other pages keep theirs. (init --no-fonts skips this file.)`
+      : ""
+  }`);
   return 0;
 }
 

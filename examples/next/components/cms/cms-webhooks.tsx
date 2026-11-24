@@ -7,7 +7,7 @@
 
 import * as React from "react";
 import { Plus, RotateCw, Send, Webhook } from "lucide-react";
-import type { WebhookDelivery, WebhookEvent, WebhookView } from "@mainsoft/agent-cms/client";
+import { WEBHOOK_AUTOMATION_ONLY, type WebhookDelivery, type WebhookEvent, type WebhookSubscription, type WebhookView } from "@mainsoft/agent-cms/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -36,6 +36,7 @@ export function groupEvents<E extends string>(events: readonly E[]): [string, E[
 
 /** "Publish, Unpublish" for a list of events; "All" for none. */
 export function eventNames(events: readonly string[], t: T): string {
+  if (events.includes(WEBHOOK_AUTOMATION_ONLY)) return t("webhook_automation_events");
   return events.length ? events.map((e) => t(`event.${e}` as never)).join(", ") : t("webhook_all_events");
 }
 
@@ -154,21 +155,7 @@ export function CmsWebhooks({ className }: CmsWebhooksProps) {
           hooks.reload();
         }}
       />
-      <Dialog open={!!created} onOpenChange={(o) => !o && setCreated(null)}>
-        <DialogContent className={DIALOG.md}>
-          <DialogHeader>
-            <DialogTitle>{t("webhook_created", { name: created?.name ?? "" })}</DialogTitle>
-            <DialogDescription>{t("webhook_created_text")}</DialogDescription>
-          </DialogHeader>
-          <CodeBox value={created?.secret ?? ""} secret={created?.secret} label={t("webhook_secret")} multiline />
-          <CodeBox value={'const event = await verifyWebhook(req, process.env.CMS_WEBHOOK_SECRET);'} label="verifyWebhook" multiline />
-          <DialogFooter>
-            <Button type="button" onClick={() => setCreated(null)}>
-              {t("close")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <WebhookCreatedDialog created={created} onClose={() => setCreated(null)} />
     </div>
   );
 }
@@ -305,14 +292,51 @@ function WebhookPanel({ hook, onEdit, onChanged, onDeleted }: { hook: WebhookVie
   );
 }
 
-function WebhookDialog({ target, events, collections, onClose, onSaved }: { target: WebhookView | "new" | null; events: readonly WebhookEvent[]; collections: { slug: string; label: string }[]; onClose: () => void; onSaved: (w: WebhookView, secret?: string) => void }) {
+/** The secret of a webhook just made: shown once here, again from its panel. */
+export function WebhookCreatedDialog({ created, onClose }: { created: { name: string; secret: string } | null; onClose: () => void }) {
+  const { t } = useCms();
+  return (
+    <Dialog open={!!created} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className={DIALOG.md}>
+        <DialogHeader>
+          <DialogTitle>{t("webhook_created", { name: created?.name ?? "" })}</DialogTitle>
+          <DialogDescription>{t("webhook_created_text")}</DialogDescription>
+        </DialogHeader>
+        <CodeBox value={created?.secret ?? ""} secret={created?.secret} label={t("webhook_secret")} multiline />
+        <CodeBox value={'const event = await verifyWebhook(req, process.env.CMS_WEBHOOK_SECRET);'} label="verifyWebhook" multiline />
+        <DialogFooter>
+          <Button type="button" onClick={onClose}>
+            {t("close")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+type Mode = "all" | "automation" | "some";
+const modeOf = (events: readonly WebhookSubscription[] | undefined): Mode => (!events?.length ? "all" : events.includes(WEBHOOK_AUTOMATION_ONLY) ? "automation" : "some");
+
+export interface WebhookDialogProps {
+  target: WebhookView | "new" | null;
+  events: readonly WebhookEvent[];
+  collections: { slug: string; label: string }[];
+  onClose: () => void;
+  onSaved: (w: WebhookView, secret?: string) => void;
+  /** 0.22.2: made from an automation: "Only automations" is picked first, and the texts say so. */
+  forAutomation?: boolean;
+}
+
+/** New or edit webhook. Also opened from an automation's "Send a webhook" action (`forAutomation`). */
+export function WebhookDialog({ target, events, collections, onClose, onSaved, forAutomation = false }: WebhookDialogProps) {
   const { client, t } = useCms();
   const cur = target && target !== "new" ? target : null;
   const [name, setName] = React.useState("");
   const [url, setUrl] = React.useState("");
   const [picked, setPicked] = React.useState<WebhookEvent[]>([]);
   // "Every event" is a choice of its own: unticking the last event must not quietly mean "all".
-  const [every, setEvery] = React.useState(true);
+  const [mode, setMode] = React.useState<Mode>("all");
+  const every = mode === "all";
   const [cols, setCols] = React.useState<string[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -320,8 +344,8 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
     if (!target) return;
     setName(cur?.name ?? "");
     setUrl(cur?.url ?? "");
-    setPicked(cur?.events ?? []);
-    setEvery(!cur?.events?.length);
+    setPicked((cur?.events ?? []).filter((e): e is WebhookEvent => e !== WEBHOOK_AUTOMATION_ONLY));
+    setMode(cur ? modeOf(cur.events) : forAutomation ? "automation" : "all");
     setCols(cur?.collections ?? []);
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -332,7 +356,7 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
     setBusy(true);
     setError(null);
     try {
-      const input = { name, url, events: every ? [] : picked, collections: cols };
+      const input = { name, url, events: mode === "all" ? [] : mode === "automation" ? [WEBHOOK_AUTOMATION_ONLY] : picked, collections: cols };
       if (cur) onSaved(await client.updateWebhook(cur.id, input));
       else {
         const r = await client.createWebhook(input);
@@ -352,7 +376,7 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>{cur ? t("webhook_edit_title") : t("webhook_new")}</DialogTitle>
-            <DialogDescription>{t("webhook_dialog_text")}</DialogDescription>
+            <DialogDescription>{forAutomation && !cur ? t("automation_webhook_create_text") : t("webhook_dialog_text")}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cms-webhook-name">{t("webhook_name")}</Label>
@@ -366,17 +390,25 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
             <legend className="mb-1 text-sm font-medium">{t("webhook_events")}</legend>
             <Segmented
               label={t("webhook_events")}
-              value={every ? "all" : "some"}
-              onChange={(v) => setEvery(v === "all")}
-              options={[
-                { value: "all", label: t("webhook_every_event") },
-                { value: "some", label: t("webhook_only_these") },
-              ]}
+              value={mode}
+              onChange={(v) => setMode(v as Mode)}
+              options={(forAutomation
+                ? [
+                    { value: "automation", label: t("webhook_automation_only") },
+                    { value: "all", label: t("webhook_every_event") },
+                    { value: "some", label: t("webhook_only_these") },
+                  ]
+                : [
+                    { value: "all", label: t("webhook_every_event") },
+                    { value: "some", label: t("webhook_only_these") },
+                    { value: "automation", label: t("webhook_automation_only") },
+                  ]) as { value: Mode; label: string }[]}
             />
             {/* Grouped by what they are about, each group with its own "all". */}
             {every ? <p className="text-xs text-muted-foreground">{t("webhook_every_event_text")}</p> : null}
-            {!every && !picked.length ? <p className="text-xs text-amber-700 dark:text-amber-400">{t("webhook_pick_one")}</p> : null}
-            <div className={cn("grid grid-cols-1 gap-3 sm:grid-cols-2", every && "hidden")}>
+            {mode === "automation" ? <p className="text-xs text-muted-foreground">{t("webhook_automation_only_text")}</p> : null}
+            {mode === "some" && !picked.length ? <p className="text-xs text-amber-700 dark:text-amber-400">{t("webhook_pick_one")}</p> : null}
+            <div className={cn("grid grid-cols-1 gap-3 sm:grid-cols-2", mode !== "some" && "hidden")}>
               {groupEvents(events).map(([group, evs]) => {
                 const on = evs.filter((ev) => picked.includes(ev)).length;
                 return (
@@ -421,8 +453,8 @@ function WebhookDialog({ target, events, collections, onClose, onSaved }: { targ
             <Button type="button" variant="outline" onClick={onClose}>
               {t("cancel")}
             </Button>
-            <Button type="submit" disabled={busy || (!every && !picked.length)}>
-              {cur ? t("save") : t("webhook_create")}
+            <Button type="submit" disabled={busy || (mode === "some" && !picked.length)}>
+              {cur ? t("save") : forAutomation ? t("automation_webhook_create_submit") : t("webhook_create")}
             </Button>
           </DialogFooter>
         </form>

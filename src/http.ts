@@ -120,7 +120,7 @@ import { isTranslationDoc, localeTag, splitAddress } from "./locale";
 import { openApiDocument } from "./openapi";
 import { FORM_MAX_BODY, FORM_STATUSES } from "./forms";
 import type { FormSubmissionStatus } from "./types";
-import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
+import { ASSET_KINDS, DOC_STATUSES, KEY_SCOPES, WEBHOOK_AUTOMATION_ONLY, WEBHOOK_EVENTS, type Actor, type AssetKind, type CmsDoc } from "./types";
 
 /** What the handler needs from the CMS's own sign-in (`createAuth` from `@mainsoft/agent-cms/auth`). */
 export interface HandlerAuth {
@@ -1331,7 +1331,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
 
       // ── webhooks and jobs (admins) ──
       if (seg[0] === "webhooks") {
-        const input = z.object({ name: z.string(), url: z.string(), events: z.array(z.enum(WEBHOOK_EVENTS)).optional(), collections: z.array(z.string()).optional(), enabled: z.boolean().optional() });
+        const input = z.object({ name: z.string(), url: z.string(), events: z.array(z.enum([...WEBHOOK_EVENTS, WEBHOOK_AUTOMATION_ONLY])).optional(), collections: z.array(z.string()).optional(), enabled: z.boolean().optional() });
         if (seg.length === 1 && m === "GET") return json({ webhooks: await core.webhooks.list(actor), events: WEBHOOK_EVENTS, enabled: core.webhooks.enabled() });
         if (seg.length === 1 && m === "POST") return json(await core.webhooks.create(actor, await body(req, input)), 201);
         if (seg[1] === "deliveries" && seg.length === 4 && seg[3] === "retry" && m === "POST") return json(await core.webhooks.retry(actor, seg[2]), 202);

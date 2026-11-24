@@ -26,7 +26,8 @@ import type { AuditEntry, AutosaveState, CmsComment, CmsDoc, CmsKey, CmsRelease,
 
 export type { BlockedItem, CommentThread, ReleaseView, ScheduledRun, TrashItem, TrashRef } from "./flow";
 export type { WebhookInput, WebhookView } from "./outbox";
-export type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
+export type { CmsJob, WebhookDelivery, WebhookEvent, WebhookSubscription } from "./types";
+export { WEBHOOK_AUTOMATION_ONLY } from "./types";
 export type { AutomationAction, AutomationCondition, AutomationInput, AutomationRun, CmsAutomation } from "./automations";
 export type { CmsRole, PersonMatch, RoleInput, RoleMember, RoleOp, RolePermissions } from "./roles";
 export type { CmsStats } from "./stats";

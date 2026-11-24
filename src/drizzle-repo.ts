@@ -7,7 +7,7 @@ import type { AssetPatch, AssetQuery, AuditQuery, CmsRepo, PruneTarget, DocFilte
 import type { CmsRedirect, DocRef, FormSubmission, FormSubmissionStatus } from "./types";
 import { SCHEMA_VERSION } from "./schema-version";
 import { defaultTables, LEGACY_COLUMNS, type CmsTables } from "./tables";
-import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsJob, CmsRecord, CmsRelease, CmsWebhook, WebhookDelivery, WebhookEvent, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
+import type { AssetKind, AssetRef, AuditEntry, CmsAsset, CmsComment, CmsDoc, CmsJob, CmsRecord, CmsRelease, CmsWebhook, WebhookDelivery, WebhookSubscription, DocStatus, KeyScope, Presence, ReviewMark, SavedFilter } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PgDatabase<any, any, any>;
@@ -871,7 +871,7 @@ export class DrizzleRepo implements CmsRepo {
     return { id: r.id, kind: r.kind, payload: r.payload, runAt: r.runAt.toISOString(), attempts: r.attempts, maxAttempts: r.maxAttempts, lockedUntil: this.iso(r.lockedUntil), lastError: r.lastError, doneAt: this.iso(r.doneAt), failedAt: this.iso(r.failedAt), createdAt: r.createdAt.toISOString() };
   }
   private toWebhook(r: typeof this.t.webhooks.$inferSelect): CmsWebhook {
-    return { ...r, events: r.events as WebhookEvent[], createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() };
+    return { ...r, events: r.events as WebhookSubscription[], createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() };
   }
   private toDelivery(r: typeof this.t.webhookDeliveries.$inferSelect): WebhookDelivery {
     return { ...r, at: r.at.toISOString() };

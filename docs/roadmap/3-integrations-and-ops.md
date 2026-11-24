@@ -396,3 +396,17 @@ PR #24. 스키마 7. 검증: 단위 166개(159 통과, 7은 실제 저장소가 
 | 로그인 | `user create`, `user reset-link` |
 
 남은 것(묶음 밖으로 넘김): 목록 본문 제외(77), 복구 절차 문서(82), `doctor --runtime=edge`(104), bench의 CI 회귀 감시(106), Contentful·Strapi 가져오기(131), Remix 예제와 다른 언어 클라이언트(27), 실제 Google·Okta로 SSO 확인, 어드민 zip 가져오기의 Notion 그림(지금은 CLI만).
+
+## 플러그인 v2 (2026-11-24 계획, 0.22.2 → 0.23.0 → 0.24.0)
+
+92번과 134번은 0.12.0~0.17.0에서 "일부"로 끝났다: `ctx.automationAction`은 주석에만 있었고, 플러그인이 컬렉션 훅·컬렉션·필드를 붙일 수 없었고, "웹훅과 자동화를 플러그인으로 만들어 계약이 충분한지 확인"은 하지 않았다. 모델을 부르는 기능(G)이 이 계약 위에 올라가므로 v2로 끝까지 만든다. 목표는 Payload, Strapi, Sanity와 같거나 나은 수준. 뼈대는 Strapi식(등록 → 비동기 시작 → 종료, 서버와 어드민 진입점이 따로)에 WordPress식 필터와 Sanity식 자리 합치기를 더한다.
+
+| 버전 | 무엇 |
+|---|---|
+| 0.22.2 | 자동화의 "웹훅 보내기" 고침(그 자리에서 웹훅 만들기, `events: ["automation"]`, 웹훅이 꺼진 서버 안내), 어드민 기본 폰트(Wanted Sans + Geist Mono, `init`이 `cms-fonts.css`) |
+| 0.23.0 | 서버 쪽: 옵션(zod)·`engine`·`requires`·`required`, 비동기 `start`/`stop`과 `cms.close()`, 시작 실패 격리(그 플러그인과 기대는 것만 끔), 자리(`hook`, `collection`, `field`, `automationAction`, `filter` 6곳, 좁히기만 하는 `access`, `store`, 어드민에서 바꾸는 `settings`, `log`), `cms.plugins.list()`와 `GET /plugins`·다시 시작·설정 API, 웹훅·자동화를 내장 플러그인으로 옮기기(`builtins`로 끔). 92·134의 계약 검증이 여기서 끝난다 |
+| 0.24.0 | 어드민 짝: `@mainsoft/agent-cms/admin`(프레임워크 무관 코어)과 `/react`(`defineAdminPlugin`), 자리 합치기, `add cms-plugin-page`의 catch-all 페이지, 플러그인 목록·설정·다시 시작 화면(`cms-plugins`), 작성자 도구(`@mainsoft/agent-cms/testing`의 `createTestCms`, `plugin init`, `examples/plugins/`) |
+
+필터 이름: `render.html`, `sitemap.entries`, `rest.doc`, `mcp.result`, `export.file`, `mail.message`. 하지 않는 것: 플러그인 마켓, 어드민에서 설치, 넓히는 권한 규칙, Payload식 `config => config`.
+
+**프레임워크 무관**: 서버는 웹 표준 `Request → Response`라 어디에나 붙는다(예제와 CI는 27번). 어드민은 0.24.0에서 프레임워크와 무관한 코어(`/admin`)와 React 판으로 나눈다. Vue·Svelte 판은 116번(묶음 6)에서 그 코어 위에 얹는다. 비유는 Auth.js의 `@auth/core`, TanStack Query의 `query-core`. (사용자 답을 기다리는 중: 이 나눔을 0.24.0에서 할지 묶음 6으로 미룰지. 지금 기준은 0.24.0에서 코어와 React만.)

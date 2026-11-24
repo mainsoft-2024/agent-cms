@@ -218,6 +218,17 @@ npx @mainsoft/agent-cms add --update    # update files you did not edit; yours g
 Missing shadcn parts are listed with the `npx shadcn add …` line to run
 (`--yes` runs it). `agent-cms.json` records what was copied.
 
+**Fonts.** `npx @mainsoft/agent-cms init` writes `app/cms-fonts.css`; import it
+in your admin layout (`import "../cms-fonts.css"`). The admin then uses
+[Wanted Sans](https://github.com/wanteddev/wanted-sans) (Korean and Latin in
+one family) and [Geist Mono](https://github.com/vercel/geist-font), both under
+the SIL Open Font License 1.1, loaded from jsDelivr and Google Fonts. It applies
+only while an admin screen is on the page (`CmsShell` sets the `cms-root`
+class; put it on a wrapper of your own for pages without the shell), so the
+rest of your app keeps its fonts. To use other fonts, change
+`--cms-font-sans` and `--cms-font-mono` in that file; to serve the files
+yourself, replace the two `@import` lines. `init --no-fonts` skips the file.
+
 The same screens install with the shadcn CLI, from any host that serves the
 registry (`npm run build:registry -- --base-url <url> --out <dir>` writes it).
 Files go to `<components>/cms/`; the shadcn parts and the screens an item
@@ -631,7 +642,7 @@ Signing secrets are stored encrypted with `secretsKey` (AES-256-GCM). Changing t
 
 An admin makes a webhook in the admin (`cms-webhooks`) or with `POST /webhooks`: a name, an https address, which events, which collections. The signing secret is shown then and can be read again from the same screen.
 
-**Events:** `doc.created`, `doc.updated`, `doc.published`, `doc.unpublished`, `doc.archived`, `doc.deleted`, `doc.restored`, `review.requested`, `review.approved`, `review.rejected`, `asset.uploaded`, `asset.moved`, `asset.deleted`, `release.published`, `comment.created`. No events checked means all of them.
+**Events:** `doc.created`, `doc.updated`, `doc.published`, `doc.unpublished`, `doc.archived`, `doc.deleted`, `doc.restored`, `review.requested`, `review.approved`, `review.rejected`, `asset.uploaded`, `asset.moved`, `asset.deleted`, `release.published`, `comment.created`. No events checked means all of them. **Only automations** (`events: ["automation"]`, 0.22.2) means none: the webhook gets only what an automation's "Send a webhook" action sends it. The automations screen can make such a webhook from the action itself.
 
 **What is sent.** Never the document's text:
 

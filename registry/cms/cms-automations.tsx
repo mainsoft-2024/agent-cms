@@ -6,7 +6,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, X } from "lucide-react";
+import { Lock, Plus, Webhook, X } from "lucide-react";
 import type { AutomationAction, AutomationCondition, AutomationRun, CmsAutomation } from "@mainsoft/agent-cms/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { errorMessage } from "./cms-messages";
 import { ConfirmDialog, PageHeader, StatusText, NativeSelect, DocPicker, type DocOption } from "./cms-parts";
 import { relativeTime, useAsync, useCms } from "./use-cms";
+import { WebhookCreatedDialog, WebhookDialog } from "./cms-webhooks";
 
 const SELECT = "h-9 min-w-0 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const OPS: AutomationCondition["op"][] = ["is", "is_not", "contains", "empty", "not_empty"];
@@ -87,7 +88,12 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
   const [confirming, setConfirming] = React.useState(false);
   const [testCol, setTestCol] = React.useState("");
   const runs = useAsync<AutomationRun[]>(() => client.automationRuns(auto.id, 20), [client, auto.id, auto.updatedAt]);
-  const hooks = useAsync(() => (me?.webhooks ? client.webhooks().then((r) => r.webhooks) : Promise.resolve([])), [client, me?.webhooks]);
+  // 0.22.2: the events too, for the "Create a webhook" dialog opened from an action.
+  const hooks = useAsync(() => (me?.webhooks ? client.webhooks().then((r) => r) : Promise.resolve(null)), [client, me?.webhooks]);
+  const webhooksOn = !!me?.webhooks;
+  /** The action row whose "Create a webhook" dialog is open. */
+  const [creatingFor, setCreatingFor] = React.useState<number | null>(null);
+  const [created, setCreated] = React.useState<{ name: string; secret: string } | null>(null);
   const releases = useAsync(() => client.releases().then((r) => r.filter((x) => x.state !== "published"), () => []), [client]);
   const cols = me?.collections ?? [];
   const [testDoc, setTestDoc] = React.useState<DocOption | null>(null);
@@ -125,12 +131,15 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
   const savedForm = React.useRef<string | null>(null);
   if (savedForm.current === null) savedForm.current = JSON.stringify(input());
   const unsaved = JSON.stringify(input()) !== savedForm.current;
+  // A webhook action with nothing picked would fail on every run: the server refuses it too.
+  const missingWebhook = webhooksOn && actions.some((a) => a.type === "webhook" && !a.target);
   const patchAt = <V,>(set: React.Dispatch<React.SetStateAction<V[]>>, i: number, p: Partial<V>) => set((l) => l.map((x, n) => (n === i ? { ...x, ...p } : x)));
   const actionLabel = (a: string) => lists.actionLabels[a] ?? t(`action.${a}` as never);
   const targets = (type: string): { id: string; label: string }[] | null =>
-    type === "webhook" ? (hooks.data ?? []).map((w) => ({ id: w.id, label: w.name })) : type === "add_to_release" ? (releases.data ?? []).map((r) => ({ id: r.id, label: r.name })) : type === "call" ? lists.functions.map((f) => ({ id: f, label: f })) : null;
+    type === "webhook" ? (hooks.data?.webhooks ?? []).map((w) => ({ id: w.id, label: w.name })) : type === "add_to_release" ? (releases.data ?? []).map((r) => ({ id: r.id, label: r.name })) : type === "call" ? lists.functions.map((f) => ({ id: f, label: f })) : null;
 
   return (
+    <>
     <form className="flex max-w-3xl flex-col gap-5" onSubmit={(e) => (e.preventDefault(), void run(async () => (await client.updateAutomation(auto.id, input()), (savedForm.current = JSON.stringify(input())), t("automation_saved"))))}>
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex min-w-0 flex-1 basis-full flex-col gap-1.5 sm:basis-0">
@@ -144,7 +153,7 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
         <Button type="button" variant="outline" className="text-destructive" onClick={() => setConfirming(true)}>
           {t("action_delete")}
         </Button>
-        <Button type="submit" disabled={busy}>
+        <Button type="submit" disabled={busy || missingWebhook}>
           {t("save")}
         </Button>
       </div>
@@ -204,12 +213,24 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
             <div key={i} className="flex flex-wrap items-center gap-2">
               <NativeSelect aria-label={t("automation_action")} className={SELECT} value={a.type} onChange={(e) => patchAt(setActions, i, { type: e.target.value, target: undefined, name: undefined, value: undefined })}>
                 {lists.actions.map((x) => (
-                  <option key={x} value={x}>
-                    {actionLabel(x)}
+                  <option key={x} value={x} disabled={x === "webhook" && !webhooksOn && a.type !== x}>
+                    {x === "webhook" && !webhooksOn ? t("automation_action_off", { action: actionLabel(x) }) : actionLabel(x)}
                   </option>
                 ))}
               </NativeSelect>
-              {opts ? (
+              {a.type === "webhook" && !webhooksOn ? null : a.type === "webhook" && hooks.data && !opts?.length ? (
+                // Nothing to pick yet: say so, and make one right here (it is picked when made).
+                <>
+                  <span className="flex h-9 items-center gap-2 rounded-md border border-dashed px-2.5 text-sm text-muted-foreground">
+                    <Webhook aria-hidden className="h-3.5 w-3.5" />
+                    {t("automation_webhook_none")}
+                  </span>
+                  <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={() => setCreatingFor(i)}>
+                    <Plus aria-hidden className="h-3.5 w-3.5" />
+                    {t("automation_webhook_create")}
+                  </Button>
+                </>
+              ) : opts ? (
                 <NativeSelect aria-label={t("automation_target")} className={SELECT} value={a.target ?? ""} onChange={(e) => patchAt(setActions, i, { target: e.target.value })}>
                   <option value="">{t("automation_pick")}</option>
                   {opts.map((o) => (
@@ -218,6 +239,12 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
                     </option>
                   ))}
                 </NativeSelect>
+              ) : null}
+              {a.type === "webhook" && webhooksOn && opts?.length ? (
+                <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={() => setCreatingFor(i)}>
+                  <Plus aria-hidden className="h-3.5 w-3.5" />
+                  {t("automation_webhook_create")}
+                </Button>
               ) : null}
               {a.type === "add_keyword" ? <Input aria-label={t("automation_keyword")} placeholder={t("automation_keyword")} className="w-40" value={a.name ?? ""} onChange={(e) => patchAt(setActions, i, { name: e.target.value })} /> : null}
               {a.type === "set_field" ? (
@@ -229,6 +256,17 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
               <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label={t("automation_remove_step")} onClick={() => setActions((l) => l.filter((_, n) => n !== i))}>
                 <X aria-hidden className="h-4 w-4" />
               </Button>
+              {a.type === "webhook" && !webhooksOn ? (
+                <div role="note" className="flex basis-full items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                  <Lock aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+                  <div className="flex flex-col gap-0.5">
+                    <span>{t("automation_webhook_off")}</span>
+                    <span className="text-xs text-muted-foreground">{t("automation_webhook_off_hint")}</span>
+                  </div>
+                </div>
+              ) : a.type === "webhook" && hooks.data && !a.target ? (
+                <p className="basis-full text-xs text-muted-foreground">{t("automation_webhook_needed")}</p>
+              ) : null}
             </div>
           );
         })}
@@ -316,5 +354,21 @@ function AutomationForm({ auto, lists, onChanged, onDeleted }: { auto: CmsAutoma
       </section>
       <ConfirmDialog open={confirming} onOpenChange={setConfirming} title={t("automation_delete_title", { name: auto.name })} description={t("automation_delete_text")} confirmLabel={t("action_delete")} destructive busy={busy} onConfirm={() => run(async () => (await client.removeAutomation(auto.id), onDeleted(), ""))} />
     </form>
+    {/* Outside the form: the dialog has a form of its own, and submit events bubble through portals. */}
+    <WebhookDialog
+      target={creatingFor === null ? null : "new"}
+      forAutomation
+      events={hooks.data?.events ?? []}
+      collections={cols.map((c) => ({ slug: c.slug, label: c.label }))}
+      onClose={() => setCreatingFor(null)}
+      onSaved={(w, secret) => {
+        if (creatingFor !== null) patchAt(setActions, creatingFor, { target: w.id });
+        setCreatingFor(null);
+        if (secret) setCreated({ name: w.name, secret });
+        hooks.reload();
+      }}
+    />
+    <WebhookCreatedDialog created={created} onClose={() => setCreated(null)} />
+    </>
   );
 }

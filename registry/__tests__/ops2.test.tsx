@@ -114,6 +114,54 @@ test("automations: make one on the screen; a publish that matches runs on the ne
   assert.equal((await s.cms.automations.list(admin)).automations.length, 0);
 });
 
+test("automations 0.22.2: \"Send a webhook\" with no webhook yet makes one right there, picks it, and only then saves", async () => {
+  const s = makeServer({ webhooks: true });
+  const auto = await s.cms.automations.create(admin, { name: "Tell Slack", trigger: { event: "doc.published", collection: null }, actions: [] });
+  const user = userEvent.setup();
+  renderWith(s, <CmsAutomations />);
+  await screen.findByDisplayValue("Tell Slack");
+  await user.click(screen.getByRole("button", { name: "Add an action" }));
+  await user.selectOptions(screen.getByLabelText("Do"), "webhook");
+  await screen.findByText("No webhook to send to yet");
+  await screen.findByText("Pick a webhook to save.");
+  assert.ok((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled, "nothing to send to: no saving");
+
+  await user.click(screen.getByRole("button", { name: "Create a webhook" }));
+  const dlg = await screen.findByRole("dialog", { name: "New webhook" });
+  assert.match(dlg.textContent ?? "", /Once created, it is picked for this action\./);
+  // "Only automations" comes first and is picked.
+  const only = within(dlg).getByRole("radio", { name: "Only automations" });
+  assert.equal(only.getAttribute("aria-checked"), "true");
+  await user.type(within(dlg).getByLabelText("Name"), "Slack");
+  await user.type(within(dlg).getByLabelText("Address"), "https://hooks.example/slack");
+  await user.click(within(dlg).getByRole("button", { name: "Create and pick" }));
+  // The secret is shown once; the new webhook is picked in the row.
+  const secret = await screen.findByRole("dialog", { name: /Slack/ });
+  await user.click(within(secret).getAllByRole("button", { name: "Close" }).at(-1)!);
+  await waitFor(() => assert.equal((screen.getByLabelText("Target") as HTMLSelectElement).selectedOptions[0]?.textContent, "Slack"));
+  const [made] = await s.cms.webhooks.list(admin);
+  assert.deepEqual(made.events, ["automation"]);
+  assert.equal((await s.cms.automations.list(admin)).automations[0].actions.length, 0, "nothing saved by making the webhook");
+
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Saved.");
+  const saved = (await s.cms.automations.list(admin)).automations.find((a) => a.id === auto.id)!;
+  assert.deepEqual(saved.actions, [{ type: "webhook", target: made.id }]);
+});
+
+test("automations 0.22.2: webhooks off on the server: the action says so instead of an empty list", async () => {
+  const s = makeServer();
+  await s.cms.automations.create(admin, { name: "Old", trigger: { event: "doc.published", collection: null }, actions: [{ type: "webhook", target: "gone" }] });
+  renderWith(s, <CmsAutomations />, { messages: ko });
+  await screen.findByDisplayValue("Old");
+  const note = await screen.findByRole("note");
+  assert.match(note.textContent ?? "", /이 서버는 웹훅이 꺼져 있음\. 이 동작은 실행되지 않음\./);
+  assert.match(note.textContent ?? "", /secretsKey/);
+  assert.ok(screen.queryByLabelText("대상") === null, "no empty list to pick from");
+  const opt = within(screen.getByLabelText("동작")).getByRole("option", { name: "웹훅 보내기 (꺼짐)" }) as HTMLOptionElement;
+  assert.ok(opt.selected);
+});
+
 test("automations: Korean strings, and someone who is not an admin is told so", async () => {
   const s = makeServer();
   await s.cms.automations.create(admin, { name: "알림", trigger: { event: "schedule.weekly", collection: null }, actions: [{ type: "call", target: "notify" }] });
