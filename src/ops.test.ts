@@ -175,6 +175,31 @@ test("webhooks: a publish goes out signed, without the body, and verifies", asyn
   assert.equal((await cms.webhooks.deliveries(admin, webhook.id)).length, 0);
 });
 
+test("webhooks 0.22.2: \"only automations\" gets what an automation sends and no event; the subscription does not mix", async () => {
+  const { cms, api, sent } = setup();
+  const { webhook } = await cms.webhooks.create(admin, { name: "Slack", url: "https://hooks.test/slack", events: ["automation"] });
+  assert.deepEqual(webhook.events, ["automation"]);
+  // Mixed with events it stays "only automations": the two do not combine.
+  assert.deepEqual((await cms.webhooks.update(admin, webhook.id, { events: ["doc.published", "automation"] })).events, ["automation"]);
+  assert.equal(await code(cms.webhooks.update(admin, webhook.id, { events: ["nope" as never] })), "webhook_event_unknown");
+  // The same over REST (the screen's way).
+  const r = await api.createWebhook({ name: "Rest", url: "https://hooks.test/rest", events: ["automation"] });
+  assert.deepEqual(r.webhook.events, ["automation"]);
+  await api.removeWebhook(r.webhook.id);
+
+  await cms.automations.create(admin, { name: "Tell Slack", enabled: true, trigger: { event: "doc.published", collection: "guide" }, actions: [{ type: "webhook", target: webhook.id }] });
+  // An action that sends to no webhook is refused, not saved to fail on every run.
+  assert.equal(await code(cms.automations.create(admin, { name: "Broken", trigger: { event: "doc.published", collection: null }, actions: [{ type: "webhook" }] })), "automation_invalid");
+
+  await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" }, { publish: true });
+  await tick();
+  await cms.cron(); // the automation runs and queues the delivery
+  await cms.cron(); // the delivery goes out
+  assert.equal(sent.length, 1, "one message: the automation's, not the publish event's");
+  assert.equal(sent[0].url, "https://hooks.test/slack");
+  assert.equal(sent[0].headers.get("x-cms-event"), "doc.published");
+});
+
 test("webhooks: a failing address is tried again on the schedule, then switched off after 20 in a row", async () => {
   const { cms, repo, sent, state, minutes } = setup({ answer: () => 500 });
   const { webhook } = await cms.webhooks.create(admin, { name: "Down", url: "https://hooks.test/down" });

@@ -1,0 +1,19 @@
+/* agent-cms admin fonts (0.22.2). Wanted Sans and Geist Mono, SIL Open Font License 1.1.
+   Applies only while an admin screen is on the page; change the two variables to use other fonts. */
+@import url("https://cdn.jsdelivr.net/gh/wanteddev/wanted-sans@v1.0.3/packages/wanted-sans/fonts/webfonts/variable/split/WantedSansVariable.min.css");
+@import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400..600&display=swap");
+
+body:has(.cms-root),
+.cms-root {
+  --cms-font-sans: "Wanted Sans Variable", "Wanted Sans", ui-sans-serif, system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --cms-font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--cms-font-sans);
+}
+body:has(.cms-root) .font-sans,
+.cms-root .font-sans {
+  font-family: var(--cms-font-sans);
+}
+body:has(.cms-root) :is(.font-mono, code, kbd, pre, samp),
+.cms-root :is(.font-mono, code, kbd, pre, samp) {
+  font-family: var(--cms-font-mono);
+}

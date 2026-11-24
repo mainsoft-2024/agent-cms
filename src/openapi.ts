@@ -12,7 +12,7 @@ import { z } from "zod";
 import { coreOf, PREVIEW_TTLS, BULK_ACTIONS, type CmsLike } from "./cms";
 import { ERROR_CODES } from "./errors";
 import { toJsonSchema } from "./mcp";
-import { DOC_STATUSES, KEY_SCOPES, WEBHOOK_EVENTS, type Actor } from "./types";
+import { DOC_STATUSES, KEY_SCOPES, WEBHOOK_AUTOMATION_ONLY, WEBHOOK_EVENTS, type Actor } from "./types";
 import { SCHEMA_VERSION } from "./schema-version";
 import { VERSION } from "./version";
 
@@ -93,7 +93,7 @@ const automation = z.object({
   actions: z.array(z.object({ type: z.string(), target: z.string().optional(), name: z.string().optional(), value: z.string().optional() })).max(10).optional(),
 });
 const role = z.object({ name: z.string().optional(), admin: z.boolean().optional(), permissions: z.record(z.record(z.boolean())).optional() });
-const webhook = z.object({ name: z.string(), url: z.string(), events: z.array(z.enum(WEBHOOK_EVENTS)).optional(), collections: z.array(z.string()).optional(), enabled: z.boolean().optional() });
+const webhook = z.object({ name: z.string(), url: z.string(), events: z.array(z.enum([...WEBHOOK_EVENTS, WEBHOOK_AUTOMATION_ONLY])).optional(), collections: z.array(z.string()).optional(), enabled: z.boolean().optional() });
 
 const ref = (name: string): Json => ({ $ref: `#/components/schemas/${name}` });
 const obj = (properties: Json, required: string[] = Object.keys(properties)): Json => ({ type: "object", properties, required });

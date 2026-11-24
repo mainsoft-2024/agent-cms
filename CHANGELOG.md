@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.22.2
+
+### Fixed
+- **Automations: "Send a webhook" could not be set up.** The target was a list of existing webhooks only, empty when there were none or when webhooks were off, with nothing to say why. Now, with no webhook yet, the action says so and has **Create a webhook**: the webhook dialog opens from the action, and **Create and pick** makes the webhook and picks it for that action (the signing secret is shown once, as on the webhooks screen). With webhooks, the list is there with **Create a webhook** next to it. An action with no webhook picked cannot be saved ("Pick a webhook to save."); the server already refused it. On a server without `secretsKey` the action shows as "Send a webhook (off)" with the reason and what a developer sets, instead of an empty list.
+
+### Added
+- **Webhooks that only automations send to**: `events: ["automation"]` (`WEBHOOK_AUTOMATION_ONLY`, type `WebhookSubscription`) on `cms.webhooks.create/update`, `POST/PATCH /webhooks` and the client. It matches no event, so the webhook gets only what automations send. It does not combine with events (sent together, it stays `["automation"]`). The webhook dialog has it as a third choice ("Only automations" / "자동화가 보낼 때만"), first and picked when opened from an automation. No schema change.
+- **Admin fonts**: `npx @mainsoft/agent-cms init` writes `app/cms-fonts.css` (Wanted Sans and Geist Mono, SIL OFL 1.1) and says to import it in the admin layout. It applies only while an admin screen is on the page: `CmsShell` now sets the `cms-root` class (also on its signed-out page), and dialogs portalled to `<body>` follow through `body:has(.cms-root)`. Change `--cms-font-sans` / `--cms-font-mono` to use other fonts; `init --no-fonts` skips the file. `CMS_FONTS_CSS` in `src/fonts.ts` is the same text. The example app uses it.
+
+### Changed
+- `cms-automations` now depends on `cms-webhooks` (it reuses its `WebhookDialog` and `WebhookCreatedDialog`, now exported). Run `npx @mainsoft/agent-cms add --update` to get both.
+
 ## 0.22.1
 
 ### Changed

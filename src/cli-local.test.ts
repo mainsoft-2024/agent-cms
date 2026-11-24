@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { runCli } from "./cli";
 import type { Registry, RegistryItem } from "./registry";
 import { buildPublicRegistry, resolveItems, rewriteImports, shadcnParts, toShadcnItem } from "./registry";
+import { CMS_FONTS_CSS } from "./fonts";
 import { VERSION } from "./version";
 
 function app(o: { src?: boolean } = {}) {
@@ -131,10 +132,29 @@ test("init writes the config, route, schema re-export and .env lines once", asyn
   assert.match(readFileSync(join(dir, "src/lib/cms.ts"), "utf8"), /visibility: "public"/);
   assert.match(readFileSync(join(dir, "src/lib/cms-schema.ts"), "utf8"), /cmsAudit/);
   assert.doesNotMatch(readFileSync(join(dir, "src/lib/cms-schema.ts"), "utf8"), /Gaps/);
+  // 0.22.2: the admin fonts, scoped to the admin and said where to import.
+  const css = readFileSync(join(dir, "src/app/cms-fonts.css"), "utf8");
+  assert.match(css, /Wanted Sans Variable/);
+  assert.match(css, /Geist Mono/);
+  assert.match(css, /body:has\(\.cms-root\)/);
+  assert.ok(css.trimStart().startsWith("/*") && css.indexOf("@import") < css.indexOf("{"), "@import comes before any rule");
+  assert.match(lines.join("\n"), /import "\.\.\/cms-fonts\.css" in your admin layout/);
   lines.length = 0;
   await runCli(["init"], quiet(dir, registry("1"), lines));
-  assert.ok(lines.filter((l) => l.startsWith("skip")).length === 4);
+  assert.ok(lines.filter((l) => l.startsWith("skip")).length === 5);
   assert.equal(readFileSync(join(dir, ".env.example"), "utf8").match(/AGENT_CMS_KEY=/g)?.length, 1);
+});
+
+test("the example app's cms-fonts.css is the one init writes", () => {
+  assert.equal(readFileSync(join(import.meta.dirname, "../examples/next/app/cms-fonts.css"), "utf8"), CMS_FONTS_CSS);
+});
+
+test("init --no-fonts leaves the fonts to the app", async () => {
+  const dir = app();
+  const lines: string[] = [];
+  assert.equal(await runCli(["init", "--no-fonts"], quiet(dir, registry("1"), lines)), 0);
+  assert.ok(!existsSync(join(dir, "app/cms-fonts.css")));
+  assert.doesNotMatch(lines.join("\n"), /cms-fonts/);
 });
 
 test("migrate print needs no database; doctor without one explains", async () => {

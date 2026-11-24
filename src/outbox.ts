@@ -8,7 +8,7 @@ import type { CmsJobs } from "./jobs";
 import { assertPublicUrl, FetchGuardError, type ResolveHost } from "./net-guard";
 import type { CmsRepo } from "./repo";
 import type { Sealer } from "./secrets";
-import { WEBHOOK_EVENTS, type Actor, type AuditAction, type CmsWebhook, type WebhookDelivery, type WebhookEvent } from "./types";
+import { WEBHOOK_AUTOMATION_ONLY, WEBHOOK_EVENTS, type Actor, type AuditAction, type CmsWebhook, type WebhookDelivery, type WebhookEvent, type WebhookSubscription } from "./types";
 import { VERSION } from "./version";
 import { signWebhook, type WebhookPayload } from "./webhooks";
 
@@ -32,7 +32,8 @@ export type WebhookView = Omit<CmsWebhook, "secretEnc">;
 export interface WebhookInput {
   name: string;
   url: string;
-  events?: WebhookEvent[];
+  /** Empty = every event. `["automation"]` = only what automations send (0.22.2). */
+  events?: WebhookSubscription[];
   collections?: string[];
   enabled?: boolean;
 }
@@ -88,9 +89,10 @@ export function createOutbox(ctx: OutboxContext) {
       out.url = new URL(i.url).toString();
     }
     if (i.events !== undefined) {
-      const bad = i.events.find((e) => !(WEBHOOK_EVENTS as readonly string[]).includes(e));
+      const bad = i.events.find((e) => e !== WEBHOOK_AUTOMATION_ONLY && !(WEBHOOK_EVENTS as readonly string[]).includes(e));
       if (bad) throw fail("webhook_event_unknown", { event: bad });
-      out.events = [...new Set(i.events)];
+      // "Only automations" is a choice of its own: it does not mix with events.
+      out.events = i.events.includes(WEBHOOK_AUTOMATION_ONLY) ? [WEBHOOK_AUTOMATION_ONLY] : [...new Set(i.events)];
     }
     if (i.collections !== undefined) {
       const known = ctx.collections();

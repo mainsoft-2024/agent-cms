@@ -11,7 +11,7 @@
  */
 import type { WebhookEvent } from "./types";
 
-export { WEBHOOK_EVENTS, type WebhookEvent } from "./types";
+export { WEBHOOK_AUTOMATION_ONLY, WEBHOOK_EVENTS, type WebhookEvent, type WebhookSubscription } from "./types";
 
 export interface WebhookPayload {
   /** The same on every attempt of one delivery: use it to ignore repeats. */

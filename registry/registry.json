@@ -624,7 +624,8 @@
         "input",
         "label",
         "dialog",
-        "cms-lib"
+        "cms-lib",
+        "cms-webhooks"
       ],
       "files": [
         {
