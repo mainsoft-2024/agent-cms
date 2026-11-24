@@ -24,7 +24,7 @@ import { createPluginHost, type PluginHost } from "./plugins";
 import { createSealer } from "./secrets";
 import { PUBLIC_EVENTS, type CacheAdapter, type CacheOptions, type ChangeEvent, type ChangesOptions } from "./changes";
 import { base64url, fromBase64url, fromUtf8, hex, hmacSha256, sha256, timingSafeEqual } from "./crypto";
-import type { z, ZodTypeAny } from "zod";
+import { z as zod, type z, type ZodTypeAny } from "zod";
 import { fieldChanges, hunks, splitLines, unifiedDiff, type FieldChange, type Hunk } from "./diff";
 import { CmsError, formatMessage, isCmsError, type CmsErrorCode, type CmsErrorOptions, type Diagnostic, type ErrorParams, type Messages } from "./errors";
 import { displayPrefix, generateKey, hashKey } from "./keys";
@@ -414,7 +414,9 @@ export type CmsTelemetry =
   | { type: "error"; where: string; message: string }
   | { type: "cache"; collection: string; hit: boolean }
   | { type: "search"; ms: number; q: string; hits: number; collections: number }
-  | { type: "index"; ms: number; documents: number; units: number };
+  | { type: "index"; ms: number; documents: number; units: number }
+  /** 0.23.0: a line a plugin logged (`ctx.log`). */
+  | { type: "plugin"; plugin: string; level: "debug" | "info" | "warn" | "error"; message: string; data?: Record<string, unknown> };
 
 /** How long a missing change-log number may still be committing before it counts as rolled back. */
 // A number missing from the change log for less than this is a transaction still committing
@@ -887,8 +889,54 @@ export function createCmsCore(opts: CreateCmsOptions) {
   dayIn(timeZone, new Date()); // throws RangeError at boot on an unknown zone
   if (opts.previewSecret !== undefined && opts.previewSecret.length < 32) throw new Error("[agent-cms] previewSecret must be at least 32 characters");
 
+  // Made before the collections are read; plugins get the CMS (`ctx.cms`) once it exists (plugins.ts).
+  // eslint-disable-next-line prefer-const
+  let pluginHost: PluginHost = null!;
+  /** A collection with what plugins add to it: fields (and their admin labels), hooks, and a per-reader mark for access rules. */
+  function withPlugins(c: AnyCollection): AnyCollection {
+    const added = pluginHost.fields.filter((f) => f.collection === c.slug);
+    const hooks = pluginHost.hooksFor(c.slug);
+    const ruled = pluginHost.hasAccess(c.slug);
+    if (!added.length && !Object.keys(hooks).length && !ruled) return c;
+    let fields = c.fields as ZodTypeAny | undefined;
+    if (added.length) {
+      const shape = Object.fromEntries(added.map((f) => [f.key, f.schema]));
+      const own = fields as { extend?: (s: Record<string, ZodTypeAny>) => ZodTypeAny; shape?: Record<string, unknown> } | undefined;
+      if (own && typeof own.extend !== "function") throw new Error(`[agent-cms] plugin ${added[0].plugin}: collection "${c.slug}" has fields that are not a z.object(), so a field cannot be added`);
+      for (const f of added) if (own?.shape && f.key in own.shape) throw new Error(`[agent-cms] plugin ${f.plugin}: collection "${c.slug}" already has the field "${f.key}"`);
+      fields = own ? own.extend!(shape) : zod.object(shape);
+    }
+    const mergedHooks = { ...(c.hooks ?? {}) } as Record<string, unknown[]>;
+    for (const [k, fns] of Object.entries(hooks)) mergedHooks[k] = [...(mergedHooks[k] ?? []), ...(fns ?? [])];
+    const adminFields = { ...(c.admin?.fields ?? {}) };
+    for (const f of added) if (f.admin && !adminFields[f.key]) adminFields[f.key] = f.admin;
+    return {
+      ...c,
+      fields,
+      hooks: mergedHooks as AnyCollection["hooks"],
+      ...(added.some((f) => f.admin) ? { admin: { ...(c.admin ?? {}), fields: adminFields } } : {}),
+      // A rule that depends on the reader: lists and caches then check each document (the rule itself runs in `can`).
+      ...(ruled && !c.access?.read ? { access: { ...(c.access ?? {}), read: (a: { actor: Actor; collection: string; doc?: CmsDoc | null }) => (c.visibility === "public" || a.actor.kind === "system") } } : {}),
+    } as AnyCollection;
+  }
+
+  // Plugins are set up before the collections are read: they can add collections, fields and hooks.
+  const appSlugs = new Set(opts.collections.map((c) => c.slug));
+  pluginHost = createPluginHost(opts.plugins ?? [], {
+    cms: () => api,
+    secrets: () => sealer,
+    repo: () => repo,
+    taken: (name) => RESERVED_ROUTES.has(name) || appSlugs.has(name),
+    listen: (event, fn, plugin) => void eventListeners.push({ event, fn, plugin }),
+    enqueue: (kind, payload, o) => jobs.enqueue(kind, payload, o),
+    report,
+    log: (e) => telemetry({ type: "plugin", ...e }),
+    now,
+    startTimeoutMs: opts.pluginStartTimeoutMs,
+  });
+
   // Fail closed at boot: every collection says who may read it.
-  for (const c of opts.collections) {
+  for (const c of [...opts.collections.map(withPlugins), ...pluginHost.collections.map((x) => withPlugins(x.config))]) {
     if (collections.has(c.slug)) throw new Error(`[agent-cms] two collections are named "${c.slug}"`);
     if (c.visibility !== "public" && c.visibility !== "internal") {
       throw new Error(`[agent-cms] collection "${c.slug}": set visibility to "public" or "internal" (required since 0.6.0)`);
@@ -903,6 +951,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     }
     collections.set(c.slug, c);
   }
+  for (const n of pluginHost.namedCollections()) for (const name of n.names) if (!collections.has(name)) throw new Error(`[agent-cms] plugin ${n.plugin}: there is no collection "${name}"`);
+  for (const f of pluginHost.fields) if (!collections.has(f.collection)) throw new Error(`[agent-cms] plugin ${f.plugin}: there is no collection "${f.collection}" to add the field "${f.key}" to`);
 
   const fail = (code: CmsErrorCode, params: ErrorParams = {}, o: CmsErrorOptions = {}) => new CmsError(code, params, { messages, ...o });
   const trashDays = Math.max(0, Math.floor(opts.trash?.days ?? 30));
@@ -971,8 +1021,13 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   function can(actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null): boolean {
-    const c = collection(col);
     if (actor.kind === "system") return true;
+    if (!baseCan(actor, col, what, doc)) return false;
+    // 0.23.0: plugins' access rules can only narrow.
+    return pluginHost.allows({ actor, collection: col, op: what, doc });
+  }
+  function baseCan(actor: Actor, col: string, what: "read" | "write" | "publish" | "delete", doc?: CmsDoc | null): boolean {
+    const c = collection(col);
     if (c.managed && what !== "read") return false;
     if (actor.kind === "key") {
       if (!keyCovers(actor, col)) return false;
@@ -3192,6 +3247,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   const sealer = opts.secretsKey ? createSealer(opts.secretsKey) : null;
   const jobs = createJobs({ repo, now, report, event: telemetry });
+  for (const j of pluginHost.jobs) jobs.define(j.kind, j.def);
   const outbox = createOutbox({
     repo,
     now,
@@ -3284,6 +3340,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     sendWebhook: (id, e) => outbox.send(id, e),
     options: opts.automations ?? {},
   });
+  for (const a of pluginHost.actions) automations.addAction(a.name, { label: a.label, run: a.run });
   const formsOn = opts.forms ? (typeof opts.forms === "object" ? opts.forms : {}) : null;
   const forms = createForms({
     repo,
@@ -3323,6 +3380,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   const stats = createStats({ repo, now, dayOf: (d) => dayIn(timeZone, d), ready: ensureSchema, collections: () => [...collections.keys()], can, counts, isAdmin, generation: () => writeGen, publicView: fallbackView, rulesPerDocument: (c: string) => { const x = collections.get(c); return !!(x?.access?.read || x?.access?.write || x?.access?.publish); } });
 
   const transfer = createTransfer({
+    exportFile: (f, actor) => (pluginHost.filters("export.file") ? pluginHost.filter("export.file", f, { actor }) : Promise.resolve(f)),
     repo,
     now,
     fail,
@@ -3385,8 +3443,6 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // ── plugins (plugin.ts) ───────────────────────────────────────────────────
 
-  // Made at the end of createCmsCore, once the CMS a plugin is given exists (plugins.ts).
-  let pluginHost: PluginHost = null!;
 
   /** Wrap a write so the document it returns is projected for the actor who asked. */
   /** The state of a document and nothing of its content: what a caller who may change but not read it gets back. */
@@ -3959,7 +4015,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     seoFor,
     /** `seoFor(doc)` under its 0.21.0 first-pass name. */
     seoOf: (doc: SeoSource) => model.seoFor(doc),
-    sitemap: (origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string } = {}) => Promise.resolve(ensureSchema()).then(() => model.sitemap(origin, o)),
+    sitemap: (origin: string, o: { collections?: readonly string[]; page?: number | null; self?: string } = {}) =>
+      Promise.resolve(ensureSchema()).then(() => model.sitemap(origin, { ...o, filter: pluginHost.filters("sitemap.entries") ? (urls) => pluginHost.filter("sitemap.entries", urls, { origin }) : undefined })),
     suggestSlug,
     /** Old heading anchors by current anchor (public renders keep old links working). */
     anchorAliases: (documentId: string) => model.aliasMap(documentId),
@@ -4208,7 +4265,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
     rolesOf: (userId: string, email?: string | null) => roles.of(userId, email),
     /** Fails with `schema_outdated` when the database needs a migration. */
     /** Records a plugin action (a restart) in the audit log, under the plugin's name. */
-    auditPlugin(actor: Actor, action: "plugin.restart", plugin: string, detail: Record<string, unknown> = {}) {
+    auditPlugin(actor: Actor, action: "plugin.restart" | "plugin.settings", plugin: string, detail: Record<string, unknown> = {}) {
       audit(actor, action, { slug: plugin, detail });
     },
     /**
@@ -4234,17 +4291,6 @@ export function createCmsCore(opts: CreateCmsOptions) {
     repo,
   };
 
-  pluginHost = createPluginHost(opts.plugins ?? [], {
-    cms: api,
-    secrets: sealer,
-    taken: (name) => RESERVED_ROUTES.has(name) || collections.has(name),
-    listen: (event, fn, plugin) => void eventListeners.push({ event, fn, plugin }),
-    defineJob: (kind, def) => jobs.define(kind, def),
-    enqueue: (kind, payload, o) => jobs.enqueue(kind, payload, o),
-    report,
-    now,
-    startTimeoutMs: opts.pluginStartTimeoutMs,
-  });
   return api;
 }
 

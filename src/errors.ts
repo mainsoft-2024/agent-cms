@@ -144,6 +144,7 @@ export const ERROR_CODES = {
   webhook_not_found: "not_found",
   plugin_unknown: "not_found",
   plugin_failed: "internal",
+  plugin_settings_invalid: "invalid",
   role_not_found: "not_found",
   automation_not_found: "not_found",
   delivery_not_found: "not_found",

@@ -144,6 +144,7 @@ export const en: Messages = {
   webhook_not_found: "Webhook not found",
   plugin_unknown: "No plugin named {plugin}",
   plugin_failed: "The plugin {plugin} is not running: {reason}",
+  plugin_settings_invalid: "Settings of {plugin} do not fit: {issues}",
   delivery_not_found: "Delivery not found",
   forbidden_webhooks: "Only an admin can manage webhooks",
   secrets_key_missing: "Set `secretsKey` in createCms first. Signing secrets are stored encrypted with it",

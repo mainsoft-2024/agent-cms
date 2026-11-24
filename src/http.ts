@@ -492,6 +492,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
     if (opts.auth && actor.kind === "user" && (await opts.auth.hasSession(req)) && !(await opts.auth.confirmed(req))) throw new CmsError("reauth_required", {}, { status: 401, messages: core.messages });
   };
   const base = (opts.basePath ?? "/api/cms").replace(/\/$/, "");
+  /** 0.23.0: plugins' `rest.doc` filters, on documents REST sends out. */
+  const restDoc = (actor: Actor, doc: CmsDoc, draft: boolean, list: boolean) => (core.plugins.filters("rest.doc") ? core.plugins.filter("rest.doc", doc, { actor, draft, list }) : Promise.resolve(doc));
   /** A `required` plugin that is not running stops every request with 503 `plugin_failed`; the next request tries again. */
   const startPlugins = () =>
     core.plugins.start().catch((err: unknown) => {
@@ -997,7 +999,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
             if (q.get("fields") === "summary") {
               return json(await core.page(actor, col, { ...lo, limit: Number(q.get("limit") ?? 50) || 50, cursor: q.get("cursor"), hits: q.get("hits") === "1" }));
             }
-            const docs = await core.list(actor, col, lo);
+            const docs = await Promise.all((await core.list(actor, col, lo)).map((d) => restDoc(actor, d, !!lo.drafts, true)));
             let counts: Map<string, number> | null = null;
             if (q.get("hits") === "1" && core.can(actor, col, "write")) counts = await core.hitCounts(actor, col, 7);
             return json({ docs: docs.map((d) => ({ ...wire(d), hits7d: counts?.get(d.id) ?? undefined })) });
@@ -1036,8 +1038,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         if (slug && seg.length === 3) {
           if (m === "GET" || m === "HEAD") {
             const raw = await core.get(actor, col, seg[2], { draft: q.get("draft") === "1", snippets: q.get("snippets") === "raw" ? "raw" : undefined, locale, fallback: q.get("fallback") === "1" });
-            const doc = await core.expand(actor, raw, expandOf(q), q.get("draft") === "1");
-            const tag = contentTag(raw, doc, expandOf(q).length > 0 || (q.get("draft") !== "1" && q.get("snippets") !== "raw" && core.collections().some((c) => c.snippets)));
+            const doc = await restDoc(actor, await core.expand(actor, raw, expandOf(q), q.get("draft") === "1"), q.get("draft") === "1", false);
+            const tag = contentTag(raw, doc, core.plugins.filters("rest.doc") || expandOf(q).length > 0 || (q.get("draft") !== "1" && q.get("snippets") !== "raw" && core.collections().some((c) => c.snippets)));
             if (req.headers.get("if-none-match") === tag) return new Response(null, { status: 304, headers: { etag: tag } });
             // Editors also learn which open release the document is in.
             const release = q.get("draft") === "1" && core.can(actor, col, "write", doc) ? await core.releases.of(doc.id) : undefined;
@@ -1207,7 +1209,7 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         const sl = seg[1];
         if (seg.length === 2 && (m === "GET" || m === "HEAD")) {
           const doc = await core.single(actor, sl, { draft: q.get("draft") === "1" });
-          return json({ doc: wire(await core.expand(actor, doc, expandOf(q), q.get("draft") === "1")) });
+          return json({ doc: wire(await restDoc(actor, await core.expand(actor, doc, expandOf(q), q.get("draft") === "1"), q.get("draft") === "1", false)) });
         }
         if (seg.length === 2 && m === "PUT") {
           // expectedVersion 0: what GET says before the first save ("create it").
@@ -1370,6 +1372,21 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           const p = core.plugins.get(seg[1]);
           if (!p) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
           return json({ plugin: p });
+        }
+        if (seg.length === 3 && seg[2] === "settings" && m === "GET") {
+          if (!core.plugins.get(seg[1])) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
+          return json({ settings: await core.plugins.settings(seg[1]) }, 200, { "cache-control": "no-store" });
+        }
+        if (seg.length === 3 && seg[2] === "settings" && m === "PUT") {
+          if (!core.plugins.get(seg[1])) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
+          const b = await body(req, z.object({ values: z.record(z.unknown()) }));
+          const p = await core.plugins.saveSettings(seg[1], b.values).catch((err: { invalid?: string }) => {
+            if (err?.invalid) throw new CmsError("plugin_settings_invalid", { plugin: seg[1], issues: err.invalid }, { messages: core.messages });
+            throw err;
+          });
+          if (!p) throw new CmsError("plugin_settings_invalid", { plugin: seg[1], issues: "this plugin has no settings" }, { messages: core.messages });
+          core.auditPlugin(actor, "plugin.settings", seg[1], { keys: Object.keys(b.values), state: p.state });
+          return json({ plugin: p, settings: await core.plugins.settings(seg[1]) });
         }
         if (seg.length === 3 && seg[2] === "restart" && m === "POST") {
           const p = await core.plugins.restart(seg[1]);

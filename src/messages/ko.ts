@@ -194,6 +194,7 @@ export const ko: Messages = {
   webhook_not_found: "웹훅을 찾을 수 없음",
   plugin_unknown: "{plugin} 플러그인 없음",
   plugin_failed: "{plugin} 플러그인이 실행 중이 아님: {reason}",
+  plugin_settings_invalid: "{plugin} 설정이 맞지 않음: {issues}",
   delivery_not_found: "전송 기록을 찾을 수 없음",
   forbidden_webhooks: "웹훅은 관리자만 관리할 수 있음",
   secrets_key_missing: "먼저 createCms에 `secretsKey` 설정 필요. 서명 키는 이 값으로 암호화해 저장함",

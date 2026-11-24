@@ -64,6 +64,8 @@ export interface ImportItem {
 }
 
 export interface TransferContext {
+  /** 0.23.0: plugins' `export.file` filters (each file of an export, before it is sent). */
+  exportFile?: (f: TransferFile, actor: Actor) => Promise<TransferFile>;
   repo: CmsRepo;
   now: () => Date;
   fail: (code: CmsErrorCode, params?: ErrorParams, o?: CmsErrorOptions) => Error;
@@ -146,6 +148,15 @@ export function createTransfer(ctx: TransferContext) {
       const assets = await ctx.assetsOf(actor, docs);
       if (assets.length) files.push({ path: "_assets/manifest.json", text: JSON.stringify({ assets }, null, 2) });
       files.push({ path: "_meta.json", text: JSON.stringify({ agentCms: VERSION, exportedAt: ctx.now().toISOString(), collections: cols, documents: docs.length, drafts: !!o.drafts }, null, 2) });
+      if (ctx.exportFile) {
+        const out: TransferFile[] = [];
+        for (const f of files) {
+          const g = await ctx.exportFile(f, actor);
+          // A file keeps its path: an import finds documents by it.
+          if (g && typeof g.text === "string") out.push({ path: f.path, text: g.text });
+        }
+        return { files: out, documents: docs.length };
+      }
       return { files, documents: docs.length };
     },
 

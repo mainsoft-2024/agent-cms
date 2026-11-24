@@ -481,9 +481,11 @@ export function createAuth(o: AuthOptions) {
       reset: (url: string) => ({ subject: `${appName} 비밀번호 재설정`, text: `이 계정의 비밀번호 재설정 요청이 있었음.\n\n새 비밀번호 정하기 (한 번만, 1시간 동안 유효):\n${url}\n\n본인이 아니면 이 메일은 무시해도 됨. 아무것도 바뀌지 않음.` }),
     },
   };
-  async function mail(m: Mail): Promise<boolean> {
+  async function mail(m: Mail, kind: "invite" | "reset"): Promise<boolean> {
     if (!o.sendMail) return false;
     try {
+      // 0.23.0: plugins' `mail.message` filters (a footer, another wording, a copy address).
+      if (core.plugins.filters("mail.message")) m = { ...(await core.plugins.filter("mail.message", m, { kind })), to: m.to };
       await o.sendMail(m);
       return true;
     } catch (e) {
@@ -726,7 +728,7 @@ export function createAuth(o: AuthOptions) {
       // The same answer either way: whether an account exists is not told.
       if (user && !user.disabledAt && o.sendMail) {
         const t = await newToken("reset", { userId: user.id }, 60 * MIN);
-        void mail({ to: user.email, ...MAILS[locale].reset(link(req, "reset", t.raw)) });
+        void mail({ to: user.email, ...MAILS[locale].reset(link(req, "reset", t.raw)) }, "reset");
       }
       return json({ ok: true, mail: !!o.sendMail });
     }
@@ -1050,7 +1052,7 @@ export function createAuth(o: AuthOptions) {
         for (const old of (await invites()).filter((x) => x.email === email)) await repo.deleteRecords({ kind: TOKEN, id: old.id });
         const t = await newToken("invite", { email, roleId: i.roleId ?? null, isAdmin: !!i.admin, invitedBy: s.user.id, invitedByLabel: s.user.name || s.user.email }, 7 * DAY);
         const url = link(req, "invite", t.raw);
-        const sent = await mail({ to: email, ...MAILS[locale].invite(s.user.name || s.user.email, url) });
+        const sent = await mail({ to: email, ...MAILS[locale].invite(s.user.name || s.user.email, url) }, "invite");
         out.push({ email, link: url, sent });
         audit(actor, "auth.invite", { email, admin: !!i.admin, roleId: i.roleId ?? null });
       }
@@ -1070,7 +1072,7 @@ export function createAuth(o: AuthOptions) {
       await repo.deleteRecords({ kind: TOKEN, id: b });
       const t = await newToken("invite", { ...d }, 7 * DAY);
       const url = link(req, "invite", t.raw);
-      const sent = await mail({ to: String(d.email), ...MAILS[locale].invite(s.user.name || s.user.email, url) });
+      const sent = await mail({ to: String(d.email), ...MAILS[locale].invite(s.user.name || s.user.email, url) }, "invite");
       audit(actor, "auth.invite", { email: d.email, resent: true });
       return json({ email: d.email, link: url, sent });
     }
@@ -1098,7 +1100,7 @@ export function createAuth(o: AuthOptions) {
       if (!u) throw fail("user_not_found");
       const t = await newToken("reset", { userId: u.id }, 60 * MIN);
       const url = link(req, "reset", t.raw);
-      const sent = await mail({ to: u.email, ...MAILS[locale].reset(url) });
+      const sent = await mail({ to: u.email, ...MAILS[locale].reset(url) }, "reset");
       audit(actor, "auth.reset_link", { id: u.id, email: u.email, sent });
       return json({ link: url, sent });
     }

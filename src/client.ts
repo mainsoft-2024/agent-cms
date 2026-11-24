@@ -791,6 +791,8 @@ export function createRestClient(opts: RestClientOptions) {
     /** Plugins with their state (admins). */
     plugins: () => req<{ plugins: PluginInfo[] }>("GET", "/plugins"),
     plugin: (name: string) => req<{ plugin: PluginInfo }>("GET", `/plugins/${enc(name)}`),
+    pluginSettings: (name: string) => req<{ settings: { schema: string[]; secret: string[]; values: Record<string, unknown> } | null }>("GET", `/plugins/${enc(name)}/settings`),
+    savePluginSettings: (name: string, values: Record<string, unknown>) => req<{ plugin: PluginInfo; settings: { schema: string[]; secret: string[]; values: Record<string, unknown> } }>("PUT", `/plugins/${enc(name)}/settings`, { body: { values } }),
     restartPlugin: (name: string) => req<{ plugin: PluginInfo }>("POST", `/plugins/${enc(name)}/restart`),
     search: (q: string, collections?: string[], o: { locale?: string } = {}) =>
       req<{ empty: boolean; hits: { collection: string; slug: string; locale?: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(","), locale: o.locale } }),

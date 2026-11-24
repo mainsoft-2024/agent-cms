@@ -713,7 +713,9 @@ export async function runTool(cms: CmsLike, actor: Actor, name: string, args: un
     return { ok: false, error: { error: "invalid_request", kind: "invalid", message: core.message({ isCmsError: true, code: "invalid_request", params: { issues } }), params: { issues }, issues: list } as never };
   }
   try {
-    return { ok: true, value: await def.run(core, actor, parsed.data as Record<string, unknown>) };
+    const value = await def.run(core, actor, parsed.data as Record<string, unknown>);
+    // 0.23.0: plugins' `mcp.result` filters see every tool's result (MCP and callTool alike).
+    return { ok: true, value: core.plugins.filters("mcp.result") ? await core.plugins.filter("mcp.result", value, { tool: name, actor }) : value };
   } catch (err) {
     if (!isCmsError(err)) throw err;
     return { ok: false, error: { ...err.toJSON(), message: core.message(err) } };

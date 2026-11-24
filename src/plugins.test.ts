@@ -188,7 +188,8 @@ test("close: plugins stop last started first; the list is for admins", async () 
     error: null,
     startedMs: plugins[1].startedMs,
     startedAt: plugins[1].startedAt,
-    registered: { routes: 1, tools: 1, events: 1, jobs: 0, nav: 1, me: 1, sql: 0 },
+    registered: { routes: 1, tools: 1, events: 1, jobs: 0, nav: 1, me: 1, sql: 0, hooks: 0, collections: 0, fields: 0, actions: 0, filters: 0, access: 0 },
+    settings: null,
   });
   await cms.close();
   assert.deepEqual(log.slice(-2), ["stop b-two", "stop a-one"]);
