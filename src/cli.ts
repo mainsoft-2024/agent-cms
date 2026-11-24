@@ -23,6 +23,8 @@
  *   agent-cms storage sync [--store name] [--folder path]
  *       make every file of a bucket known to the CMS (files that got there some other way),
  *       and list files the CMS knows that are gone from the bucket
+ *   agent-cms plugin init <name> [--dir path]
+ *       0.24.0: a new plugin package: server half, admin page, a test with @mainsoft/agent-cms/testing, README
  *
  * Against a running app, with an API key (same operations as the MCP tools):
  *   agent-cms tools | collections
@@ -61,7 +63,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { sha256 } from "./crypto";
@@ -78,6 +81,7 @@ import { DEFAULT_ACCEPT, DEFAULT_MAX_FILE_SIZE } from "./storage";
 import { addItems, buildPublicRegistry, findRegistryDir, installCommand, loadRegistry, type Registry } from "./registry";
 import { cmsDdl, cmsTables, fillLocaleSql, SCHEMA_VERSION, schemaVersionSql, splitSql, upgradeSteps } from "./tables";
 import { CMS_FONTS_CSS } from "./fonts";
+import { pluginScaffold, validPluginName } from "./plugin-scaffold";
 import { VERSION } from "./version";
 
 export interface CliIo {
@@ -174,12 +178,13 @@ export function parseEnvFile(text: string): Record<string, string> {
 const USAGE = `agent-cms ${VERSION}
 a server:      dev [--port 3000] [--memory] | serve [--port <n>] [--host <h>]
 in your app:   init [--no-fonts] | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync> | registry build
+plugins:       plugin init <name> [--dir path]   a new plugin package (server, admin page, test, README)
 with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import | openapi | retention
                read | grep | edit | pull | push | status
 options:       --env <file>  --json  --json-errors  --  (what follows is a file name, even if it starts with --)
 see https://github.com/mainsoft-2024/agent-cms#cli`;
 
-const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage", "serve", "dev", "user", "registry"]);
+const LOCAL = new Set(["init", "doctor", "migrate", "add", "storage", "serve", "dev", "user", "registry", "plugin"]);
 
 export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
   const out = io.out ?? ((l: string) => console.log(l));
@@ -568,10 +573,44 @@ function registryCmd(args: string[], argv: string[], io: LocalIo): number {
   return 0;
 }
 
+/** `plugin init <name>`: a new plugin package in `<name>/` (or `--dir`). Never writes into a folder that has files. */
+function pluginCmd(args: string[], argv: string[], io: LocalIo): number {
+  const usage = "[agent-cms] usage: npx @mainsoft/agent-cms plugin init <name> [--dir path]";
+  if (args[0] !== "init" || !args[1]) {
+    io.err(usage);
+    return 1;
+  }
+  const name = args[1];
+  if (!validPluginName(name)) {
+    io.err(`[agent-cms] plugin name "${name}" must be lowercase letters, digits and dashes (2 to 31 characters, a letter first) and not a route of the CMS (search, keys, plugins, …), e.g. read-stats`);
+    return 1;
+  }
+  const dir = resolve(io.cwd, flag(argv, "dir") ?? name);
+  const rel = relative(io.cwd, dir) || ".";
+  if (existsSync(dir) && (!statSync(dir).isDirectory() || readdirSync(dir).length)) {
+    io.err(`[agent-cms] ${rel} already exists and is not empty: pick another --dir`);
+    return 1;
+  }
+  for (const [file, content] of Object.entries(pluginScaffold(name, VERSION))) {
+    const p = join(dir, file);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, content);
+    io.out(`write ${join(rel, file)}`);
+  }
+  io.out(`
+next:
+  1. cd ${rel} && npm install && npm test
+  2. in your app: createCms({ plugins: [plugin()] }) with the default export of "${name}",
+     and <CmsProvider plugins={[pluginAdmin]}> with the default export of "${name}/admin"
+  3. the page is at /admin/p/${name}; the route at /api/cms/${name}/hello`);
+  return 0;
+}
+
 async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo): Promise<number> {
   if (cmd === "init") return init(argv, io);
   if (cmd === "add") return add(args, argv, io);
   if (cmd === "registry") return registryCmd(args, argv, io);
+  if (cmd === "plugin") return pluginCmd(args, argv, io);
   const loaded = await loadConfig(io.cwd);
   if (cmd === "serve" || cmd === "dev") return serveCmd(cmd, argv, loaded?.config ?? null, io);
   if (cmd === "user") return userCmd(args, argv, loaded?.config ?? null, io);
@@ -587,6 +626,11 @@ async function runLocal(cmd: string, args: string[], argv: string[], io: LocalIo
     io.out(cmsDdl(tables));
     for (const p of plugins) if (p.sql?.length) io.out(`\n-- plugin ${p.name}\n${p.sql.join(";\n").replace(/;?\s*$/, ";")}`);
     return 0;
+  }
+  // 0.24.0: admin plugins need the app and this package to share one React. Checked first: it needs no database.
+  if (cmd === "doctor") {
+    const r = reactCheck(io.cwd);
+    if (r) io.out(r);
   }
   let db = io.db;
   if (!db && loaded?.config.db) {
@@ -736,6 +780,31 @@ export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTable
     ? `CREATE TABLE IF NOT EXISTS ${tables.options.schema ? `"${tables.options.schema}".` : ""}"${tables.options.prefix}meta" ("key" text PRIMARY KEY, "value" jsonb, "updated_at" timestamptz NOT NULL DEFAULT now());\n`
     : "";
   return { sql: `${meta}${steps.map((s) => `-- ${s.name}\n${s.sql}`).join("\n\n")}\n${schemaVersionSql(tables)}`, steps: steps.map((s) => s.name) };
+}
+
+/**
+ * `doctor`: whether the app and the installed `@mainsoft/agent-cms` find the same React. Two
+ * copies break admin plugins (hooks fail with "Invalid hook call", the plugin's context is empty).
+ * Null when React is not installed in the app or the package is not found from `cwd`.
+ */
+export function reactCheck(cwd: string): string | null {
+  const from = (dir: string) => createRequire(join(dir, "noop.js"));
+  const find = (dir: string, what: string): string | null => {
+    try {
+      return realpathSync(from(dir).resolve(what));
+    } catch {
+      return null;
+    }
+  };
+  const app = find(cwd, "react/package.json");
+  if (!app) return null;
+  const pkg = find(cwd, "@mainsoft/agent-cms/package.json");
+  if (!pkg) return null;
+  const cms = find(dirname(pkg), "react/package.json");
+  if (cms === app) return "ok    one React (the app and @mainsoft/agent-cms use the same copy)";
+  const fix = "Make them one: npm ls react shows who brings the other; npm dedupe (or one react version in package.json, overrides/resolutions) fixes it";
+  if (!cms) return `warn  @mainsoft/agent-cms cannot find react from ${dirname(pkg)}, though the app has it at ${dirname(app)}. ${fix}`;
+  return `warn  two copies of React: the app uses ${dirname(app)}, @mainsoft/agent-cms uses ${dirname(cms)}. Admin plugins break with two ("Invalid hook call"). ${fix}`;
 }
 
 function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, io: LocalIo, staleUploads = 0, failedJobs = 0): number {

@@ -10,7 +10,7 @@
 import type { ZodTypeAny } from "zod";
 import type { AutomationFn } from "./automations";
 import type { JobKind } from "./jobs";
-import {
+import { type PluginSettingsView,
   pluginOf,
   PLUGIN_NAME,
   versionSatisfies,
@@ -29,6 +29,7 @@ import {
   type PluginTool,
 } from "./plugin";
 import type { CmsRepo } from "./repo";
+import { describeSettings, isSecretSchema } from "./plugin-fields";
 import type { Sealer } from "./secrets";
 import type { Actor, CollectionConfig, FieldAdmin } from "./types";
 import { VERSION } from "./version";
@@ -93,14 +94,9 @@ function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 500);
 
-/** Whether a settings key is a secret (`.describe("secret")` on it, outside or inside `.optional()`/`.default()`). */
+/** Whether a settings key is a secret: one rule, shared with the admin form (see `isSecretSchema`). */
 export function isSecretSetting(schema: ZodTypeAny | undefined): boolean {
-  let s: any = schema;
-  for (let i = 0; s && i < 5; i++) {
-    if (s.description === "secret") return true;
-    s = s._def?.innerType ?? s._def?.schema;
-  }
-  return false;
+  return isSecretSchema(schema);
 }
 
 /** The plugins in an order where each comes after the ones it needs; the given order otherwise. Throws on a circle. */
@@ -602,7 +598,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
      */
     restart,
     /** The settings a plugin has, for the admin: secrets show only their last four characters. Null for an unknown plugin or one without settings. */
-    async settings(name: string): Promise<{ schema: string[]; secret: string[]; values: Record<string, unknown> } | null> {
+    async settings(name: string): Promise<PluginSettingsView | null> {
       const e = entries.get(name);
       if (!e?.plugin.settings) return null;
       const shape = e.plugin.settings.shape;
@@ -617,7 +613,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       }
       // A secret is never sent back: only whether one is stored.
       for (const k of secret) values[k] = values[k] === undefined || values[k] === null || values[k] === "" ? null : SECRET_MASK;
-      return { schema: Object.keys(shape), secret, values };
+      return { schema: Object.keys(shape), secret, values, fields: describeSettings(shape) };
     },
     /**
      * Save a plugin's settings (checked with its schema), then restart it. A secret left out (or

@@ -35,7 +35,7 @@ export interface CmsLinkProps {
   onClick?: () => void;
 }
 
-export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" } | { kind: "redirects" } | { kind: "forms" } | { kind: "dashboard" } | { kind: "automations" } | { kind: "roles" } | { kind: "transfer" } | { kind: "people" } | { kind: "account" } | { kind: "login" };
+export type CmsShellTarget = { kind: "collection"; slug: string } | { kind: "media" } | { kind: "files" } | { kind: "releases" } | { kind: "trash" } | { kind: "keys" } | { kind: "audit" } | { kind: "webhooks" } | { kind: "redirects" } | { kind: "forms" } | { kind: "dashboard" } | { kind: "automations" } | { kind: "roles" } | { kind: "transfer" } | { kind: "plugins" } | { kind: "people" } | { kind: "account" } | { kind: "login" };
 
 export interface CmsShellProps {
   children?: React.ReactNode;
@@ -68,7 +68,7 @@ export interface CmsShellProps {
 }
 
 export function CmsShell({ children, title, logo, activeCollection, activeHref, basePath = "/admin", hrefFor, extraNav, onSearch, LinkComponent, renderLink, counts, onNavigate, className }: CmsShellProps) {
-  const { t, me, client, meError, reloadMe } = useCms();
+  const { t, me, client, meError, reloadMe, runtime, locale } = useCms();
   const [open, setOpen] = React.useState(false);
   const [help, setHelp] = React.useState(false);
   useShortcut("shift+?", () => setHelp(true));
@@ -167,6 +167,25 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
     navigated.current = true;
     setOpen(false);
   };
+
+  // Admin plugins' own entries (their labels follow the admin's language), then the server's
+  // (a missing href opens the plugin's page), once per address.
+  const pluginNavId = React.useId();
+  const pluginNav = React.useMemo(() => {
+    const out: { plugin: string; label: string; href: string }[] = [];
+    const seen = new Set<string>();
+    for (const n of [...runtime.nav({ locale, isAdmin: !!me?.isAdmin }), ...(me?.nav ?? []).map((n) => ({ ...n, href: n.href || runtime.href(n.plugin) }))])
+      if (!seen.has(n.href)) (seen.add(n.href), out.push(n));
+    return me ? out : [];
+  }, [me, runtime, locale]);
+
+  const pluginActive = React.useMemo(() => {
+    if (!activeHref) return null;
+    if (pluginNav.some((n) => n.href === activeHref)) return activeHref;
+    let best: string | null = null;
+    for (const n of pluginNav) if (activeHref.startsWith(`${n.href}/`) && (!best || n.href.length > best.length)) best = n.href;
+    return best;
+  }, [pluginNav, activeHref]);
 
   const nav = (
     <nav aria-label={t("nav_label")} className="flex flex-col gap-0.5 text-sm">
@@ -305,8 +324,11 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
                 ...(me.roles ? [{ kind: "roles", label: t("nav_roles"), Icon: Shield } as const] : []),
                 ...(me.redirects ? [{ kind: "redirects", label: t("nav_redirects"), Icon: CornerDownRight } as const] : []),
                 ...(me.roles ? [{ kind: "transfer", label: t("nav_transfer"), Icon: ArrowLeftRight } as const] : []),
+                // 0.24.0: the plugins screen, with how many failed to start.
+                { kind: "plugins", label: t("nav_plugin_list"), Icon: Puzzle, failed: me.pluginsFailed ?? 0 },
               ] as const
-            ).map(({ kind, label, Icon }) => {
+            ).map(({ kind, label, Icon, ...rest }) => {
+              const failed = "failed" in rest ? rest.failed : 0;
               const h = href({ kind });
               const active = activeHref === h;
               return (
@@ -320,6 +342,12 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
                       <>
                         <Icon aria-hidden className="h-4 w-4 shrink-0" />
                         <span className="flex-1 truncate">{label}</span>
+                        {failed ? (
+                          <span className="rounded-full bg-destructive px-1.5 text-xs font-medium tabular-nums text-destructive-foreground">
+                            {failed}
+                            <span className="sr-only">{` ${t("plugins_failed_badge")}`}</span>
+                          </span>
+                        ) : null}
                       </>
                     ),
                   })}
@@ -329,26 +357,33 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
           </ul>
         </>
       ) : null}
-      {/* What plugins add (`ctx.nav()`), after the CMS's own entries. */}
-      {me?.nav?.length ? (
-        <ul className="flex flex-col gap-0.5 pt-4" aria-label={t("nav_plugins")}>
-          {me.nav.map((n) => (
-            <li key={n.plugin + n.href}>
-              {link({
-                href: n.href,
-                className: navClass(activeHref === n.href),
-                "aria-current": activeHref === n.href ? "page" : undefined,
-                onClick: close,
-                children: (
-                  <>
-                    <Puzzle aria-hidden className="h-4 w-4 shrink-0" />
-                    <span className="flex-1 truncate">{n.label}</span>
-                  </>
-                ),
-              })}
-            </li>
-          ))}
-        </ul>
+      {/* What plugins add: the server's `ctx.nav()` and admin plugins' pages, after the CMS's own entries. */}
+      {pluginNav.length ? (
+        <>
+          <h2 id={pluginNavId} className="px-2 pb-1 pt-4 text-xs font-medium text-muted-foreground">{t("nav_plugins")}</h2>
+          <ul aria-labelledby={pluginNavId} className="flex flex-col gap-0.5">
+            {pluginNav.map((n) => {
+              // One current entry: the exact address, else the longest one the page is under.
+              const active = n.href === pluginActive;
+              return (
+                <li key={n.plugin + n.href}>
+                  {link({
+                    href: n.href,
+                    className: navClass(active),
+                    "aria-current": active ? "page" : undefined,
+                    onClick: close,
+                    children: (
+                      <>
+                        <Puzzle aria-hidden className="h-4 w-4 shrink-0" />
+                        <bdi className="flex-1 truncate">{n.label}</bdi>
+                      </>
+                    ),
+                  })}
+                </li>
+              );
+            })}
+          </ul>
+        </>
       ) : null}
       {(extraNav ?? []).map((g, gi) => (
         <div key={gi} data-cms-extra-nav="">

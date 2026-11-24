@@ -682,6 +682,63 @@
       ]
     },
     {
+      "name": "cms-plugins",
+      "type": "registry:component",
+      "title": "Plugins",
+      "description": "0.24.0: the plugins screen and its Next.js route app/admin/plugins/page.tsx: state, what each adds, why one failed, its settings (a form from the plugin's schema) and Restart. Admins only.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "badge",
+        "button",
+        "checkbox",
+        "dialog",
+        "input",
+        "label",
+        "table",
+        "textarea",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-plugins.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/pages/plugins-page.tsx",
+          "type": "registry:page",
+          "target": "app/admin/plugins/page.tsx"
+        }
+      ]
+    },
+    {
+      "name": "cms-plugin-page",
+      "type": "registry:component",
+      "title": "Plugin page",
+      "description": "0.24.0: the frame of admin plugin pages and the Next.js route app/admin/p/[plugin]/[[...path]]/page.tsx.",
+      "dependencies": [
+        "@mainsoft/agent-cms",
+        "lucide-react"
+      ],
+      "registryDependencies": [
+        "button",
+        "cms-lib"
+      ],
+      "files": [
+        {
+          "path": "registry/cms/cms-plugin-page.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/pages/plugin-page.tsx",
+          "type": "registry:page",
+          "target": "app/admin/p/[plugin]/[[...path]]/page.tsx"
+        }
+      ]
+    },
+    {
       "name": "cms-login",
       "type": "registry:component",
       "title": "Sign-in pages",

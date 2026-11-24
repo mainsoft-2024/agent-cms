@@ -8,7 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unifiedDiff } from "./diff";
 import { VERSION } from "./version";
@@ -99,7 +99,8 @@ export function toShadcnItem(it: RegistryItem, own: Set<string>, o: PublicRegist
     ...it,
     dependencies: it.dependencies?.map((d) => (d === "@mainsoft/agent-cms" ? `${d}@${range}` : d)),
     registryDependencies: it.registryDependencies?.map((d) => (own.has(d) ? `${base}/${d}.json` : d)),
-    files: it.files.map((f) => ({ ...f, target: `@components/cms/${basename(f.path)}` })),
+    // A page keeps its route (`app/admin/p/[plugin]/[[...path]]/page.tsx`); the rest go next to each other.
+    files: it.files.map((f) => (f.type === "registry:page" && f.target ? f : { ...f, target: `@components/cms/${basename(f.path)}` })),
   };
 }
 
@@ -186,7 +187,9 @@ export interface AppLayout {
   dir: string;
   /** Directory of the shadcn parts (absolute), to check what is missing. */
   uiDir: string;
-  aliases: { ui: string; utils: string };
+  aliases: { ui: string; utils: string; components?: string };
+  /** Where Next.js routes live (`<cwd>/src` when there is `src/app`, else `<cwd>`): a page's target is under it. */
+  appRoot?: string;
 }
 
 interface ComponentsJson {
@@ -220,11 +223,13 @@ export function appLayout(cwd: string, o: { dir?: string } = {}): AppLayout {
   const components = aliases.components ?? "@/components";
   const ui = aliases.ui ?? `${components}/ui`;
   const utils = aliases.utils ?? "@/lib/utils";
-  return { dir: o.dir ? resolve(cwd, o.dir) : join(aliasToDir(cwd, components), "cms"), uiDir: aliasToDir(cwd, ui), aliases: { ui, utils } };
+  const appRoot = existsSync(join(cwd, "src", "app")) && !existsSync(join(cwd, "app")) ? join(cwd, "src") : cwd;
+  return { dir: o.dir ? resolve(cwd, o.dir) : join(aliasToDir(cwd, components), "cms"), uiDir: aliasToDir(cwd, ui), aliases: { ui, utils, components }, appRoot };
 }
 
 /** The file as it will be written into the app (import aliases rewritten). */
 export function rewriteImports(content: string, aliases: AppLayout["aliases"]): string {
+  if (aliases.components && aliases.components !== "@/components") content = content.replace(/(["'])@\/components\/cms\//g, `$1${aliases.components}/cms/`);
   return content.replace(/(["'])@\/components\/ui\//g, `$1${aliases.ui}/`).replace(/(["'])@\/lib\/utils(["'])/g, `$1${aliases.utils}$2`);
 }
 
@@ -276,9 +281,23 @@ export function addItems(o: AddOptions): AddResult {
 
   for (const it of items) {
     for (const f of it.files) {
-      const target = join(layout.dir, basename(f.path));
+      // 0.24.0: a page goes to its route under the app (`app/admin/p/[plugin]/[[...path]]/page.tsx`).
+      const pageRoot = layout.appRoot ?? o.cwd;
+      const target = f.type === "registry:page" && f.target ? join(pageRoot, f.target) : join(layout.dir, basename(f.path));
+      const underApp = (t: string) => {
+        const r = relative(join(pageRoot, "app"), join(pageRoot, t));
+        return !!r && !isAbsolute(r) && r.split(/[\\/]/)[0] !== "..";
+      };
+      if (f.type === "registry:page" && f.target && (isAbsolute(f.target) || !underApp(f.target)))
+        throw new Error(`[agent-cms] ${it.name}: page target "${f.target}" must stay under app/`);
       const rel = relative(o.cwd, target).split("\\").join("/");
-      const next = rewriteImports(f.content ?? "", layout.aliases);
+      let next = rewriteImports(f.content ?? "", layout.aliases);
+      if (f.type === "registry:page" && o.dir) {
+        // The screens went to --dir: the page imports them from there.
+        let rel = relative(dirname(target), layout.dir).split("\\").join("/");
+        if (!rel.startsWith(".")) rel = `./${rel}`;
+        next = next.replace(/(["'])[^"']*\/cms\/(cms-[\w-]+)\1/g, (_, q: string, file: string) => `${q}${rel}/${file}${q}`);
+      }
       const exists = existsSync(target);
       const cur = exists ? readFileSync(target, "utf8") : null;
       const locked = lock.files[rel];

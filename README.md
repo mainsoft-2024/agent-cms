@@ -749,12 +749,50 @@ createCms({ /* … */, plugins: [slack({ channel: "#news" })] });   // or `slack
 ```
 
 - **Start**: `start` runs once before the first request (10 s, `pluginStartTimeoutMs`). A plugin that fails is switched off with the plugins that need it, and the CMS goes on: its routes answer 503 `plugin_failed`, and its tools, hooks, filters, access rules, actions, `_me` values and menu entries are skipped. `required: true` makes every request answer 503 until it starts. `cms.close()` waits for running work and calls `stop`, last started first.
-- **Admins**: `GET /plugins` (state, version, error, what each added), `POST /plugins/:name/restart`, `GET`/`PUT /plugins/:name/settings` (secrets come back as `••••` and their last four characters; saving restarts the plugin and is in the audit log). `cms.plugins.list()` is the same list.
+- **Admins**: `GET /plugins` (state, version, error, what each added), `POST /plugins/:name/restart`, `GET`/`PUT /plugins/:name/settings` (secrets come back as `••••••••`; saving restarts the plugin and is in the audit log). `cms.plugins.list()` is the same list.
 - **Built-in plugins**: webhooks and automations are plugins of the CMS, listed with `builtin: true`. `createCms({ builtins: { webhooks: false, automations: false } })` turns them off (routes 404, the admin hides them).
 - **Access rules fail closed**: while a plugin with `ctx.access` is not running, the collections its rules cover refuse everyone but system actors. Rules are synchronous.
 - **Secrets**: a setting with `.describe("secret")` (any type) is sealed and never sent back; the admin sees `••••••••`, and a save that leaves it out keeps it. Error messages name the setting, never its value.
 - **Limits in 0.23.0**: saved settings restart the plugin on the server that saved them; restart the other instances yourself. A plugin tool named like one of the CMS's own is ignored. Built-ins turned off are still listed in `openapi.json`.
 - Plugins written for 0.12 to 0.22 work unchanged.
+
+**Admin plugins (0.24.0).** The browser half of a plugin ships in the same package, from `@mainsoft/agent-cms/react`: buttons in the admin's slots, its own pages, menu entries and strings.
+
+```tsx
+// my-plugin/admin.tsx
+import { useEffect, useState } from "react";
+import { defineAdminPlugin, useCmsAdmin, usePluginT, type PluginPageProps } from "@mainsoft/agent-cms/react";
+
+function StatsPage(_: PluginPageProps) {
+  const { client } = useCmsAdmin();                    // the REST client, _me, language, toast
+  const t = usePluginT("stats");
+  // client.request() calls the plugin's own routes (a path under the CMS): GET /api/cms/stats/summary
+  const [s, setS] = useState<{ total: number }>();
+  useEffect(() => void client.request<{ total: number }>("GET", "/stats/summary").then(setS), [client]);
+  return <p>{t("reads", { n: s?.total ?? "…" })}</p>;
+}
+
+export const statsAdmin = defineAdminPlugin({
+  name: "stats",                                      // the server plugin's name
+  label: { en: "Read counts", ko: "읽은 수 통계" },
+  pages: { "": StatsPage, "docs/:slug": DocStats },     // /admin/p/stats, /admin/p/stats/docs/<slug>
+  slots: { editorActions: (ctx) => <ReadsBadge slug={ctx.slug} /> },
+  messages: { en: { reads: "Reads: {n}" }, ko: { reads: "읽음: {n}" } },
+});
+
+// the app's admin frame (keep the array outside the component)
+const plugins = [statsAdmin];
+<CmsProvider plugins={plugins}>…</CmsProvider>
+```
+
+- **Pages**: `npx @mainsoft/agent-cms add cms-plugin-page` copies the frame and writes the Next.js route `app/admin/p/[plugin]/[[...path]]/page.tsx`. A page that throws shows an error there; the rest of the admin keeps working. A page key takes `:name` parameters; a fixed part beats a parameter.
+- **Slots**: every plugin's part shows after the app's own, in the order of `plugins`; a slot function that throws is left out (and reported to the console). A component it returns that throws while rendering is not caught there: give it its own error boundary. `blockEditor` holds one editor: the app's, else the first plugin's.
+- **Menu**: the sidebar's "Extensions" lists each admin plugin's page and the server's `ctx.nav()` entries. 0.24.0: `ctx.nav({ label })` without `href` opens the plugin's page.
+- **Plugins screen**: `npx @mainsoft/agent-cms add cms-plugins` copies the screen and writes its Next.js route `app/admin/plugins/page.tsx` (admins): every plugin's state, version, what it adds, why one failed and the plugins off with it, Restart, and a settings form drawn from its zod schema (`GET /plugins/:name/settings` now has `fields`; string, number, boolean, enum, URL and secret inputs, anything else as JSON). `.describe("secret: Webhook URL")` names a secret field, wherever the mark sits (outside or inside `.optional()`, `.default()`, `.pipe()`); its value and default never reach the browser. Fields you do not touch are saved back as they were. The sidebar shows how many plugins failed to start (`_me.pluginsFailed`, admins only).
+- **One React**: the app, the copied screens and plugin packages must share one React and one `@mainsoft/agent-cms`. `npx @mainsoft/agent-cms doctor` warns when React is installed twice.
+- **Framework-free core**: `@mainsoft/agent-cms/admin` (no React) merges slots, finds pages and picks strings; `/react` builds on it. Other frameworks can bind to the same core later.
+- **Write and test a plugin**: `npx @mainsoft/agent-cms plugin init <name>` writes a package with a server entry, an admin entry, a test and a README. `@mainsoft/agent-cms/testing` gives `createTestCms({ plugins })`: an in-memory CMS with an admin, a writer and an anonymous caller (`as: "writer"`), `fetch(path)`, `client(as)`, `tool(name, input)`, `cron()`, `flush()` (wait for `ctx.on` listeners), `settings(plugin, values)`, `errors` and `close()`. The package `plugin init` writes exports its TypeScript sources: a Next.js app lists it in `transpilePackages`, or build it before publishing. Examples: `examples/plugins/stats` and `examples/plugins/slack-notify`.
+- **Plugin actions in automations** are their own action type: `{ type: "slack-notify.post" }` (the automations screen lists them under "Do"), not `{ type: "call" }`, which runs `createCms({ automations: { actions } })`.
 
 **Telemetry.** `createCms({ onEvent })` gets every request (`method`, `path`, `status`, `ms`, `actor`, `via`), every event, every job run, every cron call and every error the CMS reports. Connect it to your tracing; it is never awaited.
 

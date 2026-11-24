@@ -1,6 +1,6 @@
 {
   "name": "@mainsoft/agent-cms",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "description": "An add-on CMS that runs inside your web app, edited by people (admin UI) and AI agents (MCP, REST, CLI) together.",
   "license": "MIT",
   "type": "module",
@@ -310,6 +310,36 @@
         "types": "./dist/tenants.d.cts",
         "default": "./dist/tenants.cjs"
       }
+    },
+    "./admin": {
+      "import": {
+        "types": "./dist/admin.d.ts",
+        "default": "./dist/admin.js"
+      },
+      "require": {
+        "types": "./dist/admin.d.cts",
+        "default": "./dist/admin.cjs"
+      }
+    },
+    "./react": {
+      "import": {
+        "types": "./dist/react.d.ts",
+        "default": "./dist/react.js"
+      },
+      "require": {
+        "types": "./dist/react.d.cts",
+        "default": "./dist/react.cjs"
+      }
+    },
+    "./testing": {
+      "import": {
+        "types": "./dist/testing.d.ts",
+        "default": "./dist/testing.js"
+      },
+      "require": {
+        "types": "./dist/testing.d.cts",
+        "default": "./dist/testing.cjs"
+      }
     }
   },
   "scripts": {
@@ -328,19 +358,23 @@
     "test:blob": "tsx --test src/storage-vercel-blob.test.ts",
     "build:admin": "node scripts/build-admin.mjs",
     "bench": "tsx scripts/bench.ts",
-    "test:examples": "node scripts/link-self.mjs && node --import tsx --test examples/frameworks.test.ts"
+    "test:examples": "node scripts/link-self.mjs && tsc -p examples/plugins && node --import tsx --test examples/frameworks.test.ts examples/plugins/*/index.test.ts"
   },
   "peerDependencies": {
     "@vercel/blob": ">=2.9.0",
     "drizzle-orm": ">=0.36.0",
     "sharp": ">=0.33.0",
-    "zod": "^3.25.0 || ^4.0.0"
+    "zod": "^3.25.0 || ^4.0.0",
+    "react": ">=18"
   },
   "peerDependenciesMeta": {
     "@vercel/blob": {
       "optional": true
     },
     "sharp": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },

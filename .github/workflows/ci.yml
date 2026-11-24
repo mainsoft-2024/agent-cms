@@ -17,7 +17,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      # The Hono and Express examples, against the package as built.
+      # The Hono and Express examples and the example plugins, against the package as built.
       - run: npm run test:examples
       - run: npm run check:pack
 

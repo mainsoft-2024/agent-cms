@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.24.0
+
+Plugin v2, admin side. No schema change. Copied screens change (`use-cms.ts`, `cms-shell.tsx`, `cms-messages.ts`): run `npx @mainsoft/agent-cms add --update`.
+
+### Added
+- **Admin plugins**: `@mainsoft/agent-cms/react` has `defineAdminPlugin({ name, label, slots, pages, nav, messages })`, `useCmsAdmin()` (REST client, `_me`, language, toast) and `usePluginT(name)`. `<CmsProvider plugins={[…]}>` merges every plugin's slot parts after the app's own (a slot function that throws is left out; a component that throws while rendering needs its own error boundary), and opens their pages under `/admin/p/<name>/…` (keys like `""`, `"settings"`, `"items/:id"`).
+- **`@mainsoft/agent-cms/admin`**: the same runtime without React (slot merging, page lookup, menu, strings) for other framework bindings later.
+- **`cms-plugins` screen** (and its Next.js route `app/admin/plugins/page.tsx`, written by `add`): every plugin's state, version and what it adds; why one failed and the plugins switched off with it; Restart; a settings form drawn from the plugin's zod schema (zod 3 and 4). The sidebar has "Plugins" with the number that failed to start, and "Extensions" with plugin pages.
+- **`cms-plugin-page`**: the frame of a plugin's page, and the Next.js route `app/admin/p/[plugin]/[[...path]]/page.tsx` that `add` now writes (registry items can carry pages).
+- **Server**: `GET /plugins/:name/settings` has `fields` (key, type, label, optional, default, options); `_me.pluginsFailed` for admins; `ctx.nav({ label })` without `href` opens the plugin's page; `.describe("secret: Label")` names a secret setting; `client.request(method, path, { body, query })` calls any route under the CMS (a plugin's own; a path with `?`, `#`, a backslash or a `.`/`..` segment is refused). Settings fields of an enum also carry `choices` (the typed values).
+- **Author tools**: `@mainsoft/agent-cms/testing` (`createTestCms({ plugins })` with `admin`, `writer`, `anon`, `fetch`, `client`, `tool`, `cron`, `flush`, `settings`, `close`), `npx @mainsoft/agent-cms plugin init <name>` (server entry, admin page, test, README), `doctor` warns about two copies of React, and `examples/plugins/` (`stats`, `slack-notify`) run in CI with `test:examples`.
+- The built-in admin (`serve`, `dev`) has the plugins screen too.
+
+### Fixed
+- Plugin settings: one rule decides which fields are secret (a `secret` mark outside or inside `.optional()`, `.default()`, `.pipe()`), for sealing, masking and the form, so a secret is never stored in plain text and its default never reaches the browser.
+
+### Changed
+- `npx @mainsoft/agent-cms plugin init` refuses names the CMS uses for its own routes (`search`, `plugins`, …).
+- React is an optional peer dependency (only `@mainsoft/agent-cms/react` needs it).
+- `CmsSlots` slot types (`EditorSlotContext`, `LocaleSlotContext`, `DocContent`) come from `@mainsoft/agent-cms/react`; `use-cms.ts` exports them as before.
+
 ## 0.23.0
 
 Plugin v2, server side. No schema change. Plugins written for 0.12 to 0.22 work unchanged.
