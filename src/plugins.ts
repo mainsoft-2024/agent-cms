@@ -47,7 +47,8 @@ const isBuiltin = (p: CmsPlugin) => BUILTIN_PLUGINS.has(p);
 export const SECRET_MASK = "••••••••";
 
 /** A zod problem without the value it was about (validators quote values; settings may be secrets). */
-const safeIssues = (issues: readonly { path: (string | number)[]; code: string }[]) => issues.map((i) => `${i.path.join(".") || "settings"}: ${i.code}`).join("; ");
+// Only the setting's name: deeper path segments can be keys of a secret record.
+const safeIssues = (issues: readonly { path: (string | number)[]; code: string }[]) => issues.map((i) => `${i.path.length ? String(i.path[0]) : "settings"}: ${i.code}`).join("; ");
 
 type Registered = PluginInfo["registered"];
 
@@ -62,6 +63,8 @@ interface Entry {
   live: boolean;
   /** Its settings, checked at its last start. */
   settings: Record<string, unknown>;
+  /** Counts start attempts: a late continuation of an older one does nothing. */
+  attempt: number;
 }
 
 export interface PluginHostDeps {
@@ -229,7 +232,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
   }
 
   for (const p of ordered) {
-    const e: Entry = { plugin: p, ctx: null, state: "starting", error: null, startedMs: null, startedAt: null, live: false, settings: {} };
+    const e: Entry = { plugin: p, ctx: null, state: "starting", error: null, startedMs: null, startedAt: null, live: false, settings: {}, attempt: 0 };
     entries.set(p.name, e);
     counts.set(p.name, { routes: 0, tools: 0, events: 0, jobs: 0, nav: 0, me: 0, sql: 0, hooks: 0, collections: 0, fields: 0, actions: 0, filters: 0, access: 0 });
     const missing = (p.requires ?? []).find((d) => !given.some((g) => g.name === d) || entries.get(d)?.state === "off");
@@ -395,7 +398,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
   }
 
   /** Start one plugin whose dependencies are settled. Never throws: a failure is kept on the entry. */
-  async function startOne(e: Entry): Promise<void> {
+  async function startOne(e: Entry, during: "starting" | "restarting" = "starting"): Promise<void> {
     if (!e.ctx) return; // off since createCms: never set up
     const blocked = (e.plugin.requires ?? []).find((d) => !running(d));
     if (blocked) {
@@ -403,13 +406,17 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       e.error = `needs the plugin "${blocked}", which is ${entries.get(blocked)?.state === "failed" ? "failed" : "off"}`;
       return;
     }
-    e.state = "starting";
+    // During a restart what it added stays out of use until its start succeeded.
+    e.state = during;
+    const attempt = ++e.attempt;
     e.error = null;
     const t0 = Date.now();
     try {
       await within(
         (async () => {
           e.settings = await loadSettings(e);
+          // A start that timed out, or a CMS closed meanwhile, opens nothing late.
+          if (closed || attempt !== e.attempt) throw new Error("start abandoned");
           e.live = true;
           if (e.plugin.start) await e.plugin.start(e.ctx!, undefined);
         })(),
@@ -418,6 +425,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       );
       e.state = "running";
     } catch (err) {
+      e.attempt++;
       e.state = "failed";
       e.error = messageOf(err);
       deps.report(err, `plugin ${e.plugin.name}: start`);
@@ -471,8 +479,8 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       for (const x of [e, ...after]) if (x.ctx) x.state = "restarting";
       for (const d of [...after].reverse()) await stopOne(d);
       await stopOne(e);
-      await startOne(e);
-      for (const d of after) await startOne(d);
+      await startOne(e, "restarting");
+      for (const d of after) await startOne(d, "restarting");
       return info(e);
     });
   }
@@ -563,7 +571,14 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
         if (!usable(f.plugin)) continue;
         try {
           // Each filter gets a copy: changing the value in place cannot reach what the caller keeps.
-          const next = await f.fn(structuredClone(cur), ctx);
+          // Values go out as JSON, so a value structuredClone cannot copy is copied as its JSON.
+          let copy: typeof cur;
+          try {
+            copy = structuredClone(cur);
+          } catch {
+            copy = JSON.parse(JSON.stringify(cur));
+          }
+          const next = await f.fn(copy, ctx);
           if (next !== undefined) cur = next;
         } catch (err) {
           deps.report(err, `plugin ${f.plugin}: filter ${name}`);
@@ -612,6 +627,10 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       const e = entries.get(name);
       if (!e?.plugin.settings) return Promise.resolve(null);
       return serial(() => save(e, input)).then(() => restart(name));
+    },
+    /** Refuse new work (nothing starts again). `close()` then stops them; drain running work in between. */
+    markClosed() {
+      closed = true;
     },
     /** Stop every plugin, last started first. Final: nothing starts again afterwards. */
     close(): Promise<void> {

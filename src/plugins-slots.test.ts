@@ -348,3 +348,46 @@ test("built-ins: webhooks and automations are plugins; builtins: false turns the
   assert.equal(await code(api.webhooks()), "route_not_found");
   assert.equal(await code(api.automations()), "route_not_found");
 });
+
+test("delta fixes: a restarting plugin's route waits; paused jobs do not hold up others; ruled collections leave the sitemap; a filter still runs on values structuredClone cannot copy", async () => {
+  let release: () => void = () => {};
+  let gate = false;
+  const slow = definePlugin({
+    name: "slow",
+    setup: (ctx) => {
+      ctx.route("GET", "ping", () => Response.json({ ok: true }));
+      ctx.access(() => true, { collections: ["guide"] });
+      ctx.filter("mcp.result", (v) => ({ ...(v as object), filtered: true }));
+      ctx.tool({ name: "slow_fn", description: "x", input: z.object({}), run: () => ({ fn: () => 1, keep: 1 }) });
+    },
+    start: () => (gate ? new Promise<void>((r) => (release = r)) : undefined),
+  });
+  const { cms, api, doFetch } = setup([slow]);
+  await api.me();
+  gate = true;
+  const restarting = cms.plugins.restart("slow");
+  await tick();
+  assert.equal((await doFetch("http://app.test/api/cms/slow/ping")).status, 503, "not reachable until its start finished");
+  release();
+  await restarting;
+  assert.equal((await doFetch("http://app.test/api/cms/slow/ping")).status, 200);
+
+  await cms.create(admin, "guide", { slug: "a", title: "A", body: "x\n" });
+  await cms.publish(admin, "guide", "a");
+  assert.doesNotMatch(await (await doFetch("http://app.test/api/cms/sitemap.xml")).text(), /guide\/a/);
+
+  const out = (await callTool(cms, admin, "slow_fn", {})) as { filtered?: boolean };
+  assert.equal(out.filtered, true);
+});
+
+test("delta fixes: jobs of a down plugin are put back and due jobs of others still run", async () => {
+  const ran: string[] = [];
+  const down = definePlugin({ name: "down", setup: (ctx) => ctx.job("w", { run: () => void ran.push("down") }), start: () => { throw new Error("x"); } });
+  const ok = definePlugin({ name: "fine", setup: (ctx) => ctx.job("w", { run: () => void ran.push("fine") }) });
+  const { cms, api } = setup([down, ok]);
+  await api.me();
+  for (let i = 0; i < 7; i++) await cms.core.jobs.enqueue("down.w");
+  await cms.core.jobs.enqueue("fine.w");
+  await cms.cron();
+  assert.deepEqual(ran, ["fine"]);
+});

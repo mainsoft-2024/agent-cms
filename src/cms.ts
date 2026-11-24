@@ -1139,7 +1139,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     // YouTube and Vimeo unless `video.defaults` is false; `video.hosts` adds to them.
     videoHosts: [...new Set([...(opts.video?.defaults === false ? [] : DEFAULT_VIDEO_HOSTS), ...(opts.video?.hosts ?? [])].map((h) => h.toLowerCase()))],
     // 0.23.0: plugins' access rules are asked too (about the collection: the sitemap names addresses, not content).
-    publicReadable: async (col, slug) => pluginHost.allows({ actor: { kind: "anonymous" }, collection: col, op: "read" }) && (await readable({ kind: "anonymous" }, col, locales.length ? splitAddress(slug).slug : slug)),
+    // A collection with plugin rules is left out (they may judge each document; this path has none).
+    publicReadable: async (col, slug) => !pluginHost.hasAccess(col) && (await readable({ kind: "anonymous" }, col, locales.length ? splitAddress(slug).slug : slug)),
     localized,
     defaultLocale,
     publicCopy: (doc) => {
@@ -4330,9 +4331,9 @@ export function createCmsCore(opts: CreateCmsOptions) {
     async close(): Promise<void> {
       closing ??= (async () => {
         // Plugins first marked closed (nothing starts again), then the work drains, then they stop.
-        const stopped = pluginHost.close();
+        pluginHost.markClosed();
         await api.settle();
-        await stopped;
+        await pluginHost.close();
       })();
       return closing;
     },

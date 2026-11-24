@@ -94,10 +94,7 @@ export function createJobs(ctx: JobsContext) {
         const at = ctx.now();
         const batch = await ctx.repo.claimJobs(iso(at), iso(new Date(at.getTime() + JOB_LOCK_MS)), JOB_BATCH);
         if (!batch.length) break;
-        const ranBefore = out.ran;
         await Promise.all(batch.map((j) => one(j).catch((e) => ctx.report(e, "jobs"))));
-        // Only paused jobs in this batch (put back for later): stop rather than claim them again.
-        if (out.ran === ranBefore) break;
       }
       out.waiting = (await ctx.repo.countJobs()).waiting;
       return out;
