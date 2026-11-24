@@ -109,7 +109,8 @@ export * from "./types";
 // 0.12.0: background jobs, webhooks, plugins, telemetry
 export { JOB_LOCK_MS, type CmsJobs, type JobKind, type JobsRun } from "./jobs";
 export { WEBHOOK_MAX_FAILURES, WEBHOOK_RETRY, type CmsOutbox, type OutEvent, type WebhookInput, type WebhookOptions, type WebhookView } from "./outbox";
-export { definePlugin, type CmsEvent, type CmsPlugin, type PluginContext, type PluginNav, type PluginRouteArgs, type PluginTool } from "./plugin";
+export { definePlugin, versionSatisfies, type CmsEvent, type CmsPlugin, type CmsPluginFactory, type PluginContext, type PluginDefinition, type PluginInfo, type PluginInput, type PluginNav, type PluginRouteArgs, type PluginState, type PluginTool } from "./plugin";
+export { PLUGIN_START_TIMEOUT_MS, PLUGIN_STOP_TIMEOUT_MS, type PluginHost } from "./plugins";
 export { createSealer, type Sealer } from "./secrets";
 export { signWebhook, verifyWebhook, WebhookVerifyError, type WebhookPayload } from "./webhooks";
 export { cmsJobs, cmsWebhookDeliveries, cmsWebhooks } from "./tables";

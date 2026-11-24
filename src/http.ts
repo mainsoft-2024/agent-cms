@@ -492,6 +492,13 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
     if (opts.auth && actor.kind === "user" && (await opts.auth.hasSession(req)) && !(await opts.auth.confirmed(req))) throw new CmsError("reauth_required", {}, { status: 401, messages: core.messages });
   };
   const base = (opts.basePath ?? "/api/cms").replace(/\/$/, "");
+  /** A `required` plugin that is not running stops every request with 503 `plugin_failed`; the next request tries again. */
+  const startPlugins = () =>
+    core.plugins.start().catch((err: unknown) => {
+      const e = err as { pluginFailed?: string; reason?: string };
+      if (!e.pluginFailed) throw err;
+      throw new CmsError("plugin_failed", { plugin: e.pluginFailed, reason: e.reason ?? "" }, { status: 503, messages: core.messages });
+    });
 
   return async function handler(req: Request): Promise<Response> {
     const t0 = Date.now();
@@ -519,6 +526,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         throw new CmsError("invalid_request", { issues: "path encoding" }, { status: 400 });
       }
       const m = req.method.toUpperCase();
+      // Plugins start once, before the first request is answered (plugins.ts).
+      await startPlugins();
       if (seg[0] === "_cron" && seg.length === 1 && (m === "GET" || m === "POST")) {
         // Its own secret, not a session or a key: a cron service calls this.
         if (!core.cronSecret) throw new CmsError("route_not_found");
@@ -613,8 +622,8 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           roles: core.isAdmin(actor),
           /** The CMS's own sign-in, when it is on: how people sign in, and whether this caller manages people. */
           auth: opts.auth ? { ...opts.auth.describe(), people: core.isAdmin(actor) && actor.kind === "user" } : null,
-          nav: core.plugins.nav.filter((n) => !n.admin || core.isAdmin(actor)).map(({ label, href, plugin }) => ({ label, href, plugin })),
-          plugins: Object.fromEntries(await Promise.all(core.plugins.names.map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
+          nav: core.plugins.nav.filter((n) => core.plugins.usable(n.plugin) && (!n.admin || core.isAdmin(actor))).map(({ label, href, plugin }) => ({ label, href, plugin })),
+          plugins: Object.fromEntries(await Promise.all(core.plugins.names.filter((name) => core.plugins.usable(name)).map(async (name) => [name, Object.assign({}, ...(await Promise.all(core.plugins.me.filter((x) => x.plugin === name).map((x) => x.fn(actor)))))] as const))),
           collections: core
             .collections()
             .filter((c) => core.can(actor, c.slug, "read"))
@@ -1354,8 +1363,26 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         }
       }
 
+      if (seg[0] === "plugins") {
+        if (!core.isAdmin(actor)) throw new CmsError(actor.kind === "anonymous" ? "unauthorized" : "forbidden", {}, { messages: core.messages });
+        if (seg.length === 1 && m === "GET") return json({ plugins: core.plugins.list() });
+        if (seg.length === 2 && m === "GET") {
+          const p = core.plugins.get(seg[1]);
+          if (!p) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
+          return json({ plugin: p });
+        }
+        if (seg.length === 3 && seg[2] === "restart" && m === "POST") {
+          const p = await core.plugins.restart(seg[1]);
+          if (!p) throw new CmsError("plugin_unknown", { plugin: seg[1] }, { messages: core.messages });
+          core.auditPlugin(actor, "plugin.restart", seg[1], { state: p.state, error: p.error });
+          return json({ plugin: p });
+        }
+      }
+
       // ── plugin routes: /<plugin name>/… ──
       if (seg[0] && core.plugins.names.includes(seg[0])) {
+        const st = core.plugins.get(seg[0])!;
+        if (st.state === "failed" || st.state === "off") throw new CmsError("plugin_failed", { plugin: seg[0], reason: st.error ?? st.state }, { status: 503, messages: core.messages });
         const rest = seg.slice(1);
         const route = core.plugins.routes
           .filter((r) => r.plugin === seg[0] && r.method === m && r.path.length <= rest.length && r.path.every((p, i) => p === rest[i]))

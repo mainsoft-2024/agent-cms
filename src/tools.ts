@@ -649,7 +649,7 @@ export function toolsFor(cms: CmsLike, actor: Actor, only?: readonly string[]): 
   const own = CMS_TOOLS.filter((t) => (!only || only.includes(t.name)) && (!t.locales || core.locales.length > 0) && (!t.needs || cols.some((c) => core.can(actor, c, t.needs!))) && (!t.media || stores.some((s) => core.assets.can(actor, s, t.media!))));
   // Tools plugins add. `read` is open to whoever may read something; the others follow the same rule as ours; `admin` is for admins.
   const added = core.plugins.tools
-    .filter((t) => !only || only.includes(t.name))
+    .filter((t) => core.plugins.usable(t.plugin) && (!only || only.includes(t.name)))
     .filter((t) => {
       const scope = t.scope ?? "read";
       return scope === "admin" ? core.isAdmin(actor) : cols.some((c) => core.can(actor, c, scope));

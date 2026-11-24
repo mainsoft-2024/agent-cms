@@ -11,6 +11,7 @@
 import type { AutomationCondition, AutomationInput, AutomationRun, CmsAutomation } from "./automations";
 import type { WebhookInput, WebhookView } from "./outbox";
 import type { CmsRole, PersonMatch, RoleInput, RoleMember, RoleOp } from "./roles";
+import type { PluginInfo } from "./plugin";
 import type { CmsStats } from "./stats";
 import type { ImportItem, ImportOptions, TransferFile } from "./transfer";
 import type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
@@ -787,6 +788,10 @@ export function createRestClient(opts: RestClientOptions) {
     searchUsers: (q: string) => req<{ users: PersonMatch[] }>("GET", "/roles/_users", { query: { q } }).then((r) => r.users),
     jobs: (q: { state?: "waiting" | "failed" | "done"; kind?: string; limit?: number } = {}) => req<{ waiting: number; failed: number; jobs: CmsJob[] }>("GET", "/jobs", { query: q }),
     retryJob: (id: string) => req<{ ok: true }>("POST", `/jobs/${enc(id)}/retry`),
+    /** Plugins with their state (admins). */
+    plugins: () => req<{ plugins: PluginInfo[] }>("GET", "/plugins"),
+    plugin: (name: string) => req<{ plugin: PluginInfo }>("GET", `/plugins/${enc(name)}`),
+    restartPlugin: (name: string) => req<{ plugin: PluginInfo }>("POST", `/plugins/${enc(name)}/restart`),
     search: (q: string, collections?: string[], o: { locale?: string } = {}) =>
       req<{ empty: boolean; hits: { collection: string; slug: string; locale?: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(","), locale: o.locale } }),
     keys: () => req<{ keys: CmsKey[] }>("GET", "/keys").then((r) => r.keys),

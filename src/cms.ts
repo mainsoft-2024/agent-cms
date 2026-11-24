@@ -19,7 +19,8 @@ import { DEFAULT_VIDEO_HOSTS } from "./video";
 import { createFlow, type ScheduledRun } from "./flow";
 import { createJobs, type JobsRun } from "./jobs";
 import { createOutbox, type OutEvent, type WebhookOptions } from "./outbox";
-import { PLUGIN_NAME, type CmsPlugin, type PluginNav, type PluginRoute, type PluginTool } from "./plugin";
+import type { PluginInput } from "./plugin";
+import { createPluginHost, type PluginHost } from "./plugins";
 import { createSealer } from "./secrets";
 import { PUBLIC_EVENTS, type CacheAdapter, type CacheOptions, type ChangeEvent, type ChangesOptions } from "./changes";
 import { base64url, fromBase64url, fromUtf8, hex, hmacSha256, sha256, timingSafeEqual } from "./crypto";
@@ -218,8 +219,10 @@ export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly 
    */
   secretsKey?: string;
   webhooks?: WebhookOptions;
-  /** Additions made with `definePlugin`. */
-  plugins?: readonly CmsPlugin[];
+  /** Additions made with `definePlugin` (a plugin defined with `options` can be given called or as is). */
+  plugins?: readonly PluginInput[];
+  /** How long a plugin's `start` may take before it counts as failed. Default 10000 ms. */
+  pluginStartTimeoutMs?: number;
   /**
    * Everything worth measuring, as it happens: requests, events, job runs, errors. Connect it to
    * your tracing or metrics. Must not throw; it is never awaited.
@@ -708,6 +711,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     void automations.onEvent(e);
     for (const l of eventListeners) {
       if (l.event !== "*" && l.event !== e.event) continue;
+      // A plugin that failed to start, or is off, hears nothing.
+      if (pluginHost && !pluginHost.usable(l.plugin)) continue;
       Promise.resolve()
         .then(() => l.fn(e))
         .catch((err) => report(err, `plugin ${l.plugin}: ${e.event}`));
@@ -3380,15 +3385,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // ── plugins (plugin.ts) ───────────────────────────────────────────────────
 
-  const plugins = {
-    names: [] as string[],
-    routes: [] as PluginRoute[],
-    tools: [] as (PluginTool<any> & { plugin: string })[],
-    nav: [] as (PluginNav & { plugin: string })[],
-    me: [] as { plugin: string; fn: (actor: Actor) => Record<string, unknown> | Promise<Record<string, unknown>> }[],
-    /** The SQL the plugins' tables need (run it with your migrations; every statement is safe to repeat). */
-    sql: [] as string[],
-  };
+  // Made at the end of createCmsCore, once the CMS a plugin is given exists (plugins.ts).
+  let pluginHost: PluginHost = null!;
 
   /** Wrap a write so the document it returns is projected for the actor who asked. */
   /** The state of a document and nothing of its content: what a caller who may change but not read it gets back. */
@@ -4155,7 +4153,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** Seal and open values kept in the database (null without `secretsKey`). */
     secrets: sealer,
     telemetry,
-    plugins,
+    /** The plugins given to `createCms`: their state (`list()`), what they added, `start`, `restart`, `stop` (plugins.ts). */
+    get plugins(): PluginHost {
+      return pluginHost;
+    },
     cronSecret: opts.cronSecret ?? null,
     /** Deleted documents and files: `list`, `restore`, `purge`. */
     trash: { ...flow.trash, days: trashDays },
@@ -4206,6 +4207,18 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** The roles a person is in (for the people screen). */
     rolesOf: (userId: string, email?: string | null) => roles.of(userId, email),
     /** Fails with `schema_outdated` when the database needs a migration. */
+    /** Records a plugin action (a restart) in the audit log, under the plugin's name. */
+    auditPlugin(actor: Actor, action: "plugin.restart", plugin: string, detail: Record<string, unknown> = {}) {
+      audit(actor, action, { slug: plugin, detail });
+    },
+    /**
+     * Finish what is running and stop the plugins (last started first, 5 s each). Call it when
+     * the process ends; the CMS answers no further requests after it.
+     */
+    async close(): Promise<void> {
+      await api.settle();
+      await pluginHost.stop();
+    },
     checkSchema: async () => {
       await ensureSchema();
     },
@@ -4221,27 +4234,17 @@ export function createCmsCore(opts: CreateCmsOptions) {
     repo,
   };
 
-  for (const p of opts.plugins ?? []) {
-    if (!PLUGIN_NAME.test(p.name)) throw new Error(`[agent-cms] plugin name "${p.name}" must be lowercase letters, digits and dashes`);
-    if (plugins.names.includes(p.name)) throw new Error(`[agent-cms] plugin "${p.name}" is given twice`);
-    if (RESERVED_ROUTES.has(p.name) || collections.has(p.name)) throw new Error(`[agent-cms] plugin name "${p.name}" is taken by a route of the CMS`);
-    plugins.names.push(p.name);
-    plugins.sql.push(...(p.sql ?? []));
-    p.setup({
-      cms: api,
-      secrets: sealer,
-      on: (event, fn) => void eventListeners.push({ event, fn, plugin: p.name }),
-      route: (method, path, handler) => void plugins.routes.push({ plugin: p.name, method, path: path.split("/").filter(Boolean), handler }),
-      tool: (tool) => {
-        if (!/^[a-z][a-z0-9_]{2,63}$/.test(tool.name)) throw new Error(`[agent-cms] plugin ${p.name}: tool name "${tool.name}" must be snake_case`);
-        plugins.tools.push({ ...tool, plugin: p.name });
-      },
-      job: (kind, def) => jobs.define(`${p.name}.${kind}`, def),
-      enqueue: (kind, payload, o) => jobs.enqueue(`${p.name}.${kind}`, payload, o),
-      me: (fn) => void plugins.me.push({ plugin: p.name, fn }),
-      nav: (item) => void plugins.nav.push({ ...item, plugin: p.name }),
-    });
-  }
+  pluginHost = createPluginHost(opts.plugins ?? [], {
+    cms: api,
+    secrets: sealer,
+    taken: (name) => RESERVED_ROUTES.has(name) || collections.has(name),
+    listen: (event, fn, plugin) => void eventListeners.push({ event, fn, plugin }),
+    defineJob: (kind, def) => jobs.define(kind, def),
+    enqueue: (kind, payload, o) => jobs.enqueue(kind, payload, o),
+    report,
+    now,
+    startTimeoutMs: opts.pluginStartTimeoutMs,
+  });
   return api;
 }
 
