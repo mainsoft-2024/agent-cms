@@ -727,7 +727,8 @@ export function AssetPanel({ id, basePath, docHref, onClose, onChanged, onDelete
                   void save({ tags: [...asset.tags, v] }).then((ok) => ok && setTagText(""));
                 }
               }}
-              className="h-6 min-w-[60px] flex-1 bg-transparent text-sm outline-none"
+              // w-0: an input is ~20 characters wide by default, wider in a wider font; let it shrink to 60px.
+              className="h-6 w-0 min-w-[60px] flex-1 bg-transparent text-sm outline-none"
             />
           ) : null}
         </div>
