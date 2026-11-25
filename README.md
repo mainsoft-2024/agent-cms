@@ -1065,7 +1065,10 @@ definePlugin({
   then follow `doc.published`, `doc.updated`, `doc.unpublished`, `doc.archived`, `doc.deleted`,
   `doc.restored`, `doc.moved` and the new `search.stale` event: a published snippet changed what
   other documents read (`detail.reason: "snippet"`: read everything again), or a document came
-  back from the archive (it names the document). Pass the event's `locale` on. Events are heard
+  back from the archive (it names the document), or (0.25.1) a renamed source moved a published
+  translation (`"moved"`, `detail.from` is the old address). Pass the event's `locale` on. A lookup
+  holds every write made before it. Ask for many documents with one `doc=collection/slug` each
+  (a slug may hold a comma) or `docs=a/x,b/y`. Events are heard
   once, on the server that wrote: with several servers keep your index in a table, and read
   everything again now and then. A worker outside the app can do the same with webhooks and
   `GET /search/sections`.

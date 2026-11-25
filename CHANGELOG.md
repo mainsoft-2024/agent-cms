@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.25.1
+
+Fixes. No schema change. One copied screen changes (`cms-shell.tsx`): run `npx @mainsoft/agent-cms add --update`.
+
+### Fixed
+- **`cms.searchSections`** (and `ctx.search.sections()`, `GET /search/sections`) now holds every write made before the call: a rebuild of the index that was already running is awaited and checked again. When the rebuild fails it is an error instead of the previous index (searches still fall back to the last index).
+- **Search index on several servers**: the check for changes made on another server also sees a write that committed after a newer one (it looked only at the number of documents and the newest change time). Searches and section lookups no longer stay on the old text in that case.
+- **`search.stale`** is sent for each published translation when its source is renamed (`detail.reason: "moved"`, `detail.from`: the old address). Translations move with their source without a version of their own, so an index kept elsewhere had no event to follow.
+- **`GET /search/sections`** takes `doc=collection/slug` once per document, so a slug with a comma (a custom `slugPattern`) can be asked for; the client sends this form. `docs=a/x,b/y` still works.
+- **OpenAPI**: `/search/sections` names its fields (`SearchSection`, `SearchDocRef` schemas).
+- **`add`**: a route page the lock gives to another item (that item's page moved there) is skipped with a message instead of being overwritten.
+- **Sidebar**: on a page under Releases or Forms, an exact link (an `extraNav` entry or a plugin's) is the one current entry; Releases or Forms is current only when no link names the page.
+
 ## 0.25.0
 
 Search rankers (roadmap 135). No schema change. Copied screens change (`cms-plugins.tsx`, `cms-messages.ts`): run `npx @mainsoft/agent-cms add --update`.

@@ -204,15 +204,18 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
         ]
       : []),
   ] as (OwnKind | null)[]).filter((k): k is OwnKind => !!k);
-  const ownClaims = (a: string) =>
-    shownKinds.some((kind) => {
-      const h = href({ kind });
-      return a === h || ((kind === "releases" || kind === "forms") && a.startsWith(`${h}/`));
-    }) || (extraNav ?? []).some((g) => g.items.some((it) => it.href === a));
+  // 0.25.1: an exact link beats a section that claims everything under it (Releases, Forms): an app's
+  // or a plugin's own /admin/forms/report is current alone, not together with Forms.
+  const ownExact = (a: string) => shownKinds.some((kind) => a === href({ kind }));
+  const extraExact = (a: string) => (extraNav ?? []).some((g) => g.items.some((it) => it.href === a));
+  const pluginExact = (a: string) => pluginNav.some((n) => n.href === a);
+  const ownPrefix = (a: string) => shownKinds.some((kind) => (kind === "releases" || kind === "forms") && a.startsWith(`${href({ kind })}/`));
+  const prefixCurrent = !!activeHref && !ownExact(activeHref) && !extraExact(activeHref) && !pluginExact(activeHref);
   const pluginActive = (() => {
     // A collection that is current wins; a value that is no collection here (say "p" from the path) does not.
-    if (!activeHref || (activeCollection && me?.collections.some((c) => c.slug === activeCollection)) || ownClaims(activeHref)) return null;
-    if (pluginNav.some((n) => n.href === activeHref)) return activeHref;
+    if (!activeHref || (activeCollection && me?.collections.some((c) => c.slug === activeCollection)) || ownExact(activeHref) || extraExact(activeHref)) return null;
+    if (pluginExact(activeHref)) return activeHref;
+    if (ownPrefix(activeHref)) return null;
     let best: string | null = null;
     for (const n of pluginNav) if (activeHref.startsWith(`${n.href}/`) && (!best || n.href.length > best.length)) best = n.href;
     return best;
@@ -320,7 +323,7 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
             .filter((x) => x.show)
             .map(({ kind, label, Icon, n }) => {
               const h = href({ kind });
-              const active = activeHref === h || ((kind === "releases" || kind === "forms") && !!activeHref?.startsWith(`${h}/`));
+              const active = activeHref === h || ((kind === "releases" || kind === "forms") && prefixCurrent && !!activeHref?.startsWith(`${h}/`));
               return (
                 <li key={kind}>
                   {link({

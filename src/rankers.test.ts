@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { defineCollection } from "./cms";
 import { definePlugin } from "./plugin";
 import { fuse, pickSections, runRanker, type SearchRankContext, type SearchRankerHit } from "./rankers";
+import { MemoryRepo } from "./repo";
 import { unitsOf } from "./search";
 import { createTestCms } from "./testing";
 
@@ -383,6 +384,100 @@ test("delta 0.25: unarchiving a published page with a pending draft tells search
     await t.flush();
     assert.deepEqual(heard, ["a:unarchive"]);
     assert.equal((await t.cms.searchSections({ docs: [{ collection: "pages", slug: "a" }] })).sections.length, 1);
+  } finally {
+    await t.close();
+  }
+});
+
+test("0.25.1: sections wait for a rebuild that started before the write; a failed rebuild is an error", async () => {
+  const repo = new MemoryRepo();
+  let failNext = false;
+  const list = repo.listDocs.bind(repo);
+  repo.listDocs = (async (...a: Parameters<typeof list>) => {
+    if (failNext) {
+      failNext = false;
+      throw new Error("database is gone");
+    }
+    // A slow read: the rebuild is still running when the write below lands.
+    await new Promise((r) => setTimeout(r, 20));
+    return list(...a);
+  }) as typeof repo.listDocs;
+  const t = createTestCms({ collections: [pages], repo });
+  try {
+    await t.cms.create(t.admin, "pages", { slug: "a", title: "A", body: "one\n" }, { publish: true });
+    await t.cms.search(t.admin, ["pages"], "one");
+    await t.cms.update(t.admin, "pages", "a", { body: "two\n" }, { publish: true });
+    const searching = t.cms.search(t.admin, ["pages"], "two"); // starts a rebuild
+    await t.cms.update(t.admin, "pages", "a", { body: "three\n" }, { publish: true });
+    const page = await t.cms.searchSections({ docs: [{ collection: "pages", slug: "a" }] });
+    assert.match(page.sections[0].text, /three/);
+    await searching;
+
+    await t.cms.update(t.admin, "pages", "a", { body: "four\n" }, { publish: true });
+    failNext = true;
+    await assert.rejects(t.cms.searchSections({ docs: [{ collection: "pages", slug: "a" }] }), /database is gone/);
+    // Searches still answer (from the last index, then a good rebuild).
+    await t.cms.search(t.admin, ["pages"], "four");
+    assert.match((await t.cms.searchSections({ docs: [{ collection: "pages", slug: "a" }] })).sections[0].text, /four/);
+  } finally {
+    await t.close();
+  }
+});
+
+test("0.25.1: renaming a source tells search.stale for each live translation at its new address", async () => {
+  const guide = defineCollection({ slug: "guide", label: "Guide", visibility: "public", localized: true });
+  const heard: string[] = [];
+  const watcher = definePlugin({ name: "watch", setup: (ctx) => ctx.on("search.stale", (e) => void heard.push(`${e.slug}@${(e as { locale?: string }).locale}:${(e.detail as { reason?: string }).reason}:${(e.detail as { from?: string }).from}`)) });
+  const t = createTestCms({ collections: [guide], plugins: [watcher], locales: ["ko", "en", "ja"], defaultLocale: "ko", redirects: true });
+  try {
+    await t.cms.create(t.admin, "guide", { slug: "start", title: "시작", body: "본문\n" }, { publish: true });
+    await t.cms.create(t.admin, "guide", { slug: "start", title: "Start", body: "Body\n" }, { locale: "en", publish: true });
+    await t.cms.create(t.admin, "guide", { slug: "start", title: "始め", body: "本文\n" }, { locale: "ja" }); // a draft: not searchable
+    await t.flush();
+    heard.length = 0;
+    await t.cms.update(t.admin, "guide", "start", { slug: "begin" }, { publish: true });
+    await t.flush();
+    assert.equal(heard.length, 1, heard.join(", "));
+    assert.match(heard[0], /^begin@en:moved:start@en$/);
+    const page = await t.cms.searchSections({ docs: [{ collection: "guide", slug: "begin", locale: "en" }] });
+    assert.equal(page.sections[0]?.slug, "begin");
+  } finally {
+    await t.close();
+  }
+});
+
+test("0.25.1: sections by address work for a slug with a comma (repeated doc=); OpenAPI names the section fields", async () => {
+  const odd = defineCollection({ slug: "odd", label: "Odd", visibility: "public", slugPattern: /^[a-z0-9,-]+$/ });
+  const t = createTestCms({ collections: [odd] });
+  try {
+    await t.cms.create(t.admin, "odd", { slug: "a,b", title: "Comma", body: "Hello\n" }, { publish: true });
+    await t.cms.create(t.admin, "odd", { slug: "c", title: "C", body: "Hi\n" }, { publish: true });
+    const rest = (await (await t.fetch(`/search/sections?doc=${encodeURIComponent("odd/a,b")}&doc=odd/c`)).json()) as { sections: { slug: string }[]; missing: { docs: unknown[] } };
+    assert.deepEqual(rest.sections.map((s) => s.slug).sort(), ["a,b", "c"]);
+    assert.equal(rest.missing.docs.length, 0);
+    assert.equal((await t.fetch("/search/sections?doc=")).status, 422, "a blank doc= is refused, not a listing");
+    const viaClient = await t.client().searchSections({ docs: [{ collection: "odd", slug: "a,b" }] });
+    assert.deepEqual(viaClient.sections.map((s) => s.slug), ["a,b"]);
+    const spec = (await (await t.fetch("/openapi.json")).json()) as { components: { schemas: Record<string, { properties: Record<string, unknown> }> }; paths: Record<string, { get: { parameters?: { name: string }[] } }> };
+    assert.ok(spec.components.schemas.SearchSection.properties.hash);
+    assert.ok(spec.components.schemas.SearchDocRef.properties.collection);
+    assert.ok(spec.paths["/search/sections"].get.parameters?.some((p) => p.name === "doc"));
+  } finally {
+    await t.close();
+  }
+});
+
+test("0.25.1: the change stamp sees a write that committed after a newer one", async () => {
+  const repo = new MemoryRepo();
+  const t = createTestCms({ collections: [pages], repo });
+  try {
+    await t.cms.create(t.admin, "pages", { slug: "a", title: "A", body: "one\n" }, { publish: true });
+    await t.cms.create(t.admin, "pages", { slug: "b", title: "B", body: "two\n" }, { publish: true });
+    const a = await t.cms.get(t.admin, "pages", "a");
+    const before = await repo.changeStamp();
+    // A slow transaction lands with a time older than the newest row: count and newest time stay.
+    await repo.updateDoc(a.id, { status: "archived", updatedAt: "2000-01-01T00:00:00.000Z" }, a.version);
+    assert.notEqual(await repo.changeStamp(), before);
   } finally {
     await t.close();
   }

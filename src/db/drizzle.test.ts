@@ -1095,3 +1095,20 @@ test("db: review 0.22 (3rd): cascades are bound to the rows checked; a driver wi
     await close();
   }
 });
+
+test("db: the change stamp sees a write with an older time than the newest row (0.25.1)", async () => {
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const repo = new DrizzleRepo(db);
+    const cms = createCms({ repo, collections: [guide], searchRefreshMs: 0 });
+    await cms.create(admin, "guide", { slug: "a", title: "A", body: "one" }, { publish: true });
+    await cms.create(admin, "guide", { slug: "b", title: "B", body: "two" }, { publish: true });
+    const a = await cms.get(admin, "guide", "a");
+    const before = await repo.changeStamp();
+    await repo.updateDoc(a.id, { status: "archived", updatedAt: "2000-01-01T00:00:00.000Z" }, a.version);
+    assert.notEqual(await repo.changeStamp(), before);
+  } finally {
+    await close();
+  }
+});

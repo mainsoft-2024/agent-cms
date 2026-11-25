@@ -834,8 +834,17 @@ export class DrizzleRepo implements CmsRepo {
   }
   async changeStamp() {
     const D = this.t.documents;
-    const [r] = await this.db.select({ n: sql<number>`count(*)::int`, max: sql<string | null>`max(${D.updatedAt})::text` }).from(D);
-    return `${r?.n ?? 0}:${r?.max ?? ""}`;
+    // 0.25.1: plus a sum over every row's state. Count and newest time alone miss a write that committed
+    // after a newer one (its updated_at was set before the other's commit), so another server's index
+    // stayed behind.
+    const [r] = await this.db
+      .select({
+        n: sql<number>`count(*)::int`,
+        max: sql<string | null>`max(${D.updatedAt})::text`,
+        sum: sql<string>`coalesce(sum(hashtext(${D.id}::text || '|' || ${D.slug} || '|' || ${D.updatedAt}::text || '|' || ${D.status} || '|' || ${D.version}::text || '|' || coalesce(${D.publishedVersion}, -1)::text || '|' || coalesce(${D.deletedAt}::text, ''))::bigint), 0)::text`,
+      })
+      .from(D);
+    return `${r?.n ?? 0}:${r?.max ?? ""}:${r?.sum ?? "0"}`;
   }
   async getMeta(key: string) {
     const M = this.t.meta;
