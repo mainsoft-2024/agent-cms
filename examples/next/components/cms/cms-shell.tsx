@@ -180,14 +180,38 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
   }, [me, runtime, locale]);
 
   // One current entry in the whole menu: a page the CMS's own entries claim is never a plugin's
-  // (0.24.1: a plugin linking to /admin/plugins does not light up next to "Plugins").
+  // (0.24.1: a plugin linking to /admin/plugins does not light up next to "Plugins"). 0.24.2: only
+  // entries this menu shows claim a page, so with forms off a plugin's /admin/forms is its own.
+  type OwnKind = Exclude<CmsShellTarget["kind"], "collection" | "account" | "login">;
+  const shownKinds: OwnKind[] = ([
+    me?.dashboard ? "dashboard" : null,
+    me?.media ? "media" : null,
+    me?.media?.stores.some((s) => s.can.browse) ? "files" : null,
+    editor ? "releases" : null,
+    editor && me?.forms ? "forms" : null,
+    hasTrash ? "trash" : null,
+    ...(me?.isAdmin
+      ? [
+          "keys",
+          "audit",
+          me.webhooks ? "webhooks" : null,
+          me.automations ? "automations" : null,
+          me.auth?.people ? "people" : null,
+          me.roles ? "roles" : null,
+          me.redirects ? "redirects" : null,
+          me.roles ? "transfer" : null,
+          "plugins",
+        ]
+      : []),
+  ] as (OwnKind | null)[]).filter((k): k is OwnKind => !!k);
   const ownClaims = (a: string) =>
-    (["dashboard", "media", "files", "releases", "forms", "trash", "keys", "audit", "webhooks", "automations", "people", "roles", "redirects", "transfer", "plugins"] as const).some((kind) => {
+    shownKinds.some((kind) => {
       const h = href({ kind });
       return a === h || ((kind === "releases" || kind === "forms") && a.startsWith(`${h}/`));
     }) || (extraNav ?? []).some((g) => g.items.some((it) => it.href === a));
   const pluginActive = (() => {
-    if (!activeHref || activeCollection || ownClaims(activeHref)) return null;
+    // A collection that is current wins; a value that is no collection here (say "p" from the path) does not.
+    if (!activeHref || (activeCollection && me?.collections.some((c) => c.slug === activeCollection)) || ownClaims(activeHref)) return null;
     if (pluginNav.some((n) => n.href === activeHref)) return activeHref;
     let best: string | null = null;
     for (const n of pluginNav) if (activeHref.startsWith(`${n.href}/`) && (!best || n.href.length > best.length)) best = n.href;

@@ -829,7 +829,7 @@ export function reactCheck(cwd: string): string | null {
     }
   };
   const own = readJson(join(cwd, "package.json")) ?? {};
-  const deps = [...new Set([...Object.keys(record(own.dependencies)), ...Object.keys(record(own.devDependencies))])].slice(0, 2000);
+  const deps = [...new Set([...Object.keys(record(own.dependencies)), ...Object.keys(record(own.devDependencies)), ...Object.keys(record(own.optionalDependencies))])].slice(0, 2000);
   for (const name of deps) {
     if (name === "react" || name === "react-dom" || name === "@mainsoft/agent-cms") continue;
     let at: string | null;
@@ -852,6 +852,10 @@ export function reactCheck(cwd: string): string | null {
     else if (theirCms !== pkg) problems.push(`uses another copy of @mainsoft/agent-cms (${dirname(theirCms)}): its admin part cannot see the admin's context. Make it a peer dependency and remove the plugin's own copy (npm ls @mainsoft/agent-cms)`);
     if (app && theirReact && theirReact !== app) problems.push(`uses another copy of React (${dirname(theirReact)}). ${fix}`);
     else if (app && usesReact && !theirReact) problems.push(`cannot find react from ${dir}`);
+    // 0.24.2: an app without React and a plugin that wants it as a peer (not an optional one):
+    // its admin part will not load until the app installs React.
+    else if (!app && "react" in peers && !record(record(meta.peerDependenciesMeta).react).optional && !find(dir, "react/package.json"))
+      problems.push(`needs react as a peer and cannot find it (the app has no React): to use its admin part, install react and react-dom where the plugin can resolve them (in the app; a linked plugin needs a shared workspace). If you use only its server part and that never imports React, this is fine`);
     if (problems.length) for (const p of problems) lines.push(`warn  plugin ${name} ${p}`);
     else lines.push(`ok    plugin ${name} uses the app's ${theirReact ? "React and " : ""}@mainsoft/agent-cms`);
   }

@@ -7,7 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unifiedDiff } from "./diff";
@@ -233,9 +233,17 @@ export function rewriteImports(content: string, aliases: AppLayout["aliases"]): 
   return content.replace(/(["'])@\/components\/ui\//g, `$1${aliases.ui}/`).replace(/(["'])@\/lib\/utils(["'])/g, `$1${aliases.utils}$2`);
 }
 
+export interface LockEntry {
+  item: string;
+  version: string;
+  hash: string;
+  /** 0.24.2: the registry file this came from (pages only), so a page the app moved is found again. */
+  source?: string;
+}
+
 export interface LockFile {
   version: string;
-  files: Record<string, { item: string; version: string; hash: string }>;
+  files: Record<string, LockEntry>;
 }
 
 export const LOCK_FILE = "agent-cms.json";
@@ -280,17 +288,54 @@ export function addItems(o: AddOptions): AddResult {
   const diffs: string[] = [];
 
   for (const it of items) {
+    const pageFiles = it.files.filter((f) => f.type === "registry:page" && f.target);
     for (const f of it.files) {
       // 0.24.0: a page goes to its route under the app (`app/admin/p/[plugin]/[[...path]]/page.tsx`).
       const pageRoot = layout.appRoot ?? o.cwd;
-      const target = f.type === "registry:page" && f.target ? join(pageRoot, f.target) : join(layout.dir, basename(f.path));
+      const isPage = f.type === "registry:page" && !!f.target;
+      let target = isPage ? join(pageRoot, f.target!) : join(layout.dir, basename(f.path));
       const underApp = (t: string) => {
         const r = relative(join(pageRoot, "app"), join(pageRoot, t));
         return !!r && !isAbsolute(r) && r.split(/[\\/]/)[0] !== "..";
       };
       if (f.type === "registry:page" && f.target && (isAbsolute(f.target) || !underApp(f.target)))
         throw new Error(`[agent-cms] ${it.name}: page target "${f.target}" must stay under app/`);
-      const rel = relative(o.cwd, target).split("\\").join("/");
+      let rel = relative(o.cwd, target).split("\\").join("/");
+      // 0.24.2: the app moved this page (a route group like `app/admin/(app)/plugins/page.tsx`): the
+      // lock still has it under its new path. Keep it there instead of writing a second route.
+      // A stale entry for the default path (an older `--update` wrote it back) does not stop the search.
+      if (isPage && !existsSync(target)) {
+        // Only a regular file under the app's `app/` (the lock is a file anyone can edit), an exact
+        // `source` match first; more than one candidate and nothing is guessed.
+        const appDir = join(pageRoot, "app");
+        const inApp = (k: string) => {
+          if (isAbsolute(k) || k.split(/[\\/]/).includes("..")) return false;
+          const abs = join(o.cwd, k);
+          const r = relative(appDir, abs);
+          if (!r || isAbsolute(r) || r.split(/[\\/]/)[0] === "..") return false;
+          try {
+            if (!lstatSync(abs).isFile()) return false;
+            const real = relative(realpathSync(appDir), realpathSync(abs));
+            return !!real && !isAbsolute(real) && real.split(/[\\/]/)[0] !== "..";
+          } catch {
+            return false;
+          }
+        };
+        const mine = Object.entries(lock.files).filter(([k, v]) => k !== rel && v.item === it.name && inApp(k));
+        const exact = mine.filter(([, v]) => v.source === f.path);
+        const legacy = pageFiles.length === 1 ? mine.filter(([k, v]) => !v.source && /(^|\/)page\.[jt]sx?$/.test(k)) : [];
+        const pick = exact.length ? exact : legacy;
+        if (pick.length === 1) {
+          if (o.mode !== "diff") delete lock.files[rel];
+          rel = pick[0][0];
+          target = join(o.cwd, rel);
+        } else if (pick.length > 1) {
+          const reason = `moved more than once in ${LOCK_FILE} (${pick.map(([k]) => k).join(", ")}): keep one entry`;
+          if (o.mode === "diff") diffs.push(`!!! ${rel}: ${reason}`);
+          else res.skipped.push({ file: rel, reason });
+          continue;
+        }
+      }
       let next = rewriteImports(f.content ?? "", layout.aliases);
       if (f.type === "registry:page" && o.dir) {
         // The screens went to --dir: the page imports them from there.
@@ -310,10 +355,10 @@ export function addItems(o: AddOptions): AddResult {
       const write = () => {
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, next);
-        lock.files[rel] = { item: it.name, version: VERSION, hash: sha(next) };
+        lock.files[rel] = { item: it.name, version: VERSION, hash: sha(next), ...(isPage ? { source: f.path } : {}) };
       };
       if (cur === next) {
-        lock.files[rel] = { item: it.name, version: VERSION, hash: sha(next) };
+        lock.files[rel] = { item: it.name, version: VERSION, hash: sha(next), ...(isPage ? { source: f.path } : {}) };
         res.unchanged.push(rel);
         continue;
       }
@@ -334,6 +379,12 @@ export function addItems(o: AddOptions): AddResult {
         write();
         res.updated.push(rel);
       } else {
+        // Never through a link someone left at `<file>.new`.
+        try {
+          if (lstatSync(`${target}.new`).isSymbolicLink()) unlinkSync(`${target}.new`);
+        } catch {
+          /* no such file */
+        }
         writeFileSync(`${target}.new`, next);
         res.conflicts.push(rel);
       }
