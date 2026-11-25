@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.24.2
+
+Fixes. No schema change. One copied screen changes (`cms-shell.tsx`): run `npx @mainsoft/agent-cms add --update`.
+
+### Fixed
+- **`add --update` no longer writes a route page a second time after you moved it.** A page you moved (for example into a route group, `app/admin/(app)/plugins/page.tsx`) and renamed in `agent-cms.json` is updated where it is, and plain `add` does not write it again at the default path. `agent-cms.json` now records which registry file each page came from (`source`); older entries are matched by item.
+- **Sidebar**: only entries the menu shows claim a page. With forms off, a plugin's link to `/admin/forms` is current on that page.
+- **`doctor`** in an app without React warns about a plugin that needs React as a (non-optional) peer and cannot find it: its admin part will not load until React is installed where the plugin resolves it. Plugins listed in `optionalDependencies` are checked too.
+- **Sidebar**: an `activeCollection` that is no collection (an app passing the first path part, `"p"` on a plugin page) no longer hides the plugin's current entry.
+- **`add --update`** follows a moved page only to a regular file under `app/`, and when two entries claim the same page it skips it and says so.
+
 ## 0.24.1
 
 Fixes and follow-ups to 0.24.0. No schema change. Copied screens change (`cms-plugins.tsx`, `cms-shell.tsx`, `cms-messages.ts`): run `npx @mainsoft/agent-cms add --update`.

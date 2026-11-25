@@ -237,6 +237,36 @@ test("0.24.1: shell: a plugin link to a CMS page never shows as current next to 
   assert.equal(nav.querySelectorAll('[aria-current="page"]').length, 1);
 });
 
+test("0.24.2: shell: a CMS entry that is not shown (forms off) does not take its page from a plugin", async () => {
+  const s = makeServer({ plugins: [definePlugin({ name: "my-forms", setup: (ctx) => ctx.nav({ label: "My forms", href: "/admin/forms" }) })] });
+  render(
+    <CmsProvider baseUrl={BASE} fetch={s.fetch}>
+      <CmsShell activeHref="/admin/forms">
+        <p>body</p>
+      </CmsShell>
+    </CmsProvider>
+  );
+  const nav = await screen.findByRole("navigation", { name: "Admin navigation" });
+  const mine = await within(nav).findByRole("link", { name: "My forms" });
+  assert.ok(!within(nav).queryByRole("link", { name: "Forms" }));
+  await waitFor(() => assert.equal(mine.getAttribute("aria-current"), "page"));
+  assert.equal(nav.querySelectorAll('[aria-current="page"]').length, 1);
+});
+
+test("0.24.2: shell: an activeCollection that is no collection (\"p\" from the path) does not hide the plugin's current entry", async () => {
+  const s = makeServer({ plugins: plugins() });
+  render(
+    <CmsProvider baseUrl={BASE} fetch={s.fetch} plugins={ADMIN}>
+      <CmsShell activeCollection="p" activeHref="/admin/p/stats">
+        <p>body</p>
+      </CmsShell>
+    </CmsProvider>
+  );
+  const nav = await screen.findByRole("navigation", { name: "Admin navigation" });
+  const link = await within(nav).findByRole("link", { name: "Read counts" });
+  await waitFor(() => assert.equal(link.getAttribute("aria-current"), "page"));
+});
+
 test("0.24.1: shell: a plugin link to a collection is not current next to that collection", async () => {
   const s = makeServer({ plugins: [definePlugin({ name: "mirror", setup: (ctx) => ctx.nav({ label: "Mirror", href: "/admin/guide" }) })] });
   render(

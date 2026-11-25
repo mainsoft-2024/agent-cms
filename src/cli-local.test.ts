@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { test } from "node:test";
 import { runCli } from "./cli";
 import type { Registry, RegistryItem } from "./registry";
@@ -33,6 +34,7 @@ const registry = (v: string): Registry => ({
   ],
 });
 
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 const quiet = (cwd: string, reg: Registry, lines: string[] = []) => ({ cwd, registry: reg, out: (l: string) => lines.push(l), err: (l: string) => lines.push(l), run: () => 0 });
 
 test("add: a page goes to its route under app/ (src/app too); the rest to components/cms; a components alias is followed", async () => {
@@ -56,6 +58,76 @@ test("add --dir: a page imports the screens from that folder", async () => {
   assert.equal(await runCli(["add", "cms-plugins", "--yes", "--dir", "components/custom"], quiet(dir, reg)), 0);
   assert.ok(existsSync(join(dir, "components/custom/cms-plugins.tsx")));
   assert.match(readFileSync(join(dir, "app/admin/plugins/page.tsx"), "utf8"), /from "\.\.\/\.\.\/\.\.\/components\/custom\/cms-plugins"/);
+});
+
+test("add --update: a page the app moved (a route group) is updated where it is, not written again (0.24.2)", async () => {
+  const pageV = (v: string) => ({ path: "registry/pages/plugins-page.tsx", type: "registry:page", target: "app/admin/plugins/page.tsx", content: `import { CmsPlugins } from "@/components/cms/cms-plugins";\n// ${v}\n` });
+  const reg = (v: string): Registry => ({ name: "agent-cms", items: [{ name: "cms-plugins", type: "registry:component", files: [{ path: "registry/cms/cms-plugins.tsx", type: "registry:component", content: `export const v = "${v}";\n` }, pageV(v)] }] });
+  const lockOf = (dir: string) => JSON.parse(readFileSync(join(dir, "agent-cms.json"), "utf8")) as { files: Record<string, { source?: string; hash: string }> };
+  const move = (dir: string, withSource: boolean) => {
+    mkdirSync(join(dir, "app/admin/(app)/plugins"), { recursive: true });
+    renameSync(join(dir, "app/admin/plugins/page.tsx"), join(dir, "app/admin/(app)/plugins/page.tsx"));
+    const lock = lockOf(dir);
+    const entry = lock.files["app/admin/plugins/page.tsx"];
+    assert.equal(entry.source, "registry/pages/plugins-page.tsx");
+    if (!withSource) delete entry.source; // a lock written before 0.24.2
+    delete lock.files["app/admin/plugins/page.tsx"];
+    lock.files["app/admin/(app)/plugins/page.tsx"] = entry;
+    writeFileSync(join(dir, "agent-cms.json"), JSON.stringify(lock));
+  };
+  for (const withSource of [true, false]) {
+    const dir = app({ src: false });
+    assert.equal(await runCli(["add", "cms-plugins", "--yes"], quiet(dir, reg("1"))), 0);
+    move(dir, withSource);
+    assert.equal(await runCli(["add", "--update", "--yes"], quiet(dir, reg("2"))), 0);
+    assert.ok(!existsSync(join(dir, "app/admin/plugins/page.tsx")), "no second route");
+    assert.match(readFileSync(join(dir, "app/admin/(app)/plugins/page.tsx"), "utf8"), /\/\/ 2/);
+    assert.deepEqual(Object.keys(lockOf(dir).files).filter((k) => k.endsWith("page.tsx")), ["app/admin/(app)/plugins/page.tsx"]);
+    // Plain `add` again does not write a second route either.
+    assert.equal(await runCli(["add", "cms-plugins", "--yes"], quiet(dir, reg("2"))), 0);
+    assert.ok(!existsSync(join(dir, "app/admin/plugins/page.tsx")));
+  }
+
+  // A stale default entry left by an older --update (both keys in the lock, only the moved file on disk).
+  const stale = app({ src: false });
+  assert.equal(await runCli(["add", "cms-plugins", "--yes"], quiet(stale, reg("1"))), 0);
+  move(stale, true);
+  const ls = lockOf(stale);
+  ls.files["app/admin/plugins/page.tsx"] = { ...ls.files["app/admin/(app)/plugins/page.tsx"] };
+  writeFileSync(join(stale, "agent-cms.json"), JSON.stringify(ls));
+  assert.equal(await runCli(["add", "--update", "--yes"], quiet(stale, reg("2"))), 0);
+  assert.ok(!existsSync(join(stale, "app/admin/plugins/page.tsx")), "no second route from a stale key");
+  assert.deepEqual(Object.keys(lockOf(stale).files).filter((k) => k.endsWith("page.tsx")), ["app/admin/(app)/plugins/page.tsx"]);
+
+  // A lock key outside app/ (the lock is editable) is never followed; two candidates are not guessed.
+  const outside = app({ src: false });
+  assert.equal(await runCli(["add", "cms-plugins", "--yes"], quiet(outside, reg("1"))), 0);
+  const victim = join(outside, "..", `victim-${Date.now()}`);
+  mkdirSync(join(victim), { recursive: true });
+  writeFileSync(join(victim, "page.tsx"), "keep me\n");
+  const lock = lockOf(outside);
+  const entry = lock.files["app/admin/plugins/page.tsx"];
+  delete lock.files["app/admin/plugins/page.tsx"];
+  rmSync(join(outside, "app/admin/plugins/page.tsx"));
+  lock.files[relative(outside, join(victim, "page.tsx"))] = { ...entry, hash: sha256("keep me\n") };
+  lock.files["lib/page.tsx"] = { ...entry };
+  writeFileSync(join(outside, "agent-cms.json"), JSON.stringify(lock));
+  assert.equal(await runCli(["add", "--update", "--yes"], quiet(outside, reg("2"))), 0);
+  assert.equal(readFileSync(join(victim, "page.tsx"), "utf8"), "keep me\n");
+  assert.ok(existsSync(join(outside, "app/admin/plugins/page.tsx")), "written at the default route instead");
+
+  const twice = app({ src: false });
+  assert.equal(await runCli(["add", "cms-plugins", "--yes"], quiet(twice, reg("1"))), 0);
+  move(twice, true);
+  mkdirSync(join(twice, "app/admin/(b)/plugins"), { recursive: true });
+  writeFileSync(join(twice, "app/admin/(b)/plugins/page.tsx"), readFileSync(join(twice, "app/admin/(app)/plugins/page.tsx")));
+  const l2 = lockOf(twice);
+  l2.files["app/admin/(b)/plugins/page.tsx"] = { ...l2.files["app/admin/(app)/plugins/page.tsx"] };
+  writeFileSync(join(twice, "agent-cms.json"), JSON.stringify(l2));
+  const lines: string[] = [];
+  assert.equal(await runCli(["add", "--update", "--yes"], quiet(twice, reg("2"), lines)), 0);
+  assert.ok(!existsSync(join(twice, "app/admin/plugins/page.tsx")));
+  assert.match(lines.join("\n"), /moved more than once/);
 });
 
 test("add: a page target outside app/ is refused", async () => {
@@ -235,7 +307,9 @@ test("doctor: plugin packages: missing peers are not ok, both copies are named, 
     writeFileSync(join(dir, p, "package.json"), JSON.stringify(json));
   };
   // A server-only app: no React at all.
-  pkg("", { name: "api", dependencies: { "@mainsoft/agent-cms": "*", both: "*", broken: "*", server: "*" } });
+  pkg("", { name: "api", dependencies: { "@mainsoft/agent-cms": "*", both: "*", broken: "*", server: "*", "maybe-admin": "*" }, optionalDependencies: { "with-admin": "*" } });
+  pkg("node_modules/with-admin", { name: "with-admin", peerDependencies: { "@mainsoft/agent-cms": "*", react: ">=18" } });
+  pkg("node_modules/maybe-admin", { name: "maybe-admin", peerDependencies: { "@mainsoft/agent-cms": "*", react: ">=18" }, peerDependenciesMeta: { react: { optional: true } } });
   pkg("node_modules/@mainsoft/agent-cms", { name: "@mainsoft/agent-cms", version: VERSION });
   pkg("node_modules/broken", null);
   pkg("node_modules/server", { name: "server", peerDependencies: { "@mainsoft/agent-cms": "*" } });
@@ -245,6 +319,9 @@ test("doctor: plugin packages: missing peers are not ok, both copies are named, 
   assert.ok(out.some((l) => /^ok {4}plugin server uses the app's @mainsoft\/agent-cms$/.test(l)), out.join("\n"));
   assert.ok(out.some((l) => /^warn {2}plugin both uses another copy of @mainsoft\/agent-cms/.test(l)), out.join("\n"));
   assert.ok(!out.some((l) => /broken/.test(l)));
+  // 0.24.2: no React in the app, and a plugin wants it as a (non-optional) peer.
+  assert.ok(out.some((l) => /^warn {2}plugin with-admin needs react as a peer and cannot find it/.test(l)), out.join("\n"));
+  assert.ok(out.some((l) => /^ok {4}plugin maybe-admin uses the app's @mainsoft\/agent-cms$/.test(l)), out.join("\n"));
 
   // A linked plugin outside the app that cannot find its peers.
   const app = mkdtempSync(join(tmpdir(), "agent-cms-react-plugins3-"));
