@@ -13,7 +13,7 @@ import type { WebhookInput, WebhookView } from "./outbox";
 import type { CmsRole, PersonMatch, RoleInput, RoleMember, RoleOp } from "./roles";
 import type { PluginInfo, PluginSettingsView } from "./plugin";
 
-export type { PluginInfo, PluginSettingsView, PluginState, SettingField, SettingFieldType } from "./plugin";
+export type { PluginAdded, PluginInfo, PluginSettingsView, PluginState, SettingField, SettingFieldType } from "./plugin";
 import type { CmsStats } from "./stats";
 import type { ImportItem, ImportOptions, TransferFile } from "./transfer";
 import type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";

@@ -37,7 +37,8 @@ export interface AdminPluginShape<N = unknown, P = unknown> {
   /* eslint-enable @typescript-eslint/no-explicit-any */
   /**
    * Pages by path under `/admin/p/<plugin>`: `""` is the plugin's first page; `"items/:id"`
-   * takes a parameter. The first matching key wins, longer paths first.
+   * takes a parameter. Where two keys fit a path, the one with a fixed word at the first part
+   * where they differ wins (`items/:id` beats `:kind/edit` for `items/edit`).
    */
   pages?: Record<string, P>;
   /** Menu entries. Default: one entry for the `""` page when there is one. */
@@ -56,6 +57,11 @@ export interface AdminRuntimeOptions<N, P> {
   basePath?: string;
   /** Called when a plugin's slot throws (the other parts still show). Default `console.error`. */
   onError?: (err: unknown, where: string) => void;
+  /**
+   * 0.24.1: wrap each plugin's slot output, so a part that fails later (React: while it renders)
+   * is left out too. `report` sends the error to `onError`. The app's own parts are not wrapped.
+   */
+  wrap?: (node: N, o: { plugin: string; slot: string; report: (err: unknown) => void }) => N;
 }
 
 export interface AdminPageMatch<P> {
@@ -119,22 +125,24 @@ export function createAdminRuntime<N, P>(o: AdminRuntimeOptions<N, P>): AdminRun
   const slots: Record<string, unknown> = { ...app };
 
   for (const name of MULTI_SLOTS) {
-    const parts: { from: string; fn: (...a: unknown[]) => N }[] = [];
-    if (typeof app[name] === "function") parts.push({ from: "app", fn: app[name] as (...a: unknown[]) => N });
+    // `from: null` is the app's own part (a plugin may well be called "app").
+    const parts: { from: string | null; fn: (...a: unknown[]) => N }[] = [];
+    if (typeof app[name] === "function") parts.push({ from: null, fn: app[name] as (...a: unknown[]) => N });
     for (const p of plugins) {
       const fn = p.slots?.[name];
       if (typeof fn === "function") parts.push({ from: p.name, fn });
     }
     if (parts.length === 0) delete slots[name];
-    else if (parts.length === 1 && parts[0].from === "app") slots[name] = parts[0].fn;
+    else if (parts.length === 1 && parts[0].from === null) slots[name] = parts[0].fn;
     else
       slots[name] = (...args: unknown[]) =>
         o.combine(
           parts.flatMap(({ from, fn }) => {
-            if (from === "app") return [fn(...args)];
+            if (from === null) return [fn(...args)];
             // A plugin's slot that throws is left out; the app's and the others still show.
             try {
-              return [fn(...args)];
+              const node = fn(...args);
+              return [o.wrap ? o.wrap(node, { plugin: from, slot: name, report: (err) => report(err, `admin plugin ${from}: slot ${name}`) }) : node];
             } catch (err) {
               report(err, `admin plugin ${from}: slot ${name}`);
               return [];
@@ -148,12 +156,19 @@ export function createAdminRuntime<N, P>(o: AdminRuntimeOptions<N, P>): AdminRun
     if (from) slots[name] = from.slots![name];
   }
 
-  // Pages: literal segments beat parameters; longer keys first.
+  // Pages: only keys with as many parts as the path can match. Among those, 0.24.1: the first
+  // part that differs decides, a fixed word beating a parameter (`items/:id` before `:kind/edit`
+  // for `items/edit`), whatever order the keys were written in.
+  const isParam = (x: string) => x.startsWith(":");
+  const specific = (a: string[], b: string[]) => {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (isParam(a[i]) !== isParam(b[i])) return isParam(a[i]) ? 1 : -1;
+    return 0;
+  };
   const pageTable = plugins.map((p) => ({
     plugin: p.name,
     pages: Object.entries(p.pages ?? {})
       .map(([key, page]) => ({ key, page, parts: key ? key.split("/") : [] }))
-      .sort((a, b) => b.parts.length - a.parts.length || a.parts.filter((x) => x.startsWith(":")).length - b.parts.filter((x) => x.startsWith(":")).length),
+      .sort((a, b) => b.parts.length - a.parts.length || specific(a.parts, b.parts)),
   }));
   const byName = new Map(plugins.map((p) => [p.name, p]));
 

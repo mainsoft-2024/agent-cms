@@ -30,6 +30,12 @@ test("serve: health, the admin page with its settings and a strict policy, the A
     assert.equal(page.headers.get("x-content-type-options"), "nosniff");
     assert.match(html, /<script type="application\/json" id="agent-cms-settings">\{"basePath":"\/api\/cms","adminPath":"\/admin","appName":"Acme \\u003cCMS>"/);
     assert.match(html, /<title>Acme CMS><\/title>/);
+    // 0.24.1: the admin's fonts from jsDelivr, and only that origin is added for styles and fonts.
+    assert.match(csp, /style-src 'self' 'unsafe-inline' https:\/\/cdn\.jsdelivr\.net;/);
+    assert.match(csp, /font-src 'self' data: https:\/\/cdn\.jsdelivr\.net;/);
+    assert.match(html, /<link rel="stylesheet" href="https:\/\/cdn\.jsdelivr\.net\/gh\/wanteddev\/wanted-sans@v1\.0\.3\/[^"]+"/);
+    assert.match(html, /<link rel="stylesheet" href="https:\/\/cdn\.jsdelivr\.net\/npm\/@fontsource-variable\/geist-mono@[^"]+"/);
+    assert.match(html, /<style>body:has\(\.cms-root\)/);
     assert.match(html, /src="\/admin\/app-abcdefgh\.js"/, "files are found from any admin address");
 
     const js = await fetch(`${s.url}/admin/app-abcdefgh.js`);
@@ -62,10 +68,13 @@ test("serve: the admin may connect to the storage it uploads to (connect-src lis
   const { s3Storage } = await import("./storage-s3");
   const s3 = s3Storage({ bucket: "media", endpoint: "http://127.0.0.1:9100", region: "us-east-1", accessKeyId: "a", secretAccessKey: "b" });
   const cms = createCms({ repo: new MemoryRepo(), collections: [], media: { stores: { public: { adapter: s3, visibility: "public" } } } });
-  const s = await startServer({ cms, port: 0, host: "127.0.0.1", adminDir: admin, auth: false, cron: false, log: () => {} });
+  const s = await startServer({ cms, port: 0, host: "127.0.0.1", adminDir: admin, auth: false, cron: false, cdnFonts: false, log: () => {} });
   try {
-    const csp = (await fetch(`${s.url}/admin`)).headers.get("content-security-policy") ?? "";
+    const res = await fetch(`${s.url}/admin`);
+    const csp = res.headers.get("content-security-policy") ?? "";
     assert.match(csp, /connect-src 'self' http:\/\/127\.0\.0\.1:9100(;|$)/);
+    // cdnFonts: false: no outside fonts and nothing added to the policy.
+    assert.ok(!csp.includes("jsdelivr") && !(await res.text()).includes("jsdelivr"));
   } finally {
     await s.stop();
     rmSync(cwd, { recursive: true, force: true });

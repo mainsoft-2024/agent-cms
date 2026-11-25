@@ -94,8 +94,10 @@ test("plugins screen: states, why one failed, settings form from its schema, sav
   await user.click(within(row("slack-notify")).getByRole("button", { name: "slack-notify" }));
   const panel = await screen.findByRole("complementary", { name: "slack-notify" });
   within(panel).getByText("Switched off: it could not start");
-  within(panel).getByText(/url/);
+  within(panel).getByText(/settings: url/);
   within(panel).getByText("Also off, as they need this plugin: deploy-notes");
+  // 0.24.1: what it adds, by name.
+  within(panel).getByText("slack-notify.post");
   assert.deepEqual(await axeViolations(), []);
 
   // Restarting the one that needs it does not claim success while it stays off.
@@ -206,6 +208,50 @@ test("settings values: numbers, JSON and empty secrets", () => {
   assert.deepEqual(settingsValues([...fields], { n: "1", j: "{", s: "", b: false }, t), { error: "Extra: not valid JSON" });
 });
 
+test("0.24.1: the panel names what a plugin adds, its pages included", async () => {
+  const s = makeServer({ plugins: plugins() });
+  const user = userEvent.setup();
+  renderWith(s, <CmsPlugins />, { plugins: ADMIN });
+  const table = await screen.findByRole("table");
+  await user.click(within(table).getByRole("button", { name: "Read counts" }));
+  const panel = await screen.findByRole("complementary", { name: "Read counts" });
+  const items = within(panel)
+    .getAllByRole("listitem")
+    .map((li) => li.textContent);
+  assert.deepEqual(items, ["RoutesGET /stats/summary", "Menu entriesRead counts", "Pages/admin/p/stats", "Pages/admin/p/stats/items/:id", "Pages/admin/p/stats/broken"]);
+});
+
+test("0.24.1: shell: a plugin link to a CMS page never shows as current next to the CMS's own entry", async () => {
+  const s = makeServer({ plugins: [definePlugin({ name: "mirror", setup: (ctx) => ctx.nav({ label: "Mirror", href: "/admin/plugins" }) })] });
+  render(
+    <CmsProvider baseUrl={BASE} fetch={s.fetch}>
+      <CmsShell activeHref="/admin/plugins">
+        <p>body</p>
+      </CmsShell>
+    </CmsProvider>
+  );
+  const nav = await screen.findByRole("navigation", { name: "Admin navigation" });
+  const mirror = await within(nav).findByRole("link", { name: "Mirror" });
+  assert.equal(mirror.getAttribute("aria-current"), null);
+  assert.equal(within(nav).getByRole("link", { name: /^Plugins/ }).getAttribute("aria-current"), "page");
+  assert.equal(nav.querySelectorAll('[aria-current="page"]').length, 1);
+});
+
+test("0.24.1: shell: a plugin link to a collection is not current next to that collection", async () => {
+  const s = makeServer({ plugins: [definePlugin({ name: "mirror", setup: (ctx) => ctx.nav({ label: "Mirror", href: "/admin/guide" }) })] });
+  render(
+    <CmsProvider baseUrl={BASE} fetch={s.fetch}>
+      <CmsShell activeCollection="guide" activeHref="/admin/guide">
+        <p>body</p>
+      </CmsShell>
+    </CmsProvider>
+  );
+  const nav = await screen.findByRole("navigation", { name: "Admin navigation" });
+  await within(nav).findByRole("link", { name: "Mirror" });
+  await waitFor(() => assert.equal(nav.querySelectorAll('[aria-current="page"]').length, 1));
+  assert.equal(within(nav).getByRole("link", { name: "Mirror" }).getAttribute("aria-current"), null);
+});
+
 test("shell: Plugins with the failed count for admins; Extensions lists server menus (no href → its page) and admin plugin pages once", async () => {
   const s = makeServer({ plugins: plugins() });
   render(
@@ -271,12 +317,80 @@ test("slots: the app's button and each plugin's show side by side in the editor'
   );
 });
 
+test("0.24.1: slots: a plugin part that throws while rendering is left out; the rest stays", async () => {
+  const s = makeServer();
+  function Bad(): React.ReactElement {
+    throw new Error("render boom");
+  }
+  const broken = defineAdminPlugin({ name: "broken", slots: { editorActions: () => <Bad /> } });
+  const ok = defineAdminPlugin({ name: "ok", slots: { editorActions: () => <button type="button">Fine</button> } });
+  function Probe() {
+    const { runtime } = useCmsAdmin();
+    const fn = runtime.slots.editorActions as (c: { slug: string }) => React.ReactNode;
+    return <div data-testid="slot">{fn({ slug: "hello" })}</div>;
+  }
+  const quiet = console.error;
+  const seen: string[] = [];
+  console.error = (...a: unknown[]) => void seen.push(a.map(String).join(" "));
+  try {
+    renderWith(s, <Probe />, { plugins: [broken, ok], slots: { editorActions: () => <button type="button">Mine</button> } });
+    const slot = await screen.findByTestId("slot");
+    await waitFor(() =>
+      assert.deepEqual(
+        within(slot)
+          .getAllByRole("button")
+          .map((b) => b.textContent),
+        ["Mine", "Fine"]
+      )
+    );
+  } finally {
+    console.error = quiet;
+  }
+  assert.ok(seen.some((l) => l.includes("admin plugin broken: slot editorActions")), seen.join("\n"));
+});
+
+test("0.24.1: slots: a failed part is not handed to the next plugin when an earlier one drops out", async () => {
+  const s = makeServer();
+  let aThrows = false;
+  function Bad(): React.ReactElement {
+    throw new Error("render boom");
+  }
+  const a = defineAdminPlugin({ name: "a", slots: { editorActions: () => { if (aThrows) throw new Error("gone"); return <button type="button">A</button>; } } });
+  const b = defineAdminPlugin({ name: "b", slots: { editorActions: () => <Bad /> } });
+  const c = defineAdminPlugin({ name: "c", slots: { editorActions: () => <button type="button">C</button> } });
+  function Probe({ n }: { n: number }) {
+    const { runtime } = useCmsAdmin();
+    const fn = runtime.slots.editorActions as (c: { n: number }) => React.ReactNode;
+    return <div data-testid="slot">{fn({ n })}</div>;
+  }
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const view = renderWith(s, <Probe n={1} />, { plugins: [a, b, c] });
+    const names = () => within(screen.getByTestId("slot")).queryAllByRole("button").map((x) => x.textContent);
+    await waitFor(() => assert.deepEqual(names(), ["A", "C"]));
+    aThrows = true;
+    view.rerender(
+      <CmsProvider baseUrl={BASE} fetch={s.fetch} plugins={[a, b, c]}>
+        <Probe n={2} />
+      </CmsProvider>
+    );
+    await waitFor(() => assert.deepEqual(names(), ["C"]));
+  } finally {
+    console.error = quiet;
+  }
+});
+
 test("phone: the list, then the plugin's details on their own with a way back", async () => {
   setMobile(true);
   const s = makeServer({ plugins: plugins() });
   const user = userEvent.setup();
   renderWith(s, <CmsPlugins />, { plugins: ADMIN });
   const table = await screen.findByRole("table");
+  // 0.24.1: on a phone each row says its version and what it adds (or why it failed) under the name.
+  await within(table).findByText("1.2.0 · Routes 1 · Menu entries 1 · Pages 3");
+  within(table).getByText("settings: url: invalid_type");
+  assert.equal(within(table).getAllByText("Built in · Events 1").length, 2);
   await user.click(within(table).getByRole("button", { name: "slack-notify" }));
   const heading = await screen.findByRole("heading", { name: "slack-notify" });
   assert.ok(!screen.queryByRole("table"));

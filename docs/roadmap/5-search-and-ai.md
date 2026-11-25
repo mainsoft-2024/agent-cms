@@ -50,7 +50,9 @@
 
 ## 135. 검색 확장 연결구 (12번 임베딩 검색을 대신한다) — 나중으로 옮김
 
-**2026-11-24 사용자 결정**: 묶음 5에서 빼고 나중에 한다. 플러그인 계약(92번)을 먼저 끝까지 만들고([3-integrations-and-ops.md](3-integrations-and-ops.md)의 "플러그인 v2"), 135는 그 위에 자리 하나로 붙인다: `ctx.search.ranker({ name, rank, weight?, timeoutMs? })`와 색인을 따라가기 위한 섹션 조회(`cms.searchSections({ docIds })`, 게시·게시 취소·삭제 이벤트와 `search.stale`). 2026-11-24에 정한 세부: 추가 순위가 찾은 결과는 coverage 기준과 상관없이 통과, 결과의 `score`는 합친 점수와 `matchedBy`, 모든 검색에 쓰고 호출마다 끌 수 있음(`rankers: false`), 가중치(기본 1)와 시간 한도(기본 500ms, 최대 2000)는 선택. 아래는 처음 계획.
+**2026-11-24 사용자 결정**: 묶음 5에서 빼고 나중에 한다. 플러그인 계약(92번)을 먼저 끝까지 만들고([3-integrations-and-ops.md](3-integrations-and-ops.md)의 "플러그인 v2"), 135는 그 위에 자리 하나로 붙인다: `ctx.search.ranker({ name, rank, weight?, timeoutMs? })`와 색인을 따라가기 위한 섹션 조회(`cms.searchSections({ docIds })`, 게시·게시 취소·삭제 이벤트와 `search.stale`). 2026-11-24에 정한 세부: 추가 순위가 찾은 결과는 coverage 기준과 상관없이 통과, 결과의 `score`는 합친 점수와 `matchedBy`, 모든 검색에 쓰고 호출마다 끌 수 있음(`rankers: false`), 가중치(기본 1)와 시간 한도(기본 500ms, 최대 2000)는 선택. `rank`에는 넉넉하게 넘김(읽을 수 있는 컬렉션, locale, limit, signal, actor), 섹션을 못 찾으면 그 문서에서 낱말 검색이 가장 높게 본 섹션, 없으면 첫 섹션, 관찰은 telemetry `rankers`와 순위마다 1분에 한 번 onError.
+
+**2026-11-25 사용자 결정 (색인 따라가기)**: B. 쓰기 이벤트 + 섹션 조회. 게시·게시 취소·삭제 이벤트(클러스터 전체에서 한 번)를 받은 플러그인이 `cms.searchSections({ docIds })`로 그 문서의 섹션을 읽는다. 스니펫이나 컬렉션 검색 설정이 바뀌면 `search.stale` 이벤트, 처음 채우기는 `cms.searchSections()` 전체를 job으로 읽는다. 색인 차이 알림(A)은 서버마다, 서버리스의 콜드 스타트마다 불려서 고르지 않았다. 아래는 처음 계획.
 
 
 **무엇을, 왜.** 낱말이 하나도 겹치지 않는 질문("결제가 안 돼요"와 "카드 승인 오류")은 낱말 검색으로 찾지 못한다. 이것을 푸는 임베딩 검색은 모델을 불러야 해서 이 패키지에 넣지 않는다. 대신 밖에서 붙일 수 있는 연결구를 만든다. 이 패키지의 검색은 낱말 기반 그대로다.

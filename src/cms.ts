@@ -723,7 +723,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
       // A plugin that failed to start, or is off, hears nothing.
       if (pluginHost && !pluginHost.usable(l.plugin)) continue;
       // Built-ins pick recipients now, at dispatch, as before 0.23.0; other plugins run after.
-      const builtin = pluginHost.get(l.plugin)?.builtin;
+      const builtin = pluginHost.isBuiltin(l.plugin);
       const set = builtin ? inFlight : pluginWork;
       const heard: Promise<unknown> = (builtin ? new Promise((ok) => ok(l.fn(e))) : Promise.resolve().then(() => l.fn(e)))
         .catch((err) => report(err, `plugin ${l.plugin}: ${e.event}`))
@@ -4157,6 +4157,29 @@ export function createCmsCore(opts: CreateCmsOptions) {
           if (rows.length < 500) return { changes: out, last: Math.max(after, seq), more: false };
         }
       },
+    },
+    /**
+     * 0.24.1: wait until the work that runs after a write is done (the change log, webhook queueing,
+     * plugins' event listeners, and whatever those start in turn), without stopping anything. For
+     * tests (`createTestCms().flush()`). Gives up after `timeoutMs` (default 5 s) and resolves.
+     */
+    async idle(o: { timeoutMs?: number } = {}): Promise<void> {
+      const now = () => performance.now();
+      const until = now() + (o.timeoutMs ?? PLUGIN_STOP_TIMEOUT_MS);
+      // Listeners start on a later turn; let them start, then wait until nothing is left.
+      for (let quiet = 0; quiet < 2 && now() < until; ) {
+        await new Promise((r) => setTimeout(r, 0));
+        const busy = [...inFlight, ...pluginWork];
+        if (!busy.length) {
+          quiet++;
+          continue;
+        }
+        quiet = 0;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const late = await Promise.race([Promise.allSettled(busy).then(() => false), new Promise<boolean>((done) => (timer = setTimeout(() => done(true), Math.max(0, until - now()))))]);
+        clearTimeout(timer);
+        if (late) return;
+      }
     },
     /**
      * Waits for writes that run after a response (the change log, webhook queueing) and stops

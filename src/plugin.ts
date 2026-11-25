@@ -273,6 +273,12 @@ export interface PluginSettingsView {
   fields: SettingField[];
 }
 
+/** One thing a plugin added (0.24.1). `kind` is a key of `PluginInfo.registered`. */
+export interface PluginAdded {
+  kind: "routes" | "tools" | "events" | "jobs" | "nav" | "me" | "sql" | "hooks" | "collections" | "fields" | "actions" | "filters" | "access";
+  name: string;
+}
+
 export interface PluginInfo {
   name: string;
   /** Part of the CMS (`webhooks`, `automations`). */
@@ -291,6 +297,8 @@ export interface PluginInfo {
   /** How long its last `start` took. */
   startedMs: number | null;
   startedAt: string | null;
+  /** 0.24.1: the same, by name: `{ kind: "routes", name: "GET /stats/summary" }`, `{ kind: "tools", name: "stats_summary" }`. */
+  added?: PluginAdded[];
   registered: { routes: number; tools: number; events: number; jobs: number; nav: number; me: number; sql: number; hooks: number; collections: number; fields: number; actions: number; filters: number; access: number };
   /** Its settings schema's keys, when it has one (`GET /plugins/:name/settings` has the values). */
   settings: string[] | null;

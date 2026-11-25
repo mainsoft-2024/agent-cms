@@ -109,7 +109,7 @@ export interface CliIo {
 
 const WITH_VALUE = new Set(["--base-url", "--out", "--name", "--on-conflict", "--collection", "--env", "--note", "--collections", "--expected-version", "--dir", "--format", "--store", "--folder", "--alt", "--tag", "--origin", "--from", "--types", "--every", "--port", "--host", "--offset", "--limit", "--context", "--glob", "--args-file", "--default", "--batch"]);
 /** Switches without a value. Anything else that starts with "--" is refused before any request. */
-const SWITCHES = new Set(["--admin", "--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--fix", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--memory", "--no-fonts", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
+const SWITCHES = new Set(["--admin", "--all", "--count", "--diff", "--draft", "--drafts", "--dry-run", "--files", "--fix", "--force", "--help", "--ignore-case", "--json", "--json-errors", "--list", "--memory", "--no-cdn-fonts", "--no-fonts", "--outline", "--overwrite", "--publish", "--regex", "--update", "--version", "--watch", "--with-files", "--yes"]);
 
 /** Problems with the flags (unknown, missing value), or null. Checked before reading any settings. */
 export function checkFlags(argv: string[]): string | null {
@@ -176,7 +176,7 @@ export function parseEnvFile(text: string): Record<string, string> {
 }
 
 const USAGE = `agent-cms ${VERSION}
-a server:      dev [--port 3000] [--memory] | serve [--port <n>] [--host <h>]
+a server:      dev [--port 3000] [--memory] [--no-cdn-fonts] | serve [--port <n>] [--host <h>] [--no-cdn-fonts]
 in your app:   init [--no-fonts] | doctor | migrate <check|print|apply> | add <item...> [--diff|--update] | storage <check|cleanup|sync> | registry build
 plugins:       plugin init <name> [--dir path]   a new plugin package (server, admin page, test, README)
 with a key:    tools | collections | list | get | search | put | patch | publish | upload | call | export | import | openapi | retention
@@ -785,7 +785,10 @@ export function migrationSql(r: DoctorReport, tables: ReturnType<typeof cmsTable
 /**
  * `doctor`: whether the app and the installed `@mainsoft/agent-cms` find the same React. Two
  * copies break admin plugins (hooks fail with "Invalid hook call", the plugin's context is empty).
- * Null when React is not installed in the app or the package is not found from `cwd`.
+ * 0.24.1: also each plugin package the app depends on (one that names `@mainsoft/agent-cms` in its
+ * dependencies or peer dependencies, linked ones too): it must find the app's React and the app's
+ * `@mainsoft/agent-cms`. One line per finding, the first about the app.
+ * Null when the package is not found from `cwd` (or there is nothing to say: no React, no plugins).
  */
 export function reactCheck(cwd: string): string | null {
   const from = (dir: string) => createRequire(join(dir, "noop.js"));
@@ -793,18 +796,66 @@ export function reactCheck(cwd: string): string | null {
     try {
       return realpathSync(from(dir).resolve(what));
     } catch {
+      // A package whose `exports` hide package.json: look in node_modules on the way up.
+      if (!what.endsWith("/package.json")) return null;
+      for (let d = dir; ; d = dirname(d)) {
+        const f = join(d, "node_modules", what);
+        if (existsSync(f)) return realpathSync(f);
+        if (dirname(d) === d) return null;
+      }
+    }
+  };
+  const pkg = find(cwd, "@mainsoft/agent-cms/package.json");
+  if (!pkg) return null;
+  const app = find(cwd, "react/package.json");
+  const fix = "Make them one: npm ls react shows who brings the other; npm dedupe (or one react version in package.json, overrides/resolutions) fixes it";
+  const lines: string[] = [];
+  if (app) {
+    const cms = find(dirname(pkg), "react/package.json");
+    if (cms === app) lines.push("ok    one React (the app and @mainsoft/agent-cms use the same copy)");
+    else if (!cms) lines.push(`warn  @mainsoft/agent-cms cannot find react from ${dirname(pkg)}, though the app has it at ${dirname(app)}. ${fix}`);
+    else lines.push(`warn  two copies of React: the app uses ${dirname(app)}, @mainsoft/agent-cms uses ${dirname(cms)}. Admin plugins break with two ("Invalid hook call"). ${fix}`);
+  }
+
+  // Plugin packages: the app's dependencies that depend on @mainsoft/agent-cms. Each must find
+  // the app's copy of it, and (when it uses React) the app's React.
+  const record = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+  const readJson = (file: string): Record<string, unknown> | null => {
+    try {
+      const v: unknown = JSON.parse(readFileSync(file, "utf8"));
+      return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+    } catch {
       return null;
     }
   };
-  const app = find(cwd, "react/package.json");
-  if (!app) return null;
-  const pkg = find(cwd, "@mainsoft/agent-cms/package.json");
-  if (!pkg) return null;
-  const cms = find(dirname(pkg), "react/package.json");
-  if (cms === app) return "ok    one React (the app and @mainsoft/agent-cms use the same copy)";
-  const fix = "Make them one: npm ls react shows who brings the other; npm dedupe (or one react version in package.json, overrides/resolutions) fixes it";
-  if (!cms) return `warn  @mainsoft/agent-cms cannot find react from ${dirname(pkg)}, though the app has it at ${dirname(app)}. ${fix}`;
-  return `warn  two copies of React: the app uses ${dirname(app)}, @mainsoft/agent-cms uses ${dirname(cms)}. Admin plugins break with two ("Invalid hook call"). ${fix}`;
+  const own = readJson(join(cwd, "package.json")) ?? {};
+  const deps = [...new Set([...Object.keys(record(own.dependencies)), ...Object.keys(record(own.devDependencies))])].slice(0, 2000);
+  for (const name of deps) {
+    if (name === "react" || name === "react-dom" || name === "@mainsoft/agent-cms") continue;
+    let at: string | null;
+    try {
+      at = find(cwd, `${name}/package.json`);
+    } catch {
+      continue;
+    }
+    const meta = at ? readJson(at) : null;
+    if (!at || !meta) continue;
+    const peers = record(meta.peerDependencies);
+    const direct = record(meta.dependencies);
+    if (!("@mainsoft/agent-cms" in peers) && !("@mainsoft/agent-cms" in direct)) continue;
+    const dir = dirname(at);
+    const theirCms = find(dir, "@mainsoft/agent-cms/package.json");
+    const usesReact = "react" in peers || "react" in direct;
+    const theirReact = app ? find(dir, "react/package.json") : null;
+    const problems: string[] = [];
+    if (!theirCms) problems.push(`cannot find @mainsoft/agent-cms from ${dir} (a linked package needs the app's copy: npm link it from the app, or add it to the workspace)`);
+    else if (theirCms !== pkg) problems.push(`uses another copy of @mainsoft/agent-cms (${dirname(theirCms)}): its admin part cannot see the admin's context. Make it a peer dependency and remove the plugin's own copy (npm ls @mainsoft/agent-cms)`);
+    if (app && theirReact && theirReact !== app) problems.push(`uses another copy of React (${dirname(theirReact)}). ${fix}`);
+    else if (app && usesReact && !theirReact) problems.push(`cannot find react from ${dir}`);
+    if (problems.length) for (const p of problems) lines.push(`warn  plugin ${name} ${p}`);
+    else lines.push(`ok    plugin ${name} uses the app's ${theirReact ? "React and " : ""}@mainsoft/agent-cms`);
+  }
+  return lines.length ? lines.join("\n") : null;
 }
 
 function doctor(r: DoctorReport, o: { prefix: string; schema: string | null }, io: LocalIo, staleUploads = 0, failedJobs = 0): number {
@@ -1253,7 +1304,7 @@ async function serveCmd(cmd: "serve" | "dev", argv: string[], config: AgentCmsCo
   }
   const { cms: _drop, ...rest } = server ?? ({} as NonNullable<typeof server>);
   void _drop;
-  const running = await startServer({ ...rest, metricsToken: rest.metricsToken ?? (process.env.CMS_METRICS_TOKEN || undefined), cms, port, host: flag(argv, "host") ?? rest.host ?? (cmd === "dev" ? "127.0.0.1" : "0.0.0.0"), log: io.out });
+  const running = await startServer({ ...rest, cdnFonts: argv.includes("--no-cdn-fonts") ? false : rest.cdnFonts, metricsToken: rest.metricsToken ?? (process.env.CMS_METRICS_TOKEN || undefined), cms, port, host: flag(argv, "host") ?? rest.host ?? (cmd === "dev" ? "127.0.0.1" : "0.0.0.0"), log: io.out });
   stopOnSignals(running, io.out);
   await new Promise<void>((resolve) => running.server.once("close", () => resolve()));
   return 0;

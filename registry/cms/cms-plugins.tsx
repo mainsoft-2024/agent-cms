@@ -32,7 +32,7 @@ const REGISTERED = ["routes", "tools", "events", "jobs", "hooks", "collections",
 
 /** "Routes 2 · Tools 1 · Pages 1" for what a plugin adds. */
 export function addedText(p: PluginInfo, t: T, pages = 0): string {
-  const parts = REGISTERED.filter((k) => (p.registered[k] ?? 0) > 0).map((k) => `${t(`plugin_reg_${k}`)} ${p.registered[k]}`);
+  const parts = ([...REGISTERED, "me", "sql"] as const).filter((k) => (p.registered[k] ?? 0) > 0).map((k) => `${t(`plugin_reg_${k}`)} ${p.registered[k]}`);
   if (pages) parts.push(`${t("plugin_reg_pages")} ${pages}`);
   if (p.settings?.length) parts.push(t("plugin_settings"));
   return parts.length ? parts.join(" · ") : t("plugin_added_none");
@@ -42,6 +42,18 @@ export function addedText(p: PluginInfo, t: T, pages = 0): string {
 export function pluginLabel(p: { name: string; builtin?: boolean }, t: T, label: (name: string) => string): string {
   if (p.builtin && (p.name === "webhooks" || p.name === "automations")) return t(p.name === "webhooks" ? "nav_webhooks" : "nav_automations");
   return label(p.name);
+}
+
+/** 0.24.1: what a plugin added, by name, kind by kind (older servers send counts only: null). */
+export function addedRows(p: PluginInfo, t: T, pages: string[] = []): { kind: string; name: string }[] | null {
+  if (!p.added) return null;
+  const order = [...REGISTERED, "me", "sql"] as string[];
+  const rows = [...p.added]
+    .sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind))
+    .map((a) => ({ kind: t(`plugin_reg_${a.kind}`), name: a.kind === "sql" ? t("plugin_sql_count", { n: a.name }) : a.kind === "events" && a.name === "*" ? t("plugin_events_all") : a.name }));
+  for (const href of pages) rows.push({ kind: t("plugin_reg_pages"), name: href });
+  for (const f of p.settings ?? []) rows.push({ kind: t("plugin_settings"), name: f });
+  return rows;
 }
 
 /** The plugins that need `name` and are off because of it. */
@@ -160,7 +172,11 @@ export function CmsPlugins({ className, onOpenPage }: CmsPluginsProps) {
                             >
                               <bdi>{label(p)}</bdi>
                             </button>
-                            {label(p) !== p.name ? <div className="truncate font-mono text-xs text-muted-foreground">{p.name}</div> : null}
+                            {label(p) !== p.name ? <div className="hidden truncate font-mono text-xs text-muted-foreground sm:block">{p.name}</div> : null}
+                            {/* On a phone the version and "what it adds" columns are hidden: one line under the name instead. */}
+                            <div className={cn("line-clamp-2 break-words text-xs sm:hidden", p.state === "failed" ? "font-mono text-foreground" : "text-muted-foreground")}>
+                              {p.state === "failed" && p.error ? p.error : `${p.builtin ? t("plugin_builtin") : (p.version ?? "—")} · ${addedText(p, t, pagesOf(p.name))}`}
+                            </div>
                           </TableCell>
                           <TableCell className="hidden whitespace-nowrap font-mono text-xs text-muted-foreground sm:table-cell">{p.builtin ? t("plugin_builtin") : (p.version ?? "—")}</TableCell>
                           <TableCell>
@@ -216,7 +232,9 @@ function PluginPanel({ plugin: p, all, label, pageHref, onOpenPage, onSettings, 
   const [status, setStatus] = React.useState<{ text: string; tone: "ok" | "error" | "muted" }>({ text: "", tone: "muted" });
   const offWithIt = dependents(all, p.name);
   const needs = p.requires.filter((r) => all.find((x) => x.name === r)?.state !== "running");
-  const pages = Object.keys(runtime.plugins.find((x) => x.name === p.name)?.pages ?? {}).length;
+  const pageKeys = Object.keys(runtime.plugins.find((x) => x.name === p.name)?.pages ?? {});
+  const pages = pageKeys.length;
+  const named = addedRows(p, t, pageKeys.map((k) => (k ? `${runtime.href(p.name)}/${k}` : runtime.href(p.name))));
   const heading = React.useRef<HTMLSpanElement>(null);
   const mobileView = !!onBack;
   React.useEffect(() => {
@@ -268,7 +286,22 @@ function PluginPanel({ plugin: p, all, label, pageHref, onOpenPage, onSettings, 
       </dl>
       <div>
         <h3 className="mb-1 text-xs font-medium text-muted-foreground">{t("plugin_attached")}</h3>
-        <p className="text-sm">{addedText(p, t, pages)}</p>
+        {named ? (
+          named.length ? (
+            <ul role="list" className="divide-y rounded-md border text-sm">
+              {named.map((r, i) => (
+                <li key={i} className="flex gap-3 px-3 py-1.5">
+                  <span className="w-20 shrink-0 text-muted-foreground">{r.kind}</span>
+                  <span className="min-w-0 flex-1 break-all font-mono text-xs leading-5">{r.name}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">{t("plugin_added_none")}</p>
+          )
+        ) : (
+          <p className="text-sm">{addedText(p, t, pages)}</p>
+        )}
       </div>
       <div className="flex flex-wrap gap-2">
         {p.settings?.length ? (

@@ -24,6 +24,7 @@ import { type PluginSettingsView,
   type PluginInput,
   type PluginNav,
   type PluginRoute,
+  type PluginAdded,
   type PluginState,
   type PluginStore,
   type PluginTool,
@@ -168,7 +169,12 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
   const filters = new Map<PluginFilterName, { plugin: string; fn: (v: any, c: any) => any; priority: number; seq: number }[]>();
   const access: { plugin: string; rule: (q: PluginAccessQuery) => boolean; collections: readonly string[] | null }[] = [];
   const counts = new Map<string, Registered>();
-  const count = (name: string, k: keyof Registered) => void counts.get(name)![k]++;
+  /** 0.24.1: what each plugin added, by name (the plugins screen lists them). */
+  const added = new Map<string, PluginAdded[]>();
+  const count = (name: string, k: keyof Registered, label?: string) => {
+    counts.get(name)![k]++;
+    if (label !== undefined) added.get(name)!.push({ kind: k, name: label.slice(0, 200) });
+  };
   let filterSeq = 0;
 
   const running = (name: string) => entries.get(name)?.state === "running";
@@ -230,6 +236,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
   for (const p of ordered) {
     const e: Entry = { plugin: p, ctx: null, state: "starting", error: null, startedMs: null, startedAt: null, live: false, settings: {}, attempt: 0 };
     entries.set(p.name, e);
+    added.set(p.name, []);
     counts.set(p.name, { routes: 0, tools: 0, events: 0, jobs: 0, nav: 0, me: 0, sql: 0, hooks: 0, collections: 0, fields: 0, actions: 0, filters: 0, access: 0 });
     const missing = (p.requires ?? []).find((d) => !given.some((g) => g.name === d) || entries.get(d)?.state === "off");
     if (missing) {
@@ -250,25 +257,25 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
         return deps.secrets();
       },
       on: (event, fn) => {
-        count(p.name, "events");
+        count(p.name, "events", event);
         deps.listen(event, fn, p.name);
       },
       route: (method, path, handler) => {
         const parts = path.split("/").filter(Boolean);
         if (routes.some((r) => r.plugin === p.name && r.method === method && r.path.join("/") === parts.join("/"))) throw new Error(`${where}: the route ${method} /${parts.join("/")} is added twice`);
-        count(p.name, "routes");
+        count(p.name, "routes", `${method} /${[p.name, ...parts].join("/")}`);
         routes.push({ plugin: p.name, method, path: parts, handler });
       },
       tool: (tool) => {
         if (!/^[a-z][a-z0-9_]{2,63}$/.test(tool.name)) throw new Error(`${where}: tool name "${tool.name}" must be snake_case`);
         const other = tools.find((t) => t.name === tool.name);
         if (other) throw new Error(`${where}: the tool "${tool.name}" is already added by ${other.plugin}`);
-        count(p.name, "tools");
+        count(p.name, "tools", tool.name);
         tools.push({ ...tool, plugin: p.name });
       },
       job: (kind, def) => {
         if (jobs.some((j) => j.plugin === p.name && j.kind === kind)) throw new Error(`${where}: the job kind "${kind}" is defined twice`);
-        count(p.name, "jobs");
+        count(p.name, "jobs", `${p.name}.${kind}`);
         // A plugin that is not in use does not run its jobs: they wait and are tried again.
         jobs.push({
           plugin: p.name,
@@ -284,48 +291,48 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       },
       enqueue: (kind, payload, o) => deps.enqueue(`${p.name}.${kind}`, payload, o),
       me: (fn) => {
-        count(p.name, "me");
+        count(p.name, "me", "_me");
         me.push({ plugin: p.name, fn });
       },
       nav: (item) => {
-        count(p.name, "nav");
+        count(p.name, "nav", item.label);
         nav.push({ ...item, plugin: p.name });
       },
       hook: (name, fn, o) => {
-        count(p.name, "hooks");
+        count(p.name, "hooks", o?.collections?.length ? `${name} (${o.collections.join(", ")})` : name);
         hooks.push({ plugin: p.name, name, fn: fn as (...a: any[]) => any, collections: o?.collections ? [...o.collections] : null });
       },
       collection: (config) => {
         if (deps.taken(config.slug)) throw new Error(`${where}: the collection name "${config.slug}" is taken`);
         const other = collections.find((c) => c.config.slug === config.slug);
         if (other) throw new Error(`${where}: the collection "${config.slug}" is already added by ${other.plugin}`);
-        count(p.name, "collections");
+        count(p.name, "collections", config.slug);
         collections.push({ plugin: p.name, config });
       },
       field: (collection, key, schema, admin) => {
         if (!/^[a-zA-Z][a-zA-Z0-9_]{0,60}$/.test(key)) throw new Error(`${where}: field key "${key}" must be letters, digits and _`);
         const other = fields.find((f) => f.collection === collection && f.key === key);
         if (other) throw new Error(`${where}: the field "${collection}.${key}" is already added by ${other.plugin}`);
-        count(p.name, "fields");
+        count(p.name, "fields", `${collection}.${key}`);
         fields.push({ plugin: p.name, collection, key, schema, admin });
       },
       automationAction: (name, def) => {
         if (!/^[a-z][a-z0-9_-]{1,40}$/.test(name)) throw new Error(`${where}: action name "${name}" must be lowercase letters, digits, - and _`);
         const full = `${p.name}.${name}`;
         if (actions.some((a) => a.name === full)) throw new Error(`${where}: the action "${full}" is added twice`);
-        count(p.name, "actions");
+        count(p.name, "actions", full);
         actions.push({ plugin: p.name, name: full, label: def.label, run: def.run });
       },
       filter: (name, fn, o) => {
         if (!FILTER_NAMES.includes(name)) throw new Error(`${where}: there is no filter "${name}" (${FILTER_NAMES.join(", ")})`);
-        count(p.name, "filters");
+        count(p.name, "filters", name);
         const list = filters.get(name) ?? [];
         list.push({ plugin: p.name, fn, priority: o?.priority ?? 10, seq: filterSeq++ });
         list.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
         filters.set(name, list);
       },
       access: (rule, o) => {
-        count(p.name, "access");
+        count(p.name, "access", o?.collections?.length ? o.collections.join(", ") : "*");
         access.push({ plugin: p.name, rule, collections: o?.collections ? [...o.collections] : null });
       },
       store: makeStore(p.name),
@@ -495,6 +502,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       startedMs: e.startedMs,
       startedAt: e.startedAt,
       registered: { ...counts.get(p.name)! },
+      added: [...(added.get(p.name) ?? []), ...(counts.get(p.name)!.sql ? [{ kind: "sql" as const, name: `${counts.get(p.name)!.sql}` }] : [])],
       settings: p.settings ? Object.keys(p.settings.shape) : null,
     };
   }
@@ -587,6 +595,11 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
     get: (name: string): PluginInfo | null => {
       const e = entries.get(name);
       return e ? info(e) : null;
+    },
+    /** Whether `name` is a built-in plugin (cheap: the event dispatch asks for every listener). */
+    isBuiltin: (name: string): boolean => {
+      const e = entries.get(name);
+      return !!e && isBuiltin(e.plugin);
     },
     /** Runs before the first request; rejects while a `required` plugin is not running. */
     start,
