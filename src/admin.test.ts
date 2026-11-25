@@ -40,6 +40,39 @@ test("pages: literal beats parameter, decoding, unknown plugin or path → null"
   assert.equal(r.href("stats", "items/1"), "/admin/p/stats/items/1");
 });
 
+test("0.24.1: pages: the first part that differs decides, whatever order the keys were written in", () => {
+  for (const pages of [{ ":kind/edit": "Edit", "items/:id": "Item" }, { "items/:id": "Item", ":kind/edit": "Edit" }]) {
+    const r = rt([{ name: "p", pages }]);
+    assert.equal(r.page("p", ["items", "edit"])?.page, "Item");
+    assert.deepEqual(r.page("p", ["posts", "edit"])?.params, { kind: "posts" });
+  }
+});
+
+test("0.24.1: wrap: each plugin's slot output is wrapped (the app's is not) with a report to onError", () => {
+  const errors: string[] = [];
+  const r = createAdminRuntime<N, string>({
+    plugins: [{ name: "seo", slots: { editorActions: () => "seo" } }],
+    slots: { editorActions: () => "app" },
+    combine,
+    onError: (_e, where) => errors.push(where),
+    wrap: (node, o) => {
+      o.report(new Error("later"));
+      return `[${o.plugin}/${o.slot}:${node}]`;
+    },
+  });
+  assert.deepEqual((r.slots.editorActions as (c: unknown) => N)({}), ["app", "[seo/editorActions:seo]"]);
+  assert.deepEqual(errors, ["admin plugin seo: slot editorActions"]);
+});
+
+test("0.24.1: a plugin called \"app\" is still a plugin: its part is wrapped", () => {
+  const r = createAdminRuntime<N, string>({
+    plugins: [{ name: "app", slots: { editorActions: () => "theirs" } }],
+    combine,
+    wrap: (node, o) => `[${o.plugin}:${node}]`,
+  });
+  assert.deepEqual((r.slots.editorActions as (c: unknown) => N)({}), ["[app:theirs]"]);
+});
+
 test("nav, labels and strings by language", () => {
   const r = createAdminRuntime<N, string>({
     combine,

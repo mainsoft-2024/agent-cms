@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.24.1
+
+Fixes and follow-ups to 0.24.0. No schema change. Copied screens change (`cms-plugins.tsx`, `cms-shell.tsx`, `cms-messages.ts`): run `npx @mainsoft/agent-cms add --update`.
+
+### Fixed
+- **Built-in admin fonts**: the admin of `npx @mainsoft/agent-cms serve` and `dev` now shows Wanted Sans and Geist Mono. Its Content-Security-Policy allows `https://cdn.jsdelivr.net` for styles and fonts, and nothing else. `--no-cdn-fonts` (or `server: { cdnFonts: false }`) keeps system fonts with no outside request. Geist Mono now comes from jsDelivr too (it came from Google Fonts), so `cms-fonts.css` loads from one place. The sign-in, setup, invite and reset screens of the built-in admin use the fonts too. An existing `app/cms-fonts.css` keeps working (`init` does not overwrite it); to move it off Google Fonts, replace its Geist Mono `@import` with `https://cdn.jsdelivr.net/npm/@fontsource-variable/geist-mono@5.2.7/index.css` and put `"Geist Mono Variable"` first in `--cms-font-mono`.
+- **A plugin's slot part that throws while rendering** is left out by itself; the editor and the other plugins' parts stay (even when another plugin's part drops out on a later render), and the error goes to `onError`. `createAdminRuntime({ wrap })` is how other framework bindings do the same. `blockEditor` is not wrapped.
+- **Plugin pages**: when two keys fit a path, the one with a fixed word at the first part where they differ wins (`items/:id` beats `:kind/edit` for `items/edit`), whatever order they are written in.
+- **Sidebar**: a plugin link to one of the CMS's own pages (`/admin/plugins`, a collection) no longer shows as current next to the CMS's entry; one entry is current.
+- **`createTestCms().flush()`** waits until every `ctx.on` listener has finished, awaits included (at most 5 seconds). It is `cms.idle()`, new on the core.
+
+### Added
+- **What a plugin adds, by name**: `PluginInfo.added` (`[{ kind: "routes", name: "GET /stats/summary" }, …]`) in `GET /plugins` (admins) and `cms.plugins.list()`. The names are what the plugin wrote (route paths, tool, job and hook names): keep secrets out of them. The plugins screen's panel lists them, pages included; on a phone each row shows the version and what the plugin adds (or why it failed) under its name.
+- **`doctor`** also checks each plugin package the app depends on (one that lists `@mainsoft/agent-cms` in its dependencies or peer dependencies, linked ones too): it warns when the plugin finds another React or another `@mainsoft/agent-cms`, or cannot find them at all (a linked package), and runs for apps without React too.
+
 ## 0.24.0
 
 Plugin v2, admin side. No schema change. Copied screens change (`use-cms.ts`, `cms-shell.tsx`, `cms-messages.ts`): run `npx @mainsoft/agent-cms add --update`.

@@ -222,12 +222,16 @@ Missing shadcn parts are listed with the `npx shadcn add …` line to run
 in your admin layout (`import "../cms-fonts.css"`). The admin then uses
 [Wanted Sans](https://github.com/wanteddev/wanted-sans) (Korean and Latin in
 one family) and [Geist Mono](https://github.com/vercel/geist-font), both under
-the SIL Open Font License 1.1, loaded from jsDelivr and Google Fonts. It applies
+the SIL Open Font License 1.1, both loaded from jsDelivr. It applies
 only while an admin screen is on the page (`CmsShell` sets the `cms-root`
 class; put it on a wrapper of your own for pages without the shell), so the
 rest of your app keeps its fonts. To use other fonts, change
 `--cms-font-sans` and `--cms-font-mono` in that file; to serve the files
 yourself, replace the two `@import` lines. `init --no-fonts` skips the file.
+The built-in admin of `npx @mainsoft/agent-cms serve` and `dev` loads the same
+fonts and allows only `https://cdn.jsdelivr.net` for them in its
+Content-Security-Policy; `--no-cdn-fonts` (or `server: { cdnFonts: false }`)
+keeps it on system fonts with no outside request.
 
 The same screens install with the shadcn CLI, from any host that serves the
 registry (`npm run build:registry -- --base-url <url> --out <dir>` writes it).
@@ -749,7 +753,7 @@ createCms({ /* … */, plugins: [slack({ channel: "#news" })] });   // or `slack
 ```
 
 - **Start**: `start` runs once before the first request (10 s, `pluginStartTimeoutMs`). A plugin that fails is switched off with the plugins that need it, and the CMS goes on: its routes answer 503 `plugin_failed`, and its tools, hooks, filters, access rules, actions, `_me` values and menu entries are skipped. `required: true` makes every request answer 503 until it starts. `cms.close()` waits for running work and calls `stop`, last started first.
-- **Admins**: `GET /plugins` (state, version, error, what each added), `POST /plugins/:name/restart`, `GET`/`PUT /plugins/:name/settings` (secrets come back as `••••••••`; saving restarts the plugin and is in the audit log). `cms.plugins.list()` is the same list.
+- **Admins**: `GET /plugins` (state, version, error, what each added: counts in `registered`, names in `added` — route paths, tool, job and hook names as the plugin wrote them, so keep secrets out of those), `POST /plugins/:name/restart`, `GET`/`PUT /plugins/:name/settings` (secrets come back as `••••••••`; saving restarts the plugin and is in the audit log). `cms.plugins.list()` is the same list.
 - **Built-in plugins**: webhooks and automations are plugins of the CMS, listed with `builtin: true`. `createCms({ builtins: { webhooks: false, automations: false } })` turns them off (routes 404, the admin hides them).
 - **Access rules fail closed**: while a plugin with `ctx.access` is not running, the collections its rules cover refuse everyone but system actors. Rules are synchronous.
 - **Secrets**: a setting with `.describe("secret")` (any type) is sealed and never sent back; the admin sees `••••••••`, and a save that leaves it out keeps it. Error messages name the setting, never its value.
@@ -785,13 +789,13 @@ const plugins = [statsAdmin];
 <CmsProvider plugins={plugins}>…</CmsProvider>
 ```
 
-- **Pages**: `npx @mainsoft/agent-cms add cms-plugin-page` copies the frame and writes the Next.js route `app/admin/p/[plugin]/[[...path]]/page.tsx`. A page that throws shows an error there; the rest of the admin keeps working. A page key takes `:name` parameters; a fixed part beats a parameter.
-- **Slots**: every plugin's part shows after the app's own, in the order of `plugins`; a slot function that throws is left out (and reported to the console). A component it returns that throws while rendering is not caught there: give it its own error boundary. `blockEditor` holds one editor: the app's, else the first plugin's.
+- **Pages**: `npx @mainsoft/agent-cms add cms-plugin-page` copies the frame and writes the Next.js route `app/admin/p/[plugin]/[[...path]]/page.tsx`. A page that throws shows an error there; the rest of the admin keeps working. A page key takes `:name` parameters; where two keys fit a path, a fixed word beats a parameter at the first part where they differ (0.24.1).
+- **Slots**: every plugin's part shows after the app's own, in the order of `plugins`; a slot function that throws, or a component it returns that throws while rendering (0.24.1), is left out by itself and reported to the console; the rest stays. `blockEditor` holds one editor: the app's, else the first plugin's (not wrapped: an editor that fails should show its own fallback).
 - **Menu**: the sidebar's "Extensions" lists each admin plugin's page and the server's `ctx.nav()` entries. 0.24.0: `ctx.nav({ label })` without `href` opens the plugin's page.
 - **Plugins screen**: `npx @mainsoft/agent-cms add cms-plugins` copies the screen and writes its Next.js route `app/admin/plugins/page.tsx` (admins): every plugin's state, version, what it adds, why one failed and the plugins off with it, Restart, and a settings form drawn from its zod schema (`GET /plugins/:name/settings` now has `fields`; string, number, boolean, enum, URL and secret inputs, anything else as JSON). `.describe("secret: Webhook URL")` names a secret field, wherever the mark sits (outside or inside `.optional()`, `.default()`, `.pipe()`); its value and default never reach the browser. Fields you do not touch are saved back as they were. The sidebar shows how many plugins failed to start (`_me.pluginsFailed`, admins only).
-- **One React**: the app, the copied screens and plugin packages must share one React and one `@mainsoft/agent-cms`. `npx @mainsoft/agent-cms doctor` warns when React is installed twice.
+- **One React**: the app, the copied screens and plugin packages must share one React and one `@mainsoft/agent-cms`. `npx @mainsoft/agent-cms doctor` warns when React is installed twice, and when a plugin package the app depends on finds another React or another `@mainsoft/agent-cms`.
 - **Framework-free core**: `@mainsoft/agent-cms/admin` (no React) merges slots, finds pages and picks strings; `/react` builds on it. Other frameworks can bind to the same core later.
-- **Write and test a plugin**: `npx @mainsoft/agent-cms plugin init <name>` writes a package with a server entry, an admin entry, a test and a README. `@mainsoft/agent-cms/testing` gives `createTestCms({ plugins })`: an in-memory CMS with an admin, a writer and an anonymous caller (`as: "writer"`), `fetch(path)`, `client(as)`, `tool(name, input)`, `cron()`, `flush()` (wait for `ctx.on` listeners), `settings(plugin, values)`, `errors` and `close()`. The package `plugin init` writes exports its TypeScript sources: a Next.js app lists it in `transpilePackages`, or build it before publishing. Examples: `examples/plugins/stats` and `examples/plugins/slack-notify`.
+- **Write and test a plugin**: `npx @mainsoft/agent-cms plugin init <name>` writes a package with a server entry, an admin entry, a test and a README. `@mainsoft/agent-cms/testing` gives `createTestCms({ plugins })`: an in-memory CMS with an admin, a writer and an anonymous caller (`as: "writer"`), `fetch(path)`, `client(as)`, `tool(name, input)`, `cron()`, `flush()` (wait until every `ctx.on` listener has finished; `cms.idle()`), `settings(plugin, values)`, `errors` and `close()`. The package `plugin init` writes exports its TypeScript sources: a Next.js app lists it in `transpilePackages`, or build it before publishing. Examples: `examples/plugins/stats` and `examples/plugins/slack-notify`.
 - **Plugin actions in automations** are their own action type: `{ type: "slack-notify.post" }` (the automations screen lists them under "Do"), not `{ type: "call" }`, which runs `createCms({ automations: { actions } })`.
 
 **Telemetry.** `createCms({ onEvent })` gets every request (`method`, `path`, `status`, `ms`, `actor`, `via`), every event, every job run, every cron call and every error the CMS reports. Connect it to your tracing; it is never awaited.

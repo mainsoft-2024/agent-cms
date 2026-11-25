@@ -194,6 +194,14 @@ test("close: plugins stop last started first; the list is for admins", async () 
     startedMs: plugins[1].startedMs,
     startedAt: plugins[1].startedAt,
     registered: { routes: 1, tools: 1, events: 1, jobs: 0, nav: 1, me: 1, sql: 0, hooks: 0, collections: 0, fields: 0, actions: 0, filters: 0, access: 0 },
+    // 0.24.1: the same by name, in the order the plugin added them.
+    added: [
+      { kind: "routes", name: "GET /b-two/ping" },
+      { kind: "tools", name: "b_two_ping" },
+      { kind: "nav", name: "b-two" },
+      { kind: "me", name: "_me" },
+      { kind: "events", name: "doc.created" },
+    ],
     settings: null,
   });
   const unknown = await api.plugin("nope").then(

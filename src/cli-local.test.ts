@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -201,6 +201,67 @@ test("migrate print needs no database; doctor without one explains", async () =>
   lines.length = 0;
   assert.equal(await runCli(["doctor"], quiet(dir, registry("1"), lines)), 1);
   assert.match(lines.join("\n"), /agent-cms\.config\.ts/);
+});
+
+test("doctor: each plugin package must use the app's React and @mainsoft/agent-cms (0.24.1)", async () => {
+  const { reactCheck } = await import("./cli");
+  const dir = mkdtempSync(join(tmpdir(), "agent-cms-react-plugins-"));
+  const pkg = (p: string, json: object) => {
+    mkdirSync(join(dir, p), { recursive: true });
+    writeFileSync(join(dir, p, "package.json"), JSON.stringify(json));
+  };
+  pkg("", { name: "site", dependencies: { "@mainsoft/agent-cms": "*", react: "*", good: "*", "own-react": "*", "own-cms": "*", lodash: "*" } });
+  pkg("node_modules/@mainsoft/agent-cms", { name: "@mainsoft/agent-cms", version: VERSION, exports: { ".": "./index.js" } });
+  pkg("node_modules/react", { name: "react", version: "19.0.0", main: "index.js" });
+  pkg("node_modules/lodash", { name: "lodash" });
+  pkg("node_modules/good", { name: "good", peerDependencies: { "@mainsoft/agent-cms": ">=0.24", react: ">=18" } });
+  pkg("node_modules/own-react", { name: "own-react", peerDependencies: { "@mainsoft/agent-cms": ">=0.24" } });
+  pkg("node_modules/own-react/node_modules/react", { name: "react", version: "18.3.1", main: "index.js" });
+  pkg("node_modules/own-cms", { name: "own-cms", dependencies: { "@mainsoft/agent-cms": "0.23.0" } });
+  pkg("node_modules/own-cms/node_modules/@mainsoft/agent-cms", { name: "@mainsoft/agent-cms", version: "0.23.0" });
+  const out = (reactCheck(dir) ?? "").split("\n");
+  assert.match(out[0], /^ok {4}one React/);
+  assert.ok(out.some((l) => /^ok {4}plugin good /.test(l)), out.join("\n"));
+  assert.ok(out.some((l) => /^warn {2}plugin own-react uses another copy of React/.test(l)), out.join("\n"));
+  assert.ok(out.some((l) => /^warn {2}plugin own-cms uses another copy of @mainsoft\/agent-cms/.test(l)), out.join("\n"));
+  assert.ok(!out.some((l) => /lodash/.test(l)));
+});
+
+test("doctor: plugin packages: missing peers are not ok, both copies are named, odd manifests are skipped, no React needed (0.24.1)", async () => {
+  const { reactCheck } = await import("./cli");
+  const dir = mkdtempSync(join(tmpdir(), "agent-cms-react-plugins2-"));
+  const pkg = (p: string, json: unknown) => {
+    mkdirSync(join(dir, p), { recursive: true });
+    writeFileSync(join(dir, p, "package.json"), JSON.stringify(json));
+  };
+  // A server-only app: no React at all.
+  pkg("", { name: "api", dependencies: { "@mainsoft/agent-cms": "*", both: "*", broken: "*", server: "*" } });
+  pkg("node_modules/@mainsoft/agent-cms", { name: "@mainsoft/agent-cms", version: VERSION });
+  pkg("node_modules/broken", null);
+  pkg("node_modules/server", { name: "server", peerDependencies: { "@mainsoft/agent-cms": "*" } });
+  pkg("node_modules/both", { name: "both", dependencies: { "@mainsoft/agent-cms": "0.23.0", react: "18" } });
+  pkg("node_modules/both/node_modules/@mainsoft/agent-cms", { name: "@mainsoft/agent-cms", version: "0.23.0" });
+  const out = (reactCheck(dir) ?? "").split("\n");
+  assert.ok(out.some((l) => /^ok {4}plugin server uses the app's @mainsoft\/agent-cms$/.test(l)), out.join("\n"));
+  assert.ok(out.some((l) => /^warn {2}plugin both uses another copy of @mainsoft\/agent-cms/.test(l)), out.join("\n"));
+  assert.ok(!out.some((l) => /broken/.test(l)));
+
+  // A linked plugin outside the app that cannot find its peers.
+  const app = mkdtempSync(join(tmpdir(), "agent-cms-react-plugins3-"));
+  const outside = mkdtempSync(join(tmpdir(), "agent-cms-linked-"));
+  const at = (root: string, p: string, json: unknown) => {
+    mkdirSync(join(root, p), { recursive: true });
+    writeFileSync(join(root, p, "package.json"), JSON.stringify(json));
+  };
+  at(app, "", { name: "site", dependencies: { "@mainsoft/agent-cms": "*", react: "*", linked: "*" } });
+  at(app, "node_modules/@mainsoft/agent-cms", { name: "@mainsoft/agent-cms", version: VERSION });
+  at(app, "node_modules/react", { name: "react", version: "19.0.0", main: "index.js" });
+  at(outside, "", { name: "linked", peerDependencies: { "@mainsoft/agent-cms": "*", react: "*" } });
+  symlinkSync(outside, join(app, "node_modules", "linked"), "dir");
+  const lines = (reactCheck(app) ?? "").split("\n");
+  assert.ok(lines.some((l) => /^warn {2}plugin linked cannot find @mainsoft\/agent-cms/.test(l)), lines.join("\n"));
+  assert.ok(lines.some((l) => /^warn {2}plugin linked cannot find react/.test(l)), lines.join("\n"));
+  assert.ok(!lines.some((l) => /^ok {4}plugin linked/.test(l)));
 });
 
 test("plugin init writes a plugin package; refuses a bad name and a folder with files", async () => {

@@ -83,6 +83,29 @@ test("createTestCms: events, then jobs on cron", async () => {
   }
 });
 
+test("0.24.1: flush() waits for a listener that is still awaiting", async () => {
+  let done = false;
+  const slow = definePlugin({
+    name: "slow-listener",
+    setup(ctx) {
+      ctx.on("doc.published", async () => {
+        await new Promise((r) => setTimeout(r, 60));
+        await new Promise((r) => setTimeout(r, 60));
+        done = true;
+      });
+    },
+  });
+  const t = createTestCms({ plugins: [slow] });
+  try {
+    await t.cms.create(t.admin, "pages", { slug: "hello", title: "Hello", body: "hi\n" });
+    await t.cms.publish(t.admin, "pages", "hello");
+    await t.flush();
+    assert.equal(done, true);
+  } finally {
+    await t.close();
+  }
+});
+
 test("createTestCms: settings are saved (secrets sealed) and the plugin restarts", async () => {
   assert.equal(TEST_SECRETS_KEY.length, 32);
   const t = createTestCms({ plugins: [counter] });

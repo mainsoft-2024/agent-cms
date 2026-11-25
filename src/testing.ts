@@ -147,10 +147,8 @@ export function createTestCms<const C extends readonly AnyCollection[] = readonl
     return handler(new Request(url, { ...init, headers }));
   }
 
-  const flush = async () => {
-    // Listeners run after the write, on later turns of the event loop.
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 1));
-  };
+  // 0.24.1: until every listener has finished, awaits included (at most 5 s).
+  const flush = () => cms.idle();
 
   return {
     cms,

@@ -179,13 +179,20 @@ export function CmsShell({ children, title, logo, activeCollection, activeHref, 
     return me ? out : [];
   }, [me, runtime, locale]);
 
-  const pluginActive = React.useMemo(() => {
-    if (!activeHref) return null;
+  // One current entry in the whole menu: a page the CMS's own entries claim is never a plugin's
+  // (0.24.1: a plugin linking to /admin/plugins does not light up next to "Plugins").
+  const ownClaims = (a: string) =>
+    (["dashboard", "media", "files", "releases", "forms", "trash", "keys", "audit", "webhooks", "automations", "people", "roles", "redirects", "transfer", "plugins"] as const).some((kind) => {
+      const h = href({ kind });
+      return a === h || ((kind === "releases" || kind === "forms") && a.startsWith(`${h}/`));
+    }) || (extraNav ?? []).some((g) => g.items.some((it) => it.href === a));
+  const pluginActive = (() => {
+    if (!activeHref || activeCollection || ownClaims(activeHref)) return null;
     if (pluginNav.some((n) => n.href === activeHref)) return activeHref;
     let best: string | null = null;
     for (const n of pluginNav) if (activeHref.startsWith(`${n.href}/`) && (!best || n.href.length > best.length)) best = n.href;
     return best;
-  }, [pluginNav, activeHref]);
+  })();
 
   const nav = (
     <nav aria-label={t("nav_label")} className="flex flex-col gap-0.5 text-sm">

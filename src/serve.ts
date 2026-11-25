@@ -17,6 +17,7 @@
  * (requests in flight finish, up to 10 seconds).
  */
 
+import { CMS_FONT_ORIGIN, cmsFontHead } from "./fonts";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { timingSafeEqual } from "./crypto";
@@ -72,6 +73,12 @@ export interface ServeOptions {
    * for anything else, or `["https:"]` to allow every https address on purpose.
    */
   connectSrc?: readonly string[];
+  /**
+   * 0.24.1: the admin's fonts (Wanted Sans, Geist Mono) from jsDelivr; the policy allows
+   * `https://cdn.jsdelivr.net` for styles and fonts. `false` (or `serve --no-cdn-fonts`): system
+   * fonts and no outside request. Default true.
+   */
+  cdnFonts?: boolean;
 }
 
 export interface RunningServer {
@@ -122,10 +129,12 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
   const dir = o.adminDir ?? defaultAdminDir();
   const hasAdmin = existsSync(join(dir, "index.html"));
   if (!hasAdmin) log(`[agent-cms] no admin build in ${dir}; serving the API only`);
+  const fonts = o.cdnFonts !== false;
+  const fontOrigin = fonts ? ` ${CMS_FONT_ORIGIN}` : "";
   const settings = JSON.stringify({ basePath, adminPath, appName, publicUrl: o.publicUrl ?? null }).replace(/</g, "\\u003c");
   const page = hasAdmin
     ? readFileSync(join(dir, "index.html"), "utf8")
-        .replace("<!--settings-->", `<script type="application/json" id="agent-cms-settings">${settings}</script>`)
+        .replace("<!--settings-->", `${fonts ? cmsFontHead() : ""}<script type="application/json" id="agent-cms-settings">${settings}</script>`)
         .replace(/<title>[^<]*<\/title>/, `<title>${appName.replace(/[<&]/g, "")}</title>`)
         .replace(/(href|src)="\.\//g, `$1="${adminPath}/`)
     : "";
@@ -140,10 +149,10 @@ export async function startServer(o: ServeOptions): Promise<RunningServer> {
     "default-src 'self'",
     `script-src 'self' ${inline.join(" ")}`.trim(),
     // Inline styles: element positions (popovers, focal points) are set from script.
-    "style-src 'self' 'unsafe-inline'",
+    `style-src 'self' 'unsafe-inline'${fontOrigin}`,
     "img-src 'self' data: blob: https: http:",
     "media-src 'self' blob: https: http:",
-    "font-src 'self' data:",
+    `font-src 'self' data:${fontOrigin}`,
     `connect-src 'self' ${connect.join(" ")}`.trim(),
     // The preview of HTML blocks runs in a sandboxed frame; embeds the HTML policy allows.
     "frame-src 'self' blob: https:",

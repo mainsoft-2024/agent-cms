@@ -157,18 +157,36 @@ export function usePluginT(plugin: string): (key: string, vars?: Record<string, 
   return React.useCallback((key: string, vars?: Record<string, string | number>) => runtime.t(plugin, locale, key, vars), [runtime, locale, plugin]);
 }
 
-const combine = (parts: React.ReactNode[]): React.ReactNode => React.createElement(React.Fragment, null, ...parts.map((p, i) => React.createElement(React.Fragment, { key: i }, p)));
+/** 0.24.1: a plugin's slot part that throws while rendering is left out; the rest of the screen stays. */
+class SlotBoundary extends React.Component<{ report: (err: unknown) => void; children?: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(err: unknown) {
+    this.props.report(err);
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+// Keyed by plugin and slot: when another plugin's part drops out, a failed boundary is not handed to a neighbour.
+const wrap = (node: React.ReactNode, o: { plugin: string; slot: string; report: (err: unknown) => void }): React.ReactNode =>
+  React.createElement(SlotBoundary, { key: `plugin:${o.plugin}:${o.slot}`, report: o.report }, node);
+
+const combine = (parts: React.ReactNode[]): React.ReactNode =>
+  React.createElement(React.Fragment, null, ...parts.map((p, i) => React.createElement(React.Fragment, { key: React.isValidElement(p) && p.type === SlotBoundary && p.key != null ? p.key : `app:${i}` }, p)));
 
 /** Build the runtime once per set of plugins and slots (what `CmsProvider` calls). */
 export function useCreateAdminRuntime(o: { plugins?: readonly AdminPlugin[]; slots?: object; basePath?: string }): ReactAdminRuntime {
   const { plugins, slots, basePath } = o;
   return React.useMemo(
-    () => createAdminRuntime<React.ReactNode, React.ComponentType<PluginPageProps>>({ plugins: plugins as AdminPlugin[] | undefined, slots: slots as Record<string, unknown> | undefined, combine, basePath }),
+    () => createAdminRuntime<React.ReactNode, React.ComponentType<PluginPageProps>>({ plugins: plugins as AdminPlugin[] | undefined, slots: slots as Record<string, unknown> | undefined, combine, wrap, basePath }),
     [plugins, slots, basePath]
   );
 }
 
 /** Without a hook (tests, other frameworks' bridges). */
 export function createReactAdminRuntime(o: { plugins?: readonly AdminPlugin[]; slots?: object; basePath?: string }): ReactAdminRuntime {
-  return createAdminRuntime<React.ReactNode, React.ComponentType<PluginPageProps>>({ plugins: o.plugins as AdminPlugin[] | undefined, slots: o.slots as Record<string, unknown> | undefined, combine, basePath: o.basePath });
+  return createAdminRuntime<React.ReactNode, React.ComponentType<PluginPageProps>>({ plugins: o.plugins as AdminPlugin[] | undefined, slots: o.slots as Record<string, unknown> | undefined, combine, wrap, basePath: o.basePath });
 }

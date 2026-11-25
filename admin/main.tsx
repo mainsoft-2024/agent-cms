@@ -209,7 +209,7 @@ function App() {
   if (["login", "setup", "invite", "reset"].includes(rest[0] ?? ""))
     return (
       <CmsProvider key="sign-in" baseUrl={S.basePath} messages={messages}>
-        {rest[0] === "login" ? <CmsLogin {...signIn} /> : rest[0] === "setup" ? <CmsSetup {...signIn} /> : rest[0] === "invite" ? <CmsInvite {...signIn} /> : <CmsReset {...signIn} />}
+        <div className="cms-root">{rest[0] === "login" ? <CmsLogin {...signIn} /> : rest[0] === "setup" ? <CmsSetup {...signIn} /> : rest[0] === "invite" ? <CmsInvite {...signIn} /> : <CmsReset {...signIn} />}</div>
       </CmsProvider>
     );
 
