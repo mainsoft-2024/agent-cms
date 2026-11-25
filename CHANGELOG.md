@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.25.0
+
+Search rankers (roadmap 135). No schema change. Copied screens change (`cms-plugins.tsx`, `cms-messages.ts`): run `npx @mainsoft/agent-cms add --update`.
+
+### Added
+- **`ctx.search.ranker({ name, rank, weight?, timeoutMs? })`**: a plugin adds a ranking of its own to every search (`cms.search`, `GET /search`, `search_documents`, `read_for_answer`). The lists are merged by rank (reciprocal rank fusion, k = 60). What a ranker finds passes without the keyword coverage rule; read rules, languages and the app's `filter` are applied after the merge. A ranker gets `{ collections, locale, limit, signal, actor }`; late (default 500 ms, at most 2000) or failing, it is skipped for that search, its `signal` is aborted, and `onError` hears it at most once a minute. A ranker that found nothing changes nothing; a document only a ranker found is checked against the database (the index may be behind). The package still calls no model: embeddings belong to the plugin.
+- **`matchedBy`** on search hits (`SearchHit`, REST `GET /search`, MCP `search_documents`) when a ranker took part; `score` is then the fused score. `search(..., { rankers: false })`, `GET /search?rankers=0` and `rankers: false` in `search_documents` and `read_for_answer` search by keywords only. Without rankers nothing changes.
+- **`cms.searchSections({ docIds | docs | collections, cursor, limit })`**, `ctx.search.sections()` and `GET /search/sections` (admins; keys with the admin scope and no collection limit): the sections the keyword index holds, with plain `text` and a `hash`, so a plugin or a worker keeps its own index in step. `docs` takes the addresses events carry (`slug@locale` for translations); what is not searchable any more comes back in `missing`.
+- **`search.stale` event** (webhooks, `ctx.on`): a published snippet changed what other documents read (`detail.reason: "snippet"`, restores from the trash too), or a document came back from the archive (`"unarchive"`, it names the document).
+- **Telemetry**: the `search` event has `rankers: [{ name, ms, ok, hits, timedOut? }]`.
+- **Plugins screen**: rankers are listed with what a plugin adds ("Search rankers").
+- **Example**: `examples/plugins/synonym-ranker` (synonyms admins keep, no model; follows the index through events).
+
 ## 0.24.2
 
 Fixes. No schema change. One copied screen changes (`cms-shell.tsx`): run `npx @mainsoft/agent-cms add --update`.

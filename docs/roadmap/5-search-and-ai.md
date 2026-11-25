@@ -48,7 +48,10 @@
 
 **화면.** 시안 1번.
 
-## 135. 검색 확장 연결구 (12번 임베딩 검색을 대신한다) — 나중으로 옮김
+## 135. 검색 확장 연결구 (12번 임베딩 검색을 대신한다) — 0.25.0에서 끝남
+
+**구현 결과 (0.25.0)**: `ctx.search.ranker({ name, rank, weight?, timeoutMs? })`(전체 이름 `<플러그인>.<이름>`), RRF(k=60)로 낱말 검색과 합침, 추가 순위가 찾은 것은 coverage 기준 통과, 합친 뒤 권한·언어·앱 `filter` 적용, `matchedBy`와 합친 점수(REST·MCP), `rankers: false` / `?rankers=0`, 시간 한도(기본 500ms, 최대 2000)와 `signal` 취소, telemetry `rankers`, 순위마다 1분에 한 번 onError. 섹션 조회는 `cms.searchSections({ docIds | docs | collections, cursor, limit })`, `ctx.search.sections()`, `GET /search/sections`(관리자). 섹션마다 `text`와 `hash`. 이벤트가 싣는 주소(`slug@locale`)로 찾을 수 있고, 검색에 안 나오는 것은 `missing`. 새 이벤트 `search.stale`(게시된 스니펫이 바뀜). 어드민 플러그인 화면의 "붙인 것"에 "검색 순위". 예제 `examples/plugins/synonym-ranker`(모델 없음). 평가 CLI의 켬/끔 비교는 15·64번에서.
+
 
 **2026-11-24 사용자 결정**: 묶음 5에서 빼고 나중에 한다. 플러그인 계약(92번)을 먼저 끝까지 만들고([3-integrations-and-ops.md](3-integrations-and-ops.md)의 "플러그인 v2"), 135는 그 위에 자리 하나로 붙인다: `ctx.search.ranker({ name, rank, weight?, timeoutMs? })`와 색인을 따라가기 위한 섹션 조회(`cms.searchSections({ docIds })`, 게시·게시 취소·삭제 이벤트와 `search.stale`). 2026-11-24에 정한 세부: 추가 순위가 찾은 결과는 coverage 기준과 상관없이 통과, 결과의 `score`는 합친 점수와 `matchedBy`, 모든 검색에 쓰고 호출마다 끌 수 있음(`rankers: false`), 가중치(기본 1)와 시간 한도(기본 500ms, 최대 2000)는 선택. `rank`에는 넉넉하게 넘김(읽을 수 있는 컬렉션, locale, limit, signal, actor), 섹션을 못 찾으면 그 문서에서 낱말 검색이 가장 높게 본 섹션, 없으면 첫 섹션, 관찰은 telemetry `rankers`와 순위마다 1분에 한 번 onError.
 

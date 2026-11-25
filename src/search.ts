@@ -37,6 +37,11 @@ export interface SearchHit {
   score: number;
   /** Share of the query's meaningful words that matched (0–1). */
   coverage: number;
+  /**
+   * 0.25.0: the rankings that found it (`"keyword"`, `"<plugin>.<ranker>"`), when a plugin's search
+   * ranker took part. `score` is then the fused score (reciprocal rank fusion), not the keyword score.
+   */
+  matchedBy?: string[];
 }
 
 const HANGUL = /[\uac00-\ud7a3]/;
@@ -126,6 +131,26 @@ export class SearchIndex {
 
   get size(): number {
     return this.units.length;
+  }
+
+  private byDoc: Map<string, SearchUnit[]> | null = null;
+
+  /** 0.25.0: the units of one document, in order (empty when it is not in the index). */
+  unitsOfDoc(docId: string): readonly SearchUnit[] {
+    if (!this.byDoc) {
+      this.byDoc = new Map();
+      for (const u of this.units) {
+        const list = this.byDoc.get(u.docId);
+        if (list) list.push(u);
+        else this.byDoc.set(u.docId, [u]);
+      }
+    }
+    return this.byDoc.get(docId) ?? [];
+  }
+
+  /** 0.25.0: every unit, in the order they were added. */
+  all(): readonly SearchUnit[] {
+    return this.units;
   }
 
   private add(u: SearchUnit) {

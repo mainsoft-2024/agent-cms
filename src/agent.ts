@@ -62,6 +62,8 @@ export interface LookupOptions {
   /** @deprecated since 0.6.0: renamed to `reportMiss`. */
   logGap?: boolean;
   recordHits?: boolean;
+  /** 0.25.0: false = keywords only, without the plugins' search rankers. */
+  rankers?: boolean;
   /** Token budget for the sections (needs `countTokens`). */
   budget?: number;
   /** Your model's tokenizer. The library never guesses token counts from characters. */
@@ -102,7 +104,7 @@ export async function lookupForAgent(cms: CmsLike, actor: Actor, collections: st
 
   if (o.slug) {
     // A specific document: the sections that match the question, else its first ones.
-    const inDoc = query.trim() ? await core.search(actor, collections, query, { limit: 3, perDoc: 3, filter: (u) => u.slug === o.slug }) : null;
+    const inDoc = query.trim() ? await core.search(actor, collections, query, { limit: 3, perDoc: 3, filter: (u) => u.slug === o.slug, ...(o.rankers === false ? { rankers: false } : {}) }) : null;
     if (inDoc?.hits.length) hits = inDoc.hits.map((h) => ({ ...h.unit }));
     else {
       for (const col of collections) {
@@ -119,7 +121,7 @@ export async function lookupForAgent(cms: CmsLike, actor: Actor, collections: st
     }
   }
   if (!hits.length) {
-    const r = await core.search(actor, collections, query, { limit: o.limit ?? 3, perDoc: 2, reportMiss });
+    const r = await core.search(actor, collections, query, { limit: o.limit ?? 3, perDoc: 2, reportMiss, ...(o.rankers === false ? { rankers: false } : {}) });
     hits = r.hits.map((h) => ({ ...h.unit }));
   }
   if (o.recordHits !== false && hits.length) void core.recordHits([...new Set(hits.map((h) => h.docId))], actor.via ?? "app");

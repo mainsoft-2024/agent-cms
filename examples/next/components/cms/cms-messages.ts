@@ -89,6 +89,7 @@ export const en = {
   plugin_reg_actions: "Actions",
   plugin_reg_filters: "Filters",
   plugin_reg_access: "Access rules",
+  plugin_reg_rankers: "Search rankers",
   plugin_reg_nav: "Menu entries",
   plugin_reg_pages: "Pages",
   plugin_reg_me: "Signed-in info",
@@ -1819,6 +1820,7 @@ export const en = {
   // 0.22.0 forms
   nav_forms: "Forms",
   "event.form.submitted": "Form sent",
+  "event.search.stale": "Search needs reindexing",
   "trigger.form.submitted": "A form is sent",
   automation_test_form: "A form rule runs when someone sends a form; there is no document to try it on. Its runs show below.",
   "audit_group.form": "Forms",
@@ -2241,6 +2243,7 @@ export const ko: CmsMessages = {
   plugin_reg_actions: "동작",
   plugin_reg_filters: "필터",
   plugin_reg_access: "권한 규칙",
+  plugin_reg_rankers: "검색 순위",
   plugin_reg_nav: "메뉴",
   plugin_reg_pages: "페이지",
   plugin_reg_me: "로그인 정보",
@@ -3962,6 +3965,7 @@ export const ko: CmsMessages = {
   // 0.22.0 forms
   nav_forms: "폼",
   "event.form.submitted": "폼 제출",
+  "event.search.stale": "검색 색인 다시 읽기 필요",
   "trigger.form.submitted": "폼이 제출되면",
   automation_test_form: "폼 규칙은 누군가 폼을 보낼 때 돌아서 문서 하나로 시험할 수 없음. 실행 기록은 아래에 나옴.",
   "audit_group.form": "폼",

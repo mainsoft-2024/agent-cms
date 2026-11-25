@@ -41,6 +41,7 @@ import { docsById } from "./repo";
 import { SCHEMA_VERSION } from "./schema-version";
 import { VERSION } from "./version";
 import { normalizeQuery, SearchIndex, unitsOf, type SearchHit } from "./search";
+import { fuse, KEYWORD_RANKER, pickSections, rankerWeight, runRanker, type RankerRun, type SearchSectionsOptions, type SearchSectionsPage } from "./rankers";
 import {
   docState,
   type Actor,
@@ -170,6 +171,8 @@ export interface SearchOptions {
    * language. Collections that are not translated are searched whatever the language.
    */
   locale?: string;
+  /** 0.25.0: false = the keyword search only, without the plugins' search rankers. Default true. */
+  rankers?: boolean;
 }
 
 export interface CreateCmsOptions<C extends readonly AnyCollection[] = readonly AnyCollection[]> {
@@ -420,7 +423,7 @@ export type CmsTelemetry =
   | { type: "cron"; ms: number; jobs: JobsRun }
   | { type: "error"; where: string; message: string }
   | { type: "cache"; collection: string; hit: boolean }
-  | { type: "search"; ms: number; q: string; hits: number; collections: number }
+  | { type: "search"; ms: number; q: string; hits: number; collections: number; /** 0.25.0: the plugins' search rankers asked. */ rankers?: { name: string; ms: number; ok: boolean; hits: number; timedOut?: boolean }[] }
   | { type: "index"; ms: number; documents: number; units: number }
   /** 0.23.0: a line a plugin logged (`ctx.log`). */
   | { type: "plugin"; plugin: string; level: "debug" | "info" | "warn" | "error"; message: string; data?: Record<string, unknown> };
@@ -967,6 +970,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     report,
     log: (e) => telemetry({ type: "plugin", ...e }),
     now,
+    // Hoisted: the search code below is defined later in createCms.
+    searchSections: (o) => searchSections(o),
     startTimeoutMs: opts.pluginStartTimeoutMs,
   });
 
@@ -2032,6 +2037,10 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (collections.get(target.collection)?.snippets) {
         model.forgetSnippets();
         for (const c of collections.keys()) if (c !== target.collection) invalidate(c);
+        // 0.25.0: documents that show the snippet read differently now; an index kept elsewhere
+        // (a plugin's embeddings) hears it here, since none of those documents changed.
+        // Quiet writes too (a restore from the trash): no document event tells anyone else.
+        emitEvent({ event: "search.stale", actor: null, collection: target.collection, slug: target.slug ?? null, version: null, url: null, detail: { reason: "snippet" } });
       }
     }
     if (doc && !o.quiet && !doc.deletedAt && (!prev || doc.version !== prev.version)) {
@@ -2693,6 +2702,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
       return out;
     });
     audit(actor, "doc.unarchive", { collection: col, slug, version: doc.version });
+    // 0.25.0: back in search, with no document event of its own: an index kept elsewhere reads it again.
+    if (doc.publishedVersion !== null && !!publicView(doc)) emitEvent({ event: "search.stale", actor: actorRef(actor), collection: col, slug: docAddress(doc), version: doc.publishedVersion, url: urlOf(col, docAddress(doc)), detail: { reason: "unarchive" } });
     return doc;
   }
 
@@ -2985,6 +2996,28 @@ export function createCmsCore(opts: CreateCmsOptions) {
     return index.building;
   }
 
+  /** A ranker that fails or is late goes to `onError` at most once a minute (searches go on without it). */
+  const rankerReported = new Map<string, number>();
+  function reportRanker(r: RankerRun) {
+    const t = Date.now();
+    if (t - (rankerReported.get(r.name) ?? -Infinity) < 60_000) return;
+    rankerReported.set(r.name, t);
+    report(r.error ?? new Error(`the search ranker ${r.name} failed`), `search ranker ${r.name}`);
+  }
+
+  /** 0.25.0: the sections the keyword index holds (for a plugin or worker that keeps its own index). */
+  async function searchSections(o: SearchSectionsOptions = {}): Promise<SearchSectionsPage> {
+    await ensureSchema();
+    // Look at the database's change stamp now: a write elsewhere must show.
+    index.checkedAt = 0;
+    const idx = await searchIndex();
+    try {
+      return pickSections(idx.all(), o, { localized, defaultLocale: locales.length ? defaultLocale : undefined });
+    } catch (e) {
+      throw fail("invalid_request", { issues: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   async function search(actor: Actor, cols: string[], query: string, o: SearchOptions = {}): Promise<SearchResult> {
     await ensureSchema();
     for (const c of cols) assert(actor, c, "read");
@@ -2995,18 +3028,83 @@ export function createCmsCore(opts: CreateCmsOptions) {
     if (o.logGap !== undefined) warnOnce("logGap", "search option logGap was renamed to reportMiss in 0.6.0");
     const reportMiss = o.reportMiss ?? o.logGap ?? false;
     const started = Date.now();
-    const idx = await searchIndex();
     const limit = Math.max(1, Math.min(o.limit ?? 5, 50));
+    // 0.25.0: the plugins' search rankers start right away, next to the keyword search.
+    const rankers = o.rankers === false || !query.trim() ? [] : pluginHost.rankers();
+    const rankLimit = Math.min(50, limit * 2 + 5);
+    const pending = rankers.map((r) => runRanker(r.full, r.ranker, query, { collections: [...cols], locale: lang ?? null, limit: rankLimit, actor }));
+    const idx = await searchIndex();
     const ruled = (col: string) => { const c = collection(col); return !!(c.access?.read || c.fieldAccess || pluginHost.hasAccess(col)); };
     const restricted = cols.some(ruled);
     // With per-document rules some hits will be dropped: rank more candidates, authorize, then cut,
     // so documents the reader may not see do not crowd out the ones they may.
     // The app's filter sees units of ruled collections only after they are authorized and projected
     // (below), never a unit the reader may not see.
-    const raw = idx.search(query, { limit: restricted ? limit * 4 + 10 : limit + 3, perDoc: o.perDoc ?? 2, ...(lang ? { locale: lang } : {}), filter: (u) => cols.includes(u.collection) && inLang(u) && (ruled(u.collection) || !o.filter || o.filter(u)) });
+    const wide = restricted || rankers.length > 0;
+    const keep = (u: SearchHit["unit"]) => cols.includes(u.collection) && inLang(u) && (ruled(u.collection) || !o.filter || o.filter(u));
+    const raw = idx.search(query, { limit: wide ? limit * 4 + 10 : limit + 3, perDoc: o.perDoc ?? 2, ...(lang ? { locale: lang } : {}), filter: keep });
     let hits = raw.filter((h) => h.coverage >= minCoverage);
+    const runs = await Promise.all(pending);
+    for (const r of runs) if (!r.ok) reportRanker(r);
+    // What each ranker found that this search may show. Collection and language first; the app's
+    // filter is asked about the section chosen (for ruled collections: after authorization, below).
+    const eligible = (u: SearchHit["unit"]) => cols.includes(u.collection) && inLang(u);
+    const kwBest = new Map<string, SearchHit>();
+    for (const h of raw) if (!kwBest.has(h.unit.docId)) kwBest.set(h.unit.docId, h);
+    const found = runs.map((r) => {
+      const out: SearchHit["unit"][] = [];
+      if (!r.ok) return out;
+      for (const h of r.hits) {
+        const units = idx.unitsOfDoc(h.documentId);
+        if (!units.length || !eligible(units[0])) continue;
+        // The section asked for, else the one the keyword search liked best, else the first.
+        const unit = (h.section != null ? units.find((u) => u.anchor === h.section) : undefined) ?? kwBest.get(h.documentId)?.unit ?? units[0];
+        if (!keep(unit)) continue;
+        out.push(unit);
+      }
+      return out;
+    });
+    const keywordBase = hits;
+    let fusedWith = false;
+    if (found.some((l) => l.length)) {
+      fusedWith = true;
+      // Merged by rank (reciprocal rank fusion). What a ranker found passes without the keyword
+      // coverage; read rules still apply below. A ranker that found nothing changes nothing.
+      const cover = new Map(raw.map((h) => [h.unit.docId, h.coverage]));
+      const fused = fuse(
+        [{ name: KEYWORD_RANKER, weight: 1, units: hits.map((h) => h.unit) }, ...runs.flatMap((r, i) => (found[i].length ? [{ name: r.name, weight: rankerWeight(rankers[i].ranker), units: found[i] }] : []))],
+        (u) => cover.get(u.docId) ?? 0,
+      );
+      // A document only a ranker found may be one the index is behind on (unpublished on another
+      // server since): checked against the database, like ruled collections are below.
+      const unchecked = fused.filter((h) => !h.matchedBy.includes(KEYWORD_RANKER) && !ruled(h.unit.collection));
+      let gone = new Set<string>();
+      if (unchecked.length) {
+        const docs = await docsById(repo, [...new Set(unchecked.map((h) => h.unit.docId))]);
+        gone = new Set(
+          unchecked
+            .filter((h) => {
+              const d = docs.get(h.unit.docId) ?? null;
+              const pub = d && !d.deletedAt ? publicView(d) : null;
+              return !pub || pub.slug !== h.unit.slug || (h.unit.version !== undefined && pub.version !== h.unit.version);
+            })
+            .map((h) => h.unit.docId),
+        );
+        if (gone.size) index.dirty = true;
+      }
+      const perDoc = o.perDoc ?? 2;
+      const n = new Map<string, number>();
+      hits = fused.filter((h) => {
+        if (gone.has(h.unit.docId)) return false;
+        const c = n.get(h.unit.docId) ?? 0;
+        if (c >= perDoc) return false;
+        n.set(h.unit.docId, c + 1);
+        return true;
+      });
+    }
     // The same read policy as a read: per-document `access.read` and hidden fields, judged on the
     // very copy the unit was cut from (same document id, same published version).
+    const authorize = async (hits: SearchHit[]): Promise<SearchHit[]> => {
     if (restricted && hits.some((h) => ruled(h.unit.collection))) {
       const docs = await docsById(repo, [...new Set(hits.filter((h) => ruled(h.unit.collection)).map((h) => h.unit.docId))]);
       // A translation's shared values come from its source: judged by the source's own rules too (review 0.22).
@@ -3037,9 +3135,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
       });
       if (stale) index.dirty = true;
     }
+    return hits;
+    };
+    hits = await authorize(hits);
+    // 0.25.0: when nothing a ranker found survived the read rules, the keyword search as before.
+    if (fusedWith && !hits.some((h) => h.matchedBy?.some((m) => m !== KEYWORD_RANKER))) hits = await authorize(keywordBase);
     hits = hits.slice(0, limit);
     const empty = hits.length === 0;
-    telemetry({ type: "search", ms: Date.now() - started, q: query.trim().slice(0, 200), hits: hits.length, collections: cols.length });
+    telemetry({ type: "search", ms: Date.now() - started, q: query.trim().slice(0, 200), hits: hits.length, collections: cols.length, ...(runs.length ? { rankers: runs.map((r) => ({ name: r.name, ms: r.ms, ok: r.ok, hits: r.hits.length, ...(r.timedOut ? { timedOut: true } : {}) })) } : {}) });
     if (empty && reportMiss && opts.onSearchMiss && query.trim()) {
       const e: SearchMissEvent = {
         query: query.trim().slice(0, 500),
@@ -4080,6 +4183,12 @@ export function createCmsCore(opts: CreateCmsOptions) {
     /** The zone days and schedules are shown in (`createCms({ timeZone })`, default UTC). */
     timeZone,
     search,
+    /**
+     * 0.25.0: the sections the keyword index holds (published, searchable, snippets filled in),
+     * to keep an index of your own (embeddings) in step. No permission check: call it from trusted
+     * code (plugins, jobs). Over HTTP: `GET /search/sections` (admins).
+     */
+    searchSections,
     recordHits,
     hitCounts,
     createKey,

@@ -671,7 +671,28 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         return json(openApiDocument(core, { basePath: base, origin: host ? `${proto}://${host}` : url.origin, actor, auth: !!opts.auth }), 200, { "cache-control": "private, max-age=60" });
       }
 
-      if (seg[0] === "search" && m === "GET") {
+      if (seg[0] === "search" && seg[1] === "sections" && seg.length === 2 && m === "GET") {
+        // 0.25.0: what the keyword index holds, for a worker that keeps its own index. Raw text of every
+        // searchable collection: admins, and admin keys that are not limited to some collections.
+        if (!core.isAdmin(actor) || (actor.kind === "key" && actor.collections)) throw new CmsError(actor.kind === "anonymous" ? "unauthorized" : "forbidden", {}, { messages: core.messages });
+        const list = (k: string) => (q.get(k) ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+        const docs = list("docs").map((d) => {
+          const i = d.indexOf("/");
+          return i > 0 ? { collection: d.slice(0, i), slug: d.slice(i + 1) } : null;
+        });
+        if (docs.some((d) => !d)) throw new CmsError("invalid_request", { issues: "docs: collection/slug, comma-separated" }, { messages: core.messages });
+        return json(
+          await core.searchSections({
+            ...(q.has("docIds") ? { docIds: list("docIds") } : {}),
+            ...(docs.length ? { docs: docs as { collection: string; slug: string }[] } : {}),
+            ...(q.has("collections") ? { collections: list("collections") } : {}),
+            ...(q.get("cursor") ? { cursor: q.get("cursor") } : {}),
+            ...(q.get("limit") ? { limit: Number(q.get("limit")) || undefined } : {}),
+          }),
+        );
+      }
+
+      if (seg[0] === "search" && seg.length === 1 && m === "GET") {
         const cols = (q.get("collections") ?? "").split(",").filter(Boolean);
         const readable = core.collections().map((c) => c.slug).filter((c) => core.can(actor, c, "read"));
         if (q.has("log")) console.warn("[agent-cms] /search?log=1 was renamed to ?miss=1 in 0.6.0");
@@ -679,10 +700,11 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
           limit: Math.max(1, Math.min(Number(q.get("limit") ?? 8) || 8, 20)),
           reportMiss: q.get("miss") === "1" || q.get("log") === "1",
           ...(q.get("locale") ? { locale: q.get("locale")! } : {}),
+          ...(q.get("rankers") === "0" ? { rankers: false } : {}),
         });
         return json({
           empty: r.empty,
-          hits: r.hits.map((h) => ({ collection: h.unit.collection, slug: h.unit.slug, ...(h.unit.locale ? { locale: h.unit.locale } : {}), title: h.unit.title, summary: h.unit.summary, category: h.unit.category, heading: h.unit.heading, anchor: h.unit.anchor, score: Number(h.score.toFixed(3)) })),
+          hits: r.hits.map((h) => ({ collection: h.unit.collection, slug: h.unit.slug, ...(h.unit.locale ? { locale: h.unit.locale } : {}), title: h.unit.title, summary: h.unit.summary, category: h.unit.category, heading: h.unit.heading, anchor: h.unit.anchor, score: Number(h.score.toFixed(h.matchedBy ? 6 : 3)), ...(h.matchedBy ? { matchedBy: h.matchedBy } : {}) })),
         });
       }
 

@@ -862,6 +862,8 @@ export const WEBHOOK_EVENTS = [
   "comment.created",
   "doc.moved",
   "form.submitted",
+  /** 0.25.0: what search finds changed without a document event (a snippet shown inside documents): read the sections again. */
+  "search.stale",
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 /**

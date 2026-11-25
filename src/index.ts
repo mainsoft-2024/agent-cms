@@ -90,6 +90,7 @@ export type { AgentLink, AgentLookup, AgentSection, Citation, LookupOptions } fr
 export { applyPatch, sectionRanges } from "./patch";
 export type { PatchOp, SectionRange } from "./patch";
 export { normalizeQuery } from "./search";
+export { RANKER_TIMEOUT_MS, RANKER_TIMEOUT_MAX_MS, RRF_K, type SearchDocRef, type SearchRankContext, type SearchRanker, type SearchRankerHit, type SearchSection, type SearchSectionsOptions, type SearchSectionsPage } from "./rankers";
 export { callTool, CMS_TOOLS, CMS_TOOL_NAMES, runTool, toolErrorResult, toolsFor } from "./tools";
 export { assetFields, assetId, humanSize } from "./assets";
 export { relation, assetIds, fieldMarks, type FieldMark } from "./fields";

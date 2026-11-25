@@ -28,7 +28,7 @@ export interface CmsPluginsProps {
   onOpenPage?: (href: string) => void;
 }
 
-const REGISTERED = ["routes", "tools", "events", "jobs", "hooks", "collections", "fields", "actions", "filters", "access", "nav"] as const;
+const REGISTERED = ["routes", "tools", "events", "jobs", "hooks", "collections", "fields", "actions", "filters", "access", "rankers", "nav"] as const;
 
 /** "Routes 2 · Tools 1 · Pages 1" for what a plugin adds. */
 export function addedText(p: PluginInfo, t: T, pages = 0): string {

@@ -1017,6 +1017,60 @@ It is called only when the caller asked (`search(..., { reportMiss: true })`,
 `onError`. `normalized` ignores particles and word order, so group by it.
 `search_documents` (a duplicate check before writing) never reports.
 
+### Search rankers (0.25.0)
+
+The search is keyword-based and the package never calls a model. A plugin can add a ranking of
+its own (embeddings, a click log, synonyms) next to it:
+
+```ts
+definePlugin({
+  name: "vectors",
+  setup(ctx) {
+    ctx.search.ranker({
+      name: "embeddings",            // matchedBy: "vectors.embeddings"
+      weight: 1,                     // next to the keyword search's 1
+      timeoutMs: 500,                // at most 2000; late or failing: skipped for that search
+      async rank(query, { collections, locale, limit, signal, actor }) {
+        return myVectors.nearest(query, { collections, locale, limit, signal }); // [{ documentId, section?, score? }]
+      },
+    });
+    // Keep your index in step: the sections the keyword index holds, by the address events carry.
+    ctx.on("doc.published", async (e) => {
+      const { sections, missing } = await ctx.search.sections({ docs: [{ collection: e.collection!, slug: e.slug!, locale: e.locale }] });
+      // embed sections whose `hash` changed; drop what is in `missing`
+    });
+  },
+});
+```
+
+- Every search asks the rankers in parallel with the keyword search (`cms.search`, `GET /search`,
+  `search_documents`, `read_for_answer`) and merges the lists by rank (reciprocal rank fusion,
+  k = 60). `search(..., { rankers: false })`, `GET /search?rankers=0` and `rankers: false` in the
+  two MCP tools turn them off for one call. A ranker that found nothing changes nothing.
+- The time limit cannot stop synchronous work: a ranker that blocks past it is waited for and its
+  answer dropped. Do heavy work asynchronously (pass `signal` on).
+- What a ranker finds passes without the keyword coverage rule. Read rules, languages and your
+  `filter` (on the section chosen) apply after the merge: drafts, hidden documents and unknown ids
+  never show, and a document only a ranker found is checked against the database.
+- A section the ranker leaves out, or one that is gone, becomes the section the keyword search
+  liked best in that document, else its first.
+- With a ranker in the merge, `GET /search` and `search_documents` hits carry `matchedBy` (`["keyword", "vectors.embeddings"]`)
+  and `score` is the fused score. Without one, results are as before.
+- Telemetry: the `search` event gets `rankers: [{ name, ms, ok, hits, timedOut? }]`. A failing or
+  late ranker goes to `onError` at most once a minute.
+- Sections: `cms.searchSections({ docIds | docs | collections, cursor, limit })` (trusted code) and
+  `GET /search/sections` (admins; keys need the admin scope with no collection limit) give
+  `{ sections, missing, next }`; each section has its `text` and a `hash`. Read everything once a
+  page at a time (and again after a deploy that changes collections' search settings or locales),
+  then follow `doc.published`, `doc.updated`, `doc.unpublished`, `doc.archived`, `doc.deleted`,
+  `doc.restored`, `doc.moved` and the new `search.stale` event: a published snippet changed what
+  other documents read (`detail.reason: "snippet"`: read everything again), or a document came
+  back from the archive (it names the document). Pass the event's `locale` on. Events are heard
+  once, on the server that wrote: with several servers keep your index in a table, and read
+  everything again now and then. A worker outside the app can do the same with webhooks and
+  `GET /search/sections`.
+- Example: [`examples/plugins/synonym-ranker`](examples/plugins/synonym-ranker).
+
 ### Coding agents (MCP)
 
 Register `https://app.example.com/api/cms/mcp` with the header
