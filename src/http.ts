@@ -676,11 +676,14 @@ export function createCmsHandler(opts: CmsHandlerOptions) {
         // searchable collection: admins, and admin keys that are not limited to some collections.
         if (!core.isAdmin(actor) || (actor.kind === "key" && actor.collections)) throw new CmsError(actor.kind === "anonymous" ? "unauthorized" : "forbidden", {}, { messages: core.messages });
         const list = (k: string) => (q.get(k) ?? "").split(",").map((x) => x.trim()).filter(Boolean);
-        const docs = list("docs").map((d) => {
+        // `docs=a/x,b/y` or (0.25.1) one `doc=a/x` per document, for slugs that hold a comma.
+        // A blank `doc=` is a mistake, not "everything".
+        const refs = [...list("docs"), ...q.getAll("doc").map((x) => x.trim())];
+        const docs = refs.map((d) => {
           const i = d.indexOf("/");
-          return i > 0 ? { collection: d.slice(0, i), slug: d.slice(i + 1) } : null;
+          return i > 0 && i < d.length - 1 ? { collection: d.slice(0, i), slug: d.slice(i + 1) } : null;
         });
-        if (docs.some((d) => !d)) throw new CmsError("invalid_request", { issues: "docs: collection/slug, comma-separated" }, { messages: core.messages });
+        if (docs.some((d) => !d)) throw new CmsError("invalid_request", { issues: "docs: collection/slug, comma-separated (or doc=collection/slug, repeated)" }, { messages: core.messages });
         return json(
           await core.searchSections({
             ...(q.has("docIds") ? { docIds: list("docIds") } : {}),

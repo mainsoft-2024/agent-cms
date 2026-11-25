@@ -253,6 +253,42 @@ test("0.24.2: shell: a CMS entry that is not shown (forms off) does not take its
   assert.equal(nav.querySelectorAll('[aria-current="page"]').length, 1);
 });
 
+test("0.25.1: shell: on a forms sub-page an exact link wins over Forms (one current entry)", async () => {
+  const s = makeServer({ forms: true, plugins: [definePlugin({ name: "reports", setup: (ctx) => ctx.nav({ label: "Form report", href: "/admin/forms/report" }) })] });
+  const extra = [{ label: "App", items: [{ label: "Exports", href: "/admin/forms/exports" }] }];
+  const { unmount } = render(
+    <CmsProvider baseUrl={BASE} fetch={s.fetch}>
+      <CmsShell activeHref="/admin/forms/exports" extraNav={extra}>
+        <p>body</p>
+      </CmsShell>
+    </CmsProvider>
+  );
+  let nav = await screen.findByRole("navigation", { name: "Admin navigation" });
+  const exportsLink = await within(nav).findByRole("link", { name: "Exports" });
+  await within(nav).findByRole("link", { name: /^Forms/ });
+  await waitFor(() => assert.equal(exportsLink.getAttribute("aria-current"), "page"));
+  assert.equal(within(nav).getByRole("link", { name: /^Forms/ }).getAttribute("aria-current"), null);
+  assert.equal(nav.querySelectorAll('[aria-current="page"]').length, 1);
+  unmount();
+
+  // A plugin's exact link, too; a page under Forms nobody links to stays with Forms.
+  for (const [at, current] of [["/admin/forms/report", "Form report"], ["/admin/forms/contact", "Forms"]] as const) {
+    const r = render(
+      <CmsProvider baseUrl={BASE} fetch={s.fetch}>
+        <CmsShell activeHref={at}>
+          <p>body</p>
+        </CmsShell>
+      </CmsProvider>
+    );
+    nav = await screen.findByRole("navigation", { name: "Admin navigation" });
+    await within(nav).findByRole("link", { name: "Form report" });
+    const want = within(nav).getByRole("link", { name: current === "Forms" ? /^Forms/ : current });
+    await waitFor(() => assert.equal(want.getAttribute("aria-current"), "page"));
+    assert.equal(nav.querySelectorAll('[aria-current="page"]').length, 1, at);
+    r.unmount();
+  }
+});
+
 test("0.24.2: shell: an activeCollection that is no collection (\"p\" from the path) does not hide the plugin's current entry", async () => {
   const s = makeServer({ plugins: plugins() });
   render(

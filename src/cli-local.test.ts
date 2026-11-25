@@ -130,6 +130,50 @@ test("add --update: a page the app moved (a route group) is updated where it is,
   assert.match(lines.join("\n"), /moved more than once/);
 });
 
+test("add --update: a route the lock gives to another item is left alone (0.25.1)", async () => {
+  const page = (name: string, v: string) => ({ path: `registry/pages/${name}-page.tsx`, type: "registry:page", target: `app/admin/${name}/page.tsx`, content: `// ${name} ${v}\n` });
+  const reg = (v: string): Registry => ({
+    name: "agent-cms",
+    items: [
+      { name: "cms-a", type: "registry:component", files: [page("a", v)] },
+      { name: "cms-b", type: "registry:component", files: [page("b", v)] },
+    ],
+  });
+  const dir = app({ src: false });
+  assert.equal(await runCli(["add", "cms-a", "--yes"], quiet(dir, reg("1"))), 0);
+  // The app moved a's page to where b's page would go.
+  mkdirSync(join(dir, "app/admin/b"), { recursive: true });
+  renameSync(join(dir, "app/admin/a/page.tsx"), join(dir, "app/admin/b/page.tsx"));
+  const lock = JSON.parse(readFileSync(join(dir, "agent-cms.json"), "utf8")) as { files: Record<string, unknown> };
+  lock.files["app/admin/b/page.tsx"] = lock.files["app/admin/a/page.tsx"];
+  delete lock.files["app/admin/a/page.tsx"];
+  writeFileSync(join(dir, "agent-cms.json"), JSON.stringify(lock));
+  const lines: string[] = [];
+  assert.equal(await runCli(["add", "cms-b", "--yes", "--overwrite"], quiet(dir, reg("1"), lines)), 0);
+  assert.equal(readFileSync(join(dir, "app/admin/b/page.tsx"), "utf8"), "// a 1\n", "a's page is not overwritten by b");
+  assert.match(lines.join("\n"), /gives this file to cms-a/);
+  assert.equal(await runCli(["add", "--update", "--yes"], quiet(dir, reg("2"))), 0);
+  assert.equal(readFileSync(join(dir, "app/admin/b/page.tsx"), "utf8"), "// a 2\n", "a's moved page is updated as a's");
+  const after = JSON.parse(readFileSync(join(dir, "agent-cms.json"), "utf8")) as { files: Record<string, { item: string }> };
+  assert.equal(after.files["app/admin/b/page.tsx"].item, "cms-a");
+
+  // b installed too, its page moved into a group while a's page sits on b's default route: b's update finds its own page.
+  const two = app({ src: false });
+  assert.equal(await runCli(["add", "cms-a", "cms-b", "--yes"], quiet(two, reg("1"))), 0);
+  mkdirSync(join(two, "app/admin/(g)/b"), { recursive: true });
+  renameSync(join(two, "app/admin/b/page.tsx"), join(two, "app/admin/(g)/b/page.tsx"));
+  renameSync(join(two, "app/admin/a/page.tsx"), join(two, "app/admin/b/page.tsx"));
+  const l2 = JSON.parse(readFileSync(join(two, "agent-cms.json"), "utf8")) as { files: Record<string, unknown> };
+  l2.files["app/admin/(g)/b/page.tsx"] = l2.files["app/admin/b/page.tsx"];
+  l2.files["app/admin/b/page.tsx"] = l2.files["app/admin/a/page.tsx"];
+  delete l2.files["app/admin/a/page.tsx"];
+  writeFileSync(join(two, "agent-cms.json"), JSON.stringify(l2));
+  assert.equal(await runCli(["add", "--update", "--yes"], quiet(two, reg("2"))), 0);
+  assert.equal(readFileSync(join(two, "app/admin/b/page.tsx"), "utf8"), "// a 2\n");
+  assert.equal(readFileSync(join(two, "app/admin/(g)/b/page.tsx"), "utf8"), "// b 2\n");
+  assert.ok(!existsSync(join(two, "app/admin/a/page.tsx")));
+});
+
 test("add: a page target outside app/ is refused", async () => {
   for (const target of ["../escape/page.tsx", "app/../../escape.tsx", "/tmp/escape.tsx", "lib/page.tsx"]) {
     const reg: Registry = { name: "agent-cms", items: [{ name: "evil", type: "registry:component", files: [{ path: "registry/pages/x.tsx", type: "registry:page", target, content: "export {}\n" }] }] };

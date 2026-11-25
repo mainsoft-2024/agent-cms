@@ -548,9 +548,11 @@ export function createRestClient(opts: RestClientOptions) {
   const doFetch = opts.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const enc = encodeURIComponent;
 
-  async function req<T>(method: string, path: string, o: { body?: unknown; ifMatch?: number; query?: Record<string, string | number | boolean | null | undefined> } = {}): Promise<T> {
+  async function req<T>(method: string, path: string, o: { body?: unknown; ifMatch?: number; query?: Record<string, string | number | boolean | readonly string[] | null | undefined> } = {}): Promise<T> {
     const qs = o.query
       ? Object.entries(o.query)
+          // A list repeats the name (`doc=a&doc=b`), so items may hold commas.
+          .flatMap(([k, v]) => (Array.isArray(v) ? v.map((x) => [k, x] as const) : [[k, v] as const]))
           .filter(([, v]) => v !== undefined && v !== null && v !== false && v !== "")
           .map(([k, v]) => `${enc(k)}=${enc(v === true ? "1" : String(v))}`)
           .join("&")
@@ -838,7 +840,8 @@ export function createRestClient(opts: RestClientOptions) {
         : req<SearchSectionsPage>("GET", "/search/sections", {
         query: {
           docIds: o.docIds?.join(","),
-          docs: o.docs?.map((d) => `${d.collection}/${d.locale && !d.slug.includes("@") ? `${d.slug}@${d.locale}` : d.slug}`).join(","),
+          // 0.25.1: one `doc` per document (a slug may hold a comma).
+          doc: o.docs?.map((d) => `${d.collection}/${d.locale && !d.slug.includes("@") ? `${d.slug}@${d.locale}` : d.slug}`),
           collections: o.collections?.join(","),
           cursor: o.cursor ?? undefined,
           limit: o.limit,

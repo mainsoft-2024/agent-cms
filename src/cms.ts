@@ -2364,7 +2364,7 @@ export function createCmsCore(opts: CreateCmsOptions) {
   }
 
   /** Write a new version from `next`; decides the status. */
-  async function commit(r: CmsRepo, actor: Actor, doc: CmsDoc, next: DocContent, o: WriteOptions & { restoredFrom?: number }): Promise<CmsDoc> {
+  async function commit(r: CmsRepo, actor: Actor, doc: CmsDoc, next: DocContent, o: WriteOptions & { restoredFrom?: number; moved?: { doc: CmsDoc; from: string }[] }): Promise<CmsDoc> {
     const who = actorRef(actor);
     const cfg = collection(doc.collection);
     const at = nowIso();
@@ -2436,6 +2436,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
     await model.keepAnchors(r, doc.id, doc.body, next.body);
     if (moved && doc.publishedVersion !== null) await model.autoRedirect(r, updated, doc.slug, next.slug, who.label);
     if (moved) for (const t of movedKids) await model.autoRedirect(r, t, localeAddress(doc.slug, t.locale!), localeAddress(next.slug, t.locale!), who.label);
+    // 0.25.1: the caller tells each live translation's new address after the commit (no version, no event of their own).
+    if (moved) o.moved?.push(...movedKids.map((t) => ({ doc: { ...t, slug: next.slug }, from: localeAddress(doc.slug, t.locale!) })));
     return updated;
   }
 
@@ -2443,12 +2445,14 @@ export function createCmsCore(opts: CreateCmsOptions) {
   async function write(actor: Actor, col: string, slug: string, make: (cur: CmsDoc) => DocInput, o: WriteOptions = {}) {
     await ensureSchema();
     let prev: CmsDoc | null = null;
+    let moved: { doc: CmsDoc; from: string }[] = [];
     const doc = await loggedTx(async (r, log) => {
       const out = await writeIn(r);
       await logWrite(log, actor, prev, out, o.publish ? "write-publish" : undefined);
       return out;
     });
     async function writeIn(r: CmsRepo): Promise<CmsDoc> {
+      moved = [];
       const cur = (prev = await r.findDoc(col, slug));
       if (!cur) throw fail("not_found", { collection: col, slug });
       assert(actor, col, "write", cur);
@@ -2477,11 +2481,16 @@ export function createCmsCore(opts: CreateCmsOptions) {
         }
         return cur.autosave ? ((await r.updateDoc(cur.id, { autosave: null, updatedAt: cur.updatedAt })) ?? cur) : cur;
       }
-      return commit(r, actor, cur, next, o);
+      return commit(r, actor, cur, next, { ...o, moved });
     }
     changed(prev, doc);
     if (o.publish && doc.publishedVersion === doc.version && prev && (prev as CmsDoc).publishedVersion !== doc.version) audit(actor, "doc.publish", { collection: col, slug: docAddress(doc), version: doc.version });
     flow.markAgent(actor, doc);
+    // 0.25.1: a renamed source moved its live translations: an index kept elsewhere reads them at their new address.
+    for (const m of moved) {
+      const at = docAddress(m.doc);
+      emitEvent({ event: "search.stale", actor: actorRef(actor), collection: col, slug: at, version: m.doc.publishedVersion, url: urlOf(col, at), detail: { reason: "moved", from: m.from } });
+    }
     return { prev: prev as CmsDoc | null, doc };
   }
 
@@ -2944,7 +2953,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
 
   // ── search ────────────────────────────────────────────────────────────────
 
-  const index = { built: null as SearchIndex | null, dirty: true, stamp: "", checkedAt: 0, building: null as Promise<SearchIndex> | null };
+  type IndexBuild = { ok: true; built: SearchIndex } | { ok: false; built: SearchIndex | null; error: unknown };
+  const index = { built: null as SearchIndex | null, dirty: true, stamp: "", checkedAt: 0, building: null as Promise<IndexBuild> | null };
 
   async function buildIndex(): Promise<SearchIndex> {
     model.forgetSnippets();
@@ -2973,27 +2983,52 @@ export function createCmsCore(opts: CreateCmsOptions) {
       if (stamp !== index.stamp) index.dirty = true;
     }
     if (index.built && !index.dirty) return index.built;
+    const r = await startIndexBuild();
+    // A failed rebuild keeps searches going on the last index.
+    if (r.built) return r.built;
+    throw (r as { error: unknown }).error;
+  }
+
+  /** One rebuild at a time; callers share it. */
+  function startIndexBuild(): Promise<IndexBuild> {
     if (!index.building) {
       index.dirty = false;
-      index.building = (async () => {
+      index.building = (async (): Promise<IndexBuild> => {
         const stamp = await repo.changeStamp();
         const built = await buildIndex();
         index.built = built;
         index.stamp = stamp;
         index.checkedAt = Date.now();
-        return built;
+        return { ok: true, built };
       })()
-        .catch((err) => {
+        .catch((error): IndexBuild => {
           index.dirty = true;
-          report(err, "searchIndex");
-          if (index.built) return index.built;
-          throw err;
+          report(error, "searchIndex");
+          return { ok: false, built: index.built, error };
         })
         .finally(() => {
           index.building = null;
         });
     }
     return index.building;
+  }
+
+  /**
+   * 0.25.1: an index that holds every write made before the call. A rebuild already running may have
+   * started before the last write, so it is awaited and checked again; a failed rebuild is an error here
+   * (searches still fall back to the last index, section lookups must not).
+   */
+  async function freshIndex(): Promise<SearchIndex> {
+    for (let i = 0; i < 3; i++) {
+      if (index.building) await index.building;
+      const stamp = await repo.changeStamp();
+      if (index.built && !index.dirty && stamp === index.stamp) return index.built;
+      const r = await startIndexBuild();
+      if (!r.ok) throw r.error ?? new Error("the search index could not be built");
+      if (!index.dirty) return r.built;
+    }
+    // Writes kept landing while it rebuilt: the newest index holds at least every write before the call.
+    return index.built!;
   }
 
   /** A ranker that fails or is late goes to `onError` at most once a minute (searches go on without it). */
@@ -3008,9 +3043,8 @@ export function createCmsCore(opts: CreateCmsOptions) {
   /** 0.25.0: the sections the keyword index holds (for a plugin or worker that keeps its own index). */
   async function searchSections(o: SearchSectionsOptions = {}): Promise<SearchSectionsPage> {
     await ensureSchema();
-    // Look at the database's change stamp now: a write elsewhere must show.
-    index.checkedAt = 0;
-    const idx = await searchIndex();
+    // Every write before this call must show, here or on another server (0.25.1).
+    const idx = await freshIndex();
     try {
       return pickSections(idx.all(), o, { localized, defaultLocale: locales.length ? defaultLocale : undefined });
     } catch (e) {

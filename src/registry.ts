@@ -304,7 +304,8 @@ export function addItems(o: AddOptions): AddResult {
       // 0.24.2: the app moved this page (a route group like `app/admin/(app)/plugins/page.tsx`): the
       // lock still has it under its new path. Keep it there instead of writing a second route.
       // A stale entry for the default path (an older `--update` wrote it back) does not stop the search.
-      if (isPage && !existsSync(target)) {
+      // 0.25.1: also when the default route is another item's (its page moved there).
+      if (isPage && (!existsSync(target) || (lock.files[rel] && lock.files[rel].item !== it.name))) {
         // Only a regular file under the app's `app/` (the lock is a file anyone can edit), an exact
         // `source` match first; more than one candidate and nothing is guessed.
         const appDir = join(pageRoot, "app");
@@ -326,7 +327,7 @@ export function addItems(o: AddOptions): AddResult {
         const legacy = pageFiles.length === 1 ? mine.filter(([k, v]) => !v.source && /(^|\/)page\.[jt]sx?$/.test(k)) : [];
         const pick = exact.length ? exact : legacy;
         if (pick.length === 1) {
-          if (o.mode !== "diff") delete lock.files[rel];
+          if (o.mode !== "diff" && lock.files[rel]?.item === it.name) delete lock.files[rel];
           rel = pick[0][0];
           target = join(o.cwd, rel);
         } else if (pick.length > 1) {
@@ -346,6 +347,14 @@ export function addItems(o: AddOptions): AddResult {
       const exists = existsSync(target);
       const cur = exists ? readFileSync(target, "utf8") : null;
       const locked = lock.files[rel];
+      // 0.25.1: a route file the lock gives to another item (its page moved here) is that item's page:
+      // never overwritten or claimed by this one. (Screen files shared by several items stay shared.)
+      if (isPage && locked && locked.item !== it.name) {
+        const reason = `${LOCK_FILE} gives this file to ${locked.item}: move one of the pages, or remove that entry`;
+        if (o.mode === "diff") diffs.push(`!!! ${rel}: ${reason}`);
+        else res.skipped.push({ file: rel, reason });
+        continue;
+      }
 
       if (o.mode === "diff") {
         if (cur === null) diffs.push(`+++ ${rel} (not installed)`);

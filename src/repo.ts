@@ -1049,8 +1049,17 @@ export class MemoryRepo implements CmsRepo {
   }
   async changeStamp() {
     let max = "";
-    for (const d of this.docs.values()) if (d.updatedAt > max) max = d.updatedAt;
-    return `${this.docs.size}:${max}`;
+    let sum = 0;
+    for (const d of this.docs.values()) {
+      if (d.updatedAt > max) max = d.updatedAt;
+      // Every row's state, as the database stamp has it (0.25.1).
+      const s = `${d.id}|${d.slug}|${d.updatedAt}|${d.status}|${d.version}|${d.publishedVersion ?? -1}|${d.deletedAt ?? ""}`;
+      // FNV-1a: two short strings do not cancel out the way a plain base-31 sum lets them.
+      let h = 0x811c9dc5;
+      for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0;
+      sum = (sum + h) % 0x7fffffff;
+    }
+    return `${this.docs.size}:${max}:${sum}`;
   }
   async getMeta(key: string) {
     return this.meta.get(key) ?? null;
