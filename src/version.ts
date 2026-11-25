@@ -1,2 +1,2 @@
 /** Package version (kept in step with package.json by `src/parts.test.ts`). */
-export const VERSION = "0.24.2";
+export const VERSION = "0.25.0";

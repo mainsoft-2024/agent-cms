@@ -32,6 +32,7 @@ import { type PluginSettingsView,
 import type { CmsRepo } from "./repo";
 import { describeSettings, isSecretSchema } from "./plugin-fields";
 import type { Sealer } from "./secrets";
+import { RANKER_NAME, type SearchRanker, type SearchSectionsOptions, type SearchSectionsPage } from "./rankers";
 import type { Actor, CollectionConfig, FieldAdmin } from "./types";
 import { VERSION } from "./version";
 
@@ -82,6 +83,8 @@ export interface PluginHostDeps {
   report: (err: unknown, where: string) => void;
   log: (e: { plugin: string; level: "debug" | "info" | "warn" | "error"; message: string; data?: Record<string, unknown> }) => void;
   now: () => Date;
+  /** 0.25.0: `ctx.search.sections` (what the keyword index holds). */
+  searchSections: (o: SearchSectionsOptions) => Promise<SearchSectionsPage>;
   startTimeoutMs?: number;
   stopTimeoutMs?: number;
 }
@@ -168,6 +171,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
   const actions: { plugin: string; name: string; label: string; run: AutomationFn }[] = [];
   const filters = new Map<PluginFilterName, { plugin: string; fn: (v: any, c: any) => any; priority: number; seq: number }[]>();
   const access: { plugin: string; rule: (q: PluginAccessQuery) => boolean; collections: readonly string[] | null }[] = [];
+  const rankers: { plugin: string; full: string; ranker: SearchRanker }[] = [];
   const counts = new Map<string, Registered>();
   /** 0.24.1: what each plugin added, by name (the plugins screen lists them). */
   const added = new Map<string, PluginAdded[]>();
@@ -237,7 +241,7 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
     const e: Entry = { plugin: p, ctx: null, state: "starting", error: null, startedMs: null, startedAt: null, live: false, settings: {}, attempt: 0 };
     entries.set(p.name, e);
     added.set(p.name, []);
-    counts.set(p.name, { routes: 0, tools: 0, events: 0, jobs: 0, nav: 0, me: 0, sql: 0, hooks: 0, collections: 0, fields: 0, actions: 0, filters: 0, access: 0 });
+    counts.set(p.name, { routes: 0, tools: 0, events: 0, jobs: 0, nav: 0, me: 0, sql: 0, hooks: 0, collections: 0, fields: 0, actions: 0, filters: 0, access: 0, rankers: 0 });
     const missing = (p.requires ?? []).find((d) => !given.some((g) => g.name === d) || entries.get(d)?.state === "off");
     if (missing) {
       // Not set up at all: it adds nothing, and says why.
@@ -338,6 +342,17 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       store: makeStore(p.name),
       settings: <T,>() => e.settings as T,
       log: (level, message, data) => deps.log({ plugin: p.name, level, message, data }),
+      search: {
+        ranker: (r) => {
+          if (!r || typeof r.rank !== "function") throw new Error(`${where}: a search ranker needs a rank function`);
+          if (!RANKER_NAME.test(r.name)) throw new Error(`${where}: search ranker name "${r.name}" must be lowercase letters, digits, - and _`);
+          const full = `${p.name}.${r.name}`;
+          if (rankers.some((x) => x.full === full)) throw new Error(`${where}: the search ranker "${full}" is added twice`);
+          count(p.name, "rankers", full);
+          rankers.push({ plugin: p.name, full, ranker: r });
+        },
+        sections: (o) => deps.searchSections(o ?? {}),
+      },
     };
     e.ctx = ctx;
     p.setup(ctx, undefined);
@@ -566,6 +581,8 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
       }
       return true;
     },
+    /** 0.25.0: the search rankers of the plugins in use, with their full names (`<plugin>.<name>`). */
+    rankers: () => rankers.filter((r) => usable(r.plugin)),
     /** Whether a filter has functions (so callers can skip the work). */
     filters: (name: PluginFilterName) => (filters.get(name) ?? []).some((f) => usable(f.plugin)),
     /** Run a value through a filter's functions. */

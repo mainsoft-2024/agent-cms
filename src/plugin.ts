@@ -34,6 +34,7 @@ import type { z, ZodTypeAny } from "zod";
 import type { AutomationFn } from "./automations";
 import type { JobKind } from "./jobs";
 import type { OutEvent } from "./outbox";
+import type { SearchRanker, SearchSectionsOptions, SearchSectionsPage } from "./rankers";
 import type { Sealer } from "./secrets";
 import type { TransferFile } from "./transfer";
 import type { Actor, CmsDoc, CollectionConfig, FieldAdmin, WebhookEvent } from "./types";
@@ -175,6 +176,23 @@ export interface PluginContext<Cms = unknown> {
   settings<T = Record<string, unknown>>(): T;
   /** A line for your logs and metrics: goes to `onEvent` as `{ type: "plugin", plugin, level, message, data }`. */
   log(level: "debug" | "info" | "warn" | "error", message: string, data?: Record<string, unknown>): void;
+
+  // ── 0.25.0 ──
+  search: {
+    /**
+     * A ranking of the plugin's own, merged with the keyword search (reciprocal rank fusion). Asked
+     * on every search (`cms.search`, `GET /search`, the MCP search tools) unless the call says
+     * `rankers: false`. Late (`timeoutMs`, default 500) or failing: skipped for that search.
+     */
+    ranker(r: SearchRanker): void;
+    /**
+     * The sections the keyword index holds (published, searchable, snippets filled in), to build
+     * an index of your own. Pass the documents an event names (`docs: [{ collection, slug }]`);
+     * what is not searchable any more comes back in `missing`. Without arguments: every document,
+     * a page at a time (`next`).
+     */
+    sections(o?: SearchSectionsOptions): Promise<SearchSectionsPage>;
+  };
 }
 
 export interface CmsPlugin<Cms = any, O = any> {
@@ -275,7 +293,7 @@ export interface PluginSettingsView {
 
 /** One thing a plugin added (0.24.1). `kind` is a key of `PluginInfo.registered`. */
 export interface PluginAdded {
-  kind: "routes" | "tools" | "events" | "jobs" | "nav" | "me" | "sql" | "hooks" | "collections" | "fields" | "actions" | "filters" | "access";
+  kind: "routes" | "tools" | "events" | "jobs" | "nav" | "me" | "sql" | "hooks" | "collections" | "fields" | "actions" | "filters" | "access" | "rankers";
   name: string;
 }
 
@@ -299,7 +317,7 @@ export interface PluginInfo {
   startedAt: string | null;
   /** 0.24.1: the same, by name: `{ kind: "routes", name: "GET /stats/summary" }`, `{ kind: "tools", name: "stats_summary" }`. */
   added?: PluginAdded[];
-  registered: { routes: number; tools: number; events: number; jobs: number; nav: number; me: number; sql: number; hooks: number; collections: number; fields: number; actions: number; filters: number; access: number };
+  registered: { routes: number; tools: number; events: number; jobs: number; nav: number; me: number; sql: number; hooks: number; collections: number; fields: number; actions: number; filters: number; access: number; rankers: number };
   /** Its settings schema's keys, when it has one (`GET /plugins/:name/settings` has the values). */
   settings: string[] | null;
 }

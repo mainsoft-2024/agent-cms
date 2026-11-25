@@ -12,8 +12,10 @@ import type { AutomationCondition, AutomationInput, AutomationRun, CmsAutomation
 import type { WebhookInput, WebhookView } from "./outbox";
 import type { CmsRole, PersonMatch, RoleInput, RoleMember, RoleOp } from "./roles";
 import type { PluginInfo, PluginSettingsView } from "./plugin";
+import type { SearchSectionsOptions, SearchSectionsPage } from "./rankers";
 
 export type { PluginAdded, PluginInfo, PluginSettingsView, PluginState, SettingField, SettingFieldType } from "./plugin";
+export type { SearchDocRef, SearchSection, SearchSectionsOptions, SearchSectionsPage } from "./rankers";
 import type { CmsStats } from "./stats";
 import type { ImportItem, ImportOptions, TransferFile } from "./transfer";
 import type { CmsJob, WebhookDelivery, WebhookEvent } from "./types";
@@ -826,8 +828,22 @@ export function createRestClient(opts: RestClientOptions) {
      */
     request: <T = unknown>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, o: { body?: unknown; query?: Record<string, string | number | boolean | null | undefined> } = {}) =>
       Promise.resolve().then(() => req<T>(method, safeRequestPath(path), o)),
-    search: (q: string, collections?: string[], o: { locale?: string } = {}) =>
-      req<{ empty: boolean; hits: { collection: string; slug: string; locale?: string; title: string; heading: string; anchor: string; score: number }[] }>("GET", "/search", { query: { q, collections: collections?.join(","), locale: o.locale } }),
+    search: (q: string, collections?: string[], o: { locale?: string; rankers?: boolean } = {}) =>
+      req<{ empty: boolean; hits: { collection: string; slug: string; locale?: string; title: string; summary?: string; category?: string | null; heading: string; anchor: string; score: number; matchedBy?: string[] }[] }>("GET", "/search", { query: { q, collections: collections?.join(","), locale: o.locale, rankers: o.rankers === false ? "0" : undefined } }),
+    /** 0.25.0 (admins): the sections the keyword index holds. Pass the documents an event names, or page through everything with `cursor`. */
+    searchSections: (o: SearchSectionsOptions = {}) =>
+      // Asked for no documents: nothing (an empty list must not become "everything").
+      (o.docIds && !o.docIds.length && !o.docs?.length) || (o.docs && !o.docs.length && !o.docIds?.length) || (o.collections && !o.collections.length && !o.docIds && !o.docs)
+        ? Promise.resolve<SearchSectionsPage>({ sections: [], missing: { docIds: [], docs: [] }, next: null })
+        : req<SearchSectionsPage>("GET", "/search/sections", {
+        query: {
+          docIds: o.docIds?.join(","),
+          docs: o.docs?.map((d) => `${d.collection}/${d.locale && !d.slug.includes("@") ? `${d.slug}@${d.locale}` : d.slug}`).join(","),
+          collections: o.collections?.join(","),
+          cursor: o.cursor ?? undefined,
+          limit: o.limit,
+        },
+      }),
     keys: () => req<{ keys: CmsKey[] }>("GET", "/keys").then((r) => r.keys),
     createKey: (k: { name: string; scopes: KeyScope[]; collections?: string[] | null; expiresAt?: string | null; rateLimit?: number | null; allowedIps?: string[] | null }) => req<{ key: CmsKey; secret: string }>("POST", "/keys", { body: k }),
     revokeKey: (id: string, o: { reason?: string } = {}) => req<{ ok: true }>("DELETE", `/keys/${enc(id)}${o.reason ? `?reason=${encodeURIComponent(o.reason)}` : ""}`),

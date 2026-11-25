@@ -1,11 +1,12 @@
 # Example plugins
 
-Two small plugins that show the parts of a plugin and how to test one.
+Small plugins that show the parts of a plugin and how to test one.
 
 | Folder | What it shows |
 | --- | --- |
 | [`stats/`](stats) | an `afterRead` hook, an event listener (`doc.published`), a job (`rollup`), `ctx.store`, a route (`GET /api/cms/stats/summary`), a tool (`stats_summary`) and an admin page |
 | [`slack-notify/`](slack-notify) | `settings` with a secret (sealed with `secretsKey`), a check in `start`, and an automation action (`slack-notify.post`) |
+| [`synonym-ranker/`](synonym-ranker) | a search ranker (`ctx.search.ranker`) merged with the keyword search, and following the keyword index with `ctx.search.sections()` and events |
 
 Start a new one with:
 
