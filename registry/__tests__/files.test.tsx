@@ -44,7 +44,7 @@ test("files: a bucket folder by folder, with move, share link and delete for wha
   await user.click(screen.getByRole("checkbox", { name: /msa-acme\.pdf/ }));
   await user.click(screen.getByRole("checkbox", { name: /logo\.png/ }));
   const bar = screen.getByRole("toolbar");
-  assert.equal(within(bar).getByRole("status").textContent, "2개 선택됨");
+  assert.equal(within(bar).getByRole("status").textContent, "2개 선택");
   assert.deepEqual(within(bar).getAllByRole("button").map((b) => b.textContent), ["이동", "내려받기", "링크 만들기", "삭제", "선택 해제"]);
   assert.deepEqual(await axeViolations(), []);
 
@@ -59,7 +59,7 @@ test("files: a bucket folder by folder, with move, share link and delete for wha
 
   // Delete: the documents that use any of the files are shown first.
   await user.click(within(bar).getByRole("button", { name: "삭제" }));
-  dialog = await screen.findByRole("dialog", { name: "파일 2개를 삭제할지 확인" });
+  dialog = await screen.findByRole("dialog", { name: "파일 2개를 삭제하시겠습니까?" });
   assert.ok(await within(dialog).findByText("이 파일을 쓰는 문서 1개"));
   assert.ok(within(dialog).getByRole("link", { name: "Hello, world" }));
   await user.click(within(dialog).getByRole("button", { name: "취소" }));

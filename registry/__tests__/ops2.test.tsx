@@ -155,10 +155,10 @@ test("automations 0.22.2: webhooks off on the server: the action says so instead
   renderWith(s, <CmsAutomations />, { messages: ko });
   await screen.findByDisplayValue("Old");
   const note = await screen.findByRole("note");
-  assert.match(note.textContent ?? "", /이 서버는 웹훅이 꺼져 있음\. 이 동작은 실행되지 않음\./);
+  assert.match(note.textContent ?? "", /이 서버는 웹훅이 꺼져 있습니다\. 이 동작은 실행되지 않습니다\./);
   assert.match(note.textContent ?? "", /secretsKey/);
   assert.ok(screen.queryByLabelText("대상") === null, "no empty list to pick from");
-  const opt = within(screen.getByLabelText("동작")).getByRole("option", { name: "웹훅 보내기 (꺼짐)" }) as HTMLOptionElement;
+  const opt = within(screen.getByLabelText("동작")).getByRole("option", { name: "웹훅 보내기 (비활성)" }) as HTMLOptionElement;
   assert.ok(opt.selected);
 });
 
@@ -170,7 +170,7 @@ test("automations: Korean strings, and someone who is not an admin is told so", 
   assert.match((await screen.findByRole("navigation", { name: "자동화" })).textContent ?? "", /알림매주 월요일/);
   assert.equal((screen.getByLabelText("언제") as HTMLSelectElement).value, "schedule.weekly");
   assert.ok(screen.queryByLabelText("컬렉션") === null, "a schedule has no collection");
-  await screen.findByText(/^아직 실행된 적이 없음\./);
+  await screen.findByText(/^아직 실행된 적이 없습니다\./);
   cleanup();
 
   s.session.user = { kind: "user", id: "u5", label: "Reader", isAdmin: false };
@@ -247,7 +247,7 @@ test("roles: someone who has not signed in yet is added by email and joins at fi
   assert.equal((screen.getByRole("checkbox", { name: "Guide: 게시" }) as HTMLElement).getAttribute("aria-checked"), "true");
   await user.type(screen.getByRole("combobox", { name: "사람 추가" }), "new.person@example.com");
   await user.click(await screen.findByRole("option", { name: /new\.person@example\.com 추가/ }));
-  await screen.findByText("아직 로그인 안 함");
+  await screen.findByText("로그인 전");
   const members = () => s.cms.roles.list(admin).then((r) => r.roles.find((x) => x.name === "Editors")!.members);
   assert.deepEqual(await members(), [{ id: "email:new.person@example.com", label: "new.person@example.com", email: "new.person@example.com", pending: true }]);
   // Their first visit with that email turns the invitation into a membership.
@@ -289,8 +289,8 @@ test("dashboard: the cards match the lists, changes split people and agents, the
 test("dashboard: empty CMS, Korean, and a reader sees only what they may read", async () => {
   const s = makeServer();
   renderWith(s, <CmsDashboard basePath="/cms" />, { messages: ko });
-  await screen.findByText("이 기간에 읽힌 문서가 없음.");
-  await screen.findByText("아직 활동이 없음.");
+  await screen.findByText("이 기간에 읽힌 문서가 없습니다.");
+  await screen.findByText("아직 활동이 없습니다.");
   assert.equal(screen.getByText("문서", { selector: "dt" }).parentElement!.querySelector("dd")!.textContent, "0");
   cleanup();
 

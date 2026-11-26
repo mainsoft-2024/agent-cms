@@ -243,3 +243,10 @@ test("v1: a plugin may keep ctx.secrets from setup", () => {
   createCms({ repo: new MemoryRepo(), collections: [guide], plugins: [p], secretsKey: "k".repeat(40) });
   assert.ok(kept && typeof (kept as { seal?: unknown }).seal === "function");
 });
+
+test("ctx.db is null on the memory store (0.26.0)", async () => {
+  let db: unknown = "unset";
+  const p = definePlugin({ name: "probe-db", setup: (ctx) => void (db = ctx.db) });
+  createCms({ repo: new MemoryRepo(), collections: [], plugins: [p] });
+  assert.equal(db, null);
+});

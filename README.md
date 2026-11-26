@@ -791,6 +791,7 @@ const plugins = [statsAdmin];
 
 - **Pages**: `npx @mainsoft/agent-cms add cms-plugin-page` copies the frame and writes the Next.js route `app/admin/p/[plugin]/[[...path]]/page.tsx`. A page that throws shows an error there; the rest of the admin keeps working. A page key takes `:name` parameters; where two keys fit a path, a fixed word beats a parameter at the first part where they differ (0.24.1).
 - **Slots**: every plugin's part shows after the app's own, in the order of `plugins`; a slot function that throws, or a component it returns that throws while rendering (0.24.1), is left out by itself and reported to the console; the rest stays. `blockEditor` holds one editor: the app's, else the first plugin's (not wrapped: an editor that fails should show its own fallback).
+- **A panel beside the editor** (0.26.0): `slots.editorSide: { label, icon?, render }` (or a list) adds a button to the document editor's header that opens a panel on the right (380px; the whole screen on a phone), one panel at a time. `render` gets the editor's context plus `close()` and `mobile`; Escape closes it and focus goes back to the button. Every editor slot's context has `reload()` (0.26.0): after the plugin changed the document through the API, the editor reads it again; unsaved edits that do not overlap are merged in, overlapping ones open the merge screen on save.
 - **Menu**: the sidebar's "Extensions" lists each admin plugin's page and the server's `ctx.nav()` entries. 0.24.0: `ctx.nav({ label })` without `href` opens the plugin's page.
 - **Plugins screen**: `npx @mainsoft/agent-cms add cms-plugins` copies the screen and writes its Next.js route `app/admin/plugins/page.tsx` (admins): every plugin's state, version, what it adds, why one failed and the plugins off with it, Restart, and a settings form drawn from its zod schema (`GET /plugins/:name/settings` now has `fields`; string, number, boolean, enum, URL and secret inputs, anything else as JSON). `.describe("secret: Webhook URL")` names a secret field, wherever the mark sits (outside or inside `.optional()`, `.default()`, `.pipe()`); its value and default never reach the browser. Fields you do not touch are saved back as they were. The sidebar shows how many plugins failed to start (`_me.pluginsFailed`, admins only).
 - **One React**: the app, the copied screens and plugin packages must share one React and one `@mainsoft/agent-cms`. `npx @mainsoft/agent-cms doctor` warns when React is installed twice, and when a plugin package the app depends on finds another React or another `@mainsoft/agent-cms`, or (in an app without React) needs React as a non-optional peer it cannot find.
@@ -1016,6 +1017,38 @@ It is called only when the caller asked (`search(..., { reportMiss: true })`,
 `GET /search?miss=1`, `read_for_answer`), never awaited, and its errors go to
 `onError`. `normalized` ignores particles and word order, so group by it.
 `search_documents` (a duplicate check before writing) never reports.
+
+### Plugin tables: `ctx.db` (0.26.0)
+
+A plugin that keeps more than `ctx.store` holds (conversations, logs) uses the CMS's own database:
+
+```ts
+definePlugin({
+  name: "notes",
+  sql: [`CREATE TABLE IF NOT EXISTS "notes" ("id" text PRIMARY KEY, "body" text NOT NULL)`],
+  setup(ctx) {
+    ctx.route("POST", "", async ({ req }) => {
+      if (!ctx.db) return Response.json({ error: "needs a database" }, { status: 503 });
+      const { id, body } = await req.json();
+      await ctx.db.tx(async (db) => {
+        await db.query(`INSERT INTO "notes" ("id","body") VALUES ($1, $2)`, [id, body]);
+      });
+      return Response.json({ ok: true });
+    });
+  },
+});
+```
+
+- `ctx.db.query(sql, params)` runs one statement; `$1…$n` are parameters (never put input into the
+  text). `ctx.db.tx(fn)` runs `fn` in one transaction; on a driver without transactions it
+  refuses (`transactions_required`).
+- It runs outside the CMS's own write transaction: use it in routes, jobs, `ctx.on` and `after*`
+  hooks, not in `before*` hooks (a write there stays when the change is refused, and PGlite, one
+  connection, would wait forever).
+- `ctx.db` is null on the memory store (`dev --memory`, `createTestCms`): keep a fallback or
+  refuse in `start`.
+- The CMS does not create your tables: `cms.plugins.sql` collects every plugin's `sql` for your
+  migrations.
 
 ### Search rankers (0.25.0)
 

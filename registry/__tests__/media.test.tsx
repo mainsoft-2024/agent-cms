@@ -97,7 +97,7 @@ test("media: folders, tiles, a file's details, alt text, tags, the extension slo
   assert.ok(within(panel).getByText("200B, 1200×630"));
   const usedIn = within(panel).getByRole("link", { name: "Hello, world" });
   assert.equal(usedIn.getAttribute("href"), "/admin/guide/hello");
-  assert.ok(within(panel).getByText("게시됨"));
+  assert.ok(within(panel).getByText("게시"));
   assert.deepEqual(await axeViolations(), []);
 
   // Alt text saves when the field is left; the slot fills the field without saving.
@@ -115,14 +115,14 @@ test("media: folders, tiles, a file's details, alt text, tags, the extension slo
 
   // Deleting a file in use shows the documents first.
   await user.click(within(panel).getByRole("button", { name: "삭제" }));
-  const dialog = await screen.findByRole("dialog", { name: "파일 1개를 삭제할지 확인" });
-  assert.ok(within(dialog).getByText("삭제한 파일은 되살릴 수 없음."));
+  const dialog = await screen.findByRole("dialog", { name: "파일 1개를 삭제하시겠습니까?" });
+  assert.ok(within(dialog).getByText("삭제한 파일은 되살릴 수 없습니다."));
   assert.ok(within(dialog).getByText("이 파일을 쓰는 문서 1개"));
   assert.ok(within(dialog).getByRole("link", { name: "Hello, world" }));
   await user.click(within(dialog).getByRole("button", { name: "삭제" }));
   await waitFor(() => assert.ok(screen.queryByRole("button", { name: "launch-hero.png" }) === null));
   await assert.rejects(s.cms.assets.get(admin, hero.id));
-  await screen.findByText("파일이 없음.");
+  await screen.findByText("파일이 없습니다.");
 
   // A new folder becomes the place uploads go.
   await user.click(screen.getByRole("button", { name: "새 폴더" }));
@@ -193,7 +193,7 @@ test("media: import from a URL into the open folder, and rename a file in its pa
   // (the server wrote it in English).
   await user.type(within(dialog).getByLabelText("주소"), "https://intranet.example/a.png");
   await user.click(within(dialog).getByRole("button", { name: "가져오기" }));
-  assert.ok(await within(dialog).findByText("가져올 수 없는 주소임"));
+  assert.ok(await within(dialog).findByText("가져올 수 없는 주소입니다"));
   await user.clear(within(dialog).getByLabelText("주소"));
   await user.type(within(dialog).getByLabelText("주소"), "https://example.com/pics/team-photo.png");
   assert.deepEqual(await axeViolations(), []);
@@ -311,7 +311,7 @@ test("media: the focal point by keyboard, and replacing a file asks first", asyn
   assert.equal(toggle.getAttribute("aria-pressed"), "false");
   await user.click(toggle);
   const point = within(panel).getByRole("button", { name: "초점: 왼쪽에서 50%, 위에서 50%" });
-  assert.ok(within(panel).getByText(/잘라낼 때 꼭 보여야 하는 곳/));
+  assert.ok(within(panel).getByText(/잘라낼 때 반드시 보여야 하는 곳/));
   assert.deepEqual(await axeViolations(), []);
   point.focus();
   await user.keyboard("{ArrowRight}");
@@ -331,10 +331,10 @@ test("media: the focal point by keyboard, and replacing a file asks first", asyn
   const input = panel.querySelector('input[type="file"]') as HTMLInputElement;
   assert.equal(input.accept, ".png");
   await user.upload(input, new File([new Uint8Array(1500)], "logo-2026.png", { type: "image/png" }));
-  const dialog = await screen.findByRole("dialog", { name: "“logo.png”의 내용을 바꿀지 확인" });
-  assert.ok(within(dialog).getByText("주소는 그대로임. 지금 내용은 되돌릴 수 없음."));
+  const dialog = await screen.findByRole("dialog", { name: "“logo.png”의 내용을 바꾸시겠습니까?" });
+  assert.ok(within(dialog).getByText("주소는 그대로입니다. 현재 내용은 되돌릴 수 없습니다."));
   assert.ok(within(dialog).getByText(/logo-2026\.png/));
-  assert.ok(within(dialog).getByText("이 파일을 쓰는 문서 1개에 새 내용이 보임."));
+  assert.ok(within(dialog).getByText("이 파일을 쓰는 문서 1개에 새 내용이 표시됩니다."));
   assert.deepEqual(await axeViolations(), []);
   assert.equal(s.requests.some((r) => r.path === "/assets/uploads"), false, "nothing is sent before the answer");
   await user.click(within(dialog).getByRole("button", { name: "바꾸기" }));

@@ -1112,3 +1112,41 @@ test("db: the change stamp sees a write with an older time than the newest row (
     await close();
   }
 });
+
+test("db: plugins reach the CMS's database through ctx.db (0.26.0); a failed tx leaves nothing", async () => {
+  const { definePlugin } = await import("../plugin");
+  const { db, close } = await freshDb();
+  try {
+    await run(db, cmsDdl());
+    const box: { db: import("../plugin").PluginDb | null } = { db: null };
+    const notes = definePlugin({
+      name: "notes",
+      sql: [`CREATE TABLE IF NOT EXISTS "notes" ("id" text PRIMARY KEY, "body" text NOT NULL)`],
+      setup(ctx) {
+        box.db = ctx.db;
+      },
+    });
+    const cms = createCms({ repo: new DrizzleRepo(db), collections: [guide], plugins: [notes], previewSecret: "s".repeat(32) });
+    for (const s of cms.plugins.sql) await db.execute(sql.raw(s));
+    assert.ok(box.db, "ctx.db on a SQL database");
+    const d = box.db;
+    await d.query(`INSERT INTO "notes" ("id","body") VALUES ($1, $2)`, ["a", "it's $2 literal"]);
+    assert.deepEqual((await d.query(`SELECT "body" FROM "notes" WHERE "id" = $1`, ["a"])).rows, [{ body: "it's $2 literal" }]);
+    await assert.rejects(
+      d.tx(async (t) => {
+        await t.query(`INSERT INTO "notes" ("id","body") VALUES ($1, $2)`, ["b", "x"]);
+        throw new Error("stop");
+      }),
+      /stop/,
+    );
+    assert.equal((await d.query(`SELECT count(*)::int AS n FROM "notes"`)).rows[0]!.n, 1, "rolled back");
+    await d.tx((t) => t.query(`INSERT INTO "notes" ("id","body") VALUES ($1, $2)`, ["c", "y"]));
+    assert.equal((await d.query(`SELECT count(*)::int AS n FROM "notes"`)).rows[0]!.n, 2);
+    await assert.rejects(d.query(`SELECT $2::text`, ["only one"]), /\$2 has no parameter/);
+    // `$n` inside strings, names, $$ bodies and comments is text; an array is one parameter.
+    const r = await d.query(`SELECT '$1' AS a, $$x $2$$ AS b, $1::text[] AS c -- $3`, [["x", "y"]]);
+    assert.deepEqual(r.rows[0], { a: "$1", b: "x $2", c: ["x", "y"] });
+  } finally {
+    await close();
+  }
+});

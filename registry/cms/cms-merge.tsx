@@ -1,4 +1,4 @@
-// agent-cms registry: cms-merge (0.6.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-merge (0.26.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // Someone saved first. Shows what merged by itself and, for each place both
 // sides changed, lets you pick theirs, mine or both (body) / theirs or mine
@@ -106,6 +106,9 @@ export function CmsMerge({ collection, slug, base: base0, baseVersion: baseVersi
     setBusy(true);
     setError(null);
     const merged = resolveDocMerge(m, { body, fields });
+    // Search engine details are not in the line merge: an unsaved change of the person saving is kept.
+    const seoOf = (d: { seo?: unknown }) => JSON.stringify(d.seo ?? null);
+    if (seoOf(round.mine) !== seoOf(round.base)) (merged as { seo?: unknown }).seo = (round.mine as { seo?: unknown }).seo ?? null;
     try {
       const doc = await client.update(collection, slug, toInput(merged, round.theirs.fields), { expectedVersion: round.theirs.version });
       onSaved(doc, merged);

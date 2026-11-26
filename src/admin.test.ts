@@ -98,3 +98,22 @@ test("bad shapes are refused with a clear message", () => {
   assert.throws(() => checkAdminPlugin({ name: "s", pages: { "/x": "X" } }), /not a path/);
   assert.throws(() => rt([{ name: "a" }, { name: "a" }]), /given twice/);
 });
+
+test("0.26.0: editorSide is a list (app first, then plugins), each part kept apart; a throwing panel renders nothing", () => {
+  const errors: string[] = [];
+  const r = rt(
+    [
+      { name: "ai", slots: { editorSide: { label: { en: "Agent", ko: "에이전트" }, render: (c: { slug: string }) => `ai:${c.slug}` } } },
+      { name: "two", slots: { editorSide: [{ label: "A", render: () => "a" }, { label: "B", render: () => { throw new Error("x"); } }] } },
+    ],
+    { editorSide: { label: "Mine", render: () => "mine" } },
+    (_e, where) => errors.push(where)
+  );
+  const list = r.slots.editorSide as { plugin: string | null; key: string; render: (c: unknown) => N }[];
+  assert.deepEqual(list.map((x) => [x.plugin, x.key]), [[null, "app"], ["ai", "p:ai"], ["two", "p:two:1"], ["two", "p:two:2"]]);
+  assert.equal(list[1].render({ slug: "s" }), "ai:s");
+  assert.deepEqual(list[3].render({}), []);
+  assert.deepEqual(errors, ["admin plugin two: slot editorSide"]);
+  assert.equal(rt([]).slots.editorSide, undefined);
+  assert.throws(() => checkAdminPlugin({ name: "bad", slots: { editorSide: { label: "x" } } }), /expected \{ label, render \}/);
+});

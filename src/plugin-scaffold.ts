@@ -116,7 +116,7 @@ export default defineAdminPlugin({
   pages: { "": HelloPage },
   messages: {
     en: { title: "Hello", said: "{message} (called {count} times)", loading: "Loading…" },
-    ko: { title: "인사", said: "{message} ({count}번 부름)", loading: "불러오는 중" },
+    ko: { title: "인사", said: "{message} (호출 {count}회)", loading: "불러오는 중" },
   },
 });
 `),

@@ -1,4 +1,4 @@
-// agent-cms registry: cms-doc-editor (0.22.1). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-doc-editor (0.26.0). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // One document: the info form (from `_schema`), the markdown body with a
 // live preview that follows the text (and finds its lines when clicked),
@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { pickText } from "@mainsoft/agent-cms/react";
 import { errorMessage, serverText } from "./cms-messages";
 import { CmsFieldForm, FieldGate, problemKey, type FieldProblem } from "./cms-field-form";
 import { AddToReleaseDialog, BodyBackdrop, CommentsPanel, offsetOf, placeOf, PublishButton, ReviewStrip, ScheduleStrip, type BodyCursor } from "./cms-flow";
@@ -34,7 +35,7 @@ import { bodyStats, EditorToolbar, FindBar, markdownCommands, TipButton, TipLink
 import { CmsMerge } from "./cms-merge";
 import { CodeBox, ConfirmDialog, MarkdownPreview, ModifiedMark, PageHeader, People, Segmented, StateBadge, StatusText, DIALOG } from "./cms-parts";
 import { changedSourceLines, LocaleLeaveDialog, LocaleTabs, MissingTranslation, SourceChanges, SourcePane, TranslationBar } from "./cms-locale";
-import { contentOf, docAddr, formatTime, formatUntil, formatZoned as formatZonedTime, languageName, personColor, relativeTime, sameContent, splitAddr, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type BlockEditorCommands, type DocContent, type EditorSlotContext } from "./use-cms";
+import { contentOf, docAddr, formatTime, formatUntil, formatZoned as formatZonedTime, languageName, personColor, relativeTime, sameContent, splitAddr, toInput, useAsync, useCms, useDebounced, useIsMobile, useLocalStorage, useShortcut, modLabel, type BlockEditorCommands, type AdminSidePart, type DocContent, type EditorSideContext, type EditorSlotContext } from "./use-cms";
 
 type AgentChange = Awaited<ReturnType<import("@mainsoft/agent-cms/client").RestClient["changes"]>>[number];
 type PreviewTtl = NonNullable<Parameters<import("@mainsoft/agent-cms/client").RestClient["previewLink"]>[2]>;
@@ -123,6 +124,8 @@ type Mode = { kind: "edit" } | { kind: "merge"; base: DocContent; baseVersion: n
  * editor. The line waits in sessionStorage for that editor, for a few seconds.
  */
 const KEPT_STATUS_MS = 15000;
+/** 0.26.0: width of a panel beside the editor (`slots.editorSide`) on wide screens. */
+const SIDE_WIDTH = 380;
 const keptStatusKey = (collection: string, slug: string) => `agent-cms:saved:${collection}/${slug}`;
 
 function keepStatus(collection: string, slug: string, text: string) {
@@ -147,7 +150,7 @@ function takeStatus(collection: string, slug: string): string | null {
 }
 
 export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, onSaved, onRenamed, onOpenVersions, publicUrlFor, slugPrefix, autosaveDelay = 1500, onOpenRelease, presenceMs = 15000, className, onOpenDocument }: CmsDocEditorProps) {
-  const { client, t, locale, me, baseUrl, appUrl, slots, toast } = useCms();
+  const { client, t, locale, me, baseUrl, appUrl, slots, toast, runtime } = useCms();
   // 0.22.0: another language opened here (no `onOpenDocument`): it replaces the slug until the host passes another.
   const [slugOverride, setSlugOverride] = React.useState<{ from: string | null | undefined; to: string } | null>(null);
   const slug = slugOverride && slugOverride.from === slugProp ? slugOverride.to : slugProp;
@@ -818,6 +821,60 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
   const live = React.useRef({ content, saved, baseVersion, dirty, others: 0 });
   live.current = { content, saved, baseVersion, dirty, others: others.length };
   const slugNow = doc ? docAddr(doc) : undefined;
+  // The document on screen, as `collection/slug`: a late answer for another one is dropped.
+  const slugRef = React.useRef(slugNow);
+  slugRef.current = slugNow;
+  const whereRef = React.useRef(`${collection}/${slugNow}`);
+  whereRef.current = `${collection}/${slugNow}`;
+  const editingRef = React.useRef(true);
+  editingRef.current = mode.kind === "edit";
+  /** Someone else saved: take it when nothing is unsaved here, merge when the two edits do not overlap. */
+  const catchUpRef = React.useRef<(slug: string, o?: { explicit?: boolean }) => Promise<void>>(async () => undefined);
+  catchUpRef.current = async (slugNow: string, o = {}) => {
+    const where = `${collection}/${slugNow}`;
+    const latest = await client.get(collection, slugNow, { draft: true });
+    const now = live.current;
+    if (whereRef.current !== where || !editingRef.current) return;
+    if (latest.version <= now.baseVersion) {
+      // Asked for by a plugin: a change that kept the version (publishing) still shows.
+      if (o.explicit && latest.version === now.baseVersion) setDoc(latest);
+      return;
+    }
+    const who = latest.updatedByAgent ?? latest.updatedBy ?? "";
+    if (!now.dirty) {
+      applyDoc(latest);
+      void loadChanges(slugNow);
+      setStatus({ text: t("other_saved", { who, version: latest.version }), tone: "muted" });
+      return;
+    }
+    const m = mergeDocs(now.saved, now.content, contentOf(latest));
+    if (m.body.conflicts.length || m.fieldConflicts.length) return; // saving opens the merge screen
+    // Search engine details are not in the merge: keep an unsaved change, and leave both to the
+    // merge screen when the other side changed them too.
+    const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    const mineSeo = !same(now.content.seo, now.saved.seo);
+    const theirSeo = !same(contentOf(latest).seo, now.saved.seo);
+    if (mineSeo && theirSeo && !same(now.content.seo, contentOf(latest).seo)) return;
+    autosave.cancel();
+    const merged = contentOf(resolveDocMerge(m, {}));
+    if (mineSeo) merged.seo = now.content.seo;
+    // Keep the cursor where it was: text that arrived above it pushes it down.
+    const el = bodyRef.current;
+    const sel = caretRef.current;
+    let head = 0;
+    while (head < merged.body.length && merged.body[head] === now.content.body[head]) head++;
+    const shift = (at: number) => (at <= head ? at : Math.max(head, at + merged.body.length - now.content.body.length));
+    setDoc(latest);
+    setSaved(contentOf(latest));
+    setBaseVersion(latest.version);
+    setContentRaw(merged);
+    if (el && sel && document.activeElement === el)
+      requestAnimationFrame(() => {
+        el.setSelectionRange(shift(sel[0]), shift(sel[1]));
+        caretRef.current = [shift(sel[0]), shift(sel[1])];
+      });
+    setStatus({ text: t("other_merged", { who, version: latest.version }), tone: "muted" });
+  };
   React.useEffect(() => {
     if (!slugNow || !presenceMs || mode.kind !== "edit") return;
     let stop = false;
@@ -826,39 +883,6 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
       const before = live.current.content.body.slice(0, at).split("\n");
       return { line: before.length, ch: before[before.length - 1].length };
     };
-    /** Someone else saved: take it when nothing is unsaved here, merge when the two edits do not overlap. */
-    const catchUp = async () => {
-      const latest = await client.get(collection, slugNow, { draft: true });
-      const now = live.current;
-      if (stop || latest.version <= now.baseVersion) return;
-      const who = latest.updatedByAgent ?? latest.updatedBy ?? "";
-      if (!now.dirty) {
-        applyDoc(latest);
-        void loadChanges(slugNow);
-        setStatus({ text: t("other_saved", { who, version: latest.version }), tone: "muted" });
-        return;
-      }
-      const m = mergeDocs(now.saved, now.content, contentOf(latest));
-      if (m.body.conflicts.length || m.fieldConflicts.length) return; // saving opens the merge screen
-      autosave.cancel();
-      const merged = contentOf(resolveDocMerge(m, {}));
-      // Keep the cursor where it was: text that arrived above it pushes it down.
-      const el = bodyRef.current;
-      const sel = caretRef.current;
-      let same = 0;
-      while (same < merged.body.length && merged.body[same] === now.content.body[same]) same++;
-      const shift = (at: number) => (at <= same ? at : Math.max(same, at + merged.body.length - now.content.body.length));
-      setDoc(latest);
-      setSaved(contentOf(latest));
-      setBaseVersion(latest.version);
-      setContentRaw(merged);
-      if (el && sel && document.activeElement === el)
-        requestAnimationFrame(() => {
-          el.setSelectionRange(shift(sel[0]), shift(sel[1]));
-          caretRef.current = [shift(sel[0]), shift(sel[1])];
-        });
-      setStatus({ text: t("other_merged", { who, version: latest.version }), tone: "muted" });
-    };
     const beat = async () => {
       try {
         if (document.visibilityState !== "hidden") {
@@ -866,7 +890,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
           const r = await client.presence(collection, slugNow, { cursor: sel ? point(sel[1]) : null, selection: sel && sel[0] !== sel[1] ? point(sel[0]) : null });
           if (stop) return;
           setOthers(r.others);
-          if (r.version > live.current.baseVersion) await catchUp();
+          if (r.version > live.current.baseVersion) await catchUpRef.current(slugNow);
         }
       } catch {
         /* a reader, or offline: nobody is shown */
@@ -894,6 +918,43 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
   // Wide screens: the row with the text and the preview is as tall as the window minus the header and the
   // status line, which both stay in place. The info form scrolls away above it once you work in the body.
   const rootRef = React.useRef<HTMLDivElement>(null);
+  // ── 0.26.0: panels beside the editor (`slots.editorSide`), one open at a time ──
+  const sides = ((runtime.slots as Record<string, unknown>).editorSide ?? []) as AdminSidePart<React.ReactNode>[];
+  const [sideKey, setSideKey] = React.useState<string | null>(null);
+  const side = sides.find((x) => x.key === sideKey) ?? null;
+  const sideButtonRefs = React.useRef(new Map<string, HTMLButtonElement | null>());
+  const sideRef = React.useRef<HTMLElement>(null);
+  // Opening moves focus into the panel (on a phone it covers the editor).
+  React.useEffect(() => {
+    if (sideKey) requestAnimationFrame(() => sideRef.current?.focus());
+  }, [sideKey]);
+  const closeSide = React.useCallback(() => {
+    const key = sideKey;
+    setSideKey(null);
+    // Focus goes back to the button that opened it.
+    if (key) requestAnimationFrame(() => sideButtonRefs.current.get(key)?.focus());
+  }, [sideKey]);
+  // Wide screens: the panel sits over the editor's right edge, as tall as the editor, and the
+  // editor makes room for it (no wrapper around the editor: nothing in it is remounted).
+  const [sideBox, setSideBox] = React.useState<{ top: number; height: number; left: number } | null>(null);
+  React.useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!side || mobile || !el) return setSideBox(null);
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      setSideBox((b) => (b && b.top === r.top && b.height === r.height && b.left === r.right - SIDE_WIDTH ? b : { top: r.top, height: r.height, left: r.right - SIDE_WIDTH }));
+    };
+    measure();
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [side, mobile]);
   const headRef = React.useRef<HTMLDivElement>(null);
   const rowRef = React.useRef<HTMLDivElement>(null);
   const footRef = React.useRef<HTMLDivElement>(null);
@@ -1535,6 +1596,74 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
     version: doc?.version ?? null,
     published: !!doc && doc.publishedVersion !== null,
     readOnly: !canWrite,
+    // 0.26.0: after a plugin changed the document through the API.
+    reload: async () => {
+      const s = slugRef.current;
+      if (s) await catchUpRef.current(s, { explicit: true });
+    },
+  };
+  // 0.26.0: the buttons that open a panel beside the editor, and the open panel.
+  const sideButtons = (small: boolean) =>
+    sides.map((x) => {
+      const label = pickText(x.label, locale, x.plugin ?? "");
+      const on = x.key === sideKey;
+      return (
+        <TipButton
+          key={x.key}
+          ref={(el) => void sideButtonRefs.current.set(x.key, el)}
+          label={label}
+          aria-pressed={on}
+          aria-controls={on ? `cms-side-${x.key}` : undefined}
+          className={cn(small ? "h-8 w-auto min-w-8 px-1.5" : "size-9 w-auto min-w-9 px-2", on && "bg-accent text-accent-foreground")}
+          onClick={() => (on ? closeSide() : setSideKey(x.key))}
+          onKeyDown={(e) => {
+            if (on && e.key === "Escape") {
+              e.preventDefault();
+              closeSide();
+            }
+          }}
+        >
+          {x.icon ?? <span className="text-xs font-medium">{label}</span>}
+        </TipButton>
+      );
+    });
+  const sidePanel = () => {
+    if (!side) return null;
+    const label = pickText(side.label, locale, side.plugin ?? "");
+    const ctx: EditorSideContext = { ...slotCtx, close: closeSide, mobile };
+    if (!mobile && !sideBox) return null;
+    return (
+      <aside
+        key={side.key}
+        ref={sideRef}
+        tabIndex={-1}
+        id={`cms-side-${side.key}`}
+        aria-label={label}
+        role={mobile ? "dialog" : "complementary"}
+        aria-modal={mobile ? true : undefined}
+        data-cms-side={side.key}
+        className={cn("z-50 flex min-h-0 flex-col overflow-hidden bg-background outline-none", mobile ? "fixed inset-0" : "fixed border-l")}
+        style={mobile || !sideBox ? undefined : { top: sideBox.top, left: sideBox.left, width: SIDE_WIDTH, height: sideBox.height }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && !e.defaultPrevented) {
+            e.stopPropagation();
+            closeSide();
+            return;
+          }
+          // On a phone the panel covers the editor: Tab stays inside it.
+          if (mobile && e.key === "Tab" && sideRef.current) {
+            const all = [...sideRef.current.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0);
+            if (!all.length) return e.preventDefault();
+            const first = all[0]!;
+            const last = all[all.length - 1]!;
+            if (e.shiftKey && (document.activeElement === first || document.activeElement === sideRef.current)) (e.preventDefault(), last.focus());
+            else if (!e.shiftKey && document.activeElement === last) (e.preventDefault(), first.focus());
+          }
+        }}
+      >
+        {side.render(ctx)}
+      </aside>
+    );
   };
   const insertAsset = (a: Parameters<typeof assetMarkdown>[0]) => {
     // A video file goes into a `:::video` block (what the Video block writes for a library file).
@@ -1981,6 +2110,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
             </Button>
           ) : null}
           <People people={others} max={2} />
+          {sideButtons(true)}
           {publicUrl || previewAllowed || canRelease || (canWrite && !schema.single) || canHide || canUnhide ? (
             <DropdownMenu>
               <DropdownMenuTrigger className={buttonVariants({ variant: "ghost", size: "icon", className: "h-8 w-8" })} aria-label={t("more")}>
@@ -2059,6 +2189,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
         {problemsFoot}
         <div className="sticky bottom-0 z-10 flex gap-2 border-t bg-background p-2">{saveButtons("flex-1", true)}</div>
         {previewDialog}
+        {sidePanel()}
       </div>
     );
 
@@ -2071,6 +2202,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
       role={focus ? "region" : undefined}
       aria-label={focus ? t("focus_bar") : undefined}
       className={cn("relative flex h-dvh min-h-0 flex-none flex-col overflow-y-auto", className, focus && "fixed inset-0 z-40 h-dvh w-screen max-w-none bg-background")}
+      style={side && sideBox ? { paddingRight: SIDE_WIDTH } : undefined}
     >
       <div ref={headRef} className="sticky top-0 z-20 bg-background">
         {focus ? (
@@ -2145,6 +2277,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
                 </DropdownMenu>
               ) : null}
               {slots.editorActions?.(slotCtx)}
+              {sideButtons(false)}
               {canWrite ? <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" /> : null}
               {saveButtons()}
             </PageHeader>
@@ -2217,6 +2350,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
         {focusNote}
       </span>
       {previewDialog}
+      {sidePanel()}
     </div>
   );
 }

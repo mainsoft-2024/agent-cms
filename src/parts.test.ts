@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { koreanLiterals, toneProblem } from "./tone";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -295,7 +296,7 @@ test("frontmatter: # and commas inside quotes are kept", () => {
   assert.deepEqual(d.fields, { tags: ["a, b", "c"] });
 });
 
-test("korean screen text is written in 음슴체: no value ends a sentence with 요 (0.15.0)", () => {
+test("korean screen and error text is written in 입니다체: sentences end in -다, labels are noun phrases, never 해요체 (0.26.0)", () => {
   const root = join(import.meta.dirname, "..");
   const files: [string, string][] = [
     ["src/messages/ko.ts", ""],
@@ -304,14 +305,17 @@ test("korean screen text is written in 음슴체: no value ends a sentence with 
   const bad: string[] = [];
   for (const [f, marker] of files) {
     const src = readFileSync(join(root, f), "utf8");
-    const body = marker ? src.slice(src.indexOf(marker)) : src;
-    for (const m of body.matchAll(/^\s+([a-zA-Z_]\w*):\s*"((?:[^"\\]|\\.)*)"/gm)) {
-      // 필요 is a noun, not the polite ending.
-      // Also before ":" or "(" ("없는 파일이에요: {id}", "꺼져 있어요(… 필요)").
-      if (/(?<!필)요[.!?]?(\s|$|:|\()|까요\?/.test(m[2])) bad.push(`${f} ${m[1]}: ${m[2]}`);
+    for (const text of koreanLiterals(marker ? src.slice(src.indexOf(marker)) : src)) {
+      const why = toneProblem(text);
+      if (why) bad.push(`${f}: ${why}: ${text}`);
     }
   }
   assert.deepEqual(bad, []);
+});
+
+test("the tone check itself: catches 음슴체 and 해요체, lets nouns and 입니다체 through", () => {
+  for (const s of ["저장됨", "관리자만 할 수 있음", "문제가 생김. 다시 시도하기.", "없는 컬렉션임: {x}", "저장했어요", "지울까요?"]) assert.ok(toneProblem(s), s);
+  for (const s of ["저장 완료", "관리자만 할 수 있습니다.", "없는 컬렉션입니다: {x}", "알림", "없음", "다시 시도", "삭제하시겠습니까?", "필요"]) assert.equal(toneProblem(s), null, s);
 });
 
 test("messages: every placeholder in a translation exists in English, and the other way round", async () => {

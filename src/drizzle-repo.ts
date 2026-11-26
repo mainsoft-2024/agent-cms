@@ -376,6 +376,24 @@ export class DrizzleRepo implements CmsRepo {
     };
   }
 
+  async query(text: string, params: readonly unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
+    if (typeof text !== "string" || !text.trim()) throw new Error("[agent-cms] db.query: give an SQL statement");
+    if (!Array.isArray(params)) throw new Error("[agent-cms] db.query: params is an array");
+    const chunks: SQL[] = [];
+    for (const part of splitPlaceholders(text)) {
+      if (typeof part === "string") {
+        if (part) chunks.push(sql.raw(part));
+        continue;
+      }
+      if (part < 1 || part > params.length) throw new Error(`[agent-cms] db.query: $${part} has no parameter (${params.length} given)`);
+      // One bound value each, whatever it is (an array stays one array parameter).
+      chunks.push(sql`${sql.param(params[part - 1])}`);
+    }
+    const r = (await this.db.execute(sql.join(chunks, sql.raw("")))) as unknown;
+    const rows = Array.isArray(r) ? r : ((r as { rows?: unknown[] } | null)?.rows ?? []);
+    return { rows: rows as Record<string, unknown>[] };
+  }
+
   tx<T>(fn: (repo: CmsRepo) => Promise<T>, o: { atomic?: boolean } = {}): Promise<T> {
     if (this.txMode === false) {
       if (o.atomic) return Promise.reject(new CmsError("transactions_required"));
@@ -1243,3 +1261,70 @@ export interface DoctorReport {
 export const EXPECTED_INDEXES = ["changes_at_idx", "changes_doc_idx", "documents_list_idx", "documents_public_idx", "documents_trash_idx", "documents_updated_idx", "versions_created_idx", "audit_doc_idx", "jobs_done_idx", "assets_trash_idx", "comments_thread_idx", "documents_collection_slug_locale_idx", "documents_group_idx"];
 /** Indexes an upgrade drops (0.22.0: one slug per collection became one slug per collection and language). */
 export const STALE_INDEXES = ["documents_collection_slug_idx"];
+
+/**
+ * SQL text cut at its `$n` placeholders (numbers in the result), the way Postgres reads them:
+ * not inside '...' / E'...' strings, "..." names, $tag$...$tag$ bodies or comments.
+ */
+const IDENT = /[\p{L}\p{N}_$]/u;
+
+export function splitPlaceholders(text: string): (string | number)[] {
+  const out: (string | number)[] = [];
+  let buf = "";
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i]!;
+    const next = text[i + 1];
+    if (c === "'" || c === '"') {
+      // A quoted string or name; a doubled quote stays inside.
+      let j = i + 1;
+      const escapes = c === "'" && (text[i - 1] === "E" || text[i - 1] === "e");
+      while (j < n) {
+        if (escapes && text[j] === "\\") j += 2;
+        else if (text[j] === c && text[j + 1] === c) j += 2;
+        else if (text[j] === c) break;
+        else j++;
+      }
+      buf += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (c === "-" && next === "-") {
+      const j = text.indexOf("\n", i);
+      const end = j < 0 ? n : j;
+      buf += text.slice(i, end);
+      i = end;
+    } else if (c === "/" && next === "*") {
+      // Block comments nest in Postgres.
+      let depth = 1;
+      let j = i + 2;
+      while (j < n && depth > 0) {
+        if (text[j] === "/" && text[j + 1] === "*") (depth++, (j += 2));
+        else if (text[j] === "*" && text[j + 1] === "/") (depth--, (j += 2));
+        else j++;
+      }
+      buf += text.slice(i, j);
+      i = j;
+    } else if (c === "$") {
+      const num = /^\$(\d+)/.exec(text.slice(i));
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(text.slice(i));
+      if (num && !IDENT.test(text[i - 1] ?? "")) {
+        out.push(buf, Number(num[1]));
+        buf = "";
+        i += num[0].length;
+      } else if (tag && !IDENT.test(text[i - 1] ?? "")) {
+        const close = text.indexOf(tag[0], i + tag[0].length);
+        const end = close < 0 ? n : close + tag[0].length;
+        buf += text.slice(i, end);
+        i = end;
+      } else {
+        buf += c;
+        i++;
+      }
+    } else {
+      buf += c;
+      i++;
+    }
+  }
+  out.push(buf);
+  return out;
+}
