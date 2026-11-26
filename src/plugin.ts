@@ -127,6 +127,14 @@ export interface PluginStore {
   list<T = unknown>(prefix?: string): Promise<{ key: string; value: T }[]>;
 }
 
+/** 0.26.0: SQL on the CMS's own database, for a plugin's own tables (`ctx.db`). */
+export interface PluginDb {
+  /** One statement with `$1…$n` parameters. Inside `tx`, it runs in that transaction. */
+  query(text: string, params?: readonly unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+  /** Run `fn` in one transaction (all or nothing). */
+  tx<T>(fn: (db: PluginDb) => Promise<T>): Promise<T>;
+}
+
 export interface PluginContext<Cms = unknown> {
   /** The CMS the plugin was given to. Use it inside handlers and `start`, not during `setup`. */
   cms: Cms;
@@ -176,6 +184,16 @@ export interface PluginContext<Cms = unknown> {
   settings<T = Record<string, unknown>>(): T;
   /** A line for your logs and metrics: goes to `onEvent` as `{ type: "plugin", plugin, level, message, data }`. */
   log(level: "debug" | "info" | "warn" | "error", message: string, data?: Record<string, unknown>): void;
+
+  // ── 0.26.0 ──
+  /**
+   * The CMS's own database, for the plugin's tables (`sql` lists their `CREATE TABLE`). Null when
+   * the CMS runs on the memory store (`dev --memory`, tests): keep a fallback or refuse to start.
+   * It is a connection of its own, outside the CMS's write transaction: do not await it in
+   * `before*` hooks (a write there survives a refused change, and a one-connection driver such as
+   * PGlite waits for that transaction forever). Use it in routes, jobs, `after*` hooks and `ctx.on`.
+   */
+  db: PluginDb | null;
 
   // ── 0.25.0 ──
   search: {

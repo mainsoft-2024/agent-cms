@@ -28,12 +28,12 @@ const body = () => screen.getByLabelText("Markdown") as HTMLTextAreaElement;
 
 test("flow: Korean particles follow the word, clock times follow the zone, places follow the text", () => {
   const t = createT(ko);
-  assert.equal(t("review_requested_by", { who: "김지수", version: 2 }), "김지수가 v2 검토를 요청했음");
-  assert.equal(t("review_requested_by", { who: "docs-bot", version: 3 }), "docs-bot이 v3 검토를 요청했음");
-  assert.equal(t("sched_done", { version: 3, time: "11월 24일 오전 9:00" }), "v3을 11월 24일 오전 9:00에 게시하도록 예약했음");
+  assert.equal(t("review_requested_by", { who: "김지수", version: 2 }), "김지수가 v2 검토를 요청했습니다.");
+  assert.equal(t("review_requested_by", { who: "docs-bot", version: 3 }), "docs-bot이 v3 검토를 요청했습니다.");
+  assert.equal(t("sched_done", { version: 3, time: "11월 24일 오전 9:00" }), "v3을 11월 24일 오전 9:00에 게시하도록 예약했습니다.");
   assert.equal(t("release_refresh_item", { version: 7 }), "v7로 바꾸기");
   assert.equal(t("release_refresh_item", { version: 6 }), "v6으로 바꾸기");
-  assert.equal(t("release_delete_title", { name: "0.7 출시" }), "릴리스 0.7 출시를 삭제할지 확인");
+  assert.equal(t("release_delete_title", { name: "0.7 출시" }), "릴리스 0.7 출시를 삭제하시겠습니까?");
 
   assert.equal(zonedToIso("2026-11-24", "09:00", "Asia/Seoul"), "2026-11-24T00:00:00.000Z");
   assert.equal(zonedToIso("2026-07-01", "09:00", "America/New_York"), "2026-07-01T13:00:00.000Z");

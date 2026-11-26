@@ -1323,8 +1323,8 @@ test("forms review: definition problems are codes, so Korean messages are wholly
     assert.ok(!/[a-z]{3,}/i.test(t), t);
   }
   const notify = await cms.forms.create(admin, { slug: "y", title: "Y", steps: STEPS, settings: { notify: ["not-mail"] } }).catch((x) => x);
-  assert.equal(formatMessage(ko, "form_invalid", notify.params), "폼을 저장할 수 없음: 이메일 주소가 아님: not-mail");
-  assert.equal(formatMessage(ko, "form_upload_invalid", { reason: "used" }), "파일을 받지 못함 (이미 쓴 토큰). 다시 골라야 함");
+  assert.equal(formatMessage(ko, "form_invalid", notify.params), "폼을 저장할 수 없습니다: 이메일 주소가 아닙니다: not-mail");
+  assert.equal(formatMessage(ko, "form_upload_invalid", { reason: "used" }), "파일을 받지 못했습니다 (이미 쓴 토큰). 다시 골라야 합니다");
 });
 
 // ── 0.22.0 review, 3rd round ──

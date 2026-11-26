@@ -8,7 +8,7 @@
 
 import * as React from "react";
 import { createRestClient, type AssetDetail, type Me, type RestClient } from "@mainsoft/agent-cms/client";
-import { CmsAdminProvider, useCreateAdminRuntime, type AdminPlugin, type AdminPluginSlots, type DocContent, type EditorSlotContext, type LocaleSlotContext, type ReactAdminRuntime } from "@mainsoft/agent-cms/react";
+import { CmsAdminProvider, useCreateAdminRuntime, type AdminPlugin, type AdminPluginSlots, type AdminSidePart, type DocContent, type EditorSide, type EditorSideContext, type EditorSlotContext, type LocaleSlotContext, type ReactAdminRuntime } from "@mainsoft/agent-cms/react";
 import { createT, en, type CmsMessages, type T } from "./cms-messages";
 
 /** What create / update / autosave take. */
@@ -36,7 +36,7 @@ export interface CmsProviderProps {
   children?: React.ReactNode;
 }
 
-export type { AdminPlugin, DocContent, EditorSlotContext, LocaleSlotContext };
+export type { AdminPlugin, AdminSidePart, DocContent, EditorSide, EditorSideContext, EditorSlotContext, LocaleSlotContext };
 
 export interface CmsSlots extends AdminPluginSlots {
   /**

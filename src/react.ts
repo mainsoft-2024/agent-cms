@@ -24,7 +24,7 @@ import type { AssetDetail, Me, RestClient } from "./client";
 import type { DocLike } from "./diff";
 import { checkAdminPlugin, createAdminRuntime, type AdminNavItem, type AdminRuntime, type AdminText } from "./admin";
 
-export { MULTI_SLOTS, SINGLE_SLOTS, pickText, type AdminNavItem, type AdminText, type AdminPageMatch } from "./admin";
+export { MULTI_SLOTS, SINGLE_SLOTS, LIST_SLOTS, pickText, type AdminSidePart, type AdminNavItem, type AdminText, type AdminPageMatch } from "./admin";
 
 // ── what slots get (the admin screens give these) ────────────────────────────
 
@@ -44,6 +44,29 @@ export interface EditorSlotContext {
   version: number | null;
   published: boolean;
   readOnly: boolean;
+  /**
+   * 0.26.0: read the document again after the plugin changed it through the API. Unsaved edits on
+   * screen are kept: changes that do not overlap are merged in; overlapping ones open the merge
+   * screen when the person saves.
+   */
+  reload: () => Promise<void>;
+}
+
+/** 0.26.0: what an `editorSide` panel gets. */
+export interface EditorSideContext extends EditorSlotContext {
+  /** Close the panel. */
+  close: () => void;
+  /** True on a phone: the panel covers the screen. */
+  mobile: boolean;
+}
+
+/** 0.26.0: a panel beside the document editor, opened with a button in the editor's header. */
+export interface EditorSide {
+  /** The button's name (and the panel's title for screen readers). */
+  label: AdminText;
+  /** An icon for the button (about 16px). Without it the button shows the label. */
+  icon?: React.ReactNode;
+  render: (ctx: EditorSideContext) => React.ReactNode;
 }
 
 /** What `slots.localeAction` gets (0.22.0). */
@@ -74,6 +97,11 @@ export interface AdminPluginSlots {
   editorPanel?: (ctx: EditorSlotContext) => React.ReactNode;
   /** Next to a field's input in the editor's form. */
   fieldAddon?: (field: { key: string; label: string; widget: string }, ctx: EditorSlotContext & { value: unknown; setValue: (v: unknown) => void }) => React.ReactNode;
+  /**
+   * 0.26.0: a panel beside the editor (about 380px wide; the whole screen on a phone), opened and
+   * closed with a button in the editor's header. One panel is open at a time.
+   */
+  editorSide?: EditorSide | readonly EditorSide[];
   /** Next to "Start translation" and in a translation's status bar. */
   localeAction?: (ctx: LocaleSlotContext) => React.ReactNode;
 }

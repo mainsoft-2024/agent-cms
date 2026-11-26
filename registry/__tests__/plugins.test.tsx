@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import * as React from "react";
 import { z } from "zod";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { definePlugin } from "../../src/plugin";
 import { defineAdminPlugin, useCmsAdmin, usePluginT, type PluginPageProps } from "../../src/react";
@@ -17,7 +17,7 @@ import { en } from "../cms/cms-messages";
 import { createT } from "../cms/cms-messages";
 import { CmsProvider } from "../cms/use-cms";
 import { setMobile } from "./setup";
-import { axeViolations, BASE, makeServer, renderWith } from "./server";
+import { admin, axeViolations, BASE, makeServer, renderWith } from "./server";
 
 afterEach(() => {
   cleanup();
@@ -155,14 +155,14 @@ test("plugins screen: restart a failed plugin; a bad setting is refused with the
   const table = await screen.findByRole("table");
   await user.click(within(table).getByRole("button", { name: "flaky" }));
   const panel = await screen.findByRole("complementary", { name: "flaky" });
-  within(panel).getByText("시작하지 못해서 꺼 둠");
+  within(panel).getByText("시작하지 못해 중지했습니다.");
   within(panel).getByText("no connection");
   await user.click(within(panel).getByRole("button", { name: "다시 시작" }));
-  await within(panel).findByText(/시작하지 못함: no connection/);
+  await within(panel).findByText(/시작하지 못했습니다: no connection/);
   fail = false;
   await user.click(within(panel).getByRole("button", { name: "다시 시작" }));
-  await screen.findByText("다시 시작함");
-  await waitFor(() => assert.match(within(table).getByText("flaky").closest("tr")!.textContent ?? "", /켜짐/));
+  await screen.findByText("다시 시작 완료");
+  await waitFor(() => assert.match(within(table).getByText("flaky").closest("tr")!.textContent ?? "", /실행 중/));
 });
 
 test("settings form: decimals save; untouched values go back as stored (null, typed choices)", async () => {
@@ -465,4 +465,81 @@ test("phone: the list, then the plugin's details on their own with a way back", 
   await user.click(screen.getByRole("button", { name: "Plugins" }));
   const again = await screen.findByRole("table");
   await waitFor(() => assert.ok(document.activeElement === within(again).getByRole("button", { name: "slack-notify" })));
+});
+
+test("0.26.0: editorSide: a header button opens the panel beside the editor; reload takes an API change; Escape closes and focus returns", async () => {
+  const { CmsDocEditor } = await import("../cms/cms-doc-editor");
+  const s = makeServer();
+  await s.cms.create(admin, "guide", { slug: "side", title: "Side", body: "one" });
+  let seen: import("../cms/use-cms").EditorSideContext | null = null;
+  const ai = defineAdminPlugin({
+    name: "ai",
+    slots: {
+      editorSide: {
+        label: { en: "Agent", ko: "에이전트" },
+        render: (ctx) => {
+          seen = ctx;
+          return (
+            <div>
+              <p>panel for {ctx.slug}</p>
+              <button type="button" onClick={ctx.close}>
+                Done
+              </button>
+            </div>
+          );
+        },
+      },
+    },
+  });
+  renderWith(s, <CmsDocEditor collection="guide" slug="side" />, { plugins: [ai] });
+  await screen.findByLabelText(/^Title/);
+  const open = screen.getByRole("button", { name: "Agent" });
+  assert.equal(open.getAttribute("aria-pressed"), "false");
+  fireEvent.click(open);
+  const panel = await screen.findByRole("complementary", { name: "Agent" });
+  assert.ok(within(panel).getByText("panel for side"));
+  assert.equal(screen.getByRole("button", { name: "Agent" }).getAttribute("aria-pressed"), "true");
+  // A change made through the API shows after reload.
+  await s.cms.update(admin, "guide", "side", { title: "Changed by plugin" }, { expectedVersion: 1 });
+  await act(async () => {
+    await seen!.reload();
+  });
+  await waitFor(() => assert.equal((screen.getByLabelText(/^Title/) as HTMLInputElement).value, "Changed by plugin"));
+  // Publishing keeps the version: an explicit reload still shows it.
+  assert.equal(seen!.published, false);
+  await s.cms.publish(admin, "guide", "side");
+  await act(async () => {
+    await seen!.reload();
+  });
+  await waitFor(() => assert.equal(seen!.published, true));
+  fireEvent.keyDown(within(panel).getByRole("button", { name: "Done" }), { key: "Escape" });
+  await waitFor(() => assert.ok(!screen.queryByRole("complementary", { name: "Agent" })));
+  await waitFor(() => assert.ok(document.activeElement === screen.getByRole("button", { name: "Agent" }), "focus back on the button"));
+});
+
+test("0.26.0: editorSide on a phone is a dialog over the editor; focus moves in and Escape from the trigger closes it", async () => {
+  const { CmsDocEditor } = await import("../cms/cms-doc-editor");
+  const { setMobile } = await import("./setup");
+  const s = makeServer();
+  await s.cms.create(admin, "guide", { slug: "phone", title: "Phone", body: "x" });
+  const ai = defineAdminPlugin({ name: "ai", slots: { editorSide: { label: "Agent", render: (ctx) => <button type="button" onClick={ctx.close}>Inside {String(ctx.mobile)}</button> } } });
+  setMobile(true);
+  try {
+    renderWith(s, <CmsDocEditor collection="guide" slug="phone" onBack={() => {}} />, { plugins: [ai] });
+    await screen.findByLabelText(/^Title/);
+    const open = screen.getByRole("button", { name: "Agent" });
+    fireEvent.click(open);
+    const dialog = await screen.findByRole("dialog", { name: "Agent" });
+    assert.ok(within(dialog).getByText("Inside true"));
+    await waitFor(() => assert.ok(document.activeElement === dialog, "focus in the panel"));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => assert.ok(!screen.queryByRole("dialog")));
+    // Desktop habit: Escape on the pressed trigger closes too.
+    fireEvent.click(screen.getByRole("button", { name: "Agent" }));
+    await screen.findByRole("dialog", { name: "Agent" });
+    fireEvent.keyDown(screen.getByRole("button", { name: "Agent" }), { key: "Escape" });
+    await waitFor(() => assert.ok(!screen.queryByRole("dialog")));
+  } finally {
+    setMobile(false);
+  }
 });

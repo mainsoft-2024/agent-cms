@@ -89,13 +89,13 @@ test("keys: expired badge, revoke with confirm", async () => {
   try {
     renderWith(s, <CmsKeys />, { messages: ko });
     await screen.findByText("old-script");
-    assert.ok(screen.getByText("만료됨"));
+    assert.ok(within(screen.getByText("old-script").closest("tr")!).getByText("만료"), "the expired badge in the key's row");
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "폐기: old-script" }));
-    const confirm = await screen.findByRole("dialog", { name: "old-script 키를 폐기할지 확인" });
+    const confirm = await screen.findByRole("dialog", { name: "old-script 키를 폐기하시겠습니까?" });
     assert.deepEqual(await axeViolations(), []);
     await user.click(within(confirm).getByRole("button", { name: "폐기" }));
-    await screen.findByText("폐기됨");
+    await waitFor(() => assert.ok(within(screen.getByText("old-script").closest("tr")!).getByText("폐기"), "the revoked badge in the key's row"));
     assert.ok((await s.cms.listKeys(admin)).find((x) => x.id === k.key.id)?.revokedAt);
   } finally {
     Date.now = realNow;

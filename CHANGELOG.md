@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.26.0
+
+Korean copy in 입니다체, and two extension points for plugins. No schema change. Copied screens change (`cms-messages.ts`, `cms-doc-editor.tsx`, `use-cms.ts`): run `npx @mainsoft/agent-cms add --update`.
+
+### Added
+- **`ctx.db`**: plugins run SQL on the CMS's own database for their own tables: `ctx.db.query(sql, params)` (`$1…$n` parameters) and `ctx.db.tx(fn)` (one transaction). Null on the memory store. `CmsRepo.query` is the store's side (`DrizzleRepo` has it).
+- **`slots.editorSide`**: a panel beside the document editor (380px on wide screens, the whole screen on a phone), opened with a button in the editor's header; one at a time, Escape closes it. Its `render` gets the editor's context with `close()` and `mobile`.
+- **`reload()`** in every editor slot's context: read the document again after a plugin changed it through the API (unsaved edits that do not overlap are merged in; overlapping ones open the merge screen on save).
+- **`@mainsoft/agent-cms/admin`**: `LIST_SLOTS` and `AdminSidePart` (slots whose parts stay apart).
+
+### Changed
+- **Korean text is 입니다체** across the admin screens and the server's error messages: sentences end in -습니다/-ㅂ니다, short labels (buttons, tabs, badges, states) are noun phrases (`복사 완료`, `게시`, `수락 대기`), requests use -하십시오, confirmations ask -하시겠습니까?. A test (`src/tone.ts`) keeps it that way. If you changed `cms-messages.ts` yourself, `add --update` shows the differences.
+
 ## 0.25.1
 
 Fixes. No schema change. One copied screen changes (`cms-shell.tsx`): run `npx @mainsoft/agent-cms add --update`.

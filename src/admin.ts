@@ -15,6 +15,23 @@ export type MultiSlotName = (typeof MULTI_SLOTS)[number];
 export const SINGLE_SLOTS = ["blockEditor"] as const;
 export type SingleSlotName = (typeof SINGLE_SLOTS)[number];
 
+/**
+ * 0.26.0: slots where each part stays separate (the screen shows one at a time): the app's first,
+ * then plugins in order. Each part is `{ label, icon?, render }`; the runtime gives a list.
+ */
+export const LIST_SLOTS = ["editorSide"] as const;
+export type ListSlotName = (typeof LIST_SLOTS)[number];
+
+/** One part of a list slot, as the runtime gives it. `plugin` is null for the app's own. */
+export interface AdminSidePart<N = unknown> {
+  plugin: string | null;
+  /** A key for the screen (`app` or the plugin's name, with a number when one brings several). */
+  key: string;
+  label: AdminText;
+  icon?: N;
+  render: (...args: unknown[]) => N;
+}
+
 /** Text in one language, or by language (`{ en: "Stats", ko: "통계" }`). */
 export type AdminText = string | Record<string, string>;
 
@@ -33,7 +50,7 @@ export interface AdminPluginShape<N = unknown, P = unknown> {
   /** A name people read (the menu and the page header). Default: the name. */
   label?: AdminText;
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  slots?: { [K in MultiSlotName]?: (...args: any[]) => N } & { [K in SingleSlotName]?: unknown };
+  slots?: { [K in MultiSlotName]?: (...args: any[]) => N } & { [K in SingleSlotName]?: unknown } & { [K in ListSlotName]?: unknown };
   /* eslint-enable @typescript-eslint/no-explicit-any */
   /**
    * Pages by path under `/admin/p/<plugin>`: `""` is the plugin's first page; `"items/:id"`
@@ -101,13 +118,27 @@ export function pickText(text: AdminText | undefined, locale: string, fallback =
 export function checkAdminPlugin<T extends AdminPluginShape>(p: T): T {
   if (!p || typeof p !== "object") throw new Error("[agent-cms] admin plugin: expected an object from defineAdminPlugin({ name, ... })");
   if (!NAME.test(p.name ?? "")) throw new Error(`[agent-cms] admin plugin "${p.name}": the name must be lowercase letters, digits and dashes (the server plugin's name)`);
-  for (const k of Object.keys(p.slots ?? {}))
-    if (!(MULTI_SLOTS as readonly string[]).includes(k) && !(SINGLE_SLOTS as readonly string[]).includes(k))
-      throw new Error(`[agent-cms] admin plugin "${p.name}": unknown slot "${k}" (slots: ${[...MULTI_SLOTS, ...SINGLE_SLOTS].join(", ")})`);
+  const all = [...MULTI_SLOTS, ...SINGLE_SLOTS, ...LIST_SLOTS] as readonly string[];
+  for (const k of Object.keys(p.slots ?? {})) {
+    if (!all.includes(k)) throw new Error(`[agent-cms] admin plugin "${p.name}": unknown slot "${k}" (slots: ${all.join(", ")})`);
+    if ((LIST_SLOTS as readonly string[]).includes(k)) listParts((p.slots as Record<string, unknown>)[k], `admin plugin "${p.name}": slot ${k}`);
+  }
   for (const key of Object.keys(p.pages ?? {}))
     if (key !== "" && !/^(?:[a-z0-9_-]+|:[a-zA-Z_][a-zA-Z0-9_]*)(?:\/(?:[a-z0-9_-]+|:[a-zA-Z_][a-zA-Z0-9_]*))*$/.test(key))
       throw new Error(`[agent-cms] admin plugin "${p.name}": page "${key}" is not a path like "", "settings" or "items/:id"`);
   return p;
+}
+
+/** A list slot's value: one `{ label, render }` or several. Throws a clear error on another shape. */
+function listParts(v: unknown, where: string): { label: AdminText; icon?: unknown; render: (...a: unknown[]) => unknown }[] {
+  if (v === undefined || v === null) return [];
+  const list = Array.isArray(v) ? v : [v];
+  for (const x of list) {
+    const o = x as { label?: unknown; render?: unknown } | null;
+    if (!o || typeof o.render !== "function" || (typeof o.label !== "string" && (typeof o.label !== "object" || o.label === null)))
+      throw new Error(`[agent-cms] ${where}: expected { label, render } (or a list of them)`);
+  }
+  return list as { label: AdminText; icon?: unknown; render: (...a: unknown[]) => unknown }[];
 }
 
 const fill = (s: string, vars?: Record<string, string | number>) => (vars ? s.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m)) : s);
@@ -149,6 +180,34 @@ export function createAdminRuntime<N, P>(o: AdminRuntimeOptions<N, P>): AdminRun
             }
           })
         );
+  }
+  for (const name of LIST_SLOTS) {
+    const out: AdminSidePart<N>[] = [];
+    const add = (from: string | null, v: unknown) => {
+      const parts = listParts(v, from === null ? `slot ${name}` : `admin plugin "${from}": slot ${name}`);
+      parts.forEach((part, i) => {
+        // The app's and a plugin's never collide (a plugin may well be called "app").
+        const key = `${from === null ? "app" : `p:${from}`}${parts.length > 1 ? `:${i + 1}` : ""}`;
+        const where = `admin plugin ${from}: slot ${name}`;
+        const render =
+          from === null
+            ? (part.render as (...a: unknown[]) => N)
+            : (...args: unknown[]) => {
+                try {
+                  const node = part.render(...args) as N;
+                  return o.wrap ? o.wrap(node, { plugin: from, slot: name, report: (err) => report(err, where) }) : node;
+                } catch (err) {
+                  report(err, where);
+                  return o.combine([]);
+                }
+              };
+        out.push({ plugin: from, key, label: part.label, icon: part.icon as N | undefined, render });
+      });
+    };
+    add(null, app[name]);
+    for (const p of plugins) add(p.name, (p.slots as Record<string, unknown> | undefined)?.[name]);
+    if (out.length) slots[name] = out;
+    else delete slots[name];
   }
   for (const name of SINGLE_SLOTS) {
     if (app[name] !== undefined) continue;

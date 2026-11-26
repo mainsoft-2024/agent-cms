@@ -27,6 +27,7 @@ import { type PluginSettingsView,
   type PluginAdded,
   type PluginState,
   type PluginStore,
+  type PluginDb,
   type PluginTool,
 } from "./plugin";
 import type { CmsRepo } from "./repo";
@@ -196,6 +197,23 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
   };
   let closed = false;
 
+  function dbOf(repo: CmsRepo): PluginDb | null {
+    if (typeof repo.query !== "function") return null;
+    return {
+      query: (text, params) => repo.query!(text, params),
+      tx: (fn) =>
+        repo.tx(
+          (inner) => {
+            const db = dbOf(inner);
+            // Never fall back to the outer connection: writes there would escape the rollback.
+            if (!db) throw new Error("[agent-cms] db.tx: this store has no query inside a transaction");
+            return fn(db);
+          },
+          { atomic: true }
+        ),
+    };
+  }
+
   function makeStore(name: string): PluginStore {
     const kind = `plugin:${name}`;
     const checkKey = (key: string) => {
@@ -340,6 +358,9 @@ export function createPluginHost(inputs: readonly PluginInput[], deps: PluginHos
         access.push({ plugin: p.name, rule, collections: o?.collections ? [...o.collections] : null });
       },
       store: makeStore(p.name),
+      get db() {
+        return dbOf(deps.repo());
+      },
       settings: <T,>() => e.settings as T,
       log: (level, message, data) => deps.log({ plugin: p.name, level, message, data }),
       search: {

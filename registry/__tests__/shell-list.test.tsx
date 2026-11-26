@@ -137,11 +137,11 @@ test("list: mobile cards, long press enters selection mode with the bulk bar", a
   assert.deepEqual(opened, ["a"]);
   // A long press (contextmenu on touch) selects.
   fireEvent.contextMenu(card);
-  await screen.findByRole("heading", { name: "1개 선택됨" });
+  await screen.findByRole("heading", { name: "1개 선택" });
   const bar = screen.getByRole("toolbar", { name: "일괄 작업" });
   assert.ok(within(bar).getByRole("button", { name: "게시" }));
   await user.click(screen.getByRole("button", { name: /Doc B/ }));
-  await screen.findByRole("heading", { name: "2개 선택됨" });
+  await screen.findByRole("heading", { name: "2개 선택" });
   assert.deepEqual(opened, ["a"]);
   assert.deepEqual(await axeViolations(), []);
 });
@@ -159,6 +159,6 @@ test("empty: new document plus the agent guide (CLI, MCP URL, key link)", async 
   assert.deepEqual(await axeViolations(), []);
   cleanup();
   renderWith(s, <CmsEmpty collection="notices" />, { messages: ko });
-  await screen.findByRole("heading", { name: /에 아직 문서 없음$|^아직 문서가 없음$/ });
+  await screen.findByRole("heading", { name: /에 아직 문서가 없습니다$|^아직 문서가 없습니다$/ });
   assert.ok(screen.getByText("에이전트로 쓰기"));
 });

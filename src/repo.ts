@@ -136,6 +136,12 @@ export interface CmsRepo {
    * steps one by one: used where half a change would be wrong (publishing a release).
    */
   tx<T>(fn: (repo: CmsRepo) => Promise<T>, o?: { atomic?: boolean }): Promise<T>;
+  /**
+   * 0.26.0: run one SQL statement on the CMS's database, with `$1…$n` parameters (plugins' own
+   * tables, through `ctx.db`). Inside `tx`, it runs in that transaction. Only stores on a SQL
+   * database have it (not the memory store).
+   */
+  query?(text: string, params?: readonly unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
 
   /** Documents in the trash are not found unless `trashed` is set. */
   findDoc(collection: string, slug: string, o?: FindOptions): Promise<CmsDoc | null>;
