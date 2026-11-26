@@ -1,4 +1,4 @@
-// agent-cms registry: cms-doc-editor (0.26.0). Copied into your app by `npx agent-cms add`; edit freely.
+// agent-cms registry: cms-doc-editor (0.26.1). Copied into your app by `npx agent-cms add`; edit freely.
 //
 // One document: the info form (from `_schema`), the markdown body with a
 // live preview that follows the text (and finds its lines when clicked),
@@ -2240,7 +2240,7 @@ export function CmsDocEditor({ collection, slug: slugProp, onBack, onCreated, on
         ) : (
           <>
             {/* A single is its own page in the menu: "Site settings / Site settings" would say the same thing twice. */}
-            <PageHeader title={title} crumbs={schema.single ? undefined : [schema.label]} after={stateBits} nowrap>
+            <PageHeader title={title} crumbs={schema.single ? undefined : [schema.label]} after={stateBits} nowrap={!(side && sideBox)}>
               <People people={others} className="mr-1" />
               {/* Secondary actions are icons with a tooltip, so the header stays one line and Save and Publish stay in view. */}
               {doc && canWrite ? (
