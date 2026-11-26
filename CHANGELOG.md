@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.26.2
+
+Korean wording. No schema change. Copied screens change (`cms-messages.ts`, `cms-block-editor.tsx`, `cms-locale.tsx`): run `npx @mainsoft/agent-cms add --update`.
+
+### Changed
+- **Korean admin and server copy uses standard software terms** (as in the Korean versions of Notion, Google Workspace and GitHub) instead of native coinages: 올리기 → 업로드, 내려받기/받기 → 다운로드, 고르기 → 선택, 빼기 → 제거 (관리자 권한 → 해제), 넣기 → 삽입/추가, 더하기 → 추가, 고치기 → 수정/편집, 바꾸기 → 변경/교체/전환, 지우기 → 삭제/초기화/해제, 되살리기 → 복원, 합치기 → 병합, 옮기기 → 이동, 소리 → 오디오, 그림 → 이미지, 칸 → 필드, 보기(폼 선택지) → 옵션, 체크 상자 → 체크박스, 한 줄 글/여러 줄 글 → 짧은 텍스트/긴 텍스트, 알림 상자 → 콜아웃, 2단/3단 → 2열/3열, 머리글 → 헤더, 글 모양 → 텍스트 스타일, 끌어서 → 드래그해서, 비워 둘 칸 → 숨김 필드(허니팟). Public forms say 제출 instead of 보내기. The Korean invitation and password-reset mails are in 입니다체. The `ko` role list empty state was still in English and is now Korean. The stats example plugin says 조회수 instead of 읽은 수. The roadmap calls extension points 확장 지점 and value filters 필터.
+- **Block search** in the editor's `/` menu also finds blocks by the new names (콜아웃, 2열, 3열, 전환); the old words still match.
+
 ## 0.26.1
 
 One copied screen changes (`cms-doc-editor.tsx`): run `npx @mainsoft/agent-cms add --update`.

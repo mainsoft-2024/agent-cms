@@ -168,7 +168,7 @@ test("automations: Korean strings, and someone who is not an admin is told so", 
   renderWith(s, <CmsAutomations />, { messages: ko });
   await screen.findByRole("heading", { name: "자동화" });
   assert.match((await screen.findByRole("navigation", { name: "자동화" })).textContent ?? "", /알림매주 월요일/);
-  assert.equal((screen.getByLabelText("언제") as HTMLSelectElement).value, "schedule.weekly");
+  assert.equal((screen.getByLabelText("트리거") as HTMLSelectElement).value, "schedule.weekly");
   assert.ok(screen.queryByLabelText("컬렉션") === null, "a schedule has no collection");
   await screen.findByText(/^아직 실행된 적이 없습니다\./);
   cleanup();

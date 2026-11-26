@@ -83,10 +83,10 @@ export function StatsPage(_props: PluginPageProps) {
 
 export default defineAdminPlugin({
   name: "stats",
-  label: { en: "Read counts", ko: "읽은 수 통계" },
+  label: { en: "Read counts", ko: "조회수 통계" },
   pages: { "": StatsPage },
   messages: {
     en: { title: "Read counts", reload: "Reload", loading: "Loading…", total: "Reads in all", top: "Most read", none: "Nothing read yet.", reads: "{n} reads", unread: "Published, not read yet" },
-    ko: { title: "읽은 수 통계", reload: "새로 고침", loading: "불러오는 중", total: "전체 읽은 수", top: "많이 읽은 문서", none: "아직 읽은 문서가 없습니다.", reads: "{n}회", unread: "게시 후 읽음 0회" },
+    ko: { title: "조회수 통계", reload: "새로 고침", loading: "불러오는 중", total: "전체 조회수", top: "많이 본 문서", none: "아직 조회된 문서가 없습니다.", reads: "{n}회", unread: "게시 후 조회 0회" },
   },
 });

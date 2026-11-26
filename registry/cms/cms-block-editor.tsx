@@ -175,17 +175,17 @@ const ITEMS: Item[] = [
   { key: "h2", label: "blk_t_h2", hint: "blk_t_h2_text", group: "blk_group_basic", icon: Heading2, words: "heading title h2 ## 제목 헤딩", keys: "##", make: () => text("h2") },
   { key: "h3", label: "blk_t_h3", hint: "blk_t_h3_text", group: "blk_group_basic", icon: Heading3, words: "subheading heading h3 ### 작은 제목 소제목", keys: "###", make: () => text("h3") },
   { key: "h4", label: "blk_t_h4", hint: "blk_t_h4_text", group: "blk_group_basic", icon: Heading4, words: "heading h4 #### 제목 4 소소제목", keys: "####", make: () => text("h4") },
-  { key: "bullet", label: "blk_t_bullet", hint: "blk_t_bullet_text", group: "blk_group_basic", icon: List, words: "bullet list ul - 글머리 목록 리스트", keys: "-", make: () => text("bullet") },
+  { key: "bullet", label: "blk_t_bullet", hint: "blk_t_bullet_text", group: "blk_group_basic", icon: List, words: "bullet list ul - 글머리 기호 목록 리스트", keys: "-", make: () => text("bullet") },
   { key: "number", label: "blk_t_number", hint: "blk_t_number_text", group: "blk_group_basic", icon: ListOrdered, words: "numbered list ol 1. 번호 목록 순서", keys: "1.", make: () => text("number") },
   { key: "todo", label: "blk_t_todo", hint: "blk_t_todo_text", group: "blk_group_basic", icon: ListChecks, words: "todo task check checkbox [] 할 일 체크", keys: "[]", make: () => text("todo", { checked: false }) },
   { key: "toggle", label: "blk_t_toggle", hint: "blk_t_toggle_text", group: "blk_group_basic", icon: ListCollapse, words: "toggle details collapse fold >> 접기 토글 펼치기", keys: ">>", make: () => text("toggle") },
   { key: "quote", label: "blk_t_quote", hint: "blk_t_quote_text", group: "blk_group_basic", icon: Quote, words: "quote blockquote > 인용", keys: ">", make: () => text("quote") },
-  { key: "callout", label: "blk_t_callout", hint: "blk_t_callout_text", group: "blk_group_basic", icon: Info, words: "callout note tip warning 알림 참고 팁 주의", make: () => text("callout", { tone: "note" }) },
+  { key: "callout", label: "blk_t_callout", hint: "blk_t_callout_text", group: "blk_group_basic", icon: Info, words: "callout note tip warning 콜아웃 알림 참고 팁 주의", make: () => text("callout", { tone: "note" }) },
   { key: "hr", label: "blk_t_hr", hint: "blk_t_hr_text", group: "blk_group_basic", icon: Minus, words: "divider rule hr line --- 구분선 선", keys: "---", make: () => ({ id: newId(), type: "hr" }) },
   { key: "media", label: "blk_slash_media", hint: "blk_slash_media_text", group: "blk_group_media", icon: ImageIcon, words: "image picture photo file media 이미지 사진 그림 파일 미디어", make: () => "media" },
   { key: "table", label: "blk_t_table", hint: "blk_t_table_text", group: "blk_group_advanced", icon: Table, words: "table grid rows columns 표 테이블", make: newTable },
-  { key: "columns", label: "blk_slash_columns", hint: "blk_slash_columns_text", group: "blk_group_advanced", icon: Columns2, words: "columns two side 2단 단 칼럼 나란히", make: () => makeColumns(2) },
-  { key: "columns3", label: "blk_slash_columns3", hint: "blk_slash_columns3_text", group: "blk_group_advanced", icon: Columns3, words: "columns three side 3단 단 칼럼 나란히", make: () => makeColumns(3) },
+  { key: "columns", label: "blk_slash_columns", hint: "blk_slash_columns_text", group: "blk_group_advanced", icon: Columns2, words: "columns two side 2열 열 2단 칼럼 나란히", make: () => makeColumns(2) },
+  { key: "columns3", label: "blk_slash_columns3", hint: "blk_slash_columns3_text", group: "blk_group_advanced", icon: Columns3, words: "columns three side 3열 열 3단 칼럼 나란히", make: () => makeColumns(3) },
   { key: "code", label: "blk_t_code", hint: "blk_t_code_text", group: "blk_group_advanced", icon: Code, words: "code snippet ``` 코드", keys: "```", make: () => ({ id: newId(), type: "code", text: "", lang: "" }) },
   { key: "html", label: "blk_slash_html", hint: "blk_slash_html_text", group: "blk_group_advanced", icon: CodeXml, words: "html embed iframe markup 임베드", make: () => ({ id: newId(), type: "source", md: ":::html\n\n:::", kind: "html" }) },
   { key: "steps", label: "blk_steps", hint: "blk_steps_text", group: "blk_group_new", icon: ListOrdered, words: "steps how-to guide procedure :::steps 단계 절차 순서 방법", keys: ":::steps", make: makeSteps },
@@ -4217,12 +4217,12 @@ function BlockMenu({
       ? [
           { key: "anchor-copy", label: t("blk_anchor_copy"), icon: Hash, run: () => onAnchor("copy"), keys: `#${anchor.id}`, group: "anchor" as const, words: "anchor link copy 앵커 링크 복사" },
           anchor.pinned
-            ? { key: "anchor-unpin", label: t("blk_anchor_unpin"), icon: PinOff, run: () => onAnchor("unpin"), group: "anchor" as const, words: "anchor unpin 앵커 고정 풀기" }
+            ? { key: "anchor-unpin", label: t("blk_anchor_unpin"), icon: PinOff, run: () => onAnchor("unpin"), group: "anchor" as const, words: "anchor unpin 앵커 고정 해제 풀기" }
             : { key: "anchor-pin", label: t("blk_anchor_pin"), icon: Pin, run: () => onAnchor("pin"), hint: t("blk_anchor_pin_short"), tip: t("blk_anchor_pin_hint", { id: anchor.id }), group: "anchor" as const, words: "anchor pin keep 앵커 고정" },
         ]
       : []),
     ...(turnable
-      ? TURN_INTO.map((x) => ({ key: `turn-${x.type}`, label: t(x.label), icon: x.icon, run: () => onTurn(x.type), keys: x.digit ? `${mod}${alt}${x.digit}` : undefined, group: "turn" as const, words: `turn into ${x.type} 바꾸기` }))
+      ? TURN_INTO.map((x) => ({ key: `turn-${x.type}`, label: t(x.label), icon: x.icon, run: () => onTurn(x.type), keys: x.digit ? `${mod}${alt}${x.digit}` : undefined, group: "turn" as const, words: `turn into ${x.type} 전환 바꾸기` }))
       : []),
     ...(callouts ? (["note", "tip", "warning"] as const).map((tone) => ({ key: `tone-${tone}`, label: t(`blk_tone_${tone}` as Key), icon: Info, run: () => onTone(tone), group: "tone" as const, words: `tone ${tone} 종류` })) : []),
     { key: "above", label: t("blk_add_above"), icon: ArrowUpToLine, run: () => onInsert(true), group: "act", words: "insert add above new 위에 추가" },

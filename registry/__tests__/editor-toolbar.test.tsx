@@ -605,7 +605,7 @@ test("server messages follow the screens' language; a message the CMS was given 
   const english = createT(en);
   assert.equal(serverText({ code: "redirect_loop", message: "This redirect would lead back to itself" }, ko), "이 리다이렉트는 자기 자신으로 돌아옵니다");
   const { en: serverEn } = await import("@mainsoft/agent-cms/messages/en");
-  assert.equal(serverText({ code: "slug_taken", message: "이미 쓰는 주소입니다: intro", params: { slug: "intro" } }, english), String(serverEn.slug_taken).replace("{slug}", "intro"));
+  assert.equal(serverText({ code: "slug_taken", message: "이미 사용 중인 주소입니다: intro", params: { slug: "intro" } }, english), String(serverEn.slug_taken).replace("{slug}", "intro"));
   assert.equal(serverText({ code: "redirect_loop", message: "Nope, loops are bad here" }, ko), "Nope, loops are bad here");
   assert.equal(errorMessage(new CmsRemoteError("This redirect would lead back to itself", "redirect_loop", { params: {} }), ko), "이 리다이렉트는 자기 자신으로 돌아옵니다");
 });

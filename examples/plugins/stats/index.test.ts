@@ -65,7 +65,7 @@ test("stats: only the collections it is given", async () => {
 
 test("stats admin: a page and a menu entry, in the admin's language", () => {
   const runtime = createReactAdminRuntime({ plugins: [statsAdmin] });
-  assert.deepEqual(runtime.nav({ locale: "ko", isAdmin: false }), [{ plugin: "stats", label: "읽은 수 통계", href: "/admin/p/stats" }]);
+  assert.deepEqual(runtime.nav({ locale: "ko", isAdmin: false }), [{ plugin: "stats", label: "조회수 통계", href: "/admin/p/stats" }]);
   assert.equal(runtime.page("stats", [])?.page, StatsPage);
   // The first render (before the numbers come): the title in Korean, then "loading".
   const client = { request: () => new Promise(() => {}) } as never;
@@ -76,6 +76,6 @@ test("stats admin: a page and a menu entry, in the admin's language", () => {
       React.createElement(StatsPage, { plugin: "stats", path: [], params: {} })
     )
   );
-  assert.match(html, /<h1[^>]*>읽은 수 통계<\/h1>/);
+  assert.match(html, /<h1[^>]*>조회수 통계<\/h1>/);
   assert.match(html, /불러오는 중/);
 });

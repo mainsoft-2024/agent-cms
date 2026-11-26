@@ -146,7 +146,7 @@ export interface TranslationBarProps {
   action?: React.ReactNode;
 }
 
-/** "원문 v7, 이 번역은 v5 기준" with "바뀐 곳 보기" and "v7 기준으로 맞춤"; under it what follows the source. */
+/** "원문 v7, 이 번역은 v5 기준" with "변경 사항 보기" and "v7 기준으로 맞춤"; under it what follows the source. */
 export function TranslationBar({ info, sourceVersion, defaultLocale, changesOpen, onToggleChanges, onAlign, aligning, canWrite, published, onOpenSource, url, action }: TranslationBarProps) {
   const { t } = useCms();
   const outdated = info.status === "outdated";

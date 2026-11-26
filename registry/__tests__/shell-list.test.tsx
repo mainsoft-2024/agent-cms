@@ -160,5 +160,5 @@ test("empty: new document plus the agent guide (CLI, MCP URL, key link)", async 
   cleanup();
   renderWith(s, <CmsEmpty collection="notices" />, { messages: ko });
   await screen.findByRole("heading", { name: /에 아직 문서가 없습니다$|^아직 문서가 없습니다$/ });
-  assert.ok(screen.getByText("에이전트로 쓰기"));
+  assert.ok(screen.getByText("에이전트로 작성"));
 });
