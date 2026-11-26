@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.26.1
+
+One copied screen changes (`cms-doc-editor.tsx`): run `npx @mainsoft/agent-cms add --update`.
+
+### Fixed
+- **Editor header with a side panel open**: the header's buttons wrap to a second row instead of running under the panel, so Save and Publish stay visible.
+
 ## 0.26.0
 
 Korean copy in 입니다체, and two extension points for plugins. No schema change. Copied screens change (`cms-messages.ts`, `cms-doc-editor.tsx`, `use-cms.ts`): run `npx @mainsoft/agent-cms add --update`.
