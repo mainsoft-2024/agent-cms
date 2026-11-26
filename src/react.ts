@@ -5,7 +5,7 @@
  *   import { defineAdminPlugin, useCmsAdmin } from "@mainsoft/agent-cms/react";
  *   export const statsAdmin = defineAdminPlugin({
  *     name: "stats",
- *     label: { en: "Read counts", ko: "읽은 수 통계" },
+ *     label: { en: "Read counts", ko: "조회수 통계" },
  *     pages: { "": StatsPage },
  *     slots: { editorActions: (ctx) => <ReadsBadge slug={ctx.slug} /> },
  *   });

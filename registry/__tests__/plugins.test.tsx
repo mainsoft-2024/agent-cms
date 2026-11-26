@@ -71,9 +71,9 @@ function Broken(): React.ReactElement {
 }
 const statsAdmin = defineAdminPlugin({
   name: "stats",
-  label: { en: "Read counts", ko: "읽은 수 통계" },
+  label: { en: "Read counts", ko: "조회수 통계" },
   pages: { "": StatsPage, "items/:id": StatsPage, broken: Broken },
-  messages: { en: { reads: "Reads: {n}" }, ko: { reads: "읽음: {n}" } },
+  messages: { en: { reads: "Reads: {n}" }, ko: { reads: "조회: {n}" } },
 });
 const ADMIN = [statsAdmin] as const;
 
@@ -341,8 +341,8 @@ test("shell: Plugins with the failed count for admins; Extensions lists server m
 test("plugin page: the page for the path with params and the plugin's strings; a missing page; a page that throws", async () => {
   const s = makeServer({ plugins: plugins() });
   const view = renderWith(s, <CmsPluginPage plugin="stats" path={["items", "7"]} />, { plugins: ADMIN, messages: ko });
-  await screen.findByRole("heading", { name: "읽은 수 통계" });
-  await screen.findByText("읽음: 12480 #7");
+  await screen.findByRole("heading", { name: "조회수 통계" });
+  await screen.findByText("조회: 12480 #7");
   view.rerender(
     <CmsProvider baseUrl={BASE} fetch={s.fetch} plugins={ADMIN}>
       <CmsPluginPage plugin="stats" path={["nope"]} />

@@ -81,7 +81,7 @@ CI에서 조합을 돌린다: Node 20/22/24, Next 14/15/16, React 18/19, zod 3/4
 - 미리보기 모드(`draftMode`)와 서명된 미리보기 링크의 연결
 - 리다이렉트 미들웨어 (39, 125번)
 - `generateMetadata`용 `seoMetadata(doc)` (124번), `sitemap.ts`, `llms.txt` 경로 (55번)
-- `next/image`의 로더와 `remotePatterns` 도우미 (0.8.0의 `imageUrl` 연결구)
+- `next/image`의 로더와 `remotePatterns` 도우미 (0.8.0의 `imageUrl` 확장 지점)
 
 ## 116. 다른 화면 프레임워크의 어드민 (1.0 뒤)
 

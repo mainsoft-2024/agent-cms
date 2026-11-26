@@ -78,12 +78,12 @@ test("nav, labels and strings by language", () => {
     combine,
     basePath: "/cms/",
     plugins: [
-      { name: "stats", label: { en: "Read counts", ko: "읽은 수 통계" }, pages: { "": "Home" }, messages: { en: { hi: "Hi {name}" }, ko: { hi: "안녕 {name}" } } },
+      { name: "stats", label: { en: "Read counts", ko: "조회수 통계" }, pages: { "": "Home" }, messages: { en: { hi: "Hi {name}" }, ko: { hi: "안녕 {name}" } } },
       { name: "ops", nav: [{ label: "Ops", path: "run", admin: true }] },
       { name: "quiet", pages: { x: "X" } },
     ],
   });
-  assert.deepEqual(r.nav({ locale: "ko-KR", isAdmin: false }), [{ plugin: "stats", label: "읽은 수 통계", href: "/cms/p/stats" }]);
+  assert.deepEqual(r.nav({ locale: "ko-KR", isAdmin: false }), [{ plugin: "stats", label: "조회수 통계", href: "/cms/p/stats" }]);
   assert.deepEqual(r.nav({ locale: "en", isAdmin: true }).map((n) => n.href), ["/cms/p/stats", "/cms/p/ops/run"]);
   assert.equal(r.t("stats", "ko", "hi", { name: "Kim" }), "안녕 Kim");
   assert.equal(r.t("stats", "ja", "hi", { name: "Kim" }), "Hi Kim");

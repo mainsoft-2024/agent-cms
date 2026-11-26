@@ -477,8 +477,8 @@ export function createAuth(o: AuthOptions) {
       reset: (url: string) => ({ subject: `Reset your ${appName} password`, text: `Someone asked to reset the password of this account.\n\nChoose a new password (the link works once, for 1 hour):\n${url}\n\nIf it was not you, ignore this mail: nothing changes.` }),
     },
     ko: {
-      invite: (by: string, url: string) => ({ subject: `${by} 님이 ${appName}에 초대함`, text: `${by} 님이 ${appName}에 초대함.\n\n초대 수락 (7일 동안 유효):\n${url}\n\n모르는 초대면 이 메일은 무시해도 됨.` }),
-      reset: (url: string) => ({ subject: `${appName} 비밀번호 재설정`, text: `이 계정의 비밀번호 재설정 요청이 있었음.\n\n새 비밀번호 정하기 (한 번만, 1시간 동안 유효):\n${url}\n\n본인이 아니면 이 메일은 무시해도 됨. 아무것도 바뀌지 않음.` }),
+      invite: (by: string, url: string) => ({ subject: `${by} 님이 ${appName}에 초대했습니다`, text: `${by} 님이 ${appName}에 초대했습니다.\n\n초대 수락 (7일 동안 유효):\n${url}\n\n모르는 초대라면 이 메일을 무시하십시오.` }),
+      reset: (url: string) => ({ subject: `${appName} 비밀번호 재설정`, text: `이 계정의 비밀번호 재설정 요청이 있었습니다.\n\n새 비밀번호 설정 (한 번만, 1시간 동안 유효):\n${url}\n\n본인이 요청하지 않았다면 이 메일을 무시하십시오. 아무것도 변경되지 않습니다.` }),
     },
   };
   async function mail(m: Mail, kind: "invite" | "reset"): Promise<boolean> {

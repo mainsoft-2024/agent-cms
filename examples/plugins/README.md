@@ -41,9 +41,9 @@ admin's provider: `<CmsProvider plugins={[statsAdmin]}>`.
 ```tsx
 export default defineAdminPlugin({
   name: "stats",                                   // the server half's name
-  label: { en: "Read counts", ko: "읽은 수 통계" },
+  label: { en: "Read counts", ko: "조회수 통계" },
   pages: { "": StatsPage },                        // /admin/p/stats
-  messages: { en: { title: "Read counts" }, ko: { title: "읽은 수 통계" } },
+  messages: { en: { title: "Read counts" }, ko: { title: "조회수 통계" } },
 });
 ```
 

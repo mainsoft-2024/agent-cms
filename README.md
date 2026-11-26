@@ -778,10 +778,10 @@ function StatsPage(_: PluginPageProps) {
 
 export const statsAdmin = defineAdminPlugin({
   name: "stats",                                      // the server plugin's name
-  label: { en: "Read counts", ko: "읽은 수 통계" },
+  label: { en: "Read counts", ko: "조회수 통계" },
   pages: { "": StatsPage, "docs/:slug": DocStats },     // /admin/p/stats, /admin/p/stats/docs/<slug>
   slots: { editorActions: (ctx) => <ReadsBadge slug={ctx.slug} /> },
-  messages: { en: { reads: "Reads: {n}" }, ko: { reads: "읽음: {n}" } },
+  messages: { en: { reads: "Reads: {n}" }, ko: { reads: "조회: {n}" } },
 });
 
 // the app's admin frame (keep the array outside the component)
